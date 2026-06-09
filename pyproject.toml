@@ -1,0 +1,24 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "debripod"
+version = "0.1.0"
+description = "Local Flask media app for Debripod"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+  "Flask>=3.0",
+  "requests>=2.31",
+  "Pillow>=10.0",
+  "aioslsk>=0.7",
+  "yt-dlp>=2025.1.1"
+]
+
+[project.scripts]
+debripod = "debripod.app:main"
+
+[tool.setuptools.packages.find]
+where = ["."]
+include = ["debripod*"]

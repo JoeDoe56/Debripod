@@ -1,0 +1,5 @@
+Flask>=3.0
+requests>=2.31
+Pillow>=10.0
+aioslsk>=0.7
+yt-dlp>=2025.1.1
