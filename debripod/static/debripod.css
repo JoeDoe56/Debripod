@@ -40,6 +40,8 @@
       --shadow2: 0 8px 22px rgba(0,0,0,.38);
       --radius: 20px;
       --radiusSm: 14px;
+      --screenRadius: 20px;
+      --screenFrame: 10px;
       --barBlur: 26px;
       --uiFont: "Open Sans", "Segoe UI", Arial, sans-serif;
     }
@@ -143,6 +145,29 @@
     button.chip:active{transform: translateY(1px)}
     .spacer{margin-left:auto}
     .row{display:flex; gap:12px; align-items:center; flex-wrap:wrap}
+
+    .liquidGlass{
+      isolation:isolate;
+      position:relative;
+      z-index:30;
+      background: rgba(246,248,255,.075);
+      border: 1px solid rgba(255,255,255,.18);
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.24),
+        inset 0 -1px 0 rgba(255,255,255,.08),
+        0 12px 34px rgba(0,0,0,.30);
+    }
+    .liquidGlass > *{
+      position: relative;
+      z-index: 3;
+    }
+    @supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))){
+      .liquidGlass{
+        -webkit-backdrop-filter: blur(18px) saturate(1.25);
+        backdrop-filter: blur(18px) saturate(1.25);
+        background: rgba(246,248,255,.055);
+      }
+    }
 
     
     @media (max-height: 720px){
@@ -357,10 +382,10 @@
       max-width: calc(100vw - 24px);
       padding: 8px 12px;
       border-radius: 999px;
-      border: 1px solid rgba(255,255,255,.10);
-      background: rgba(28,28,30,.28);
+      border: 1px solid rgba(255,255,255,.18);
+      background: rgba(246,248,255,.06);
       transition: background .45s ease, border-color .45s ease, box-shadow .45s ease;
-      color: var(--muted);
+      color: rgba(255,255,255,.78);
       font-size: 12px;
       line-height: 1.1;
       overflow:hidden;
@@ -377,7 +402,7 @@
       .pathPill{
         -webkit-backdrop-filter: blur(18px) saturate(1.16);
         backdrop-filter: blur(18px) saturate(1.16);
-        background: rgba(28,28,30,.34);
+        background: rgba(246,248,255,.055);
       }
     }
     .pathPill.pathPillHidden{
@@ -413,11 +438,11 @@
       margin-right: calc(50% - 50vw);
       aspect-ratio: 1 / 1;
       height: auto;
-      border: 1px solid rgba(255,255,255,.08);
-      border-radius: 20px;
-      background: rgba(28,28,30,.42);
-      box-shadow: inset 0 1px 0 rgba(255,255,255,.05);
-      padding: 0;
+      border: 1px solid rgba(255,255,255,.18);
+      border-radius: var(--screenRadius);
+      background: rgba(246,248,255,.06);
+      box-shadow: inset 0 1px 0 rgba(255,255,255,.20), 0 18px 42px rgba(0,0,0,.30);
+      padding: var(--screenFrame);
       position: relative;
       overflow:hidden;
       display:flex;
@@ -429,8 +454,25 @@
       .ipodScreen{
         -webkit-backdrop-filter: blur(18px) saturate(1.16);
         backdrop-filter: blur(18px) saturate(1.16);
-        background: rgba(28,28,30,.34);
+        background: rgba(246,248,255,.055);
       }
+    }
+
+    .ipodScreenContent{
+      position:relative;
+      z-index:3;
+      display:flex;
+      flex-direction:column;
+      flex:1 1 auto;
+      min-height:0;
+      width:100%;
+      height:100%;
+      overflow:hidden;
+      border-radius: max(0px, calc(var(--screenRadius) - var(--screenFrame)));
+      background: rgba(8,8,10,.88);
+      border: 1px solid rgba(0,0,0,.44);
+      box-shadow: 0 0 0 1px rgba(255,255,255,.04);
+      isolation:isolate;
     }
 
     .visualizerBg{
@@ -718,33 +760,71 @@
         .ipodWheelWrap{width:auto; flex: 0 0 auto; margin-top: 0;}
     .wheel{
       position: relative;
-      z-index:2;
+      z-index:30;
       width: 300px;
       height: 300px;
       border-radius: 999px;
-      border: 1px solid rgba(255,255,255,.10);
-      background: rgba(28,28,30,.42);
+      border: 1px solid rgba(255,255,255,.18);
+      background: rgba(246,248,255,.06);
       position: relative;
-      box-shadow: none;
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.22),
+        inset 0 -1px 0 rgba(255,255,255,.08),
+        0 16px 38px rgba(0,0,0,.28);
       user-select:none;
       touch-action: none;
+      overflow: hidden;
+      transform-style: preserve-3d;
+      will-change: transform;
+    }
+    .wheel::before{
+      content:"";
+      position:absolute;
+      inset: 38%;
+      z-index:1;
+      border-radius:999px;
+      background: rgba(0,0,0,.34);
+      box-shadow:
+        0 0 0 1px rgba(255,255,255,.08),
+        0 0 0 14px rgba(0,0,0,.18);
+      pointer-events:none;
+    }
+    @supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))){
+      .wheel{
+        -webkit-backdrop-filter: blur(18px) saturate(1.22);
+        backdrop-filter: blur(18px) saturate(1.22);
+        background: rgba(246,248,255,.055);
+      }
     }
     .wheelCenter{
       position:absolute;
       left: 50%;
       top: 50%;
       transform: translate(-50%,-50%);
-      width: 130px;
-      height: 130px;
+      z-index:30;
+      width: 118px;
+      height: 118px;
       border-radius: 999px;
-      border: 1px solid rgba(255,255,255,.10);
-      background: rgba(28,28,30,.42);
-      box-shadow: none;
+      border: 1px solid rgba(255,255,255,.18);
+      background: rgba(246,248,255,.065);
+      box-shadow:
+        inset 0 1px 0 rgba(255,255,255,.20),
+        inset 0 -1px 0 rgba(255,255,255,.08),
+        0 10px 26px rgba(0,0,0,.24);
       cursor:pointer;
       touch-action: none;
+      will-change: transform;
+    }
+    @supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))){
+      .wheelCenter{
+        -webkit-backdrop-filter: blur(18px) saturate(1.20);
+        backdrop-filter: blur(18px) saturate(1.20);
+        background: rgba(246,248,255,.055);
+      }
     }
     .wheelLabel{
       position:absolute;
+      z-index:22;
       color: rgba(235,235,245,.62);
       font-weight: 700;
       font-size: 16px;
@@ -863,11 +943,11 @@
   left: 12px;
   right: 12px;
   bottom: 12px;
-  z-index: 5;
+      z-index: 30;
   border-radius: 20px;
-  border: 1px solid rgba(255,255,255,.14);
-  background: rgba(28,28,30,.48);
-  box-shadow: 0 12px 32px rgba(0,0,0,.38), inset 0 1px 0 rgba(255,255,255,.08);
+  border: 1px solid rgba(255,255,255,.20);
+  background: rgba(246,248,255,.07);
+  box-shadow: 0 12px 32px rgba(0,0,0,.38), inset 0 1px 0 rgba(255,255,255,.18);
   padding: 8px 10px 8px;
   -webkit-backdrop-filter: blur(18px) saturate(1.20);
   backdrop-filter: blur(18px) saturate(1.20);

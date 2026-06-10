@@ -27,16 +27,17 @@
       <div id="tab-library">
         <div class="ipodStage">
           <div class="topPills">
-            <div class="pathPill" id="libHeader">Library</div>
+            <div class="pathPill liquidGlass" id="libHeader">Library</div>
           </div>
 
-          <div class="ipodScreen" id="ipodScreen">
+          <div class="ipodScreen liquidGlass liquidGlassScreen" id="ipodScreen">
+            <div class="ipodScreenContent">
 
               <div class="nowPlaying" id="nowPlaying">
                 <img class="npArt" id="npArt" alt="">
                 <img class="npArt npArtSwapLayer npArtSwapHidden" id="npArtSwap" alt="">
 
-                <div class="npOverlayPill" id="npOverlayPill">
+                <div class="npOverlayPill liquidGlass" id="npOverlayPill">
                 <div class="npTitle" id="npTitle"></div>
                 <div class="npSub" id="npSub"></div>
 
@@ -68,10 +69,11 @@
 
               <ul class="ipodList" id="libList"></ul>
             </div>
+          </div>
 
           <div class="wheelZone" id="wheelZone">
             <div class="ipodWheelWrap">
-              <div class="wheel" id="wheel">
+              <div class="wheel liquidGlass" id="wheel">
                 <div class="wheelLabel wlTop"><span class="menuWord">MENU</span></div>
                 <div class="wheelLabel wlLeft"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 7 6 12l5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M18 7l-5 5 5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
                 <div class="wheelLabel wlRight"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m13 7 5 5-5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="m6 7 5 5-5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
@@ -82,7 +84,7 @@
                 <div class="wheelHit hitRight wheelBtn" id="btnFwd" title="Next track"></div>
                 <div class="wheelHit hitBottom wheelBtn" id="btnPlay" title="Play or pause"></div>
 
-                <div class="wheelCenter" id="btnCenter" title="Select"></div>
+                <div class="wheelCenter liquidGlass" id="btnCenter" title="Select"></div>
               </div>
             </div>
           </div>
@@ -95,6 +97,8 @@
   
 
 <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script src="{{ url_for('static', filename='html2canvas.min.js') }}?v={{ icon_v }}"></script>
+<script src="{{ url_for('static', filename='liquidGL.js') }}?v={{ icon_v }}"></script>
 <script>
   window.DEBRIPOD_APP_INFO = {{ info_json|safe }};
   window.DEBRIPOD_TASKS_POLL_MS = {{ tasks_poll_ms }};
