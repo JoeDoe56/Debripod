@@ -21,6 +21,19 @@ from urllib.parse import quote, unquote, urlparse
 import requests
 from flask import Flask, request, redirect, url_for, render_template, abort, Response, jsonify
 
+from .Library.search_cache import (
+    _SEARCH_DISK_LOCK,
+    _atomic_write_json,
+    _disk_cache_get,
+    _disk_cache_set,
+    _load_search_history,
+    _make_search_cache_key,
+    _read_json_file,
+    clear_search_history_and_cache,
+    configure_search_cache,
+    record_search_history,
+)
+from .Library.roots import configure_library_roots, root_by_id, roots, safe_path_join
 from .media_types import (
     AUDIO_EXTS,
     PLAYLISTS_FOLDER_NAME,
@@ -33,6 +46,8 @@ from .media_types import (
 )
 from .Routes.icons import ICON_VERSION, register_icon_routes
 from .Routes.shell import register_shell_routes
+from .Services.knaben import configure_knaben, knaben_search, make_magnet
+from .Services.real_debrid import configure_real_debrid, rd_headers, rd_request
 from .Tasks.manager import (
     TASKS,
     TASKS_LOCK,
@@ -59,6 +74,7 @@ from .utils import (
     sanitize_folder_name,
     sha1_text,
 )
+from .playback.streaming import pick_mime, range_response
 
 # =========================
 # User configurable settings
@@ -211,6 +227,22 @@ try:
     apply_config_to_module(globals())
 except Exception as _config_error:
     print(f"Debripod config warning: {_config_error}")
+configure_library_roots(lambda: LIBRARY_FOLDERS)
+configure_real_debrid(
+    api_key_provider=lambda: REAL_DEBRID_API_KEY,
+    base_url_provider=lambda: RD_BASE,
+    timeout_provider=lambda: REQUEST_TIMEOUT_SECONDS,
+)
+configure_knaben(
+    api_key_provider=lambda: KNABEN_API_KEY,
+    min_interval_provider=lambda: KNABEN_MIN_SECONDS_BETWEEN_REQUESTS,
+    cache_ttl_provider=lambda: KNABEN_CACHE_TTL_SECONDS,
+    max_retries_provider=lambda: KNABEN_MAX_RETRIES,
+    api_base_provider=lambda: KNABEN_API_BASE,
+    web_base_provider=lambda: KNABEN_WEB_BASE,
+    timeout_provider=lambda: REQUEST_TIMEOUT_SECONDS,
+    results_per_page_provider=lambda: RESULTS_PER_PAGE,
+)
 
 def ensure_dirs() -> None:
     if not os.path.isabs(DOWNLOAD_DIR):
@@ -250,164 +282,7 @@ def art_cache_dir() -> str:
     return os.path.join(cache_dir(), "art")
 
 
-# =========================
-# Search history + server-side search results cache (disk)
-# =========================
-
-SEARCH_HISTORY_MAX_ITEMS = 50
-SEARCH_DISK_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60  # 7 days
-_SEARCH_DISK_LOCK = threading.Lock()
-
-
-def _search_cache_root_dir() -> str:
-    p = os.path.join(cache_dir(), "search_cache")
-    try:
-        os.makedirs(p, exist_ok=True)
-    except OSError:
-        pass
-    return p
-
-
-def _search_history_path() -> str:
-    return os.path.join(_search_cache_root_dir(), "search_history.json")
-
-
-def _search_cache_file_path(key: str) -> str:
-    key2 = re.sub(r"[^a-fA-F0-9]", "", str(key or ""))[:64]
-    if not key2:
-        key2 = sha1_text(str(key or ""))
-    return os.path.join(_search_cache_root_dir(), f"res_{key2}.json")
-
-
-def _atomic_write_json(path: str, data: dict) -> None:
-    tmp = path + ".tmp"
-    try:
-        with open(tmp, "w", encoding="utf-8") as f:
-            json.dump(data, f, ensure_ascii=False, indent=2)
-        os.replace(tmp, path)
-    except Exception:
-        try:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-        except Exception:
-            pass
-
-
-def _read_json_file(path: str) -> Optional[dict]:
-    try:
-        with open(path, "r", encoding="utf-8") as f:
-            d = json.load(f)
-        return d if isinstance(d, dict) else None
-    except Exception:
-        return None
-
-
-def _make_search_cache_key(engine: str, q: str, extra: Optional[dict] = None) -> str:
-    eng = (engine or "").strip().lower()
-    qq = (q or "").strip()
-    extra2 = extra if isinstance(extra, dict) else {}
-    payload = {"engine": eng, "q": qq, "extra": extra2}
-    return sha1_text(json.dumps(payload, sort_keys=True, ensure_ascii=False))
-
-
-def _disk_cache_get(key: str) -> Optional[dict]:
-    p = _search_cache_file_path(key)
-    d = _read_json_file(p)
-    if not d:
-        return None
-    try:
-        created = float(d.get("created") or 0.0)
-    except Exception:
-        created = 0.0
-    if created > 0 and (time.time() - created) > SEARCH_DISK_CACHE_TTL_SECONDS:
-        return None
-    return d
-
-
-def _disk_cache_set(key: str, engine: str, q: str, extra: Optional[dict], payload: dict) -> None:
-    p = _search_cache_file_path(key)
-    d = {
-        "created": time.time(),
-        "engine": (engine or "").strip().lower(),
-        "q": (q or "").strip(),
-        "extra": extra if isinstance(extra, dict) else {},
-        "payload": payload if isinstance(payload, dict) else {},
-    }
-    _atomic_write_json(p, d)
-
-
-def _load_search_history() -> List[dict]:
-    p = _search_history_path()
-    d = _read_json_file(p)
-    items = d.get("items") if isinstance(d, dict) else None
-    out: List[dict] = []
-    if isinstance(items, list):
-        for it in items:
-            if not isinstance(it, dict):
-                continue
-            q = str(it.get("q") or "").strip()
-            eng = str(it.get("engine") or "").strip().lower()
-            key = str(it.get("cache_key") or "").strip()
-            try:
-                ts = float(it.get("ts") or 0.0)
-            except Exception:
-                ts = 0.0
-            if not q or eng not in ("knaben", "soulseek", "youtube", "combined") or not key:
-                continue
-            out.append({"q": q, "engine": eng, "cache_key": key, "ts": ts})
-    out.sort(key=lambda x: float(x.get("ts") or 0.0), reverse=True)
-    return out[:SEARCH_HISTORY_MAX_ITEMS]
-
-
-def _save_search_history(items: List[dict]) -> None:
-    p = _search_history_path()
-    out = []
-    for it in (items or [])[:SEARCH_HISTORY_MAX_ITEMS]:
-        if not isinstance(it, dict):
-            continue
-        q = str(it.get("q") or "").strip()
-        eng = str(it.get("engine") or "").strip().lower()
-        key = str(it.get("cache_key") or "").strip()
-        ts = float(it.get("ts") or 0.0) if it.get("ts") is not None else 0.0
-        if not q or eng not in ("knaben", "soulseek", "youtube", "combined") or not key:
-            continue
-        out.append({"q": q, "engine": eng, "cache_key": key, "ts": ts})
-    _atomic_write_json(p, {"items": out})
-
-
-def record_search_history(q: str, engine: str, cache_key: str) -> None:
-    qq = (q or "").strip()
-    eng = (engine or "").strip().lower()
-    key = (cache_key or "").strip()
-    if not qq or eng not in ("knaben", "soulseek", "youtube", "combined") or not key:
-        return
-    with _SEARCH_DISK_LOCK:
-        items = _load_search_history()
-        # de-dupe by (engine, q)
-        items = [it for it in items if not (it.get("engine") == eng and it.get("q") == qq)]
-        items.insert(0, {"q": qq, "engine": eng, "cache_key": key, "ts": time.time()})
-        _save_search_history(items)
-
-
-def clear_search_history_and_cache() -> None:
-    with _SEARCH_DISK_LOCK:
-        try:
-            p = _search_history_path()
-            if os.path.exists(p):
-                os.remove(p)
-        except Exception:
-            pass
-        # Remove cached result json files
-        try:
-            root = _search_cache_root_dir()
-            for fn in os.listdir(root):
-                if fn.startswith("res_") and fn.endswith(".json"):
-                    try:
-                        os.remove(os.path.join(root, fn))
-                    except Exception:
-                        pass
-        except Exception:
-            pass
+configure_search_cache(cache_dir)
 
 
 def _playlist_rel_from_abs(root_abs: str, abs_path: str) -> Optional[str]:
@@ -1197,23 +1072,6 @@ def ffprobe_json(path: str) -> dict:
     except Exception:
         raise RuntimeError("ffprobe returned invalid json")
 
-
-def pick_mime(path: str) -> str:
-    mt, _ = mimetypes.guess_type(path)
-    if mt:
-        return mt
-    ext = os.path.splitext(path)[1].lower()
-    if ext == ".mkv":
-        return "video/x-matroska"
-    if ext == ".mp3":
-        return "audio/mpeg"
-    if ext == ".m4a":
-        return "audio/mp4"
-    if ext == ".mp4":
-        return "video/mp4"
-    return "application/octet-stream"
-
-
 FFMPEG_ENCODERS_CACHE: Optional[set] = None
 FFMPEG_ENCODERS_CACHE_AT: float = 0.0
 FFMPEG_ENCODERS_CACHE_TTL_SECONDS: float = 300.0
@@ -1630,156 +1488,6 @@ def transcode_if_needed(src_path: str) -> str:
         return src_path
 
     return src_path
-def range_response(file_path: str) -> Response:
-    if not os.path.exists(file_path) or not os.path.isfile(file_path):
-        abort(404)
-
-    file_size = os.path.getsize(file_path)
-    mime = pick_mime(file_path)
-    range_header = request.headers.get("Range", "")
-    method = request.method.upper()
-
-    if not range_header:
-        headers = {"Content-Length": str(file_size), "Accept-Ranges": "bytes"}
-        if method == "HEAD":
-            return Response(status=200, headers=headers, mimetype=mime)
-
-        def gen():
-            with open(file_path, "rb") as f:
-                while True:
-                    chunk = f.read(1024 * 1024)
-                    if not chunk:
-                        break
-                    yield chunk
-
-        return Response(gen(), status=200, headers=headers, mimetype=mime)
-
-    m = re.match(r"bytes=(\d+)-(\d*)", range_header)
-    if not m:
-        headers = {"Content-Length": str(file_size), "Accept-Ranges": "bytes"}
-        if method == "HEAD":
-            return Response(status=200, headers=headers, mimetype=mime)
-        return Response(open(file_path, "rb"), status=200, headers=headers, mimetype=mime)
-
-    start = int(m.group(1))
-    end_s = m.group(2)
-    end = int(end_s) if end_s and end_s.isdigit() else file_size - 1
-    start = max(0, min(start, file_size - 1))
-    end = max(start, min(end, file_size - 1))
-    length = end - start + 1
-
-    headers = {
-        "Content-Range": f"bytes {start}-{end}/{file_size}",
-        "Accept-Ranges": "bytes",
-        "Content-Length": str(length),
-        "Cache-Control": "no-cache",
-    }
-
-    if method == "HEAD":
-        return Response(status=206, headers=headers, mimetype=mime)
-
-    def gen():
-        with open(file_path, "rb") as f:
-            f.seek(start)
-            remaining = length
-            while remaining > 0:
-                chunk = f.read(min(1024 * 1024, remaining))
-                if not chunk:
-                    break
-                remaining -= len(chunk)
-                yield chunk
-
-    return Response(gen(), status=206, headers=headers, mimetype=mime)
-
-
-def _parse_library_folder_spec(spec: str) -> Optional[Tuple[str, str, str]]:
-    """Parse one LIBRARY_FOLDERS entry into (display_name, abs_path, mode).
-
-    Supported forms:
-      - r"C:\\path\\to\\music"           -> mode defaults to 'folders'
-      - r"C:\\path\\to\\music:list"      -> mode 'folders'
-      - r"C:\\path\\to\\music:meta"      -> mode 'metadata'
-
-    Note: Windows drive letters contain ':', so we only treat the final ':' as a mode suffix when the suffix
-    matches a known mode keyword.
-    """
-    spec = (spec or "").strip()
-    if not spec:
-        return None
-
-    mode = None
-    path = spec
-
-    if ":" in spec:
-        p, suf = spec.rsplit(":", 1)
-        suf_l = (suf or "").strip().lower()
-        if suf_l in ("meta", "metadata", "m"):
-            mode = "metadata"
-            path = p
-        elif suf_l in ("list", "folders", "folder", "l"):
-            mode = "folders"
-            path = p
-
-    if mode is None:
-        mode = "folders"
-
-    path = (path or "").strip().strip('"').strip("'")
-    if not path or not os.path.isabs(path):
-        return None
-
-    ap = os.path.abspath(path)
-    name = os.path.basename(ap.rstrip("\\/")) or ap
-    return name, ap, mode
-
-
-def roots() -> List[Tuple[str, str, str, str]]:
-    # Start with configured roots
-    parsed: List[Tuple[str, str, str]] = []
-
-    for spec in (LIBRARY_FOLDERS or []):
-        p = _parse_library_folder_spec(spec)
-        if not p:
-            continue
-        name, ap, mode = p
-        parsed.append((name, ap, mode))
-
-    out: List[Tuple[str, str, str, str]] = []
-    seen = set()
-    for name, ap, mode in parsed:
-        ap2 = os.path.abspath(ap)
-        if ap2 in seen:
-            continue
-        seen.add(ap2)
-        rid = sha1_text(ap2)
-        out.append((rid, name, ap2, mode))
-    return out
-
-
-def root_by_id(root_id: str) -> Optional[Tuple[str, str, str, str]]:
-    for rid, name, ap, mode in roots():
-        if rid == root_id:
-            return rid, name, ap, mode
-    return None
-
-
-def safe_path_join(root_abs: str, rel: str) -> str:
-    rel = rel or ""
-    rel = rel.replace("\\", "/")
-    rel = rel.lstrip("/")
-    joined = os.path.abspath(os.path.join(root_abs, rel.replace("/", os.sep)))
-    root_abs = os.path.abspath(root_abs)
-    try:
-        common = os.path.commonpath([root_abs, joined])
-    except Exception:
-        raise ValueError("Invalid path")
-    if common != root_abs:
-        raise ValueError("Path escapes root")
-    return joined
-
-
-# =========================
-# =========================
-# Last.fm scrobbling + likes (Web Services API / Scrobbling 2.0)
 # =========================
 LASTFM_API_ROOT = "https://ws.audioscrobbler.com/2.0/"
 LASTFM_REQUEST_TIMEOUT_SECONDS = 12
@@ -2204,210 +1912,6 @@ def _lastfm_async(fn, *args, **kwargs) -> None:
 
     th = threading.Thread(target=_run, daemon=True)
     th.start()
-# =========================
-# Real Debrid helpers
-# =========================
-def rd_headers() -> Dict[str, str]:
-    return {
-        "Authorization": f"Bearer {REAL_DEBRID_API_KEY}",
-        "User-Agent": "Debripod/1.0",
-    }
-
-
-def rd_request(method: str, path: str, params=None, data=None) -> Tuple[int, str, dict]:
-    url = RD_BASE + path
-    try:
-        resp = requests.request(
-            method=method,
-            url=url,
-            headers=rd_headers(),
-            params=params,
-            data=data,
-            timeout=REQUEST_TIMEOUT_SECONDS,
-        )
-        text = resp.text or ""
-        js = {}
-        if text.strip().startswith("{") or text.strip().startswith("["):
-            try:
-                js = resp.json()
-            except Exception:
-                js = {}
-        return resp.status_code, text, js
-    except requests.RequestException as e:
-        return 0, str(e), {}
-
-
-# =========================
-# knaben API client with cache + backoff
-# =========================
-KNABEN_SESSION = requests.Session()
-KNABEN_SESSION.headers.update(
-    {
-        "User-Agent": "Debripod/1.0",
-        "Accept": "application/json",
-    }
-)
-if KNABEN_API_KEY.strip():
-    KNABEN_SESSION.headers["x-api-key"] = KNABEN_API_KEY.strip()
-
-KNABEN_LOCK = threading.Lock()
-KNABEN_LAST_REQUEST_AT = 0.0
-
-# cache key: (q_lower, page) -> (ts, results, err_string, rate_remaining, rate_reset)
-KNABEN_CACHE: Dict[Tuple[str, int], Tuple[float, List[dict], str, str, str]] = {}
-
-
-def _sleep_to_respect_min_interval() -> None:
-    global KNABEN_LAST_REQUEST_AT
-    with KNABEN_LOCK:
-        now = time.time()
-        wait = (KNABEN_LAST_REQUEST_AT + KNABEN_MIN_SECONDS_BETWEEN_REQUESTS) - now
-        if wait > 0:
-            time.sleep(wait)
-        KNABEN_LAST_REQUEST_AT = time.time()
-
-
-
-def _knaben_fetch_json(body: dict) -> dict:
-    last_err = ""
-    for attempt in range(KNABEN_MAX_RETRIES):
-        _sleep_to_respect_min_interval()
-        try:
-            resp = KNABEN_SESSION.post(KNABEN_API_BASE, json=body, timeout=REQUEST_TIMEOUT_SECONDS)
-
-            if resp.status_code == 429:
-                retry_after = resp.headers.get("Retry-After")
-                if retry_after and retry_after.isdigit():
-                    delay = int(retry_after)
-                else:
-                    delay = min(60, 2 ** attempt)
-                time.sleep(delay)
-                last_err = f"Knaben API rate limited (429). Retrying after {delay} seconds."
-                continue
-
-            if resp.status_code >= 500:
-                delay = min(30, 2 ** attempt)
-                time.sleep(delay)
-                last_err = f"Knaben API server error ({resp.status_code}). Retrying after {delay} seconds."
-                continue
-
-            resp.raise_for_status()
-            js = resp.json()
-            if not isinstance(js, dict):
-                raise ValueError("Knaben API returned invalid JSON")
-            return js
-        except requests.RequestException as e:
-            last_err = str(e)
-            delay = min(30, 2 ** attempt)
-            time.sleep(delay)
-        except ValueError as e:
-            last_err = str(e) or "Knaben API returned invalid JSON"
-            delay = min(30, 2 ** attempt)
-            time.sleep(delay)
-
-    raise RuntimeError(last_err or "Failed to fetch from Knaben API")
-
-
-def make_magnet(infohash: str, title: str) -> str:
-    ih = (infohash or "").strip()
-    dn = quote((title or "").strip(), safe="")
-    if dn:
-        return f"magnet:?xt=urn:btih:{ih}&dn={dn}"
-    return f"magnet:?xt=urn:btih:{ih}"
-
-
-
-def knaben_search(q: str, page: int) -> Tuple[List[dict], str, str, str]:
-    """
-    Search using Knaben Database API v1 (https://api.knaben.org/v1).
-    Kept as knaben_search() to avoid changing the rest of the app.
-    """
-    q_key = q.strip().lower()
-    cache_key = (q_key, page)
-    now = time.time()
-
-    cached = KNABEN_CACHE.get(cache_key)
-    if cached and (now - cached[0]) <= KNABEN_CACHE_TTL_SECONDS:
-        return cached[1], cached[2], cached[3], cached[4]
-
-    offset = max(0, (page - 1) * RESULTS_PER_PAGE)
-
-    body = {
-        "search_type": "100%",
-        "search_field": "title",
-        "query": q,
-        "order_by": "seeders",
-        "order_direction": "desc",
-        "from": offset,
-        "size": RESULTS_PER_PAGE,
-        "hide_unsafe": True,
-        "hide_xxx": False,
-    }
-
-    try:
-        js = _knaben_fetch_json(body)
-    except Exception as e:
-        results: List[dict] = []
-        err = str(e)
-        KNABEN_CACHE[cache_key] = (time.time(), results, err, "", "")
-        return results, err, "", ""
-
-    raw_hits = js.get("hits") or []
-    results: List[dict] = []
-
-    if isinstance(raw_hits, list):
-        for h in raw_hits:
-            if not isinstance(h, dict):
-                continue
-
-            title = str(h.get("title") or "").strip()
-            if not title:
-                continue
-
-            magnet = str(h.get("magnetUrl") or "").strip()
-            infohash = str(h.get("hash") or "").strip()
-
-            # If we don't have a magnet URL, attempt to build one from the infohash.
-            if not magnet:
-                if infohash:
-                    magnet = make_magnet(infohash, title)
-                else:
-                    continue
-
-            if not infohash:
-                m = re.search(r'btih:([0-9A-Fa-f]{40})', magnet)
-                if m:
-                    infohash = m.group(1).upper()
-
-            size = h.get("bytes")
-            category = str(h.get("category") or "").strip()
-            seeders = h.get("seeders")
-            peers = h.get("peers")  # Knaben returns peers, not leechers
-
-            details = str(h.get("details") or h.get("link") or "").strip()
-            tid = str(h.get("id") or "").strip()
-
-            results.append(
-                {
-                    "id": tid or infohash or title,
-                    "title": title,
-                    "infohash": infohash,
-                    "magnet": magnet,
-                    "size": int(size) if isinstance(size, int) else None,
-                    "category": category,
-                    "seeders": int(seeders) if isinstance(seeders, int) else None,
-                    "leechers": int(peers) if isinstance(peers, int) else None,
-                    "verified": False,
-                    "href": details or f"{KNABEN_WEB_BASE}/?q={quote(title)}",
-                }
-            )
-
-    err = ""
-    KNABEN_CACHE[cache_key] = (time.time(), results, err, "", "")
-    return results, err, "", ""
-
-
-
 # =========================
 # YouTube search and yt-dlp integration
 # =========================
