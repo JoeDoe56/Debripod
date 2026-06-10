@@ -1,0 +1,105 @@
+﻿<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>Debripod</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="/favicon.ico?v={{ icon_v }}">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png?v={{ icon_v }}">
+  <link rel="apple-touch-icon-precomposed" href="/apple-touch-icon-precomposed.png?v={{ icon_v }}">
+  <link rel="manifest" href="/site.webmanifest?v={{ icon_v }}">
+  <meta name="theme-color" content="#000000">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="Debripod">
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&display=swap" rel="stylesheet">
+  {% if autorefresh %}
+  <meta http-equiv="refresh" content="{{ autorefresh }}">
+  {% endif %}
+    <link rel="stylesheet" href="{{ url_for('static', filename='debripod.css') }}?v={{ icon_v }}">
+
+</head>
+<body>
+  <div class="wrap" id="divwrap">
+    <div class="visualizerBg off" id="visualizerBg"></div>
+    <div style="margin-top:0;">
+      <div id="tab-library">
+        <div class="ipodStage">
+          <div class="topPills">
+            <div class="pathPill" id="libHeader">Library</div>
+          </div>
+
+          <div class="ipodScreen" id="ipodScreen">
+
+              <div class="nowPlaying" id="nowPlaying">
+                <img class="npArt" id="npArt" alt="">
+                <img class="npArt npArtSwapLayer npArtSwapHidden" id="npArtSwap" alt="">
+
+                <div class="npOverlayPill" id="npOverlayPill">
+                <div class="npTitle" id="npTitle"></div>
+                <div class="npSub" id="npSub"></div>
+
+                <div class="npBarArea">
+                  <div class="npProgressWrap" id="npProgressWrap">
+                    <input class="npSeek" id="npSeek" type="range" min="0" max="1000" value="0">
+                    <div class="npSeekIndicator" id="npSeekIndicator"></div>
+                  </div>
+
+                  <div class="npVolumeWrap" id="npVolumeWrap">
+                    <div class="npVolumeBar"><div class="npVolumeFill" id="npVolumeFill"></div></div>
+                  </div>
+                </div>
+
+                <div class="npTime">
+                  <div id="npCur">0:00</div>
+                  <div class="npTechInline" id="npTech"></div>
+                  <div id="npDur">0:00</div>
+                </div>
+                </div>
+
+
+                <div class="npVideoOverlay" id="npVideoOverlay" style="display:none;">
+                  <video id="npVideo" controls autoplay playsinline></video>
+                </div>
+
+                <audio id="audioMain" preload="auto" playsinline></audio>
+              </div>
+
+              <ul class="ipodList" id="libList"></ul>
+            </div>
+
+          <div class="wheelZone" id="wheelZone">
+            <div class="ipodWheelWrap">
+              <div class="wheel" id="wheel">
+                <div class="wheelLabel wlTop"><span class="menuWord">MENU</span></div>
+                <div class="wheelLabel wlLeft"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 7 6 12l5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M18 7l-5 5 5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+                <div class="wheelLabel wlRight"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m13 7 5 5-5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="m6 7 5 5-5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+                <div class="wheelLabel wlBottom"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5c2 0 3.3 0 4.4.8 1.1.7 2 2 3 3.4 1-1.4 1.9-2.7 3-3.4 1.1-.8 2.4-.8 4.4-.8" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 17h3v-3" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+
+                <div class="wheelHit hitTop wheelBtn" id="btnMenu" title="Menu"></div>
+                <div class="wheelHit hitLeft wheelBtn" id="btnRev" title="Previous track"></div>
+                <div class="wheelHit hitRight wheelBtn" id="btnFwd" title="Next track"></div>
+                <div class="wheelHit hitBottom wheelBtn" id="btnPlay" title="Play or pause"></div>
+
+                <div class="wheelCenter" id="btnCenter" title="Select"></div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      </div>
+    </div>
+  </div>
+
+  
+
+<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script>
+  window.DEBRIPOD_APP_INFO = {{ info_json|safe }};
+  window.DEBRIPOD_TASKS_POLL_MS = {{ tasks_poll_ms }};
+</script>
+<script src="{{ url_for('static', filename='debripod.js') }}?v={{ icon_v }}"></script>
+</body>
+</html>
+
