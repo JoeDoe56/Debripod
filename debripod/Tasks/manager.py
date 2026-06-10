@@ -275,3 +275,109 @@ def task_file_action(task_id: str, file_id: str, action: str) -> bool:
         return True
 
     return False
+
+
+def _json_safe(v: Any, depth: int = 0) -> Any:
+    if depth > 6:
+        return str(v)
+    if v is None or isinstance(v, (str, int, float, bool)):
+        return v
+    if isinstance(v, (list, tuple, set)):
+        return [_json_safe(x, depth + 1) for x in list(v)]
+    if isinstance(v, dict):
+        out: Dict[str, Any] = {}
+        for k, val in v.items():
+            try:
+                ks = str(k)
+            except Exception:
+                ks = "key"
+            out[ks] = _json_safe(val, depth + 1)
+        return out
+    try:
+        return str(v)
+    except Exception:
+        return "<?>"
+
+
+def task_public_dict(t: Task) -> dict:
+    return {
+        "id": t.id,
+        "title": t.title,
+        "task_dir": t.task_dir,
+        "created": t.created,
+        "paused": bool(getattr(t, "paused", False)),
+        "state": t.state,
+        "message": t.message,
+        "torrent_id": t.torrent_id,
+        "source": t.source,
+        "overall_done": int(t.overall_done or 0),
+        "overall_total": (int(t.overall_total) if t.overall_total is not None else None),
+        "slsk_user": t.slsk_user,
+        "slsk_directory": t.slsk_directory,
+        "slsk_files": _json_safe(list(t.slsk_files or [])),
+        "rd_files": _json_safe(list(getattr(t, "rd_files", []) or [])),
+        "downloaded_files": _json_safe(list(t.downloaded_files or [])),
+        "current_file": t.current_file,
+        "current_done": int(t.current_done or 0),
+        "current_total": (int(t.current_total) if t.current_total is not None else None),
+        "video_post_total": int(t.video_post_total or 0),
+        "video_post_done": int(t.video_post_done or 0),
+        "video_post_state": t.video_post_state,
+        "video_post_message": t.video_post_message,
+        "video_post_current_file": t.video_post_current_file,
+        "video_post_current_done": int(t.video_post_current_done or 0),
+        "video_post_current_total": (int(t.video_post_current_total) if t.video_post_current_total is not None else None),
+        "downloads_complete": bool(t.downloads_complete),
+    }
+
+
+def clear_task(task_id: str) -> bool:
+    task_id = (task_id or "").strip()
+    if not task_id:
+        return False
+
+    src = "rd"
+    with TASKS_LOCK:
+        t = TASKS.get(task_id)
+        if not t:
+            return False
+        src = (t.source or "rd").lower()
+        if t.state not in ("done", "error", "canceled"):
+            try:
+                t.cancel_event.set()
+            except Exception:
+                pass
+        TASKS.pop(task_id, None)
+
+    if src == "soulseek":
+        svc = _soulseek_service_provider()
+        if svc:
+            try:
+                svc.abort_task(task_id)
+            except Exception:
+                pass
+
+    return True
+
+
+def clear_all_tasks() -> None:
+    slsk_ids: List[str] = []
+    with TASKS_LOCK:
+        for t in list(TASKS.values()):
+            if t.state not in ("done", "error", "canceled"):
+                try:
+                    t.cancel_event.set()
+                except Exception:
+                    pass
+            if (t.source or "").lower() == "soulseek":
+                slsk_ids.append(t.id)
+        TASKS.clear()
+
+    if slsk_ids:
+        svc = _soulseek_service_provider()
+        if svc:
+            for tid in slsk_ids:
+                try:
+                    svc.abort_task(tid)
+                except Exception:
+                    pass
