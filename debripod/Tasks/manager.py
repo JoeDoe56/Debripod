@@ -3,7 +3,7 @@ from __future__ import annotations
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional
 
 
 @dataclass
@@ -59,6 +59,20 @@ class Task:
 
 TASKS: Dict[str, Task] = {}
 TASKS_LOCK = threading.Lock()
+_soulseek_service_provider: Callable[[], Any] = lambda: None
+_retry_worker_provider: Callable[[str], Optional[Callable[[str], None]]] = lambda source: None
+
+
+def configure_task_manager(
+    *,
+    soulseek_service_provider: Optional[Callable[[], Any]] = None,
+    retry_worker_provider: Optional[Callable[[str], Optional[Callable[[str], None]]]] = None,
+) -> None:
+    global _soulseek_service_provider, _retry_worker_provider
+    if soulseek_service_provider is not None:
+        _soulseek_service_provider = soulseek_service_provider
+    if retry_worker_provider is not None:
+        _retry_worker_provider = retry_worker_provider
 
 
 def set_task(task_id: str, **kwargs: Any) -> None:
@@ -81,18 +95,183 @@ def list_tasks() -> List[Task]:
 
 
 def cancel_task(task_id: str) -> bool:
-    from ..legacy import cancel_task as legacy_cancel_task
+    with TASKS_LOCK:
+        t = TASKS.get(task_id)
+        if not t:
+            return False
+        if t.state in {"done", "error", "canceled"}:
+            return True
+        t.cancel_event.set()
+        t.state = "canceling"
+        t.message = "Cancel requested"
+        src = (t.source or "rd").lower()
 
-    return legacy_cancel_task(task_id)
+    if src == "soulseek":
+        svc = _soulseek_service_provider()
+        if svc:
+            try:
+                svc.abort_task(task_id)
+            except Exception:
+                pass
+    return True
 
 
 def pause_task(task_id: str) -> bool:
-    from ..legacy import pause_task as legacy_pause_task
+    with TASKS_LOCK:
+        t = TASKS.get(task_id)
+        if not t:
+            return False
+        if t.state in {"done", "canceled"}:
+            return True
+        if not t.paused:
+            t.paused = True
+            t.pause_event.set()
+            t.pre_pause_state = t.state or ""
+            t.pre_pause_message = t.message or ""
+            t.state = "paused"
+            t.message = "Paused"
+        src = (t.source or "rd").lower()
 
-    return legacy_pause_task(task_id)
+    if src == "soulseek":
+        svc = _soulseek_service_provider()
+        if svc:
+            try:
+                svc.pause_task(task_id)
+            except Exception:
+                pass
+    return True
 
 
 def resume_task(task_id: str) -> bool:
-    from ..legacy import resume_task as legacy_resume_task
+    with TASKS_LOCK:
+        t = TASKS.get(task_id)
+        if not t:
+            return False
+        if not t.paused:
+            return True
+        t.paused = False
+        t.pause_event.clear()
+        prev_state = (t.pre_pause_state or "").strip()
+        prev_msg = (t.pre_pause_message or "").strip()
+        if t.state == "paused":
+            t.state = prev_state if prev_state and prev_state != "paused" else "downloading"
+            t.message = prev_msg if prev_msg else "Resumed"
+        src = (t.source or "rd").lower()
 
-    return legacy_resume_task(task_id)
+    if src == "soulseek":
+        svc = _soulseek_service_provider()
+        if svc:
+            try:
+                svc.resume_task(task_id)
+            except Exception:
+                pass
+    return True
+
+
+def _get_file_control(task_id: str, file_id: str) -> Dict[str, Any]:
+    with TASKS_LOCK:
+        t = TASKS.get(task_id)
+        if not t:
+            return {}
+        ctl = t.file_controls.get(file_id) if isinstance(t.file_controls, dict) else None
+        return dict(ctl or {})
+
+
+def _set_file_control(task_id: str, file_id: str, **kwargs: Any) -> None:
+    with TASKS_LOCK:
+        t = TASKS.get(task_id)
+        if not t:
+            return
+        if not isinstance(t.file_controls, dict):
+            t.file_controls = {}
+        cur = t.file_controls.get(file_id) or {}
+        if not isinstance(cur, dict):
+            cur = {}
+        cur.update(kwargs)
+        t.file_controls[file_id] = cur
+
+
+def _update_task_file_entry(task_id: str, which: str, file_id: str, **kwargs: Any) -> None:
+    with TASKS_LOCK:
+        t = TASKS.get(task_id)
+        if not t:
+            return
+        lst = getattr(t, which, None)
+        if not isinstance(lst, list):
+            return
+        for f in lst:
+            try:
+                if str(f.get("file_id") or "") == str(file_id):
+                    f.update(kwargs)
+                    break
+            except Exception:
+                continue
+
+
+def task_file_action(task_id: str, file_id: str, action: str) -> bool:
+    action = (action or "").strip().lower()
+    if not task_id or not file_id or action not in {"pause", "resume", "cancel", "retry"}:
+        return False
+
+    with TASKS_LOCK:
+        t = TASKS.get(task_id)
+        if not t:
+            return False
+        src = (t.source or "rd").lower()
+
+    if src == "soulseek":
+        if action == "pause":
+            _set_file_control(task_id, file_id, paused=True, canceled=False)
+            _update_task_file_entry(task_id, "slsk_files", file_id, paused=True, state="paused")
+        elif action == "resume":
+            _set_file_control(task_id, file_id, paused=False)
+            _update_task_file_entry(task_id, "slsk_files", file_id, paused=False)
+        elif action == "cancel":
+            _set_file_control(task_id, file_id, canceled=True)
+            _update_task_file_entry(task_id, "slsk_files", file_id, canceled=True, state="canceled")
+        elif action == "retry":
+            _set_file_control(task_id, file_id, paused=False, canceled=False)
+            _update_task_file_entry(task_id, "slsk_files", file_id, paused=False, canceled=False, done=0, speed=0.0, error="", state="queued")
+
+        svc = _soulseek_service_provider()
+        if svc:
+            try:
+                if action == "pause":
+                    svc.pause_file(task_id, file_id)
+                elif action == "resume":
+                    svc.resume_file(task_id, file_id)
+                elif action == "cancel":
+                    svc.cancel_file(task_id, file_id)
+                elif action == "retry":
+                    svc.retry_file(task_id, file_id)
+            except Exception:
+                pass
+        return True
+
+    if action == "pause":
+        _set_file_control(task_id, file_id, paused=True, canceled=False)
+        _update_task_file_entry(task_id, "rd_files", file_id, paused=True, state="paused")
+        return True
+    if action == "resume":
+        _set_file_control(task_id, file_id, paused=False)
+        _update_task_file_entry(task_id, "rd_files", file_id, paused=False)
+        return True
+    if action == "cancel":
+        _set_file_control(task_id, file_id, canceled=True)
+        _update_task_file_entry(task_id, "rd_files", file_id, canceled=True, state="canceled")
+        return True
+    if action == "retry":
+        _set_file_control(task_id, file_id, paused=False, canceled=False)
+        _update_task_file_entry(task_id, "rd_files", file_id, paused=False, canceled=False, done=0, speed=0.0, error="", state="queued")
+        with TASKS_LOCK:
+            t = TASKS.get(task_id)
+            st = (t.state or "").lower() if t else ""
+            src2 = (t.source or "rd").lower() if t else "rd"
+        if st in {"done", "error", "canceled"}:
+            target = _retry_worker_provider(src2)
+            if target:
+                th = threading.Thread(target=target, args=(task_id,), daemon=True)
+                th.start()
+        return True
+
+    return False
