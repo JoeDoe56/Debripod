@@ -1,5 +1,100 @@
 ﻿(function(){
   const APP_INFO = window.DEBRIPOD_APP_INFO || {};
+  const LIQUID_GL_PRESETS = {
+    "default": {refraction: 0, bevelDepth: 0.052, bevelWidth: 0.211, frost: 2, shadow: true, specular: true},
+    "alien": {refraction: 0.073, bevelDepth: 0.2, bevelWidth: 0.156, frost: 2, shadow: true, specular: false},
+    "pulse": {refraction: 0.03, bevelDepth: 0, bevelWidth: 0.273, frost: 0, shadow: false, specular: false},
+    "frost": {refraction: 0, bevelDepth: 0.035, bevelWidth: 0.119, frost: 0.9, shadow: true, specular: true},
+    "edge": {refraction: 0.047, bevelDepth: 0.136, bevelWidth: 0.076, frost: 2, shadow: true, specular: false}
+  };
+  let liquidGlassPresetName = "default";
+  let liquidGlassReady = false;
+  let liquidWheelLens = null;
+  let wheelGlassResetTimer = null;
+
+  function normalizeLiquidGlassPreset(name){
+    const key = String(name || "default").trim().toLowerCase();
+    return LIQUID_GL_PRESETS[key] ? key : "default";
+  }
+
+  function liquidGlassPresetOptions(){
+    const preset = LIQUID_GL_PRESETS[normalizeLiquidGlassPreset(liquidGlassPresetName)] || LIQUID_GL_PRESETS.default;
+    return Object.assign({
+      snapshot: "#divwrap",
+      resolution: 1.5,
+      reveal: "none",
+      tilt: false,
+      magnify: 1
+    }, preset);
+  }
+
+  function asLiquidArray(value){
+    if(!value) return [];
+    return Array.isArray(value) ? value : [value];
+  }
+
+  function initLiquidGlass(){
+    try{
+      if(liquidGlassReady || typeof window.liquidGL !== "function" || typeof window.html2canvas !== "function") return;
+      const base = liquidGlassPresetOptions();
+      window.liquidGL(Object.assign({}, base, {
+        target: ".pathPill.liquidGlass, .ipodScreen.liquidGlass, .npOverlayPill.liquidGlass"
+      }));
+      const wheelInstances = asLiquidArray(window.liquidGL(Object.assign({}, base, {
+        target: ".wheel.liquidGlass, .wheelCenter.liquidGlass",
+        shadow: false
+      })));
+      liquidWheelLens = wheelInstances.find(inst => inst && inst.el && inst.el.id === "wheel") || null;
+      try{
+        window.liquidGL.registerDynamic(".visualizerBg, .npArt, .npArtSwapLayer, .ipodList");
+      }catch(e){}
+      liquidGlassReady = true;
+    }catch(e){
+      liquidGlassReady = true;
+      try{ document.documentElement.classList.add("liquidGlassFallback"); }catch(err){}
+    }
+  }
+
+  function applyWheelGlassTilt(ev){
+    try{
+      const lens = liquidWheelLens;
+      if(!lens || !lens.el || !ev) return;
+      if(wheelGlassResetTimer){
+        clearTimeout(wheelGlassResetTimer);
+        wheelGlassResetTimer = null;
+      }
+      const rect = lens.el.getBoundingClientRect();
+      if(!rect.width || !rect.height) return;
+      const pctX = Math.max(-1, Math.min(1, (ev.clientX - (rect.left + rect.width / 2)) / (rect.width / 2)));
+      const pctY = Math.max(-1, Math.min(1, (ev.clientY - (rect.top + rect.height / 2)) / (rect.height / 2)));
+      const maxTilt = 1.15;
+      const rotY = pctX * maxTilt;
+      const rotX = -pctY * maxTilt;
+      lens.tiltX = rotX;
+      lens.tiltY = rotY;
+      lens.el.style.transition = "transform 80ms cubic-bezier(0.33,1,0.68,1)";
+      lens.el.style.transform = "perspective(900px) rotateX(" + rotX.toFixed(3) + "deg) rotateY(" + rotY.toFixed(3) + "deg)";
+      try{ lens.updateMetrics(); }catch(e){}
+      try{ if(lens.renderer && lens.renderer.render) lens.renderer.render(); }catch(e){}
+    }catch(e){}
+  }
+
+  function resetWheelGlassTilt(){
+    try{
+      const lens = liquidWheelLens;
+      if(!lens || !lens.el) return;
+      lens.tiltX = 0;
+      lens.tiltY = 0;
+      lens.el.style.transition = "transform 360ms cubic-bezier(0.33,1,0.68,1)";
+      lens.el.style.transform = "perspective(900px) rotateX(0deg) rotateY(0deg)";
+      if(wheelGlassResetTimer) clearTimeout(wheelGlassResetTimer);
+      wheelGlassResetTimer = setTimeout(()=>{
+        wheelGlassResetTimer = null;
+        try{ if(lens.el) lens.el.style.transform = ""; }catch(e){}
+      }, 380);
+      try{ if(lens.renderer && lens.renderer.render) lens.renderer.render(); }catch(e){}
+    }catch(e){}
+  }
   function humanBytes(bytes){
     const v = Number(bytes || 0);
     if(!isFinite(v) || v <= 0) return "0 B";
@@ -1708,7 +1803,7 @@ function fmtTime(sec){
 
   function layoutNowPlayingToLibList(){
     try{
-      const screen = document.querySelector(".ipodScreen");
+      const screen = document.querySelector(".ipodScreenContent") || document.querySelector(".ipodScreen");
       if(!screen || !nowPlaying || !libList) return;
       const sr = screen.getBoundingClientRect();
       const lr = libList.getBoundingClientRect();
@@ -1891,6 +1986,8 @@ function fmtTime(sec){
     state.preloadBytes = js.preload_bytes || state.preloadBytes;
     state.roots = js.roots || [];
     state.lastfmEnabled = !!js.lastfm_enabled;
+    liquidGlassPresetName = normalizeLiquidGlassPreset(js.liquid_gl_preset || "default");
+    initLiquidGlass();
     return js;
   }
 
@@ -6439,6 +6536,7 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
     }
 
     if(!dragging) return;
+    applyWheelGlassTilt(ev);
 
     const ang = angleFromEvent(ev);
     const d = normDelta(ang, lastAngle);
@@ -6472,6 +6570,7 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
     wheelPointerDown = false;
     dragging = false;
     wheelDownOnButton = false;
+    resetWheelGlassTilt();
   }
 
   wheel.addEventListener("pointerup", wheelPointerEnd, {passive:false});

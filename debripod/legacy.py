@@ -113,6 +113,7 @@ HOST = "127.0.0.1"          # localhost only
 PORT = 8083                 # change the port here
 
 APP_NAME = "Debripod"
+LIQUID_GL_PRESET = "default"
 # Auto infer version from filename like debripod112.py
 _fn = os.path.basename(__file__)
 _m = re.search(r"debripod(\d+)", _fn, re.IGNORECASE)
@@ -8332,6 +8333,7 @@ def api_library_config():
             "preload_enabled": bool(PRELOAD_NEXT_FOR_GAPLESS),
             "preload_bytes": int(PRELOAD_NEXT_CHUNK_BYTES),
             "lastfm_enabled": bool(lastfm_enabled()),
+            "liquid_gl_preset": str(LIQUID_GL_PRESET or "default"),
         }
     )
 
