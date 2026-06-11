@@ -19,13 +19,15 @@
 
   function liquidGlassPresetOptions(){
     const preset = LIQUID_GL_PRESETS[normalizeLiquidGlassPreset(liquidGlassPresetName)] || LIQUID_GL_PRESETS.default;
-    return Object.assign({
+    const options = Object.assign({
       snapshot: "#divwrap",
       resolution: 1.5,
       reveal: "none",
       tilt: false,
       magnify: 1
     }, preset);
+    options.specular = false;
+    return options;
   }
 
   function asLiquidArray(value){
@@ -38,7 +40,7 @@
       if(liquidGlassReady || typeof window.liquidGL !== "function" || typeof window.html2canvas !== "function") return;
       const base = liquidGlassPresetOptions();
       window.liquidGL(Object.assign({}, base, {
-        target: ".pathPillGlass.liquidGlass, .screenGlassEdge.liquidGlass, .npOverlayGlass.liquidGlass"
+        target: ".pathPillGlass.liquidGlass, .screenGlassFrame.liquidGlass, .npOverlayGlass.liquidGlass"
       }));
       const wheelInstances = asLiquidArray(window.liquidGL(Object.assign({}, base, {
         target: ".wheelGlassRing.liquidGlass, .wheelCenterGlass.liquidGlass",
@@ -72,8 +74,10 @@
       const rotX = -pctY * maxTilt;
       lens.tiltX = rotX;
       lens.tiltY = rotY;
-      lens.el.style.transition = "transform 80ms cubic-bezier(0.33,1,0.68,1)";
-      lens.el.style.transform = "perspective(900px) rotateX(" + rotX.toFixed(3) + "deg) rotateY(" + rotY.toFixed(3) + "deg)";
+      if(wheel){
+        wheel.style.transition = "transform 80ms cubic-bezier(0.33,1,0.68,1)";
+        wheel.style.transform = "perspective(900px) rotateX(" + rotX.toFixed(3) + "deg) rotateY(" + rotY.toFixed(3) + "deg)";
+      }
       try{ lens.updateMetrics(); }catch(e){}
       try{ if(lens.renderer && lens.renderer.render) lens.renderer.render(); }catch(e){}
     }catch(e){}
@@ -85,12 +89,14 @@
       if(!lens || !lens.el) return;
       lens.tiltX = 0;
       lens.tiltY = 0;
-      lens.el.style.transition = "transform 360ms cubic-bezier(0.33,1,0.68,1)";
-      lens.el.style.transform = "perspective(900px) rotateX(0deg) rotateY(0deg)";
+      if(wheel){
+        wheel.style.transition = "transform 360ms cubic-bezier(0.33,1,0.68,1)";
+        wheel.style.transform = "perspective(900px) rotateX(0deg) rotateY(0deg)";
+      }
       if(wheelGlassResetTimer) clearTimeout(wheelGlassResetTimer);
       wheelGlassResetTimer = setTimeout(()=>{
         wheelGlassResetTimer = null;
-        try{ if(lens.el) lens.el.style.transform = ""; }catch(e){}
+        try{ if(wheel) wheel.style.transform = ""; }catch(e){}
       }, 380);
       try{ if(lens.renderer && lens.renderer.render) lens.renderer.render(); }catch(e){}
     }catch(e){}
@@ -320,6 +326,31 @@ function hlsManifestUrl(rootId, rel){
   return "/hls/manifest?root_id=" + encodeURIComponent(rootId) + "&rel=" + encodeURIComponent(rel);
 }
 
+function httpStreamUrl(rootId, rel){
+  return "/stream/" + encodeURIComponent(rootId) + "/" + encodeRel(rel || "");
+}
+
+function playbackUsesHls(){
+  try{ return String(state.playbackStreamingMode || "http").toLowerCase() === "hls"; }catch(e){ return false; }
+}
+
+function playbackSourceUrl(rootId, rel){
+  return playbackUsesHls() ? hlsManifestUrl(rootId, rel) : httpStreamUrl(rootId, rel);
+}
+
+async function loadPlaybackIntoElement(el, rootId, rel, kind){
+  const src = playbackSourceUrl(rootId, rel);
+  if(playbackUsesHls()){
+    await loadHlsIntoElement(el, src, kind);
+    return src;
+  }
+  if(kind === "audio") destroyHlsController("audio");
+  else if(kind === "video") destroyHlsController("video");
+  else if(kind === "preload") destroyHlsController("preload");
+  try{ el.src = src; el.load(); }catch(e){}
+  return src;
+}
+
 function canUseHlsJs(){
   try{ return !!(window.Hls && window.Hls.isSupported && window.Hls.isSupported()); }catch(e){ return false; }
 }
@@ -382,14 +413,13 @@ async function preloadNextAudio(){
   if(!next || !next.root || !next.rel) return;
   state.preloadedIndex = ni;
   const nonce = ++preloadRequestNonce;
-  const manifestUrl = hlsManifestUrl(next.root.id, next.rel);
   try{
     preloadAudioEl = document.createElement("audio");
     preloadAudioEl.preload = "auto";
     preloadAudioEl.muted = true;
     preloadAudioEl.volume = 0;
     preloadAudioEl.playsInline = true;
-    await loadHlsIntoElement(preloadAudioEl, manifestUrl, "preload");
+    await loadPlaybackIntoElement(preloadAudioEl, next.root.id, next.rel, "preload");
     if(nonce !== preloadRequestNonce) return;
     try{
       if(preloadAudioHls && preloadAudioHls.startLoad) preloadAudioHls.startLoad(0);
@@ -1714,6 +1744,7 @@ function fmtTime(sec){
     serverRecent: [],
     serverLoaded: false,
     lastfmEnabled: false,
+    playbackStreamingMode: "http",
     preloadEnabled: true,
     preloadBytes: 2097152,
     shuffleEnabled: false,
@@ -1982,10 +2013,11 @@ function fmtTime(sec){
 
   async function loadConfig(){
     const js = await apiGet("/api/library/config");
-        state.preloadEnabled = !!js.preload_enabled;
+    state.preloadEnabled = !!js.preload_enabled;
     state.preloadBytes = js.preload_bytes || state.preloadBytes;
     state.roots = js.roots || [];
     state.lastfmEnabled = !!js.lastfm_enabled;
+    state.playbackStreamingMode = (String(js.playback_streaming_mode || "http").toLowerCase() === "hls") ? "hls" : "http";
     liquidGlassPresetName = normalizeLiquidGlassPreset(js.liquid_gl_preset || "default");
     initLiquidGlass();
     return js;
@@ -4846,14 +4878,13 @@ async function goBack(){
     updateMediaSession({title: meta.title || item.label || "Video", artist: meta.artist || "", album: meta.album || "", art: meta.art || ""});
     try{ syncMediaSessionControls(); }catch(e){}
 
-    const src = hlsManifestUrl(rootId, rel);
     try{
       try{ npVideo.pause(); }catch(e){}
       destroyHlsController("video");
       npVideo.removeAttribute("src");
       try{ npVideo.load(); }catch(e){}
       applyVolume();
-      await loadHlsIntoElement(npVideo, src, "video");
+      await loadPlaybackIntoElement(npVideo, rootId, rel, "video");
 
       const rt = (resumeTime && isFinite(resumeTime)) ? Number(resumeTime) : 0;
       try{
@@ -4928,7 +4959,6 @@ async function goBack(){
     if(forceShow) showNowPlaying(true);
 
     const meta = await apiGet("/api/library/filemeta?root_id=" + encodeURIComponent(rootId) + "&rel=" + encodeURIComponent(rel));
-    const src = hlsManifestUrl(rootId, rel);
 
     try{ if(activeAudio) activeAudio.pause(); }catch(e){}
     destroyHlsController("audio");
@@ -4938,7 +4968,7 @@ async function goBack(){
     try{ applyVolume(); }catch(e){}
     try{ enforceSingleAudio(); }catch(e){}
 
-    await loadHlsIntoElement(activeAudio, src, "audio");
+    await loadPlaybackIntoElement(activeAudio, rootId, rel, "audio");
 
     const rt = (resumeTime && isFinite(resumeTime)) ? Number(resumeTime) : 0;
     if(rt > 0){

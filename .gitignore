@@ -30,6 +30,7 @@ dist/
 
 # Debripod runtime output created while starting or using the app
 _debripod_cache/
+init.mp4
 cache/
 logs/
 ffmpeg_logs/

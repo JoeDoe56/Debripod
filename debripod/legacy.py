@@ -114,6 +114,7 @@ PORT = 8083                 # change the port here
 
 APP_NAME = "Debripod"
 LIQUID_GL_PRESET = "default"
+PLAYBACK_STREAMING_MODE = "http"
 # Auto infer version from filename like debripod112.py
 _fn = os.path.basename(__file__)
 _m = re.search(r"debripod(\d+)", _fn, re.IGNORECASE)
@@ -8334,6 +8335,7 @@ def api_library_config():
             "preload_bytes": int(PRELOAD_NEXT_CHUNK_BYTES),
             "lastfm_enabled": bool(lastfm_enabled()),
             "liquid_gl_preset": str(LIQUID_GL_PRESET or "default"),
+            "playback_streaming_mode": str(PLAYBACK_STREAMING_MODE or "http").strip().lower() or "http",
         }
     )
 
@@ -9050,6 +9052,7 @@ def _hls_stream_key_for_path(src_path: str) -> str:
 def _hls_build_args(src_path: str, out_dir: str) -> List[str]:
     manifest_path = os.path.join(out_dir, "stream.m3u8")
     seg_pat = os.path.join(out_dir, "seg_%05d.m4s")
+    init_path = os.path.join(out_dir, "init.mp4")
     return [
         FFMPEG_PATH, "-y", "-hide_banner", "-loglevel", "error",
         "-i", src_path,
@@ -9062,7 +9065,7 @@ def _hls_build_args(src_path: str, out_dir: str) -> List[str]:
         "-hls_playlist_type", "vod",
         "-hls_flags", "independent_segments",
         "-hls_segment_type", "fmp4",
-        "-hls_fmp4_init_filename", "init.mp4",
+        "-hls_fmp4_init_filename", init_path,
         "-hls_segment_filename", seg_pat,
         manifest_path,
     ]
@@ -9142,7 +9145,7 @@ def _rewrite_hls_manifest_text(text: str, key: str) -> str:
             out.append(raw)
             continue
         if line.startswith("#EXT-X-MAP:"):
-            line = re.sub(r'URI="([^"]+)"', lambda m: 'URI="' + base + quote(m.group(1), safe="/._-") + '"', line)
+            line = re.sub(r'URI="([^"]+)"', lambda m: 'URI="' + base + quote(os.path.basename(m.group(1)), safe="/._-") + '"', line)
             out.append(line)
             continue
         if line.startswith("#"):

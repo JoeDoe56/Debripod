@@ -446,36 +446,10 @@
       flex-direction: column;
       isolation:isolate;
     }
-    .screenGlassEdge{
+    .screenGlassFrame{
+      inset:0;
       z-index:20;
-    }
-    .screenGlassTop{
-      left:0;
-      right:0;
-      top:0;
-      height: var(--screenFrame);
-      border-radius: var(--screenRadius) var(--screenRadius) 0 0;
-    }
-    .screenGlassBottom{
-      left:0;
-      right:0;
-      bottom:0;
-      height: var(--screenFrame);
-      border-radius: 0 0 var(--screenRadius) var(--screenRadius);
-    }
-    .screenGlassLeft{
-      left:0;
-      top:var(--screenFrame);
-      bottom:var(--screenFrame);
-      width: var(--screenFrame);
-      border-radius: 0;
-    }
-    .screenGlassRight{
-      right:0;
-      top:var(--screenFrame);
-      bottom:var(--screenFrame);
-      width: var(--screenFrame);
-      border-radius: 0;
+      border-radius: var(--screenRadius);
     }
 
     .ipodScreenContent{
@@ -797,6 +771,8 @@
       inset:0;
       z-index:20;
       border-radius:999px;
+      overflow:hidden;
+      clip-path: circle(50% at 50% 50%);
     }
     .wheelCenter{
       position:absolute;
@@ -812,11 +788,16 @@
       box-shadow: none;
       cursor:pointer;
       touch-action: none;
+      overflow:hidden;
+      isolation:isolate;
+      clip-path: circle(50% at 50% 50%);
     }
     .wheelCenterGlass{
       inset:0;
       z-index:20;
-      border-radius:inherit;
+      border-radius:999px;
+      overflow:hidden;
+      clip-path: circle(50% at 50% 50%);
     }
     .wheelLabel{
       position:absolute;
