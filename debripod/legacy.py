@@ -115,6 +115,7 @@ PORT = 8083                 # change the port here
 APP_NAME = "Debripod"
 LIQUID_GL_PRESET = "default"
 LIQUID_GL_MODE = "clear"
+WHEEL_ROTATION_MAX_DEGREES = 0.95
 PLAYBACK_STREAMING_MODE = "http"
 # Auto infer version from filename like debripod112.py
 _fn = os.path.basename(__file__)
@@ -8349,6 +8350,7 @@ def api_library_config():
             "lastfm_enabled": bool(lastfm_enabled()),
             "liquid_gl_preset": str(LIQUID_GL_PRESET or "default"),
             "liquid_gl_mode": str(LIQUID_GL_MODE or "clear").strip().lower() or "clear",
+            "wheel_rotation_max_degrees": float(WHEEL_ROTATION_MAX_DEGREES),
             "playback_streaming_mode": str(PLAYBACK_STREAMING_MODE or "http").strip().lower() or "http",
         }
     )

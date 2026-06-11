@@ -9,6 +9,7 @@
   };
   let liquidGlassPresetName = "default";
   let liquidGlassModeName = "clear";
+  let wheelRotationMaxDegrees = 0.95;
   let liquidGlassReady = false;
   let liquidWheelLens = null;
   let wheelGlassResetTimer = null;
@@ -23,6 +24,12 @@
   function normalizeLiquidGlassMode(name){
     const key = String(name || "clear").trim().toLowerCase();
     return (key === "dark" || key === "light" || key === "clear") ? key : "clear";
+  }
+
+  function normalizeWheelRotationMaxDegrees(value){
+    const n = Number(value);
+    if(!Number.isFinite(n)) return 0.95;
+    return Math.max(0, Math.min(12, n));
   }
 
   function liquidGlassPresetOptions(){
@@ -62,6 +69,18 @@
     }catch(e){}
   }
 
+  function renderLiquidGlassNow(){
+    try{
+      const renderer = window.__liquidGLRenderer__;
+      if(renderer && renderer.render) renderer.render();
+    }catch(e){}
+  }
+
+  function scheduleLiquidGlassRender(){
+    try{ requestAnimationFrame(renderLiquidGlassNow); }catch(e){}
+    setTimeout(renderLiquidGlassNow, 240);
+  }
+
   function initLiquidGlass(){
     try{
       if(liquidGlassReady || typeof window.liquidGL !== "function" || typeof window.html2canvas !== "function") return;
@@ -93,7 +112,7 @@
       if(!rect.width || !rect.height) return;
       const pctX = Math.max(-1, Math.min(1, (clientX - (rect.left + rect.width / 2)) / (rect.width / 2)));
       const pctY = Math.max(-1, Math.min(1, (clientY - (rect.top + rect.height / 2)) / (rect.height / 2)));
-      const maxTilt = 0.95;
+      const maxTilt = normalizeWheelRotationMaxDegrees(wheelRotationMaxDegrees);
       const rotY = pctX * maxTilt;
       const rotX = -pctY * maxTilt;
       lens.tiltX = rotX;
@@ -734,6 +753,7 @@ function hideNpPillImmediate(){
   npPillHideTimer = null;
   try{
     if(npOverlayPill) npOverlayPill.classList.add("npPillHidden");
+    scheduleLiquidGlassRender();
   }catch(e){}
 }
 
@@ -1018,6 +1038,7 @@ async function updateNowPlayingDisplay(meta, fallbackLabel, opts){
   if(animatePill){
     try{
       npOverlayPill.classList.add("npPillSwapHidden");
+      scheduleLiquidGlassRender();
     }catch(e){}
   }
 
@@ -1043,7 +1064,10 @@ async function updateNowPlayingDisplay(meta, fallbackLabel, opts){
     npPillSwapTimer = setTimeout(()=>{
       try{ setNowPlayingOverlayText(m, fallbackLabel); }catch(e){}
       requestAnimationFrame(()=>{
-        try{ if(npOverlayPill) npOverlayPill.classList.remove("npPillSwapHidden"); }catch(e){}
+        try{
+          if(npOverlayPill) npOverlayPill.classList.remove("npPillSwapHidden");
+          scheduleLiquidGlassRender();
+        }catch(e){}
       });
       npPillSwapTimer = null;
     }, swapMs);
@@ -1057,6 +1081,7 @@ function showNpPill(pinned){
   try{
     if(!npOverlayPill) return;
     npOverlayPill.classList.remove("npPillHidden");
+    scheduleLiquidGlassRender();
   }catch(e){}
   if(effectivePinned){
     try{ if(npPillHideTimer) clearTimeout(npPillHideTimer); }catch(e){}
@@ -1078,6 +1103,7 @@ function scheduleHideNpPill(ms){
         if(!m) return;
         if(m.paused) return;
         npOverlayPill.classList.add("npPillHidden");
+        scheduleLiquidGlassRender();
       }catch(e){}
     }, (ms || 2500));
   }catch(e){}
@@ -2026,7 +2052,10 @@ function fmtTime(sec){
           if(fadeToken !== npPageFadeToken) return;
           nowPlaying.style.display = "none";
           resetNowPlayingLayout();
-          if(npOverlayPill) npOverlayPill.classList.add("npPillHidden");
+          if(npOverlayPill){
+            npOverlayPill.classList.add("npPillHidden");
+            scheduleLiquidGlassRender();
+          }
         }catch(e){}
         npPageFadeTimer = null;
       }, fadeMs);
@@ -2141,6 +2170,7 @@ function fmtTime(sec){
     state.playbackStreamingMode = (String(js.playback_streaming_mode || "http").toLowerCase() === "hls") ? "hls" : "http";
     liquidGlassPresetName = normalizeLiquidGlassPreset(js.liquid_gl_preset || "default");
     liquidGlassModeName = normalizeLiquidGlassMode(js.liquid_gl_mode || "clear");
+    wheelRotationMaxDegrees = normalizeWheelRotationMaxDegrees(js.wheel_rotation_max_degrees);
     initLiquidGlass();
     return js;
   }

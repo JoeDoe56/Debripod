@@ -1468,6 +1468,17 @@
         this._mirrorActive && this._baseRect
           ? this._baseRect
           : this.el.getBoundingClientRect();
+      const style = window.getComputedStyle(this.el);
+
+      if (
+        rect.width <= 0 ||
+        rect.height <= 0 ||
+        style.display === "none" ||
+        style.visibility === "hidden"
+      ) {
+        this.rectPx = null;
+        return;
+      }
 
       this.rectPx = {
         left: rect.left,
@@ -1476,7 +1487,6 @@
         height: rect.height,
       };
 
-      const style = window.getComputedStyle(this.el);
       const brRaw = style.borderTopLeftRadius.split(" ")[0];
       const isPct = brRaw.trim().endsWith("%");
       let brPx;
