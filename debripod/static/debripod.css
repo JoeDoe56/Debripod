@@ -415,9 +415,7 @@
       transform: translateY(10px);
       pointer-events: none;
     }
-    .pathPill.pathPillHidden .pathPillGlass,
-    .npOverlayPill.npPillHidden .npOverlayGlass,
-    .npOverlayPill.npPillSwapHidden .npOverlayGlass{
+    .pathPill.pathPillHidden .pathPillGlass{
       display:none;
     }
     .wheelZone{
@@ -465,7 +463,7 @@
       border-radius: var(--screenRadius);
       pointer-events:none;
       overflow:hidden;
-      --liquid-hole-inset: var(--screenFrame);
+      --liquid-hole-inset: calc(var(--screenFrame) + 3px);
       border:0;
       background:transparent;
       box-shadow:none;
@@ -844,6 +842,8 @@
       min-height: 26px;
       line-height: 1;
       padding: 0;
+      transform-style: preserve-3d;
+      will-change: transform;
     }
     .wheelLabel svg{
       width: 18px;
@@ -872,10 +872,10 @@
         flex: 0 0 auto;
       }
       .wheelLabel .wheelSvgIcon.isInactive{ opacity:.72; }
-    .wheelLabel.top,.wheelLabel.wlTop{left:50%; top:18px; transform: translateX(-50%);}
-    .wheelLabel.bottom,.wheelLabel.wlBottom{left:50%; bottom:18px; transform: translateX(-50%);}
-    .wheelLabel.left,.wheelLabel.wlLeft{left:18px; top:50%; transform: translateY(-50%);}
-    .wheelLabel.right,.wheelLabel.wlRight{right:18px; top:50%; transform: translateY(-50%);}
+    .wheelLabel.top,.wheelLabel.wlTop{left:50%; top:18px; transform: translateX(-50%) translateZ(1px);}
+    .wheelLabel.bottom,.wheelLabel.wlBottom{left:50%; bottom:18px; transform: translateX(-50%) translateZ(1px);}
+    .wheelLabel.left,.wheelLabel.wlLeft{left:18px; top:50%; transform: translateY(-50%) translateZ(1px);}
+    .wheelLabel.right,.wheelLabel.wlRight{right:18px; top:50%; transform: translateY(-50%) translateZ(1px);}
 
     .wheelHit{
       position:absolute;
@@ -963,6 +963,10 @@
   inset:0;
   border-radius: inherit;
   z-index:20;
+  pointer-events:none;
+  background:transparent;
+  border:0;
+  box-shadow:none;
 }
 .npOverlayContent{
   position:relative;

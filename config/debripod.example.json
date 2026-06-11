@@ -3,6 +3,7 @@
   "PORT": 8083,
   "APP_NAME": "Debripod",
   "LIQUID_GL_PRESET": "default",
+  "LIQUID_GL_MODE": "clear",
   "PLAYBACK_STREAMING_MODE": "http",
 
   "DOWNLOAD_DIR": "./data/debrid",

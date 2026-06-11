@@ -279,6 +279,7 @@
         uniform float u_tiltY;
         uniform float u_magnify;
         uniform float u_hollowInset;
+        uniform int   u_glassMode;
 
         float udRoundBox( vec2 p, vec2 b, float r ) {
           return length(max(abs(p)-b+r,0.0))-r;
@@ -367,12 +368,18 @@
           if (inShape <= 0.001) discard;
 
           if (u_specular) {
-            vec2 lp1 = vec2(sin(u_time*0.2), cos(u_time*0.3))*0.6 + 0.5;
-            vec2 lp2 = vec2(sin(u_time*-0.4+1.5), cos(u_time*0.25-0.5))*0.6 + 0.5;
+            vec2 lp1 = vec2(0.30, 0.22);
+            vec2 lp2 = vec2(0.72, 0.68);
             float h = 0.0;
-            h += smoothstep(0.4,0.0,distance(v_uv, lp1))*0.1;
-            h += smoothstep(0.5,0.0,distance(v_uv, lp2))*0.08;
+            h += smoothstep(0.36,0.0,distance(v_uv, lp1))*0.08;
+            h += smoothstep(0.48,0.0,distance(v_uv, lp2))*0.055;
             final.rgb += h;
+          }
+
+          if (u_glassMode == 1) {
+            final.rgb = mix(final.rgb, vec3(0.0), 0.18);
+          } else if (u_glassMode == 2) {
+            final.rgb = mix(final.rgb, vec3(1.0), 0.18);
           }
 
           if (u_revealType == 1) {
@@ -423,6 +430,7 @@
         tiltY: gl.getUniformLocation(this.program, "u_tiltY"),
         magnify: gl.getUniformLocation(this.program, "u_magnify"),
         hollowInset: gl.getUniformLocation(this.program, "u_hollowInset"),
+        glassMode: gl.getUniformLocation(this.program, "u_glassMode"),
       };
     }
 
@@ -732,6 +740,7 @@
       gl.uniform1f(this.u.tiltX, lens.tiltX || 0);
       gl.uniform1f(this.u.tiltY, lens.tiltY || 0);
       gl.uniform1f(this.u.hollowInset, lens.hollowInsetGl || 0);
+      gl.uniform1i(this.u.glassMode, lens.glassModeIndex || 0);
 
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
@@ -1399,6 +1408,7 @@
       this.radiusGl = 0;
       this.radiusCss = 0;
       this.hollowInsetGl = 0;
+      this.glassModeIndex = this._glassModeIndex(this.options.glassMode);
       this.revealTypeIndex = this.options.reveal === "fade" ? 1 : 0;
       this._revealProgress = this.revealTypeIndex === 0 ? 1 : 0;
       this.tiltX = 0;
@@ -1443,6 +1453,13 @@
         });
         this._sizeObs.observe(this.el);
       }
+    }
+
+    _glassModeIndex(mode) {
+      const value = String(mode || "clear").toLowerCase();
+      if (value === "dark") return 1;
+      if (value === "light") return 2;
+      return 0;
     }
 
     /* ----------------------------- */
@@ -1984,6 +2001,7 @@
       tilt: false,
       tiltFactor: 5,
       magnify: 1,
+      glassMode: "clear",
       on: {},
     };
     const options = { ...defaults, ...userOptions };

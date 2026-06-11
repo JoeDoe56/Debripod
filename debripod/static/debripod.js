@@ -8,6 +8,7 @@
     "edge": {refraction: 0.047, bevelDepth: 0.136, bevelWidth: 0.076, frost: 2, shadow: true, specular: false}
   };
   let liquidGlassPresetName = "default";
+  let liquidGlassModeName = "clear";
   let liquidGlassReady = false;
   let liquidWheelLens = null;
   let wheelGlassResetTimer = null;
@@ -19,6 +20,11 @@
     return LIQUID_GL_PRESETS[key] ? key : "default";
   }
 
+  function normalizeLiquidGlassMode(name){
+    const key = String(name || "clear").trim().toLowerCase();
+    return (key === "dark" || key === "light" || key === "clear") ? key : "clear";
+  }
+
   function liquidGlassPresetOptions(){
     const preset = LIQUID_GL_PRESETS[normalizeLiquidGlassPreset(liquidGlassPresetName)] || LIQUID_GL_PRESETS.default;
     const options = Object.assign({
@@ -26,9 +32,9 @@
       resolution: 1.0,
       reveal: "none",
       tilt: false,
-      magnify: 1
+      magnify: 1,
+      glassMode: normalizeLiquidGlassMode(liquidGlassModeName)
     }, preset);
-    options.specular = false;
     return options;
   }
 
@@ -87,7 +93,7 @@
       if(!rect.width || !rect.height) return;
       const pctX = Math.max(-1, Math.min(1, (clientX - (rect.left + rect.width / 2)) / (rect.width / 2)));
       const pctY = Math.max(-1, Math.min(1, (clientY - (rect.top + rect.height / 2)) / (rect.height / 2)));
-      const maxTilt = 0.72;
+      const maxTilt = 0.95;
       const rotY = pctX * maxTilt;
       const rotX = -pctY * maxTilt;
       lens.tiltX = rotX;
@@ -731,8 +737,7 @@ function hideNpPillImmediate(){
   }catch(e){}
 }
 
-if(npArt){
-  npArt.addEventListener("click", ()=>{
+function toggleNpPillFromArt(){
     if(nowPlaying.style.display !== "block") return;
     if(isNpPillShown()){
       npPillPinned = false;
@@ -741,6 +746,21 @@ if(npArt){
     }else{
       setNpPillPinned(true);
     }
+}
+
+if(npArt){
+  npArt.addEventListener("click", (ev)=>{ try{ ev.stopPropagation(); }catch(e){} toggleNpPillFromArt(); });
+}
+if(npArtSwap){
+  npArtSwap.addEventListener("click", (ev)=>{ try{ ev.stopPropagation(); }catch(e){} toggleNpPillFromArt(); });
+}
+if(nowPlaying){
+  nowPlaying.addEventListener("click", (ev)=>{
+    try{
+      const tgt = ev.target;
+      if(tgt && tgt.closest && tgt.closest(".npOverlayPill, .npVideoOverlay, input, button, select, textarea")) return;
+      toggleNpPillFromArt();
+    }catch(e){}
   });
 }
 
@@ -2120,6 +2140,7 @@ function fmtTime(sec){
     state.lastfmEnabled = !!js.lastfm_enabled;
     state.playbackStreamingMode = (String(js.playback_streaming_mode || "http").toLowerCase() === "hls") ? "hls" : "http";
     liquidGlassPresetName = normalizeLiquidGlassPreset(js.liquid_gl_preset || "default");
+    liquidGlassModeName = normalizeLiquidGlassMode(js.liquid_gl_mode || "clear");
     initLiquidGlass();
     return js;
   }
