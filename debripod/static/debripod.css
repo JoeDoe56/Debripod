@@ -159,9 +159,10 @@
     .liquidGlassCanvas{
       position: fixed !important;
       inset: 0 !important;
-      z-index: 65 !important;
       pointer-events: none !important;
     }
+    .liquidGlassCanvasDefault{ z-index: 65 !important; }
+    .liquidGlassCanvasScreenFrame{ z-index: 64 !important; }
 
     
     @media (max-height: 720px){

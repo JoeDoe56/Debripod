@@ -88,10 +88,11 @@
    *  Shared renderer (one per page)
    * ------------------------------------------------*/
   class liquidGLRenderer {
-    constructor(snapshotSelector, snapshotResolution = 1.0) {
+    constructor(snapshotSelector, snapshotResolution = 1.0, rendererKey = "default") {
       this.canvas = document.createElement("canvas");
       this.canvas.style.cssText = `position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:0;`;
       this.canvas.setAttribute("data-liquid-ignore", "");
+      this.canvas.setAttribute("data-liquid-renderer", rendererKey || "default");
       document.body.appendChild(this.canvas);
 
       const ctxAttribs = {
@@ -106,6 +107,7 @@
       if (!this.gl) throw new Error("liquidGL: WebGL unavailable");
 
       this.lenses = [];
+      this.rendererKey = rendererKey || "default";
       this.texture = null;
       this.textureWidth = 0;
       this.textureHeight = 0;
@@ -333,7 +335,8 @@
           if (u_hollowInset > 0.0 && u_hollowMaskContent) {
             float sampledInnerShape = hollowInnerShapeAtTextureUV(sampleUV);
             if (sampledInnerShape > 0.01) {
-              sampleUV = mapped;
+              float innerEdgeFade = smoothstep(0.01, 0.30, sampledInnerShape);
+              sampleUV = mix(sampleUV, mapped, innerEdgeFade);
             }
           }
 
@@ -465,7 +468,7 @@
     }
 
     /* ----------------------------- */
-    async captureSnapshot() {
+    async captureSnapshot(reason = "") {
       if (this._capturing || typeof html2canvas === "undefined") return;
       this._capturing = true;
 
@@ -529,7 +532,7 @@
             ignoreElements: ignoreElementsFunc,
           });
 
-          return this._uploadTexture(snapCanvas);
+          return this._uploadTexture(snapCanvas, reason);
         } catch (e) {
           liquidGLLog("error", "liquidGL snapshot failed on attempt " + attempt, e);
           if (attempt < maxAttempts) {
@@ -555,7 +558,7 @@
     }
 
     /* ----------------------------- */
-    _uploadTexture(srcCanvas) {
+    _uploadTexture(srcCanvas, reason = "") {
       if (!srcCanvas) return false;
 
       if (!(srcCanvas instanceof HTMLCanvasElement)) {
@@ -579,7 +582,10 @@
 
       if (srcCanvas.width === 0 || srcCanvas.height === 0) return false;
       if (this._canvasLooksBlankForUpload(srcCanvas)) {
-        liquidGLLog("warn", "liquidGL: Refusing to replace texture with a blank snapshot.");
+        liquidGLLog("warn", "liquidGL: Refusing to replace texture with a blank snapshot.", {
+          rendererKey: this.rendererKey,
+          reason
+        });
         return false;
       }
 
@@ -614,6 +620,16 @@
 
       this.textureWidth = srcCanvas.width;
       this.textureHeight = srcCanvas.height;
+      liquidGLLog("log", "liquidGL: Texture uploaded.", {
+        rendererKey: this.rendererKey,
+        reason,
+        width: this.textureWidth,
+        height: this.textureHeight,
+        lensCount: this.lenses.length,
+        lensClasses: this.lenses.map((lens) => lens.el && lens.el.className).filter(Boolean),
+        canvasClassName: this.canvas.className,
+        canvasZIndex: window.getComputedStyle(this.canvas).zIndex
+      });
       if (prevTexture) gl.deleteTexture(prevTexture);
 
       this.render();
@@ -1012,7 +1028,7 @@
 
       const compositeVideos = (compositeCtx, dynamicElRect) => {
         this._videoNodes.forEach((vid) => {
-          if (effectiveZ(vid) >= maxLensZ) return;
+          if (effectiveZ(vid) > maxLensZ) return;
           const vidRect = vid.getBoundingClientRect();
 
           if (
@@ -1125,7 +1141,7 @@
 
           const rect = el.getBoundingClientRect();
           if (
-            effectiveZ(el) >= maxLensZ ||
+            effectiveZ(el) > maxLensZ ||
             !document.contains(el) ||
             rect.width === 0 ||
             rect.height === 0
@@ -2273,7 +2289,7 @@
       rendererStore[rendererKey] ||
       (rendererKey === "default" ? window.__liquidGLRenderer__ : null);
     if (!renderer) {
-      renderer = new liquidGLRenderer(options.snapshot, options.resolution);
+      renderer = new liquidGLRenderer(options.snapshot, options.resolution, rendererKey);
     }
     rendererStore[rendererKey] = renderer;
     if (rendererKey === "default") {
@@ -2292,6 +2308,14 @@
     const instances = Array.from(nodeList).map((el) =>
       renderer.addLens(el, options)
     );
+    liquidGLLog("log", "liquidGL: Renderer lenses registered.", {
+      rendererKey,
+      lensCount: renderer.lenses.length,
+      lensClasses: renderer.lenses.map((lens) => lens.el && lens.el.className).filter(Boolean),
+      hollowLensCount: renderer.lenses.filter((lens) => lens.hollowMaskContent).length,
+      canvasClassName: renderer.canvas.className,
+      canvasZIndex: window.getComputedStyle(renderer.canvas).zIndex
+    });
 
     if (!renderer._rafId && !renderer.useExternalTicker) {
       const loop = () => {
