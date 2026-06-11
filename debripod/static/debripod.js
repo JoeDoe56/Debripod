@@ -15,6 +15,7 @@
   let wheelGlassResetTimer = null;
   let wheelGlassTiltFrame = 0;
   let wheelGlassTiltPoint = null;
+  let wheelGlassTiltRect = null;
 
   function normalizeLiquidGlassPreset(name){
     const key = String(name || "default").trim().toLowerCase();
@@ -101,10 +102,11 @@
     }catch(e){}
   }
 
-  function renderLiquidGlassNow(){
+  function renderLiquidGlassNow(frameState){
     try{
       liquidGlassRenderers().forEach((renderer)=>{
-        if(renderer && renderer.render) renderer.render();
+        if(!renderer || !renderer.render) return;
+        renderer.render(frameState || currentVisualizerFrameState());
       });
     }catch(e){}
   }
@@ -194,9 +196,15 @@
         hollowMaskContent: true
       }));
       mountLiquidCanvas();
-      try{
-        window.liquidGL.registerDynamic(".visualizerBg");
-      }catch(e){}
+      liquidGlassRenderers().forEach((renderer)=>{
+        try{
+          renderer.useExternalTicker = true;
+          if(renderer._rafId){
+            cancelAnimationFrame(renderer._rafId);
+            renderer._rafId = null;
+          }
+        }catch(err){}
+      });
       liquidGlassReady = true;
     }catch(e){
       liquidGlassReady = true;
@@ -204,11 +212,24 @@
     }
   }
 
+  function cacheWheelGlassTiltRect(){
+    try{
+      const lens = liquidWheelLens;
+      if(!lens || !lens.el) return null;
+      if(lens.updateMetrics) lens.updateMetrics();
+      wheelGlassTiltRect = lens.rectPx || lens.el.getBoundingClientRect();
+      return wheelGlassTiltRect;
+    }catch(e){
+      wheelGlassTiltRect = null;
+      return null;
+    }
+  }
+
   function updateWheelGlassTilt(clientX, clientY){
     try{
       const lens = liquidWheelLens;
       if(!lens || !lens.el) return;
-      const rect = lens.el.getBoundingClientRect();
+      const rect = wheelGlassTiltRect || lens.rectPx || cacheWheelGlassTiltRect();
       if(!rect.width || !rect.height) return;
       const pctX = Math.max(-1, Math.min(1, (clientX - (rect.left + rect.width / 2)) / (rect.width / 2)));
       const pctY = Math.max(-1, Math.min(1, (clientY - (rect.top + rect.height / 2)) / (rect.height / 2)));
@@ -221,8 +242,6 @@
         wheel.style.transition = "none";
         wheel.style.transform = "perspective(900px) rotateX(" + rotX.toFixed(3) + "deg) rotateY(" + rotY.toFixed(3) + "deg)";
       }
-      try{ lens.updateMetrics(); }catch(e){}
-      try{ if(lens.renderer && lens.renderer.render) lens.renderer.render(); }catch(e){}
     }catch(e){}
   }
 
@@ -253,6 +272,7 @@
         wheelGlassTiltFrame = 0;
       }
       wheelGlassTiltPoint = null;
+      wheelGlassTiltRect = null;
       lens.tiltX = 0;
       lens.tiltY = 0;
       if(wheel){
@@ -264,7 +284,7 @@
         wheelGlassResetTimer = null;
         try{ if(wheel) wheel.style.transform = ""; }catch(e){}
       }, 380);
-      try{ if(lens.renderer && lens.renderer.render) lens.renderer.render(); }catch(e){}
+      scheduleLiquidGlassRender();
     }catch(e){}
   }
   function humanBytes(bytes){
@@ -401,10 +421,19 @@ const libHeader = document.getElementById("libHeader");
       });
     }catch(e){}
   }
-  window.addEventListener("resize", ()=>{ scheduleNpOverlayGlassRender(); }, {passive:true});
+  window.addEventListener("resize", ()=>{
+    wheelGlassTiltRect = null;
+    scheduleNpOverlayGlassRender();
+  }, {passive:true});
   if(window.visualViewport){
-    window.visualViewport.addEventListener("resize", ()=>{ scheduleNpOverlayGlassRender(); }, {passive:true});
-    window.visualViewport.addEventListener("scroll", ()=>{ scheduleNpOverlayGlassRender(); }, {passive:true});
+    window.visualViewport.addEventListener("resize", ()=>{
+      wheelGlassTiltRect = null;
+      scheduleNpOverlayGlassRender();
+    }, {passive:true});
+    window.visualViewport.addEventListener("scroll", ()=>{
+      wheelGlassTiltRect = null;
+      scheduleNpOverlayGlassRender();
+    }, {passive:true});
   }
   setTimeout(()=>{ scheduleNpOverlayGlassRender(); }, 0);
   const npArtSwap = document.getElementById("npArtSwap");
@@ -701,6 +730,7 @@ let visualizerEnabled = false;
 let visualizerActive = false;
 let visualizerTrackKey = "";
 let visualizerSampleNonce = 0;
+let visualizerStrength = "medium";
 const defaultTheme = {
   accent: "rgba(10,132,255,.88)",
   accentStrong: "rgba(10,132,255,1)",
@@ -713,24 +743,51 @@ const defaultTheme = {
   visualizerC: "rgba(255,69,58,.18)"
 };
 
+const defaultVisualizerPalette = [
+  {r:10,g:132,b:255},
+  {r:94,g:92,b:230},
+  {r:255,g:69,b:58},
+  {r:48,g:209,b:88}
+];
+const visualizerPaletteCache = new Map();
+let visualizerPalette = defaultVisualizerPalette.slice();
+let visualizerTargetPalette = defaultVisualizerPalette.slice();
 let visualizerAudioCtx = null;
 let visualizerAnalyser = null;
 let visualizerData = null;
 let visualizerSources = new WeakMap();
 let visualizerFrameHandle = 0;
+let visualizerFrameTimer = 0;
 let visualizerLastFrameTs = 0;
-let visualizerLiquidCaptureLastTs = 0;
 let visualizerEnergy = 0;
 let visualizerBass = 0;
 let visualizerMid = 0;
 let visualizerTreble = 0;
+let visualizerCtx = null;
+let visualizerCanvasDpr = 0;
+let visualizerCanvasW = 0;
+let visualizerCanvasH = 0;
+let visualizerVideoSampleCanvas = null;
+let visualizerVideoSampleCtx = null;
+let visualizerVideoSampleLastTs = 0;
+
+const VISUALIZER_STRENGTHS = {
+  low: {dpr: 0.62, interval: 33, blobs: 3, waves: 1, speed: 0.62, alpha: 0.54, bright: 0.74},
+  medium: {dpr: 0.86, interval: 17, blobs: 5, waves: 2, speed: 0.86, alpha: 0.74, bright: 0.92},
+  high: {dpr: 1.05, interval: 17, blobs: 7, waves: 3, speed: 1.04, alpha: 0.90, bright: 1.05}
+};
+
+function normalizeVisualizerStrength(value){
+  const key = String(value || "medium").trim().toLowerCase();
+  return VISUALIZER_STRENGTHS[key] ? key : "medium";
+}
 
 function currentVisualizerMediaElement(){
   try{
     if(isVideoActive && isVideoActive() && npVideo) return npVideo;
   }catch(e){}
   try{
-    if(activeAudio && activeAudio.src && !activeAudio.paused) return activeAudio;
+    if(activeAudio && activeAudio.src) return activeAudio;
   }catch(e){}
   return null;
 }
@@ -763,40 +820,170 @@ function ensureVisualizerAudioGraphFor(el){
   }
 }
 
-function setVisualizerMotionVars(energy, bass, mid, treble){
-  const root = document.documentElement;
-  const e = Math.max(0, Math.min(1, Number(energy || 0)));
-  const b = Math.max(0, Math.min(1, Number(bass || 0)));
-  const m = Math.max(0, Math.min(1, Number(mid || 0)));
-  const t = Math.max(0, Math.min(1, Number(treble || 0)));
+function clamp01(n){
+  const v = Number(n || 0);
+  return Math.max(0, Math.min(1, Number.isFinite(v) ? v : 0));
+}
+
+function rgbForPaletteIndex(i){
+  const palette = visualizerPalette && visualizerPalette.length ? visualizerPalette : defaultVisualizerPalette;
+  return palette[i % palette.length] || defaultVisualizerPalette[i % defaultVisualizerPalette.length];
+}
+
+function rgbaCss(rgb, alpha, bright){
+  const b = Number.isFinite(bright) ? bright : 1;
+  return "rgba(" + clampByte((rgb.r || 0) * b) + "," + clampByte((rgb.g || 0) * b) + "," + clampByte((rgb.b || 0) * b) + "," + clamp01(alpha).toFixed(3) + ")";
+}
+
+function resizeVisualizerCanvas(cfg){
   try{
-    root.style.setProperty("--viz-energy", e.toFixed(4));
-    root.style.setProperty("--viz-bass", b.toFixed(4));
-    root.style.setProperty("--viz-mid", m.toFixed(4));
-    root.style.setProperty("--viz-treble", t.toFixed(4));
-    root.style.setProperty("--viz-x1", (50 + ((m - .5) * 24)).toFixed(2) + "%");
-    root.style.setProperty("--viz-y1", (30 + ((b - .5) * 24)).toFixed(2) + "%");
-    root.style.setProperty("--viz-x2", (20 + (b * 16)).toFixed(2) + "%");
-    root.style.setProperty("--viz-y2", (74 - (t * 22)).toFixed(2) + "%");
-    root.style.setProperty("--viz-x3", (80 - (m * 18)).toFixed(2) + "%");
-    root.style.setProperty("--viz-y3", (64 - (b * 14) + (t * 12)).toFixed(2) + "%");
-    root.style.setProperty("--viz-r1", (30 + (b * 30) + (e * 8)).toFixed(2) + "%");
-    root.style.setProperty("--viz-r2", (34 + (m * 32) + (e * 7)).toFixed(2) + "%");
-    root.style.setProperty("--viz-r3", (30 + (t * 34) + (e * 8)).toFixed(2) + "%");
-    root.style.setProperty("--viz-blur", (1.5 + (e * 8)).toFixed(2) + "px");
+    if(!visualizerBg || !visualizerBg.getContext) return false;
+    const dpr = Math.max(0.45, Math.min(cfg.dpr, window.devicePixelRatio || 1));
+    const w = Math.max(1, Math.round(window.innerWidth * dpr));
+    const h = Math.max(1, Math.round(window.innerHeight * dpr));
+    if(!visualizerCtx) visualizerCtx = visualizerBg.getContext("2d", {alpha:true});
+    if(!visualizerCtx) return false;
+    if(w !== visualizerCanvasW || h !== visualizerCanvasH || dpr !== visualizerCanvasDpr){
+      visualizerBg.width = w;
+      visualizerBg.height = h;
+      visualizerCanvasW = w;
+      visualizerCanvasH = h;
+      visualizerCanvasDpr = dpr;
+    }
+    return true;
+  }catch(e){
+    return false;
+  }
+}
+
+function blendVisualizerPalette(){
+  try{
+    const target = visualizerTargetPalette && visualizerTargetPalette.length ? visualizerTargetPalette : defaultVisualizerPalette;
+    const maxLen = Math.max(4, target.length);
+    while(visualizerPalette.length < maxLen) visualizerPalette.push(target[visualizerPalette.length % target.length]);
+    for(let i = 0; i < maxLen; i++){
+      const cur = visualizerPalette[i] || target[i % target.length];
+      const nxt = target[i % target.length] || cur;
+      visualizerPalette[i] = {
+        r: cur.r + (nxt.r - cur.r) * 0.08,
+        g: cur.g + (nxt.g - cur.g) * 0.08,
+        b: cur.b + (nxt.b - cur.b) * 0.08
+      };
+    }
+    visualizerPalette.length = maxLen;
+  }catch(e){}
+}
+
+function renderVisualizerCanvas(ts){
+  try{
+    if(!visualizerBg) return;
+    const cfg = VISUALIZER_STRENGTHS[visualizerStrength] || VISUALIZER_STRENGTHS.medium;
+    if(!resizeVisualizerCanvas(cfg)) return;
+    const ctx = visualizerCtx;
+    const w = visualizerCanvasW;
+    const h = visualizerCanvasH;
+    const t = Number(ts || 0) * 0.001 * cfg.speed;
+    const e = visualizerActive ? clamp01(visualizerEnergy) : 0;
+    const b = visualizerActive ? clamp01(visualizerBass) : 0;
+    const m = visualizerActive ? clamp01(visualizerMid) : 0;
+    const tr = visualizerActive ? clamp01(visualizerTreble) : 0;
+    blendVisualizerPalette();
+
+    ctx.globalCompositeOperation = "source-over";
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = "rgb(0,0,0)";
+    ctx.fillRect(0, 0, w, h);
+
+    const baseAlpha = cfg.alpha * (0.28 + e * 0.62);
+    const minDim = Math.min(w, h);
+    const maxDim = Math.max(w, h);
+    ctx.globalCompositeOperation = "lighter";
+    for(let i = 0; i < cfg.blobs; i++){
+      const col = rgbForPaletteIndex(i);
+      const phase = t * (0.34 + i * 0.055) + i * 2.17;
+      const ampX = (0.18 + 0.06 * Math.sin(i)) * w;
+      const ampY = (0.15 + 0.05 * Math.cos(i * 1.7)) * h;
+      const x = w * (0.50 + Math.sin(phase + m * 1.4) * ampX / w);
+      const y = h * (0.52 + Math.cos(phase * 0.83 + b * 1.6) * ampY / h);
+      const radius = minDim * (0.20 + i * 0.035 + b * 0.12 + e * 0.08);
+      const grad = ctx.createRadialGradient(x, y, 0, x, y, radius);
+      grad.addColorStop(0, rgbaCss(col, baseAlpha * (0.52 + tr * 0.32), cfg.bright));
+      grad.addColorStop(0.45, rgbaCss(col, baseAlpha * 0.20, cfg.bright));
+      grad.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = grad;
+      ctx.beginPath();
+      ctx.arc(x, y, radius, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    ctx.globalCompositeOperation = "screen";
+    ctx.lineCap = "round";
+    for(let wave = 0; wave < cfg.waves; wave++){
+      const col = rgbForPaletteIndex(wave + 2);
+      const yBase = h * (0.42 + wave * 0.13 + Math.sin(t * 0.7 + wave) * 0.035);
+      ctx.strokeStyle = rgbaCss(col, (0.10 + e * 0.22) * cfg.alpha, cfg.bright * 1.08);
+      ctx.lineWidth = Math.max(1.2, minDim * (0.0032 + tr * 0.004));
+      ctx.beginPath();
+      for(let x = -maxDim * 0.05; x <= w + maxDim * 0.05; x += Math.max(24, w / 18)){
+        const p = x / w;
+        const y = yBase + Math.sin((p * 4.4 + t * (0.8 + wave * .22)) * Math.PI) * minDim * (0.025 + m * 0.04);
+        if(x <= 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+
+    ctx.globalCompositeOperation = "source-over";
+    const vignette = ctx.createRadialGradient(w * .5, h * .5, minDim * .08, w * .5, h * .5, maxDim * .68);
+    vignette.addColorStop(0, "rgba(0,0,0,0)");
+    vignette.addColorStop(0.62, "rgba(0,0,0,.20)");
+    vignette.addColorStop(1, "rgba(0,0,0,.86)");
+    ctx.fillStyle = vignette;
+    ctx.fillRect(0, 0, w, h);
+  }catch(e){}
+}
+
+function currentVisualizerFrameState(ts){
+  return {
+    timestamp: Number(ts || performance.now() || 0),
+    active: !!visualizerActive,
+    strength: visualizerStrength,
+    energy: visualizerEnergy,
+    bass: visualizerBass,
+    mid: visualizerMid,
+    treble: visualizerTreble,
+    palette: visualizerPalette
+  };
+}
+
+function scheduleVisualizerFrame(delayMs){
+  try{
+    if(visualizerFrameHandle || visualizerFrameTimer) return;
+    const delay = Math.max(0, Number(delayMs || 0));
+    if(delay > 34){
+      visualizerFrameTimer = setTimeout(()=>{
+        visualizerFrameTimer = 0;
+        visualizerFrameHandle = requestAnimationFrame(visualizerFrame);
+      }, delay);
+      return;
+    }
+    visualizerFrameHandle = requestAnimationFrame(visualizerFrame);
   }catch(e){}
 }
 
 function visualizerFrame(ts){
+  visualizerFrameHandle = 0;
   try{
     const nowTs = Number(ts || performance.now() || 0);
-    if(visualizerLastFrameTs && (nowTs - visualizerLastFrameTs) < 33){
-      visualizerFrameHandle = requestAnimationFrame(visualizerFrame);
+    const cfg = VISUALIZER_STRENGTHS[visualizerStrength] || VISUALIZER_STRENGTHS.medium;
+    const interval = (visualizerActive || wheelGlassTiltPoint) ? cfg.interval : 180;
+    if(visualizerLastFrameTs && (nowTs - visualizerLastFrameTs) < interval){
+      scheduleVisualizerFrame(interval - (nowTs - visualizerLastFrameTs));
       return;
     }
     visualizerLastFrameTs = nowTs;
     const el = currentVisualizerMediaElement();
-    const canAnalyze = !!(visualizerEnabled && visualizerActive && el && ensureVisualizerAudioGraphFor(el) && visualizerAnalyser && visualizerData);
+    const canAnalyze = !!(visualizerEnabled && visualizerActive && !document.hidden && el && ensureVisualizerAudioGraphFor(el) && visualizerAnalyser && visualizerData);
     let nextBass = 0;
     let nextMid = 0;
     let nextTreble = 0;
@@ -828,6 +1015,12 @@ function visualizerFrame(ts){
         nextTreble = Math.min(1, (nextTreble * 0.58) + (treblePeak * 0.92));
         nextEnergy = Math.min(1, (nextEnergy * 0.45) + (energyPeak * 1.05) + (bassPeak * 0.12));
       }
+    }else if(visualizerEnabled && visualizerActive && !document.hidden){
+      const idle = nowTs * 0.001;
+      nextBass = 0.10 + Math.sin(idle * 0.71) * 0.035;
+      nextMid = 0.08 + Math.sin(idle * 0.53 + 1.6) * 0.025;
+      nextTreble = 0.06 + Math.sin(idle * 0.91 + 2.4) * 0.020;
+      nextEnergy = 0.08 + Math.sin(idle * 0.43) * 0.025;
     }
     const easeUp = 0.42;
     const easeDown = 0.18;
@@ -836,24 +1029,26 @@ function visualizerFrame(ts){
     visualizerMid = mixVal(visualizerMid, nextMid);
     visualizerTreble = mixVal(visualizerTreble, nextTreble);
     visualizerEnergy = mixVal(visualizerEnergy, nextEnergy);
-    setVisualizerMotionVars(visualizerEnergy, visualizerBass, visualizerMid, visualizerTreble);
-    if(visualizerActive && visualizerBg && nowTs - visualizerLiquidCaptureLastTs > 360){
-      visualizerLiquidCaptureLastTs = nowTs;
-      recaptureLiquidGlassElement(visualizerBg);
-    }
+    sampleLiveVideoPalette(nowTs);
+    renderVisualizerCanvas(nowTs);
+    renderLiquidGlassNow(currentVisualizerFrameState(nowTs));
   }catch(e){}
-  visualizerFrameHandle = requestAnimationFrame(visualizerFrame);
+  scheduleVisualizerFrame((visualizerActive || wheelGlassTiltPoint) ? 0 : 160);
 }
 
 function ensureVisualizerFrameLoop(){
   try{
-    if(visualizerFrameHandle) return;
-    visualizerFrameHandle = requestAnimationFrame(visualizerFrame);
+    scheduleVisualizerFrame(0);
   }catch(e){}
 }
 try{
   visualizerEnabled = (localStorage.getItem("debripod_visualizer") || "") === "1";
 }catch(e){}
+try{
+  visualizerStrength = normalizeVisualizerStrength(localStorage.getItem("debripod_visualizer_strength") || "medium");
+}catch(e){
+  visualizerStrength = "medium";
+}
 
 let npPillPinned = false;
 try{
@@ -965,9 +1160,8 @@ function applyThemeVars(theme){
 
 function visualizerShouldShow(){
   try{
-    const hasArt = !!(state && state.now && state.nowMeta && state.nowMeta.art);
     const media = currentVisualizerMediaElement();
-    return !!(visualizerEnabled && hasArt && media);
+    return !!(visualizerEnabled && media && !media.paused && !media.ended);
   }catch(e){
     return false;
   }
@@ -979,7 +1173,13 @@ function setVisualizerActive(on){
     if(!visualizerBg) return;
     visualizerBg.classList.toggle("active", !!on);
     visualizerBg.classList.toggle("off", !on);
-    scheduleLiquidGlassSnapshot("visualizer " + (on ? "active" : "inactive"), false);
+    renderVisualizerCanvas(performance.now());
+    if(on && visualizerFrameTimer){
+      clearTimeout(visualizerFrameTimer);
+      visualizerFrameTimer = 0;
+    }
+    scheduleVisualizerFrame(0);
+    scheduleLiquidGlassRender();
   }catch(e){}
 }
 
@@ -995,24 +1195,160 @@ function setVisualizerEnabled(on){
   try{ if(state && state.current && state.current.kind === "libinfo") viewLibInfo(false); }catch(e){}
 }
 
+function setVisualizerStrength(value){
+  visualizerStrength = normalizeVisualizerStrength(value);
+  try{ localStorage.setItem("debripod_visualizer_strength", visualizerStrength); }catch(e){}
+  visualizerCanvasDpr = 0;
+  renderVisualizerCanvas(performance.now());
+  scheduleLiquidGlassRender();
+  try{ if(state && state.current && state.current.kind === "libinfo") viewLibInfo(false); }catch(e){}
+}
+
+function cycleVisualizerStrength(){
+  const order = ["low", "medium", "high"];
+  const idx = order.indexOf(normalizeVisualizerStrength(visualizerStrength));
+  setVisualizerStrength(order[(idx + 1) % order.length]);
+}
+
+function rgbDistance(a, b){
+  const dr = (a.r || 0) - (b.r || 0);
+  const dg = (a.g || 0) - (b.g || 0);
+  const db = (a.b || 0) - (b.b || 0);
+  return Math.sqrt(dr * dr + dg * dg + db * db);
+}
+
+function rgbSaturation(rgb){
+  const mx = Math.max(rgb.r || 0, rgb.g || 0, rgb.b || 0);
+  const mn = Math.min(rgb.r || 0, rgb.g || 0, rgb.b || 0);
+  return mx ? (mx - mn) / mx : 0;
+}
+
+function rgbLuma(rgb){
+  return ((rgb.r || 0) * .299 + (rgb.g || 0) * .587 + (rgb.b || 0) * .114) / 255;
+}
+
+function setVisualizerPalette(palette){
+  const colors = (Array.isArray(palette) && palette.length ? palette : defaultVisualizerPalette)
+    .map(c=>({r:clampByte(c.r), g:clampByte(c.g), b:clampByte(c.b)}))
+    .slice(0, 8);
+  visualizerTargetPalette = colors.length ? colors : defaultVisualizerPalette.slice();
+  const rootTheme = themeFromBase(visualizerTargetPalette[0] || defaultVisualizerPalette[0]);
+  if(visualizerTargetPalette.length >= 3){
+    rootTheme.visualizerA = rgbaFrom(visualizerTargetPalette[0], .46);
+    rootTheme.visualizerB = rgbaFrom(visualizerTargetPalette[1], .34);
+    rootTheme.visualizerC = rgbaFrom(visualizerTargetPalette[2], .24);
+  }
+  applyThemeVars(rootTheme);
+}
+
+function cacheVisualizerPalette(key, palette){
+  try{
+    visualizerPaletteCache.set(key, palette);
+    while(visualizerPaletteCache.size > 48){
+      const first = visualizerPaletteCache.keys().next().value;
+      visualizerPaletteCache.delete(first);
+    }
+  }catch(e){}
+}
+
+function distinctPaletteFromImageData(data){
+  const buckets = new Map();
+  for(let i = 0; i < data.length; i += 4){
+    const a = Number(data[i + 3] || 0);
+    if(a < 24) continue;
+    const rr = Number(data[i] || 0);
+    const gg = Number(data[i + 1] || 0);
+    const bb = Number(data[i + 2] || 0);
+    const rgb = {r:rr, g:gg, b:bb};
+    const sat = rgbSaturation(rgb);
+    const lum = rgbLuma(rgb);
+    const colorful = sat >= .18 && lum >= .08 && lum <= .92;
+    const key2 = (rr >> 3) + "," + (gg >> 3) + "," + (bb >> 3);
+    const prev = buckets.get(key2);
+    const score = (colorful ? 2.2 : .25) * (sat + .15) * (1 - Math.abs(lum - .50) * .78);
+    if(!prev || score > prev.score){
+      buckets.set(key2, {rgb:rgb, score:score, colorful:colorful});
+    }
+  }
+  const candidates = Array.from(buckets.values())
+    .sort((a,b)=> b.score - a.score)
+    .map(x=>x.rgb);
+  const selected = [];
+  const saturated = candidates.filter(c=> rgbSaturation(c) >= .18 && rgbLuma(c) >= .08 && rgbLuma(c) <= .92);
+  const pool = saturated.length ? saturated : candidates;
+  const minDist = saturated.length ? 58 : 34;
+  for(const color of pool){
+    if(selected.every(prev=> rgbDistance(prev, color) >= minDist)){
+      selected.push(color);
+      if(selected.length >= 8) break;
+    }
+  }
+  while(selected.length < Math.min(4, pool.length)){
+    const next = pool.find(c=> selected.indexOf(c) < 0);
+    if(!next) break;
+    selected.push(next);
+  }
+  return selected;
+}
+
+function sampleLiveVideoPalette(ts){
+  try{
+    if(!visualizerEnabled || !visualizerActive || document.hidden) return;
+    if(!isVideoActive || !isVideoActive() || !npVideo || npVideo.paused || npVideo.readyState < 2) return;
+    const interval = visualizerStrength === "high" ? 1400 : (visualizerStrength === "low" ? 3200 : 2200);
+    const nowTs = Number(ts || performance.now() || 0);
+    if(visualizerVideoSampleLastTs && nowTs - visualizerVideoSampleLastTs < interval) return;
+    visualizerVideoSampleLastTs = nowTs;
+
+    if(!visualizerVideoSampleCanvas){
+      visualizerVideoSampleCanvas = document.createElement("canvas");
+      visualizerVideoSampleCtx = visualizerVideoSampleCanvas.getContext("2d", {willReadFrequently:true});
+    }
+    if(!visualizerVideoSampleCtx) return;
+    const vw = Number(npVideo.videoWidth || 0);
+    const vh = Number(npVideo.videoHeight || 0);
+    if(!(vw > 0) || !(vh > 0)) return;
+    const sampleW = visualizerStrength === "high" ? 42 : (visualizerStrength === "low" ? 24 : 32);
+    const sampleH = Math.max(12, Math.round(sampleW * Math.min(1.4, vh / vw)));
+    if(visualizerVideoSampleCanvas.width !== sampleW || visualizerVideoSampleCanvas.height !== sampleH){
+      visualizerVideoSampleCanvas.width = sampleW;
+      visualizerVideoSampleCanvas.height = sampleH;
+    }
+    visualizerVideoSampleCtx.clearRect(0, 0, sampleW, sampleH);
+    visualizerVideoSampleCtx.drawImage(npVideo, 0, 0, sampleW, sampleH);
+    const data = visualizerVideoSampleCtx.getImageData(0, 0, sampleW, sampleH).data;
+    const palette = distinctPaletteFromImageData(data);
+    if(palette && palette.length) setVisualizerPalette(palette);
+  }catch(e){}
+}
+
 function sampleThemeFromArt(src){
   const art = nowPlayingArtSrcValue(src);
   const key = nowPlayingArtCompareKey(art);
   if(!key || !art){
     visualizerTrackKey = "";
-    applyThemeVars(defaultTheme);
+    setVisualizerPalette(defaultVisualizerPalette);
     updateVisualizerState();
     return;
   }
   visualizerTrackKey = key;
+  if(visualizerPaletteCache.has(key)){
+    setVisualizerPalette(visualizerPaletteCache.get(key));
+    updateVisualizerState();
+    return;
+  }
   const myNonce = ++visualizerSampleNonce;
   const img = new Image();
   img.decoding = "async";
+  try{
+    const u = new URL(art, window.location.href);
+    if(u.origin === window.location.origin) img.crossOrigin = "anonymous";
+  }catch(e){}
   img.onload = ()=>{
     if(myNonce !== visualizerSampleNonce) return;
     try{
-      const w = Math.max(8, Math.min(40, img.naturalWidth || 24));
-      const h = Math.max(8, Math.min(40, img.naturalHeight || 24));
+      const w = Math.max(12, Math.min(56, img.naturalWidth || 32));
+      const h = Math.max(12, Math.min(56, img.naturalHeight || 32));
       const canvas = document.createElement("canvas");
       canvas.width = w;
       canvas.height = h;
@@ -1020,35 +1356,18 @@ function sampleThemeFromArt(src){
       if(!ctx) throw new Error("no canvas context");
       ctx.drawImage(img, 0, 0, w, h);
       const data = ctx.getImageData(0, 0, w, h).data;
-      let r = 0, g = 0, b = 0, c = 0;
-      for(let i = 0; i < data.length; i += 4){
-        const a = Number(data[i + 3] || 0);
-        if(a < 24) continue;
-        const rr = Number(data[i] || 0);
-        const gg = Number(data[i + 1] || 0);
-        const bb = Number(data[i + 2] || 0);
-        const mx = Math.max(rr, gg, bb);
-        const mn = Math.min(rr, gg, bb);
-        const sat = mx ? (mx - mn) / mx : 0;
-        const lum = (rr * .299 + gg * .587 + bb * .114) / 255;
-        if(lum < .08 || lum > .95) continue;
-        const weight = Math.max(.18, sat) * (0.65 + (1 - Math.abs(lum - .5) * 1.2));
-        r += rr * weight;
-        g += gg * weight;
-        b += bb * weight;
-        c += weight;
-      }
-      if(!(c > 0)) throw new Error("empty sample");
-      const base = {r: Math.round(r / c), g: Math.round(g / c), b: Math.round(b / c)};
-      applyThemeVars(themeFromBase(base));
+      const selected = distinctPaletteFromImageData(data);
+      if(!selected.length) throw new Error("empty sample");
+      cacheVisualizerPalette(key, selected);
+      setVisualizerPalette(selected);
     }catch(err){
-      applyThemeVars(defaultTheme);
+      setVisualizerPalette(defaultVisualizerPalette);
     }
     updateVisualizerState();
   };
   img.onerror = ()=>{
     if(myNonce !== visualizerSampleNonce) return;
-    applyThemeVars(defaultTheme);
+    setVisualizerPalette(defaultVisualizerPalette);
     updateVisualizerState();
   };
   img.src = art;
@@ -4147,6 +4466,7 @@ async function libDoSearch(engine, q){
 
         items.push({kind:"libinfo_action", label:"Full Screen", action:"force_fullscreen"});
         items.push({kind:"libinfo_action", label:"Visualizer", action:"toggle_visualizer", pills:[visualizerEnabled ? "On" : "Off"]});
+        items.push({kind:"libinfo_action", label:"Visualizer Strength", action:"cycle_visualizer_strength", pills:[visualizerStrength.charAt(0).toUpperCase() + visualizerStrength.slice(1)]});
         items.push({kind:"libinfo_action", label:"Binds", action:"binds_menu"});
 
         resetList(items);
@@ -5155,9 +5475,15 @@ async function goBack(){
     try{
       meta = Object.assign({}, await apiGet("/api/library/filemeta?root_id=" + encodeURIComponent(rootId) + "&rel=" + encodeURIComponent(rel)), {streamed: !!item.streamed, source: item.source || "", ext: item.ext || "", quality: item.quality || ""});
     }catch(e){ meta = {}; }
+    try{
+      if(!meta.art){
+        meta.art = String(item.art || item.thumbnail || item.poster || "");
+      }
+    }catch(e){}
 
     state.now = {rootId: rootId, rel: rel, media: "video", streamed: !!item.streamed};
     state.nowMeta = meta;
+    visualizerVideoSampleLastTs = 0;
     saveResumeNowPlaying();
 
     await updateNowPlayingDisplay(meta, item.label || "Video", {animateArt: true, animatePill: true});
@@ -5169,6 +5495,10 @@ async function goBack(){
       destroyHlsController("video");
       npVideo.removeAttribute("src");
       try{ npVideo.load(); }catch(e){}
+      try{
+        if(meta && meta.art) npVideo.poster = meta.art;
+        else npVideo.removeAttribute("poster");
+      }catch(e){}
       applyVolume();
       await loadPlaybackIntoElement(npVideo, rootId, rel, "video");
 
@@ -6070,6 +6400,11 @@ if(it.kind === "libtasks_entry"){
         await viewLibInfo(false);
         return;
       }
+      if(it.action === "cycle_visualizer_strength"){
+        cycleVisualizerStrength();
+        await viewLibInfo(false);
+        return;
+      }
     }
 
 if(it.kind === "libsearch_history_action"){
@@ -6813,6 +7148,7 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
   let wheelStartY = 0;
   let wheelDownOnButton = false;
   let wheelClickSuppressUntil = 0;
+  let wheelPointerRect = null;
   const step = 18;
   const dragPx = 8;
 
@@ -6826,7 +7162,7 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
   }
 
   function angleFromEvent(ev){
-    const rect = wheel.getBoundingClientRect();
+    const rect = wheelPointerRect || wheel.getBoundingClientRect();
     const cx = rect.left + rect.width/2;
     const cy = rect.top + rect.height/2;
     const x = (ev.clientX - cx);
@@ -6853,8 +7189,10 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
     }
     wheelStartX = ev.clientX;
     wheelStartY = ev.clientY;
+    wheelPointerRect = wheel.getBoundingClientRect();
     lastAngle = angleFromEvent(ev);
     accum = 0;
+    cacheWheelGlassTiltRect();
 
     // Avoid capturing immediately so taps on buttons stay reliable.
     // If the user drags, we will capture on move after a small threshold.
@@ -6913,6 +7251,7 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
     wheelPointerDown = false;
     dragging = false;
     wheelDownOnButton = false;
+    wheelPointerRect = null;
     resetWheelGlassTilt();
   }
 
