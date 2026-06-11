@@ -12,6 +12,24 @@
   /* --------------------------------------------------
    *  Utilities
    * ------------------------------------------------*/
+  function liquidGLDebugEnabled() {
+    try {
+      if (window.LIQUID_GL_DEBUG === true || window.DEBRIPOD_UI_DEBUG === true) {
+        return true;
+      }
+      return (localStorage.getItem("debripod_ui_debug") || "") === "1";
+    } catch (e) {
+      return false;
+    }
+  }
+
+  function liquidGLLog(method, ...args) {
+    if (!liquidGLDebugEnabled()) return;
+    try {
+      if (console && console[method]) console[method](...args);
+    } catch (e) {}
+  }
+
   function debounce(fn, wait) {
     let t;
     return (...a) => {
@@ -44,7 +62,7 @@
     gl.shaderSource(s, src.trim());
     gl.compileShader(s);
     if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
-      console.error("Shader error", gl.getShaderInfoLog(s));
+      liquidGLLog("error", "Shader error", gl.getShaderInfoLog(s));
       gl.deleteShader(s);
       return null;
     }
@@ -60,7 +78,7 @@
     gl.attachShader(p, fs);
     gl.linkProgram(p);
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
-      console.error("Program link error", gl.getProgramInfoLog(p));
+      liquidGLLog("error", "Program link error", gl.getProgramInfoLog(p));
       return null;
     }
     return p;
@@ -477,15 +495,16 @@
           this._uploadTexture(snapCanvas);
           return true;
         } catch (e) {
-          console.error("liquidGL snapshot failed on attempt " + attempt, e);
+          liquidGLLog("error", "liquidGL snapshot failed on attempt " + attempt, e);
           if (attempt < maxAttempts) {
-            console.log(
+            liquidGLLog(
+              "log",
               `Retrying snapshot capture (${attempt + 1}/${maxAttempts})...`
             );
             await new Promise((resolve) => setTimeout(resolve, delayMs));
             return await attemptCapture(attempt + 1, maxAttempts, delayMs);
           } else {
-            console.error("liquidGL: All snapshot attempts failed.", e);
+            liquidGLLog("error", "liquidGL: All snapshot attempts failed.", e);
             return false;
           }
         } finally {
@@ -513,7 +532,8 @@
           ctx.drawImage(srcCanvas, 0, 0);
           srcCanvas = tmp;
         } catch (e) {
-          console.warn(
+          liquidGLLog(
+            "warn",
             "liquidGL: Unable to convert OffscreenCanvas for upload",
             e
           );
@@ -798,7 +818,7 @@
           this._tmpCtx.drawImage(vid, 0, 0, drawW, drawH);
           this._tmpCtx.restore();
         } catch (e) {
-          console.warn("liquidGL: Error drawing video frame", e);
+          liquidGLLog("warn", "liquidGL: Error drawing video frame", e);
           return;
         }
 
@@ -922,7 +942,7 @@
               }
             })
             .catch((e) => {
-              console.error("liquidGL: Dynamic element capture failed.", e);
+              liquidGLLog("error", "liquidGL: Dynamic element capture failed.", e);
             })
             .finally(() => {
               meta._capturing = false;
@@ -1220,7 +1240,7 @@
               m.hoverClassName = className;
               el.classList.add(className);
             } catch (e) {
-              console.error("liquidGL: Failed to insert hover style rule.", e);
+              liquidGLLog("error", "liquidGL: Failed to insert hover style rule.", e);
             }
           }
           setDirty();
@@ -1957,7 +1977,8 @@
     const noWebGL = window.__liquidGLNoWebGL__;
 
     if (noWebGL) {
-      console.warn(
+      liquidGLLog(
+        "warn",
         "liquidGL: WebGL not available – falling back to CSS backdrop-filter."
       );
       const fallbackNodes = document.querySelectorAll(options.target);
@@ -1981,7 +2002,8 @@
 
     const nodeList = document.querySelectorAll(options.target);
     if (!nodeList || nodeList.length === 0) {
-      console.warn(
+      liquidGLLog(
+        "warn",
         `liquidGL: Target element(s) '${options.target}' not found.`
       );
       return;
@@ -2020,7 +2042,8 @@
   window.liquidGL.syncWith = function (config = {}) {
     const renderer = window.__liquidGLRenderer__;
     if (!renderer) {
-      console.warn(
+      liquidGLLog(
+        "warn",
         "liquidGL: Please initialize liquidGL *before* calling syncWith()."
       );
       return;

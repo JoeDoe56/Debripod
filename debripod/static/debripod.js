@@ -35,6 +35,25 @@
     return Array.isArray(value) ? value : [value];
   }
 
+  function mountLiquidCanvas(){
+    try{
+      const renderer = window.__liquidGLRenderer__;
+      const wrap = document.getElementById("divwrap");
+      if(!renderer || !renderer.canvas || !wrap) return;
+      renderer.canvas.classList.add("liquidGlassCanvas");
+      if(renderer.canvas.parentNode !== wrap){
+        const afterBg = document.getElementById("visualizerBg");
+        if(afterBg && afterBg.parentNode === wrap && afterBg.nextSibling){
+          wrap.insertBefore(renderer.canvas, afterBg.nextSibling);
+        }else{
+          wrap.insertBefore(renderer.canvas, wrap.firstChild);
+        }
+      }
+      renderer.canvas.style.pointerEvents = "none";
+      renderer.canvas.style.zIndex = "10";
+    }catch(e){}
+  }
+
   function initLiquidGlass(){
     try{
       if(liquidGlassReady || typeof window.liquidGL !== "function" || typeof window.html2canvas !== "function") return;
@@ -47,6 +66,7 @@
         shadow: false
       })));
       liquidWheelLens = wheelInstances.find(inst => inst && inst.el && inst.el.id === "wheelGlassRing") || null;
+      mountLiquidCanvas();
       try{
         window.liquidGL.registerDynamic(".visualizerBg, .npArt, .npArtSwapLayer, .ipodList");
       }catch(e){}
@@ -338,6 +358,65 @@ function playbackSourceUrl(rootId, rel){
   return playbackUsesHls() ? hlsManifestUrl(rootId, rel) : httpStreamUrl(rootId, rel);
 }
 
+function mediaErrorText(el){
+  try{
+    const err = el && el.error;
+    if(!err) return "";
+    const names = {1:"MEDIA_ERR_ABORTED", 2:"MEDIA_ERR_NETWORK", 3:"MEDIA_ERR_DECODE", 4:"MEDIA_ERR_SRC_NOT_SUPPORTED"};
+    return (names[err.code] || ("MEDIA_ERR_" + err.code)) + (err.message ? (": " + err.message) : "");
+  }catch(e){ return ""; }
+}
+
+const uiLogThrottle = new Map();
+
+function uiDebugEnabled(){
+  try{
+    if(window.DEBRIPOD_UI_DEBUG === true) return true;
+    return (localStorage.getItem("debripod_ui_debug") || "") === "1";
+  }catch(e){ return false; }
+}
+
+function warnMedia(kind, message, el){
+  try{
+    if(kind === "preload" && !uiDebugEnabled()) return;
+    const src = el && el.currentSrc ? el.currentSrc : (el && el.src ? el.src : "");
+    const err = mediaErrorText(el);
+    const key = [kind || "", message || "", src || "", err || ""].join("|");
+    const now = Date.now();
+    const last = uiLogThrottle.get(key) || 0;
+    if(now - last < 8000) return;
+    uiLogThrottle.set(key, now);
+    console.warn("[Debripod media] " + kind + " " + message, {src: src, error: err, readyState: el ? el.readyState : null, networkState: el ? el.networkState : null});
+  }catch(e){}
+}
+
+function waitForMediaReady(el, timeoutMs){
+  return new Promise((resolve, reject)=>{
+    if(!el) return reject(new Error("media element missing"));
+    if(el.readyState >= 1) return resolve(true);
+    let done = false;
+    let timer = null;
+    const cleanup = ()=>{
+      try{ el.removeEventListener("loadedmetadata", onReady); }catch(e){}
+      try{ el.removeEventListener("canplay", onReady); }catch(e){}
+      try{ el.removeEventListener("error", onError); }catch(e){}
+      try{ if(timer) clearTimeout(timer); }catch(e){}
+    };
+    const finish = (fn, val)=>{
+      if(done) return;
+      done = true;
+      cleanup();
+      fn(val);
+    };
+    const onReady = ()=>finish(resolve, true);
+    const onError = ()=>finish(reject, new Error(mediaErrorText(el) || "media load failed"));
+    try{ el.addEventListener("loadedmetadata", onReady, {once:true}); }catch(e){}
+    try{ el.addEventListener("canplay", onReady, {once:true}); }catch(e){}
+    try{ el.addEventListener("error", onError, {once:true}); }catch(e){}
+    timer = setTimeout(()=>finish(resolve, false), timeoutMs || 4000);
+  });
+}
+
 async function loadPlaybackIntoElement(el, rootId, rel, kind){
   const src = playbackSourceUrl(rootId, rel);
   if(playbackUsesHls()){
@@ -348,6 +427,7 @@ async function loadPlaybackIntoElement(el, rootId, rel, kind){
   else if(kind === "video") destroyHlsController("video");
   else if(kind === "preload") destroyHlsController("preload");
   try{ el.src = src; el.load(); }catch(e){}
+  try{ await waitForMediaReady(el, kind === "preload" ? 1200 : 5000); }catch(e){ warnMedia(kind, "load failed", el); throw e; }
   return src;
 }
 
@@ -4894,8 +4974,10 @@ async function goBack(){
 
       const p = npVideo.play();
       try{ if(rt > 0) scheduleVideoResume(rt); }catch(e){}
-      if(p && p.catch) p.catch(()=>{});
-    }catch(e){}
+      if(p && p.catch) p.catch((err)=>{ warnMedia("video", "play rejected" + (err && err.name ? " (" + err.name + ")" : ""), npVideo); });
+    }catch(e){
+      warnMedia("video", "start failed" + (e && e.name ? " (" + e.name + ")" : ""), npVideo);
+    }
   }
 
 
@@ -5038,6 +5120,7 @@ async function goBack(){
       await activeAudio.play();
       if(canMediaSession()) navigator.mediaSession.playbackState = "playing";
     }catch(e){
+      warnMedia("audio", "play rejected" + (e && e.name ? " (" + e.name + ")" : ""), activeAudio);
       if(canMediaSession()) navigator.mediaSession.playbackState = "paused";
     }
 
@@ -5050,7 +5133,12 @@ async function goBack(){
     if(!m) return;
     if(m.paused){
 
-      try{ m.play().catch(()=>{}); }catch(e){}
+      try{
+        const p = m.play();
+        if(p && p.catch) p.catch((err)=>{ warnMedia(isVideoActive() ? "video" : "audio", "play rejected" + (err && err.name ? " (" + err.name + ")" : ""), m); });
+      }catch(e){
+        warnMedia(isVideoActive() ? "video" : "audio", "play failed" + (e && e.name ? " (" + e.name + ")" : ""), m);
+      }
       if(!isVideoActive() && canMediaSession()) navigator.mediaSession.playbackState = "playing";
       try{ syncMediaSessionControls(); }catch(e){}
     }else{
@@ -5297,6 +5385,14 @@ async function goBack(){
         }
       }catch(e){}
     });
+    ["error","stalled","waiting","suspend","abort"].forEach((name)=>{
+      try{
+        el.addEventListener(name, ()=>{
+          if(el !== activeAudio) return;
+          warnMedia("audio", name, el);
+        });
+      }catch(e){}
+    });
   }
   try{ ensurePlaybackAudioSession(); }catch(e){}
   wireAudio(audioMain);
@@ -5354,6 +5450,14 @@ async function goBack(){
         }
       }catch(e){}
       if(isSearchStreamActive()) playNext();
+    });
+    ["error","stalled","waiting","suspend","abort"].forEach((name)=>{
+      try{
+        npVideo.addEventListener(name, ()=>{
+          if(!isVideoActive()) return;
+          warnMedia("video", name, npVideo);
+        });
+      }catch(e){}
     });
   }
 
