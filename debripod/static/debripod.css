@@ -499,37 +499,14 @@
       z-index:0;
       pointer-events:none;
       opacity:0;
-      transition: opacity .55s ease, filter .38s ease, transform .38s ease, background .24s linear;
-      background:
-        radial-gradient(circle at var(--viz-x1) var(--viz-y1), var(--theme-visualizer-a) 0%, rgba(0,0,0,0) var(--viz-r1)),
-        radial-gradient(circle at var(--viz-x2) var(--viz-y2), var(--theme-visualizer-b) 0%, rgba(0,0,0,0) var(--viz-r2)),
-        radial-gradient(circle at var(--viz-x3) var(--viz-y3), var(--theme-visualizer-c) 0%, rgba(0,0,0,0) var(--viz-r3)),
-        radial-gradient(circle at 50% 52%, rgba(255,255,255,calc(.03 + var(--viz-energy) * .08)) 0%, rgba(0,0,0,0) 24%),
-        linear-gradient(180deg, rgba(255,255,255,calc(.015 + var(--viz-treble) * .03)) 0%, rgba(0,0,0,0) 28%),
-        linear-gradient(0deg, rgba(0,0,0,.22) 0%, rgba(0,0,0,0) 28%),
-        radial-gradient(circle at 50% 50%, rgba(0,0,0,.06) 0%, rgba(0,0,0,.44) 58%, rgba(0,0,0,.96) 100%);
-      filter: saturate(calc(1.0 + var(--viz-energy) * .7)) blur(var(--viz-blur));
-      transform: scale(calc(1 + var(--viz-energy) * .018));
-      will-change: opacity, filter, transform, background;
-    }
-    .visualizerBg::before{
-      content:"";
-      position:absolute;
-      inset:-8%;
-      border-radius:999px;
-      pointer-events:none;
-      opacity: calc(.12 + var(--viz-energy) * .18);
-      mix-blend-mode: screen;
-      background:
-        radial-gradient(circle at calc(46% + (var(--viz-bass) * 8%)) calc(50% - (var(--viz-mid) * 8%)), var(--theme-visualizer-a) 0%, rgba(0,0,0,0) 24%),
-        radial-gradient(circle at calc(56% - (var(--viz-mid) * 7%)) calc(56% + (var(--viz-treble) * 7%)), var(--theme-visualizer-b) 0%, rgba(0,0,0,0) 28%);
-      filter: blur(calc(12px + var(--viz-energy) * 16px));
-      transform: scale(calc(.98 + var(--viz-energy) * .08));
-      transition: opacity .24s ease, filter .24s ease, transform .24s ease, background .16s linear;
-      will-change: opacity, filter, transform, background;
+      width:100vw;
+      height:100vh;
+      background: rgb(0,0,0);
+      transition: opacity .45s ease;
+      will-change: opacity;
     }
     .visualizerBg.active{ opacity:1; }
-    .visualizerBg.off{ opacity:0; filter: saturate(.85) blur(0px); transform: scale(1); }
+    .visualizerBg.off{ opacity:0; }
 
     .ipodHeader{
       position:relative;
