@@ -2,6 +2,9 @@
   "HOST": "127.0.0.1",
   "PORT": 8083,
   "APP_NAME": "Debripod",
+  "LIQUID_GL_PRESET": "default",
+  "LIQUID_GL_MODE": "clear",
+  "PLAYBACK_STREAMING_MODE": "http",
 
   "DOWNLOAD_DIR": "./data/debrid",
   "SOULSEEK_DOWNLOAD_DIR": "./data/soulseek",
