@@ -278,6 +278,7 @@
         uniform float u_tiltX;
         uniform float u_tiltY;
         uniform float u_magnify;
+        uniform float u_hollowInset;
 
         float udRoundBox( vec2 p, vec2 b, float r ) {
           return length(max(abs(p)-b+r,0.0))-r;
@@ -355,7 +356,15 @@
           vec2 p_px = (v_uv - 0.5) * u_resolution;
           vec2 b_px = 0.5 * u_resolution;
           float dmask = udRoundBox(p_px, b_px, u_radius);
-          float inShape = 1.0 - step(0.0, dmask);
+          float inShape = 1.0 - smoothstep(-1.25, 1.25, dmask);
+          if (u_hollowInset > 0.0) {
+            vec2 innerB = max(vec2(0.0), b_px - vec2(u_hollowInset));
+            float innerRadius = max(0.0, u_radius - u_hollowInset);
+            float innerD = udRoundBox(p_px, innerB, innerRadius);
+            float innerShape = 1.0 - smoothstep(-1.25, 1.25, innerD);
+            inShape *= (1.0 - innerShape);
+          }
+          if (inShape <= 0.001) discard;
 
           if (u_specular) {
             vec2 lp1 = vec2(sin(u_time*0.2), cos(u_time*0.3))*0.6 + 0.5;
@@ -413,6 +422,7 @@
         tiltX: gl.getUniformLocation(this.program, "u_tiltX"),
         tiltY: gl.getUniformLocation(this.program, "u_tiltY"),
         magnify: gl.getUniformLocation(this.program, "u_magnify"),
+        hollowInset: gl.getUniformLocation(this.program, "u_hollowInset"),
       };
     }
 
@@ -721,6 +731,7 @@
 
       gl.uniform1f(this.u.tiltX, lens.tiltX || 0);
       gl.uniform1f(this.u.tiltY, lens.tiltY || 0);
+      gl.uniform1f(this.u.hollowInset, lens.hollowInsetGl || 0);
 
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
@@ -1176,6 +1187,7 @@
         _rafId: null,
         _lastCaptureTs: 0,
         _heavyAnim: false,
+        lastDrawSignature: null,
       };
       this._dynMeta.set(el, meta);
 
@@ -1386,6 +1398,7 @@
       this.rectPx = null;
       this.radiusGl = 0;
       this.radiusCss = 0;
+      this.hollowInsetGl = 0;
       this.revealTypeIndex = this.options.reveal === "fade" ? 1 : 0;
       this._revealProgress = this.revealTypeIndex === 0 ? 1 : 0;
       this.tiltX = 0;
@@ -1459,8 +1472,18 @@
       const maxAllowedCss = Math.min(rect.width, rect.height) * 0.5;
       this.radiusCss = Math.min(brPx, maxAllowedCss);
 
+      const insetRaw = (
+        style.getPropertyValue("--liquid-hole-inset") ||
+        this.el.getAttribute("data-liquid-hole-inset") ||
+        "0"
+      ).trim();
+      let insetPx = parseFloat(insetRaw);
+      if (!isFinite(insetPx)) insetPx = 0;
+      this.hollowInsetCss = Math.max(0, Math.min(insetPx, maxAllowedCss));
+
       const dpr = Math.min(2, window.devicePixelRatio || 1);
       this.radiusGl = this.radiusCss * dpr;
+      this.hollowInsetGl = this.hollowInsetCss * dpr;
 
       if (this._shadowSyncFn) {
         this._shadowSyncFn();

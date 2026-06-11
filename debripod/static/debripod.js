@@ -11,6 +11,8 @@
   let liquidGlassReady = false;
   let liquidWheelLens = null;
   let wheelGlassResetTimer = null;
+  let wheelGlassTiltFrame = 0;
+  let wheelGlassTiltPoint = null;
 
   function normalizeLiquidGlassPreset(name){
     const key = String(name || "default").trim().toLowerCase();
@@ -21,7 +23,7 @@
     const preset = LIQUID_GL_PRESETS[normalizeLiquidGlassPreset(liquidGlassPresetName)] || LIQUID_GL_PRESETS.default;
     const options = Object.assign({
       snapshot: "#divwrap",
-      resolution: 1.5,
+      resolution: 1.0,
       reveal: "none",
       tilt: false,
       magnify: 1
@@ -68,7 +70,7 @@
       liquidWheelLens = wheelInstances.find(inst => inst && inst.el && inst.el.id === "wheelGlassRing") || null;
       mountLiquidCanvas();
       try{
-        window.liquidGL.registerDynamic(".visualizerBg, .npArt, .npArtSwapLayer, .ipodList");
+        window.liquidGL.registerDynamic(".visualizerBg");
       }catch(e){}
       liquidGlassReady = true;
     }catch(e){
@@ -77,25 +79,21 @@
     }
   }
 
-  function applyWheelGlassTilt(ev){
+  function updateWheelGlassTilt(clientX, clientY){
     try{
       const lens = liquidWheelLens;
-      if(!lens || !lens.el || !ev) return;
-      if(wheelGlassResetTimer){
-        clearTimeout(wheelGlassResetTimer);
-        wheelGlassResetTimer = null;
-      }
+      if(!lens || !lens.el) return;
       const rect = lens.el.getBoundingClientRect();
       if(!rect.width || !rect.height) return;
-      const pctX = Math.max(-1, Math.min(1, (ev.clientX - (rect.left + rect.width / 2)) / (rect.width / 2)));
-      const pctY = Math.max(-1, Math.min(1, (ev.clientY - (rect.top + rect.height / 2)) / (rect.height / 2)));
-      const maxTilt = 1.15;
+      const pctX = Math.max(-1, Math.min(1, (clientX - (rect.left + rect.width / 2)) / (rect.width / 2)));
+      const pctY = Math.max(-1, Math.min(1, (clientY - (rect.top + rect.height / 2)) / (rect.height / 2)));
+      const maxTilt = 0.72;
       const rotY = pctX * maxTilt;
       const rotX = -pctY * maxTilt;
       lens.tiltX = rotX;
       lens.tiltY = rotY;
       if(wheel){
-        wheel.style.transition = "transform 80ms cubic-bezier(0.33,1,0.68,1)";
+        wheel.style.transition = "none";
         wheel.style.transform = "perspective(900px) rotateX(" + rotX.toFixed(3) + "deg) rotateY(" + rotY.toFixed(3) + "deg)";
       }
       try{ lens.updateMetrics(); }catch(e){}
@@ -103,10 +101,33 @@
     }catch(e){}
   }
 
+  function applyWheelGlassTilt(ev){
+    try{
+      if(!ev) return;
+      if(wheelGlassResetTimer){
+        clearTimeout(wheelGlassResetTimer);
+        wheelGlassResetTimer = null;
+      }
+      wheelGlassTiltPoint = {x: ev.clientX, y: ev.clientY};
+      if(wheelGlassTiltFrame) return;
+      wheelGlassTiltFrame = requestAnimationFrame(()=>{
+        wheelGlassTiltFrame = 0;
+        const pt = wheelGlassTiltPoint;
+        if(!pt) return;
+        updateWheelGlassTilt(pt.x, pt.y);
+      });
+    }catch(e){}
+  }
+
   function resetWheelGlassTilt(){
     try{
       const lens = liquidWheelLens;
       if(!lens || !lens.el) return;
+      if(wheelGlassTiltFrame){
+        cancelAnimationFrame(wheelGlassTiltFrame);
+        wheelGlassTiltFrame = 0;
+      }
+      wheelGlassTiltPoint = null;
       lens.tiltX = 0;
       lens.tiltY = 0;
       if(wheel){

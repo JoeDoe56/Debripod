@@ -6451,6 +6451,18 @@ def playback_update_from_client(payload: dict) -> dict:
 # =========================
 app = Flask(__name__)
 
+
+class _DropStaticAccessLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+            return " /static/" not in msg
+        except Exception:
+            return True
+
+
+logging.getLogger("werkzeug").addFilter(_DropStaticAccessLogFilter())
+
 SEARCH_STREAMS: Dict[str, Dict[str, Any]] = {}
 SEARCH_STREAMS_LOCK = threading.Lock()
 
