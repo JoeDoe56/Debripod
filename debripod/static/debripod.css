@@ -147,26 +147,12 @@
     .row{display:flex; gap:12px; align-items:center; flex-wrap:wrap}
 
     .liquidGlass{
-      isolation:isolate;
-      position:relative;
-      z-index:30;
-      background: rgba(246,248,255,.075);
-      border: 1px solid rgba(255,255,255,.18);
-      box-shadow:
-        inset 0 1px 0 rgba(255,255,255,.24),
-        inset 0 -1px 0 rgba(255,255,255,.08),
-        0 12px 34px rgba(0,0,0,.30);
-    }
-    .liquidGlass > *{
-      position: relative;
-      z-index: 3;
-    }
-    @supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))){
-      .liquidGlass{
-        -webkit-backdrop-filter: blur(18px) saturate(1.25);
-        backdrop-filter: blur(18px) saturate(1.25);
-        background: rgba(246,248,255,.055);
-      }
+      position:absolute;
+      z-index:20;
+      pointer-events:none;
+      background: transparent;
+      border: 0;
+      box-shadow: none;
     }
 
     
@@ -378,14 +364,15 @@
     }
 .pathPill{
       display:inline-flex;
+      position:relative;
+      z-index:30;
       align-items:center;
       max-width: calc(100vw - 24px);
       padding: 8px 12px;
       border-radius: 999px;
-      border: 1px solid rgba(255,255,255,.18);
-      background: rgba(246,248,255,.06);
-      transition: background .45s ease, border-color .45s ease, box-shadow .45s ease;
-      color: rgba(255,255,255,.78);
+      border: 0;
+      background: transparent;
+      color: rgba(255,255,255,.88);
       font-size: 12px;
       line-height: 1.1;
       overflow:hidden;
@@ -396,19 +383,30 @@
       transform: translateY(0);
       transition: opacity .22s ease, transform .22s ease;
       will-change: opacity, transform;
-      transition: opacity .22s ease, transform .22s ease, background .45s ease, border-color .45s ease, box-shadow .45s ease;
     }
-    @supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))){
-      .pathPill{
-        -webkit-backdrop-filter: blur(18px) saturate(1.16);
-        backdrop-filter: blur(18px) saturate(1.16);
-        background: rgba(246,248,255,.055);
-      }
+    .pathPillGlass{
+      inset:0;
+      border-radius: inherit;
+    }
+    .pathPillText{
+      position:relative;
+      z-index:30;
+      display:block;
+      min-width:0;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+      text-shadow: 0 1px 1px rgba(0,0,0,.72);
     }
     .pathPill.pathPillHidden{
       opacity: 0;
       transform: translateY(10px);
       pointer-events: none;
+    }
+    .pathPill.pathPillHidden .pathPillGlass,
+    .npOverlayPill.npPillHidden .npOverlayGlass,
+    .npOverlayPill.npPillSwapHidden .npOverlayGlass{
+      display:none;
     }
     .wheelZone{
       width: 100%;
@@ -438,29 +436,51 @@
       margin-right: calc(50% - 50vw);
       aspect-ratio: 1 / 1;
       height: auto;
-      border: 1px solid rgba(255,255,255,.18);
       border-radius: var(--screenRadius);
-      background: rgba(246,248,255,.06);
-      box-shadow: inset 0 1px 0 rgba(255,255,255,.20), 0 18px 42px rgba(0,0,0,.30);
+      background: transparent;
+      box-shadow: none;
       padding: var(--screenFrame);
       position: relative;
       overflow:hidden;
       display:flex;
       flex-direction: column;
       isolation:isolate;
-      transition: background .45s ease, border-color .45s ease, box-shadow .45s ease;
     }
-    @supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))){
-      .ipodScreen{
-        -webkit-backdrop-filter: blur(18px) saturate(1.16);
-        backdrop-filter: blur(18px) saturate(1.16);
-        background: rgba(246,248,255,.055);
-      }
+    .screenGlassEdge{
+      z-index:20;
+    }
+    .screenGlassTop{
+      left:0;
+      right:0;
+      top:0;
+      height: var(--screenFrame);
+      border-radius: var(--screenRadius) var(--screenRadius) 0 0;
+    }
+    .screenGlassBottom{
+      left:0;
+      right:0;
+      bottom:0;
+      height: var(--screenFrame);
+      border-radius: 0 0 var(--screenRadius) var(--screenRadius);
+    }
+    .screenGlassLeft{
+      left:0;
+      top:var(--screenFrame);
+      bottom:var(--screenFrame);
+      width: var(--screenFrame);
+      border-radius: 0;
+    }
+    .screenGlassRight{
+      right:0;
+      top:var(--screenFrame);
+      bottom:var(--screenFrame);
+      width: var(--screenFrame);
+      border-radius: 0;
     }
 
     .ipodScreenContent{
       position:relative;
-      z-index:3;
+      z-index:30;
       display:flex;
       flex-direction:column;
       flex:1 1 auto;
@@ -469,7 +489,7 @@
       height:100%;
       overflow:hidden;
       border-radius: max(0px, calc(var(--screenRadius) - var(--screenFrame)));
-      background: rgba(8,8,10,.88);
+      background: rgba(8,8,10,.94);
       border: 1px solid rgba(0,0,0,.44);
       box-shadow: 0 0 0 1px rgba(255,255,255,.04);
       isolation:isolate;
@@ -764,68 +784,44 @@
       width: 300px;
       height: 300px;
       border-radius: 999px;
-      border: 1px solid rgba(255,255,255,.18);
-      background: rgba(246,248,255,.06);
-      position: relative;
-      box-shadow:
-        inset 0 1px 0 rgba(255,255,255,.22),
-        inset 0 -1px 0 rgba(255,255,255,.08),
-        0 16px 38px rgba(0,0,0,.28);
+      border: 0;
+      background: transparent;
+      box-shadow: none;
       user-select:none;
       touch-action: none;
       overflow: hidden;
       transform-style: preserve-3d;
-      will-change: transform;
     }
-    .wheel::before{
-      content:"";
+    .wheelGlassRing{
       position:absolute;
-      inset: 38%;
-      z-index:1;
+      inset:0;
+      z-index:20;
       border-radius:999px;
-      background: rgba(0,0,0,.34);
-      box-shadow:
-        0 0 0 1px rgba(255,255,255,.08),
-        0 0 0 14px rgba(0,0,0,.18);
-      pointer-events:none;
-    }
-    @supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))){
-      .wheel{
-        -webkit-backdrop-filter: blur(18px) saturate(1.22);
-        backdrop-filter: blur(18px) saturate(1.22);
-        background: rgba(246,248,255,.055);
-      }
     }
     .wheelCenter{
       position:absolute;
       left: 50%;
       top: 50%;
       transform: translate(-50%,-50%);
-      z-index:30;
+      z-index:50;
       width: 118px;
       height: 118px;
       border-radius: 999px;
-      border: 1px solid rgba(255,255,255,.18);
-      background: rgba(246,248,255,.065);
-      box-shadow:
-        inset 0 1px 0 rgba(255,255,255,.20),
-        inset 0 -1px 0 rgba(255,255,255,.08),
-        0 10px 26px rgba(0,0,0,.24);
+      border: 0;
+      background: transparent;
+      box-shadow: none;
       cursor:pointer;
       touch-action: none;
-      will-change: transform;
     }
-    @supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))){
-      .wheelCenter{
-        -webkit-backdrop-filter: blur(18px) saturate(1.20);
-        backdrop-filter: blur(18px) saturate(1.20);
-        background: rgba(246,248,255,.055);
-      }
+    .wheelCenterGlass{
+      inset:0;
+      z-index:20;
+      border-radius:inherit;
     }
     .wheelLabel{
       position:absolute;
-      z-index:22;
-      color: rgba(235,235,245,.62);
+      z-index:60;
+      color: rgba(255,255,255,.88);
       font-weight: 700;
       font-size: 16px;
       letter-spacing: .3px;
@@ -874,6 +870,7 @@
 
     .wheelHit{
       position:absolute;
+      z-index:70;
       border-radius: 999px;
       opacity:0;
       touch-action: none;
@@ -943,17 +940,25 @@
   left: 12px;
   right: 12px;
   bottom: 12px;
-      z-index: 30;
+  z-index: 40;
   border-radius: 20px;
-  border: 1px solid rgba(255,255,255,.20);
-  background: rgba(246,248,255,.07);
-  box-shadow: 0 12px 32px rgba(0,0,0,.38), inset 0 1px 0 rgba(255,255,255,.18);
+  border: 0;
+  background: transparent;
+  box-shadow: none;
   padding: 8px 10px 8px;
-  -webkit-backdrop-filter: blur(18px) saturate(1.20);
-  backdrop-filter: blur(18px) saturate(1.20);
   opacity: 1;
   transform: translateY(0);
   transition: opacity .22s ease, transform .22s ease;
+}
+.npOverlayGlass{
+  inset:0;
+  border-radius: inherit;
+  z-index:20;
+}
+.npOverlayContent{
+  position:relative;
+  z-index:40;
+  min-width:0;
 }
 .npOverlayPill.npPillHidden{
   opacity: 0;
@@ -1229,6 +1234,7 @@
     }
     @media (min-width: 821px){
       .ipodScreen{
+        --screenRadius: 0px;
         position: fixed;
         inset: 0;
         width: 100vw;
