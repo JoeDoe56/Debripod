@@ -65,6 +65,16 @@
     return list;
   }
 
+  function liquidGlassRendererByKey(key){
+    try{
+      const wanted = key || "default";
+      const renderers = window.__liquidGLRenderers__;
+      if(renderers && renderers[wanted]) return renderers[wanted];
+      if(wanted === "default") return window.__liquidGLRenderer__ || null;
+    }catch(e){}
+    return null;
+  }
+
   function mountLiquidCanvas(){
     try{
       const wrap = document.getElementById("divwrap");
@@ -72,6 +82,10 @@
       liquidGlassRenderers().forEach((renderer)=>{
         if(!renderer || !renderer.canvas) return;
         renderer.canvas.classList.add("liquidGlassCanvas");
+        const key = renderer.rendererKey || (renderer === window.__liquidGLRenderer__ ? "default" : "");
+        renderer.canvas.classList.toggle("liquidGlassCanvasDefault", key === "default");
+        renderer.canvas.classList.toggle("liquidGlassCanvasScreenFrame", key === "screenFrame");
+        renderer.canvas.setAttribute("data-liquid-renderer", key || "unknown");
         if(renderer.canvas.parentNode !== wrap){
           const afterBg = document.getElementById("visualizerBg");
           if(afterBg && afterBg.parentNode === wrap && afterBg.nextSibling){
@@ -81,8 +95,9 @@
           }
         }
         renderer.canvas.style.pointerEvents = "none";
-        renderer.canvas.style.zIndex = "65";
+        renderer.canvas.style.zIndex = key === "screenFrame" ? "64" : "65";
       });
+      debugLiquidGlassRenderers("mount");
     }catch(e){}
   }
 
@@ -94,13 +109,52 @@
     }catch(e){}
   }
 
+  function captureLiquidGlassSnapshot(reason, includeScreenFrame){
+    try{
+      const defaultRenderer = liquidGlassRendererByKey("default");
+      if(defaultRenderer && defaultRenderer.captureSnapshot) defaultRenderer.captureSnapshot(reason || "app");
+      if(includeScreenFrame){
+        const screenRenderer = liquidGlassRendererByKey("screenFrame");
+        if(screenRenderer && screenRenderer.captureSnapshot) screenRenderer.captureSnapshot(reason || "app");
+      }
+      renderLiquidGlassNow();
+    }catch(e){}
+  }
+
+  function scheduleLiquidGlassSnapshot(reason, includeScreenFrame){
+    try{ requestAnimationFrame(()=> captureLiquidGlassSnapshot(reason, includeScreenFrame)); }catch(e){}
+    setTimeout(()=> captureLiquidGlassSnapshot(reason, includeScreenFrame), 90);
+    setTimeout(()=> captureLiquidGlassSnapshot(reason, includeScreenFrame), 260);
+  }
+
+  function debugLiquidGlassRenderers(reason){
+    try{
+      const enabled = window.DEBRIPOD_UI_DEBUG === true || (localStorage.getItem("debripod_ui_debug") || "") === "1";
+      if(!enabled || !console || !console.log) return;
+      liquidGlassRenderers().forEach((renderer)=>{
+        const lenses = (renderer.lenses || []).map((lens)=> lens && lens.el ? {
+          className: lens.el.className,
+          id: lens.el.id || "",
+          hollow: !!lens.hollowMaskContent
+        } : null).filter(Boolean);
+        console.log("[Debripod LiquidGL]", reason || "state", {
+          rendererKey: renderer.rendererKey || "unknown",
+          texture: String(renderer.textureWidth || 0) + "x" + String(renderer.textureHeight || 0),
+          lensCount: renderer.lenses ? renderer.lenses.length : 0,
+          lenses: lenses,
+          canvasClassName: renderer.canvas ? renderer.canvas.className : "",
+          canvasZIndex: renderer.canvas ? window.getComputedStyle(renderer.canvas).zIndex : ""
+        });
+      });
+    }catch(e){}
+  }
+
   function recaptureLiquidGlassElement(el){
     try{
-      const renderer = window.__liquidGLRenderer__;
+      const renderer = liquidGlassRendererByKey("default");
       if(!renderer || !el) return;
       if(el.tagName === "IMG"){
-        if(renderer.captureSnapshot) renderer.captureSnapshot();
-        renderLiquidGlassNow();
+        captureLiquidGlassSnapshot("image " + (el.id || el.className || "load"), false);
         return;
       }
       if(typeof renderer.addDynamicElement === "function") renderer.addDynamicElement(el);
@@ -263,6 +317,7 @@ const libHeader = document.getElementById("libHeader");
     try{
       if(!libHeader) return;
       libHeader.classList.remove("pathPillHidden");
+      scheduleLiquidGlassSnapshot("path pill shown", false);
     }catch(e){}
     if(effectivePinned){
       try{ if(pathPillHideTimer) clearTimeout(pathPillHideTimer); }catch(e){}
@@ -281,6 +336,7 @@ const libHeader = document.getElementById("libHeader");
           const ae = document.activeElement;
           if(ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.tagName === "SELECT" || ae.isContentEditable)) return;
           libHeader.classList.add("pathPillHidden");
+          scheduleLiquidGlassSnapshot("path pill hidden", false);
         }catch(e){}
       }, (ms || 2500));
     }catch(e){}
@@ -663,6 +719,7 @@ let visualizerData = null;
 let visualizerSources = new WeakMap();
 let visualizerFrameHandle = 0;
 let visualizerLastFrameTs = 0;
+let visualizerLiquidCaptureLastTs = 0;
 let visualizerEnergy = 0;
 let visualizerBass = 0;
 let visualizerMid = 0;
@@ -780,6 +837,10 @@ function visualizerFrame(ts){
     visualizerTreble = mixVal(visualizerTreble, nextTreble);
     visualizerEnergy = mixVal(visualizerEnergy, nextEnergy);
     setVisualizerMotionVars(visualizerEnergy, visualizerBass, visualizerMid, visualizerTreble);
+    if(visualizerActive && visualizerBg && nowTs - visualizerLiquidCaptureLastTs > 360){
+      visualizerLiquidCaptureLastTs = nowTs;
+      recaptureLiquidGlassElement(visualizerBg);
+    }
   }catch(e){}
   visualizerFrameHandle = requestAnimationFrame(visualizerFrame);
 }
@@ -918,6 +979,7 @@ function setVisualizerActive(on){
     if(!visualizerBg) return;
     visualizerBg.classList.toggle("active", !!on);
     visualizerBg.classList.toggle("off", !on);
+    scheduleLiquidGlassSnapshot("visualizer " + (on ? "active" : "inactive"), false);
   }catch(e){}
 }
 
@@ -2096,6 +2158,7 @@ function fmtTime(sec){
       nowPlaying.style.display = "block";
       try{ nowPlaying.classList.remove("npPageActive"); }catch(e){}
       updateVisualizerState();
+      scheduleLiquidGlassSnapshot("now playing entering", true);
       setTimeout(()=>{
         try{
           recaptureLiquidGlassElement(npArt);
@@ -2108,6 +2171,7 @@ function fmtTime(sec){
           try{
             if(fadeToken !== npPageFadeToken) return;
             nowPlaying.classList.add("npPageActive");
+            scheduleLiquidGlassSnapshot("now playing active", true);
           }catch(e){}
         });
       });
@@ -2115,6 +2179,7 @@ function fmtTime(sec){
     }else{
       try{ libList.classList.remove("npUnderlay"); }catch(e){}
       try{ nowPlaying.classList.remove("npPageActive"); }catch(e){}
+      scheduleLiquidGlassSnapshot("now playing leaving", true);
       npPageFadeTimer = setTimeout(()=>{
         try{
           if(fadeToken !== npPageFadeToken) return;
@@ -2124,6 +2189,7 @@ function fmtTime(sec){
             npOverlayPill.classList.add("npPillHidden");
             scheduleLiquidGlassRender();
           }
+          scheduleLiquidGlassSnapshot("now playing hidden", true);
         }catch(e){}
         npPageFadeTimer = null;
       }, fadeMs);
