@@ -95,10 +95,11 @@
       this.canvas.setAttribute("data-liquid-renderer", rendererKey || "default");
       document.body.appendChild(this.canvas);
 
+      const isMobileSafari = /iPad|iPhone|iPod/.test(navigator.userAgent);
       const ctxAttribs = {
         alpha: true,
         premultipliedAlpha: true,
-        preserveDrawingBuffer: false,
+        preserveDrawingBuffer: isMobileSafari,
       };
       this.gl =
         this.canvas.getContext("webgl2", ctxAttribs) ||
@@ -288,16 +289,6 @@
         uniform float u_hollowInset;
         uniform bool  u_hollowMaskContent;
         uniform int   u_glassMode;
-        uniform bool  u_visualizerActive;
-        uniform float u_vizEnergy;
-        uniform float u_vizBass;
-        uniform float u_vizMid;
-        uniform float u_vizTreble;
-        uniform float u_vizTime;
-        uniform vec3  u_vizColor0;
-        uniform vec3  u_vizColor1;
-        uniform vec3  u_vizColor2;
-        uniform vec3  u_vizColor3;
 
         float udRoundBox( vec2 p, vec2 b, float r ) {
           return length(max(abs(p)-b+r,0.0))-r;
@@ -324,28 +315,6 @@
           float innerRadius = max(0.0, u_radius - u_hollowInset);
           float innerD = udRoundBox(p_px, innerB, innerRadius);
           return 1.0 - smoothstep(-1.25, 1.25, innerD);
-        }
-
-        vec3 visualizerColor(vec2 uv) {
-          vec2 p = uv - 0.5;
-          float e = clamp(u_vizEnergy, 0.0, 1.0);
-          float b = clamp(u_vizBass, 0.0, 1.0);
-          float m = clamp(u_vizMid, 0.0, 1.0);
-          float tr = clamp(u_vizTreble, 0.0, 1.0);
-          float t = u_vizTime;
-
-          vec2 c0 = vec2(0.50 + sin(t * 0.34 + m) * 0.18, 0.36 + cos(t * 0.29 + b) * 0.14);
-          vec2 c1 = vec2(0.28 + cos(t * 0.26 + b * 1.8) * 0.16, 0.72 + sin(t * 0.31 + tr) * 0.12);
-          vec2 c2 = vec2(0.76 + sin(t * 0.22 + tr * 2.0) * 0.12, 0.58 + cos(t * 0.35 + m) * 0.14);
-          float r0 = 0.18 + b * 0.16 + e * 0.08;
-          float r1 = 0.22 + m * 0.14 + e * 0.07;
-          float r2 = 0.20 + tr * 0.13 + e * 0.08;
-          float g0 = smoothstep(r0, 0.0, distance(uv, c0));
-          float g1 = smoothstep(r1, 0.0, distance(uv, c1));
-          float g2 = smoothstep(r2, 0.0, distance(uv, c2));
-          float wave = smoothstep(0.018 + tr * 0.018, 0.0, abs(p.y - sin((p.x * 4.5 + t * 0.8) * 3.14159) * (0.028 + m * 0.035)));
-          vec3 col = u_vizColor0 * g0 + u_vizColor1 * g1 + u_vizColor2 * g2 + u_vizColor3 * wave * (0.18 + e * 0.34);
-          return col * (0.42 + e * 0.84);
         }
 
         void main(){
@@ -427,12 +396,6 @@
           }
           if (inShape <= 0.001) discard;
 
-          if (u_visualizerActive) {
-            vec3 viz = visualizerColor(mapped);
-            final.rgb = mix(final.rgb, max(final.rgb, viz), 0.20 + u_vizEnergy * 0.24);
-            final.rgb += viz * edge * (0.08 + u_vizBass * 0.18);
-          }
-
           if (u_specular) {
             vec2 tilt = vec2(u_tiltY, -u_tiltX) * 0.010;
             vec2 lp1 = vec2(0.27, 0.20) + tilt;
@@ -500,16 +463,6 @@
         hollowInset: gl.getUniformLocation(this.program, "u_hollowInset"),
         hollowMaskContent: gl.getUniformLocation(this.program, "u_hollowMaskContent"),
         glassMode: gl.getUniformLocation(this.program, "u_glassMode"),
-        visualizerActive: gl.getUniformLocation(this.program, "u_visualizerActive"),
-        vizEnergy: gl.getUniformLocation(this.program, "u_vizEnergy"),
-        vizBass: gl.getUniformLocation(this.program, "u_vizBass"),
-        vizMid: gl.getUniformLocation(this.program, "u_vizMid"),
-        vizTreble: gl.getUniformLocation(this.program, "u_vizTreble"),
-        vizTime: gl.getUniformLocation(this.program, "u_vizTime"),
-        vizColor0: gl.getUniformLocation(this.program, "u_vizColor0"),
-        vizColor1: gl.getUniformLocation(this.program, "u_vizColor1"),
-        vizColor2: gl.getUniformLocation(this.program, "u_vizColor2"),
-        vizColor3: gl.getUniformLocation(this.program, "u_vizColor3"),
       };
     }
 
@@ -563,6 +516,17 @@
           const ignoreElementsFunc = (element) => {
             if (!element || !element.hasAttribute) return false;
             if (element === this.canvas || lensElements.includes(element)) {
+              return true;
+            }
+            const isVisualizer = element.id === "visualizerBg" || (element.classList && element.classList.contains("visualizerBg"));
+            if (isVisualizer) {
+              return this.rendererKey === "npOverlay";
+            }
+            if (
+              this.rendererKey === "npOverlay" &&
+              (element.id === "npVideoOverlay" ||
+                (element.closest && element.closest("#npVideoOverlay")))
+            ) {
               return true;
             }
             const style = window.getComputedStyle(element);
@@ -841,6 +805,8 @@
       const gl = this.gl;
       const rect = lens.rectPx;
       if (!rect) return;
+      if (!this.texture || !this.textureWidth || !this.textureHeight) return;
+      if (!(rect.width > 0) || !(rect.height > 0)) return;
 
       const dpr = this._dpr || Math.min(2, window.devicePixelRatio || 1);
 
@@ -868,6 +834,20 @@
       const topUV = (docY * this.scaleFactor) / this.textureHeight;
       const wUV = (rect.width * this.scaleFactor) / this.textureWidth;
       const hUV = (rect.height * this.scaleFactor) / this.textureHeight;
+      if (
+        !Number.isFinite(leftUV) ||
+        !Number.isFinite(topUV) ||
+        !Number.isFinite(wUV) ||
+        !Number.isFinite(hUV) ||
+        wUV <= 0 ||
+        hUV <= 0 ||
+        leftUV + wUV <= -0.02 ||
+        topUV + hUV <= -0.02 ||
+        leftUV >= 1.02 ||
+        topUV >= 1.02
+      ) {
+        return;
+      }
       gl.uniform4f(this.u.bounds, leftUV, topUV, wUV, hUV);
 
       gl.uniform2f(
@@ -898,28 +878,6 @@
       gl.uniform1f(this.u.hollowInset, lens.hollowInsetGl || 0);
       gl.uniform1i(this.u.hollowMaskContent, lens.hollowMaskContent ? 1 : 0);
       gl.uniform1i(this.u.glassMode, lens.glassModeIndex || 0);
-
-      const fs = this._externalFrameState || {};
-      const palette = Array.isArray(fs.palette) && fs.palette.length ? fs.palette : [];
-      const colorAt = (idx) => {
-        const c = palette[idx % palette.length] || { r: 10, g: 132, b: 255 };
-        return [
-          Math.max(0, Math.min(1, Number(c.r || 0) / 255)),
-          Math.max(0, Math.min(1, Number(c.g || 0) / 255)),
-          Math.max(0, Math.min(1, Number(c.b || 0) / 255)),
-        ];
-      };
-      gl.uniform1i(this.u.visualizerActive, fs.active ? 1 : 0);
-      gl.uniform1f(this.u.vizEnergy, Math.max(0, Math.min(1, Number(fs.energy || 0))));
-      gl.uniform1f(this.u.vizBass, Math.max(0, Math.min(1, Number(fs.bass || 0))));
-      gl.uniform1f(this.u.vizMid, Math.max(0, Math.min(1, Number(fs.mid || 0))));
-      gl.uniform1f(this.u.vizTreble, Math.max(0, Math.min(1, Number(fs.treble || 0))));
-      gl.uniform1f(this.u.vizTime, Number.isFinite(fs.timestamp) ? fs.timestamp / 1000 : (Date.now() - this.startTime) / 1000);
-      const c0 = colorAt(0), c1 = colorAt(1), c2 = colorAt(2), c3 = colorAt(3);
-      gl.uniform3f(this.u.vizColor0, c0[0], c0[1], c0[2]);
-      gl.uniform3f(this.u.vizColor1, c1[0], c1[1], c1[2]);
-      gl.uniform3f(this.u.vizColor2, c2[0], c2[1], c2[2]);
-      gl.uniform3f(this.u.vizColor3, c3[0], c3[1], c3[2]);
 
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
