@@ -459,9 +459,16 @@
       isolation:isolate;
     }
     .screenGlassFrame{
+      position:absolute;
       inset:0;
       z-index:20;
       border-radius: var(--screenRadius);
+      pointer-events:none;
+      overflow:hidden;
+      --liquid-hole-inset: var(--screenFrame);
+      border:0;
+      background:transparent;
+      box-shadow:none;
     }
 
     .ipodScreenContent{
@@ -476,8 +483,8 @@
       overflow:hidden;
       border-radius: max(0px, calc(var(--screenRadius) - var(--screenFrame)));
       background: rgb(8,8,10);
-      border: 1px solid rgba(0,0,0,.44);
-      box-shadow: 0 0 0 1px rgba(255,255,255,.04);
+      border: 0;
+      box-shadow: none;
       isolation:isolate;
     }
 
