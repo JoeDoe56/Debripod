@@ -38,13 +38,13 @@
       if(liquidGlassReady || typeof window.liquidGL !== "function" || typeof window.html2canvas !== "function") return;
       const base = liquidGlassPresetOptions();
       window.liquidGL(Object.assign({}, base, {
-        target: ".pathPill.liquidGlass, .ipodScreen.liquidGlass, .npOverlayPill.liquidGlass"
+        target: ".pathPillGlass.liquidGlass, .screenGlassEdge.liquidGlass, .npOverlayGlass.liquidGlass"
       }));
       const wheelInstances = asLiquidArray(window.liquidGL(Object.assign({}, base, {
-        target: ".wheel.liquidGlass, .wheelCenter.liquidGlass",
+        target: ".wheelGlassRing.liquidGlass, .wheelCenterGlass.liquidGlass",
         shadow: false
       })));
-      liquidWheelLens = wheelInstances.find(inst => inst && inst.el && inst.el.id === "wheel") || null;
+      liquidWheelLens = wheelInstances.find(inst => inst && inst.el && inst.el.id === "wheelGlassRing") || null;
       try{
         window.liquidGL.registerDynamic(".visualizerBg, .npArt, .npArtSwapLayer, .ipodList");
       }catch(e){}
@@ -2002,7 +2002,10 @@ function fmtTime(sec){
   }
 
   function setHeader(){
-    libHeader.textContent = headerText();
+    const text = headerText();
+    const headerTextEl = document.getElementById("libHeaderText");
+    if(headerTextEl) headerTextEl.textContent = text;
+    else libHeader.textContent = text;
     try{ pathPillActivity(false); }catch(e){}
     try{
       const k = state.current ? state.current.kind : "";

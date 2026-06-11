@@ -27,35 +27,45 @@
       <div id="tab-library">
         <div class="ipodStage">
           <div class="topPills">
-            <div class="pathPill liquidGlass" id="libHeader">Library</div>
+            <div class="pathPill" id="libHeader">
+              <div class="pathPillGlass liquidGlass" aria-hidden="true"></div>
+              <span class="pathPillText" id="libHeaderText">Library</span>
+            </div>
           </div>
 
-          <div class="ipodScreen liquidGlass liquidGlassScreen" id="ipodScreen">
+          <div class="ipodScreen" id="ipodScreen">
+            <div class="screenGlassEdge screenGlassTop liquidGlass" aria-hidden="true"></div>
+            <div class="screenGlassEdge screenGlassRight liquidGlass" aria-hidden="true"></div>
+            <div class="screenGlassEdge screenGlassBottom liquidGlass" aria-hidden="true"></div>
+            <div class="screenGlassEdge screenGlassLeft liquidGlass" aria-hidden="true"></div>
             <div class="ipodScreenContent">
 
               <div class="nowPlaying" id="nowPlaying">
                 <img class="npArt" id="npArt" alt="">
                 <img class="npArt npArtSwapLayer npArtSwapHidden" id="npArtSwap" alt="">
 
-                <div class="npOverlayPill liquidGlass" id="npOverlayPill">
-                <div class="npTitle" id="npTitle"></div>
-                <div class="npSub" id="npSub"></div>
+                <div class="npOverlayPill" id="npOverlayPill">
+                <div class="npOverlayGlass liquidGlass" aria-hidden="true"></div>
+                <div class="npOverlayContent">
+                  <div class="npTitle" id="npTitle"></div>
+                  <div class="npSub" id="npSub"></div>
 
-                <div class="npBarArea">
-                  <div class="npProgressWrap" id="npProgressWrap">
-                    <input class="npSeek" id="npSeek" type="range" min="0" max="1000" value="0">
-                    <div class="npSeekIndicator" id="npSeekIndicator"></div>
+                  <div class="npBarArea">
+                    <div class="npProgressWrap" id="npProgressWrap">
+                      <input class="npSeek" id="npSeek" type="range" min="0" max="1000" value="0">
+                      <div class="npSeekIndicator" id="npSeekIndicator"></div>
+                    </div>
+
+                    <div class="npVolumeWrap" id="npVolumeWrap">
+                      <div class="npVolumeBar"><div class="npVolumeFill" id="npVolumeFill"></div></div>
+                    </div>
                   </div>
 
-                  <div class="npVolumeWrap" id="npVolumeWrap">
-                    <div class="npVolumeBar"><div class="npVolumeFill" id="npVolumeFill"></div></div>
+                  <div class="npTime">
+                    <div id="npCur">0:00</div>
+                    <div class="npTechInline" id="npTech"></div>
+                    <div id="npDur">0:00</div>
                   </div>
-                </div>
-
-                <div class="npTime">
-                  <div id="npCur">0:00</div>
-                  <div class="npTechInline" id="npTech"></div>
-                  <div id="npDur">0:00</div>
                 </div>
                 </div>
 
@@ -73,7 +83,8 @@
 
           <div class="wheelZone" id="wheelZone">
             <div class="ipodWheelWrap">
-              <div class="wheel liquidGlass" id="wheel">
+              <div class="wheel" id="wheel">
+                <div class="wheelGlassRing liquidGlass" id="wheelGlassRing" aria-hidden="true"></div>
                 <div class="wheelLabel wlTop"><span class="menuWord">MENU</span></div>
                 <div class="wheelLabel wlLeft"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 7 6 12l5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M18 7l-5 5 5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
                 <div class="wheelLabel wlRight"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m13 7 5 5-5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="m6 7 5 5-5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
@@ -84,7 +95,9 @@
                 <div class="wheelHit hitRight wheelBtn" id="btnFwd" title="Next track"></div>
                 <div class="wheelHit hitBottom wheelBtn" id="btnPlay" title="Play or pause"></div>
 
-                <div class="wheelCenter liquidGlass" id="btnCenter" title="Select"></div>
+                <div class="wheelCenter" id="btnCenter" title="Select">
+                  <div class="wheelCenterGlass liquidGlass" id="wheelCenterGlass" aria-hidden="true"></div>
+                </div>
               </div>
             </div>
           </div>
