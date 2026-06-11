@@ -4,6 +4,7 @@
   "APP_NAME": "Debripod",
   "LIQUID_GL_PRESET": "default",
   "LIQUID_GL_MODE": "clear",
+  "WHEEL_ROTATION_MAX_DEGREES": 0.95,
   "PLAYBACK_STREAMING_MODE": "http",
 
   "DOWNLOAD_DIR": "./data/debrid",
