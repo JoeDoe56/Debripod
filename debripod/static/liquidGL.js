@@ -330,18 +330,10 @@
           float blend = 1.0 - smoothstep(0.0, 0.01, oob);
           vec2 sampleUV = mix(mapped, refracted, blend);
 
-          bool hollowBlockedSample = false;
-          bool hollowTransparentSample = false;
           if (u_hollowInset > 0.0 && u_hollowMaskContent) {
             float sampledInnerShape = hollowInnerShapeAtTextureUV(sampleUV);
             if (sampledInnerShape > 0.01) {
-              float mappedInnerShape = hollowInnerShapeAtTextureUV(mapped);
-              hollowBlockedSample = true;
-              if (mappedInnerShape > 0.001) {
-                hollowTransparentSample = true;
-              } else {
-                sampleUV = mapped;
-              }
+              sampleUV = mapped;
             }
           }
 
@@ -371,10 +363,7 @@
               refrCol /= 5.0;
           }
 
-          if (hollowTransparentSample) {
-              baseCol = vec4(0.0);
-              refrCol = vec4(0.0);
-          } else if (!hollowBlockedSample && refrCol.a < 0.1) {
+          if (refrCol.a < 0.1) {
               refrCol = baseCol;
           }
 
@@ -1060,6 +1049,13 @@
             meta.lastCapture = imageCapture;
             meta.needsRecapture = false;
             requestAnimationFrame(() => this.render());
+          } else if (el && el.tagName === "IMG") {
+            liquidGLLog(
+              "warn",
+              "liquidGL: Image dynamic capture failed; relying on the static snapshot.",
+              el.currentSrc || el.src || el
+            );
+            meta.needsRecapture = false;
           }
         }
 
@@ -1322,6 +1318,7 @@
         ctx.drawImage(el, dx, dy, dw, dh);
         return canvas;
       } catch (e) {
+        liquidGLLog("warn", "liquidGL: Image element capture failed.", e);
         return null;
       }
     }
@@ -1577,7 +1574,9 @@
       this.radiusGl = 0;
       this.radiusCss = 0;
       this.hollowInsetGl = 0;
-      this.hollowMaskContent = this.el.hasAttribute("data-liquid-mask-content");
+      this.hollowMaskContent =
+        !!this.options.hollowMaskContent ||
+        this.el.hasAttribute("data-liquid-mask-content");
       this.glassModeIndex = this._glassModeIndex(this.options.glassMode);
       this.revealTypeIndex = this.options.reveal === "fade" ? 1 : 0;
       this._revealProgress = this.revealTypeIndex === 0 ? 1 : 0;
@@ -2256,9 +2255,10 @@
       const fallbackNodes = document.querySelectorAll(options.target);
       fallbackNodes.forEach((node) => {
         Object.assign(node.style, {
-          background: "rgba(255, 255, 255, 0.07)",
-          backdropFilter: "blur(12px)",
-          webkitBackdropFilter: "blur(12px)",
+          background: "transparent",
+          backdropFilter: "none",
+          webkitBackdropFilter: "none",
+          boxShadow: "none",
         });
       });
       return fallbackNodes.length === 1
@@ -2266,9 +2266,17 @@
         : Array.from(fallbackNodes);
     }
 
-    let renderer = window.__liquidGLRenderer__;
+    const rendererKey = options.rendererKey || "default";
+    const rendererStore =
+      window.__liquidGLRenderers__ || (window.__liquidGLRenderers__ = {});
+    let renderer =
+      rendererStore[rendererKey] ||
+      (rendererKey === "default" ? window.__liquidGLRenderer__ : null);
     if (!renderer) {
       renderer = new liquidGLRenderer(options.snapshot, options.resolution);
+    }
+    rendererStore[rendererKey] = renderer;
+    if (rendererKey === "default") {
       window.__liquidGLRenderer__ = renderer;
     }
 

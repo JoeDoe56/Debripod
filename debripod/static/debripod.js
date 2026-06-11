@@ -50,29 +50,47 @@
     return Array.isArray(value) ? value : [value];
   }
 
+  function liquidGlassRenderers(){
+    const list = [];
+    try{
+      if(window.__liquidGLRenderer__) list.push(window.__liquidGLRenderer__);
+      const renderers = window.__liquidGLRenderers__;
+      if(renderers && typeof renderers === "object"){
+        Object.keys(renderers).forEach((key)=>{
+          const renderer = renderers[key];
+          if(renderer && list.indexOf(renderer) < 0) list.push(renderer);
+        });
+      }
+    }catch(e){}
+    return list;
+  }
+
   function mountLiquidCanvas(){
     try{
-      const renderer = window.__liquidGLRenderer__;
       const wrap = document.getElementById("divwrap");
-      if(!renderer || !renderer.canvas || !wrap) return;
-      renderer.canvas.classList.add("liquidGlassCanvas");
-      if(renderer.canvas.parentNode !== wrap){
-        const afterBg = document.getElementById("visualizerBg");
-        if(afterBg && afterBg.parentNode === wrap && afterBg.nextSibling){
-          wrap.insertBefore(renderer.canvas, afterBg.nextSibling);
-        }else{
-          wrap.insertBefore(renderer.canvas, wrap.firstChild);
+      if(!wrap) return;
+      liquidGlassRenderers().forEach((renderer)=>{
+        if(!renderer || !renderer.canvas) return;
+        renderer.canvas.classList.add("liquidGlassCanvas");
+        if(renderer.canvas.parentNode !== wrap){
+          const afterBg = document.getElementById("visualizerBg");
+          if(afterBg && afterBg.parentNode === wrap && afterBg.nextSibling){
+            wrap.insertBefore(renderer.canvas, afterBg.nextSibling);
+          }else{
+            wrap.insertBefore(renderer.canvas, wrap.firstChild);
+          }
         }
-      }
-      renderer.canvas.style.pointerEvents = "none";
-      renderer.canvas.style.zIndex = "65";
+        renderer.canvas.style.pointerEvents = "none";
+        renderer.canvas.style.zIndex = "65";
+      });
     }catch(e){}
   }
 
   function renderLiquidGlassNow(){
     try{
-      const renderer = window.__liquidGLRenderer__;
-      if(renderer && renderer.render) renderer.render();
+      liquidGlassRenderers().forEach((renderer)=>{
+        if(renderer && renderer.render) renderer.render();
+      });
     }catch(e){}
   }
 
@@ -80,6 +98,11 @@
     try{
       const renderer = window.__liquidGLRenderer__;
       if(!renderer || !el) return;
+      if(el.tagName === "IMG"){
+        if(renderer.captureSnapshot) renderer.captureSnapshot();
+        renderLiquidGlassNow();
+        return;
+      }
       if(typeof renderer.addDynamicElement === "function") renderer.addDynamicElement(el);
       const meta = renderer._dynMeta && renderer._dynMeta.get ? renderer._dynMeta.get(el) : null;
       if(meta) meta.needsRecapture = true;
@@ -104,19 +127,21 @@
     try{
       if(liquidGlassReady || typeof window.liquidGL !== "function" || typeof window.html2canvas !== "function") return;
       const base = liquidGlassPresetOptions();
-      window.liquidGL(Object.assign({}, base, {
-        target: ".pathPillGlass.liquidGlass"
-      }));
       const sharedGlassOptions = Object.assign({}, base, {
-        target: ".screenGlassFrame.liquidGlass, .npOverlayGlass.liquidGlass, .wheelGlassRing.liquidGlass, .wheelCenterGlass.liquidGlass",
+        target: ".pathPillGlass.liquidGlass, .npOverlayGlass.liquidGlass, .wheelGlassRing.liquidGlass, .wheelCenterGlass.liquidGlass",
         shadow: false
       });
       const sharedGlassInstances = asLiquidArray(window.liquidGL(sharedGlassOptions));
       liquidWheelLens = sharedGlassInstances.find(inst => inst && inst.el && inst.el.id === "wheelGlassRing") || null;
+      window.liquidGL(Object.assign({}, base, {
+        target: ".screenGlassFrame.liquidGlass",
+        rendererKey: "screenFrame",
+        shadow: false,
+        hollowMaskContent: true
+      }));
       mountLiquidCanvas();
       try{
         window.liquidGL.registerDynamic(".visualizerBg");
-        window.liquidGL.registerDynamic(".npArt");
       }catch(e){}
       liquidGlassReady = true;
     }catch(e){
