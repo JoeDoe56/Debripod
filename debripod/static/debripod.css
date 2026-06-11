@@ -42,7 +42,7 @@
       --radiusSm: 14px;
       --screenRadius: 20px;
       --screenFrame: 14px;
-      --screenContentInset: calc(var(--screenFrame) - 1px);
+      --screenContentInset: var(--screenFrame);
       --screenInnerRadius: max(0px, calc(var(--screenRadius) - var(--screenContentInset)));
       --barBlur: 26px;
       --uiFont: "Open Sans", "Segoe UI", Arial, sans-serif;
@@ -470,8 +470,8 @@
       overflow:hidden;
       --liquid-hole-inset: var(--screenFrame);
       border:0;
-      background: rgba(255,255,255,.045);
-      box-shadow: inset 0 0 0 1px rgba(255,255,255,.10), inset 0 1px 0 rgba(255,255,255,.16);
+      background: transparent;
+      box-shadow: none;
     }
 
     .ipodScreenContent{
@@ -952,45 +952,38 @@
   left: 12px;
   right: 12px;
   bottom: 12px;
-  z-index: 40;
+  z-index: 80;
   border-radius: 20px;
   border: 0;
   background: transparent;
   box-shadow: none;
   min-height: 82px;
+  overflow:hidden;
+  isolation:isolate;
   opacity: 1;
   transform: none;
   transition: opacity .22s ease, transform .22s ease, visibility 0s linear 0s;
   will-change: opacity, transform;
 }
 .npOverlayGlass{
+  position:absolute;
   inset:0;
   border-radius: inherit;
-  z-index:20;
+  z-index:0;
   pointer-events:none;
   overflow:hidden;
-  background: rgba(255,255,255,.055);
   border:0;
-  box-shadow: inset 0 0 0 1px rgba(255,255,255,.10), inset 0 1px 0 rgba(255,255,255,.18), 0 10px 28px rgba(0,0,0,.18);
+  background: transparent;
+  box-shadow: none;
   opacity:1;
-  transition: opacity .22s ease, transform .22s ease, visibility 0s linear 0s;
-  -webkit-backdrop-filter: blur(18px) saturate(1.25);
-  backdrop-filter: blur(18px) saturate(1.25);
 }
 .npOverlaySurface{
-  position:fixed;
-  left:0;
-  top:0;
-  width:0;
-  z-index:120;
+  position:relative;
+  z-index:30;
   border-radius:20px;
   padding: 8px 10px 8px;
   min-width:0;
-  opacity:1;
-  visibility:visible;
-  transform:none;
   pointer-events:auto;
-  transition: opacity .22s ease, transform .22s ease, visibility 0s linear 0s;
 }
 .npOverlayPill.npPillHidden{
   opacity: 0;
@@ -1003,28 +996,6 @@
   opacity: 0;
   transform: translateY(10px);
   visibility: hidden;
-  transition: opacity .22s ease, transform .22s ease, visibility 0s linear .22s;
-}
-.npOverlayPill.npPillHidden .npOverlayGlass,
-.npOverlayPill.npPillSwapHidden .npOverlayGlass{
-  opacity:0;
-  transform: translateY(calc(100% + 16px)) scaleY(.001);
-  transform-origin: 50% 100%;
-  visibility:hidden;
-  transition: opacity .22s ease, transform .22s ease, visibility 0s linear .22s;
-}
-.npOverlaySurface.npSurfaceHidden{
-  opacity:0;
-  visibility:hidden;
-  transform: translateY(calc(100% + 16px));
-  pointer-events:none;
-  transition: opacity .22s ease, transform .22s ease, visibility 0s linear .22s;
-}
-.npOverlaySurface.npSurfaceSwapHidden{
-  opacity:0;
-  visibility:hidden;
-  transform: translateY(10px);
-  pointer-events:none;
   transition: opacity .22s ease, transform .22s ease, visibility 0s linear .22s;
 }
 .npOverlaySurface .npTitle{
