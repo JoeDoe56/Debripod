@@ -115,6 +115,8 @@
     try{
       const defaultRenderer = liquidGlassRendererByKey("default");
       if(defaultRenderer && defaultRenderer.captureSnapshot) defaultRenderer.captureSnapshot(reason || "app");
+      const npOverlayRenderer = liquidGlassRendererByKey("npOverlay");
+      if(npOverlayRenderer && npOverlayRenderer.captureSnapshot) npOverlayRenderer.captureSnapshot(reason || "app");
       if(includeScreenFrame){
         const screenRenderer = liquidGlassRendererByKey("screenFrame");
         if(screenRenderer && screenRenderer.captureSnapshot) screenRenderer.captureSnapshot(reason || "app");
@@ -184,11 +186,17 @@
       if(liquidGlassReady || typeof window.liquidGL !== "function" || typeof window.html2canvas !== "function") return;
       const base = liquidGlassPresetOptions();
       const sharedGlassOptions = Object.assign({}, base, {
-        target: ".pathPillGlass.liquidGlass, .npOverlayGlass.liquidGlass, .wheelGlassRing.liquidGlass, .wheelCenterGlass.liquidGlass",
+        target: ".pathPillGlass.liquidGlass, .wheelGlassRing.liquidGlass, .wheelCenterGlass.liquidGlass",
         shadow: false
       });
       const sharedGlassInstances = asLiquidArray(window.liquidGL(sharedGlassOptions));
       liquidWheelLens = sharedGlassInstances.find(inst => inst && inst.el && inst.el.id === "wheelGlassRing") || null;
+      window.liquidGL(Object.assign({}, base, {
+        target: ".npOverlayGlass.liquidGlass",
+        snapshot: "#nowPlaying",
+        rendererKey: "npOverlay",
+        shadow: false
+      }));
       window.liquidGL(Object.assign({}, base, {
         target: ".screenGlassFrame.liquidGlass",
         rendererKey: "screenFrame",
@@ -242,6 +250,7 @@
         wheel.style.transition = "none";
         wheel.style.transform = "perspective(900px) rotateX(" + rotX.toFixed(3) + "deg) rotateY(" + rotY.toFixed(3) + "deg)";
       }
+      try{ if(lens.renderer && lens.renderer.render) lens.renderer.render(); }catch(e){}
     }catch(e){}
   }
 
@@ -772,9 +781,9 @@ let visualizerVideoSampleCtx = null;
 let visualizerVideoSampleLastTs = 0;
 
 const VISUALIZER_STRENGTHS = {
-  low: {dpr: 0.62, interval: 33, blobs: 3, waves: 1, speed: 0.62, alpha: 0.54, bright: 0.74},
-  medium: {dpr: 0.86, interval: 17, blobs: 5, waves: 2, speed: 0.86, alpha: 0.74, bright: 0.92},
-  high: {dpr: 1.05, interval: 17, blobs: 7, waves: 3, speed: 1.04, alpha: 0.90, bright: 1.05}
+  low: {dpr: 0.62, interval: 33, bassFields: 1, midFields: 1, trebleFields: 1, speed: 0.58, alpha: 0.42, bright: 0.72, coverage: 0.72},
+  medium: {dpr: 0.86, interval: 17, bassFields: 2, midFields: 2, trebleFields: 2, speed: 0.82, alpha: 0.68, bright: 0.92, coverage: 1.0},
+  high: {dpr: 1.05, interval: 17, bassFields: 3, midFields: 3, trebleFields: 3, speed: 1.02, alpha: 0.86, bright: 1.06, coverage: 1.22}
 };
 
 function normalizeVisualizerStrength(value){
@@ -833,6 +842,24 @@ function rgbForPaletteIndex(i){
 function rgbaCss(rgb, alpha, bright){
   const b = Number.isFinite(bright) ? bright : 1;
   return "rgba(" + clampByte((rgb.r || 0) * b) + "," + clampByte((rgb.g || 0) * b) + "," + clampByte((rgb.b || 0) * b) + "," + clamp01(alpha).toFixed(3) + ")";
+}
+
+function drawRadialField(ctx, w, h, x, y, radius, rgb, alpha, bright, midStop){
+  const grad = ctx.createRadialGradient(x, y, 0, x, y, Math.max(1, radius));
+  grad.addColorStop(0, rgbaCss(rgb, alpha, bright));
+  grad.addColorStop(Math.max(0.12, Math.min(0.82, midStop || 0.42)), rgbaCss(rgb, alpha * 0.32, bright));
+  grad.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, w, h);
+}
+
+function drawLinearGlow(ctx, w, h, x0, y0, x1, y1, rgb, alpha, bright){
+  const grad = ctx.createLinearGradient(x0, y0, x1, y1);
+  grad.addColorStop(0, "rgba(0,0,0,0)");
+  grad.addColorStop(0.50, rgbaCss(rgb, alpha, bright));
+  grad.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, w, h);
 }
 
 function resizeVisualizerCanvas(cfg){
@@ -894,43 +921,42 @@ function renderVisualizerCanvas(ts){
     ctx.fillStyle = "rgb(0,0,0)";
     ctx.fillRect(0, 0, w, h);
 
-    const baseAlpha = cfg.alpha * (0.28 + e * 0.62);
     const minDim = Math.min(w, h);
     const maxDim = Math.max(w, h);
     ctx.globalCompositeOperation = "lighter";
-    for(let i = 0; i < cfg.blobs; i++){
+
+    for(let i = 0; i < cfg.bassFields; i++){
       const col = rgbForPaletteIndex(i);
-      const phase = t * (0.34 + i * 0.055) + i * 2.17;
-      const ampX = (0.18 + 0.06 * Math.sin(i)) * w;
-      const ampY = (0.15 + 0.05 * Math.cos(i * 1.7)) * h;
-      const x = w * (0.50 + Math.sin(phase + m * 1.4) * ampX / w);
-      const y = h * (0.52 + Math.cos(phase * 0.83 + b * 1.6) * ampY / h);
-      const radius = minDim * (0.20 + i * 0.035 + b * 0.12 + e * 0.08);
-      const grad = ctx.createRadialGradient(x, y, 0, x, y, radius);
-      grad.addColorStop(0, rgbaCss(col, baseAlpha * (0.52 + tr * 0.32), cfg.bright));
-      grad.addColorStop(0.45, rgbaCss(col, baseAlpha * 0.20, cfg.bright));
-      grad.addColorStop(1, "rgba(0,0,0,0)");
-      ctx.fillStyle = grad;
-      ctx.beginPath();
-      ctx.arc(x, y, radius, 0, Math.PI * 2);
-      ctx.fill();
+      const phase = t * (0.13 + i * 0.025) + i * 2.31;
+      const x = w * (0.50 + Math.sin(phase + b * 0.55) * (0.08 + i * 0.025));
+      const y = h * (0.62 + Math.cos(phase * 0.72) * (0.07 + i * 0.018));
+      const radius = minDim * cfg.coverage * (0.42 + i * 0.09 + b * 0.18 + e * 0.10);
+      drawRadialField(ctx, w, h, x, y, radius, col, cfg.alpha * (0.18 + b * 0.34 + e * 0.12), cfg.bright * 0.62, 0.52);
     }
 
-    ctx.globalCompositeOperation = "screen";
-    ctx.lineCap = "round";
-    for(let wave = 0; wave < cfg.waves; wave++){
-      const col = rgbForPaletteIndex(wave + 2);
-      const yBase = h * (0.42 + wave * 0.13 + Math.sin(t * 0.7 + wave) * 0.035);
-      ctx.strokeStyle = rgbaCss(col, (0.10 + e * 0.22) * cfg.alpha, cfg.bright * 1.08);
-      ctx.lineWidth = Math.max(1.2, minDim * (0.0032 + tr * 0.004));
-      ctx.beginPath();
-      for(let x = -maxDim * 0.05; x <= w + maxDim * 0.05; x += Math.max(24, w / 18)){
-        const p = x / w;
-        const y = yBase + Math.sin((p * 4.4 + t * (0.8 + wave * .22)) * Math.PI) * minDim * (0.025 + m * 0.04);
-        if(x <= 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.stroke();
+    for(let i = 0; i < cfg.midFields; i++){
+      const col = rgbForPaletteIndex(i + cfg.bassFields);
+      const phase = t * (0.28 + i * 0.045) + i * 1.77;
+      const x = w * (0.48 + Math.sin(phase + m * 0.9) * (0.18 + i * 0.035));
+      const y = h * (0.48 + Math.cos(phase * 0.86 + b * 0.35) * (0.16 + i * 0.025));
+      const radius = minDim * cfg.coverage * (0.25 + i * 0.055 + m * 0.12 + e * 0.06);
+      drawRadialField(ctx, w, h, x, y, radius, col, cfg.alpha * (0.16 + m * 0.30 + e * 0.08), cfg.bright * 0.90, 0.42);
+    }
+
+    for(let i = 0; i < cfg.trebleFields; i++){
+      const col = rgbForPaletteIndex(i + cfg.bassFields + cfg.midFields);
+      const phase = t * (0.58 + i * 0.08) + i * 2.04;
+      const x = w * (0.50 + Math.sin(phase + tr * 1.3) * (0.24 + i * 0.025));
+      const y = h * (0.36 + Math.cos(phase * 1.08 + m * 0.6) * (0.18 + i * 0.018));
+      const radius = minDim * cfg.coverage * (0.12 + i * 0.03 + tr * 0.09 + e * 0.035);
+      drawRadialField(ctx, w, h, x, y, radius, col, cfg.alpha * (0.08 + tr * 0.30 + e * 0.08), cfg.bright * 1.16, 0.34);
+    }
+
+    if(visualizerStrength !== "low"){
+      drawLinearGlow(ctx, w, h, 0, h * (0.24 + tr * 0.12), w, h * (0.70 - m * 0.10), rgbForPaletteIndex(1), cfg.alpha * (0.035 + m * 0.08), cfg.bright);
+    }
+    if(visualizerStrength === "high"){
+      drawLinearGlow(ctx, w, h, w * 0.15, 0, w * 0.85, h, rgbForPaletteIndex(3), cfg.alpha * (0.04 + tr * 0.10), cfg.bright * 1.08);
     }
 
     ctx.globalCompositeOperation = "source-over";
@@ -1031,7 +1057,6 @@ function visualizerFrame(ts){
     visualizerEnergy = mixVal(visualizerEnergy, nextEnergy);
     sampleLiveVideoPalette(nowTs);
     renderVisualizerCanvas(nowTs);
-    renderLiquidGlassNow(currentVisualizerFrameState(nowTs));
   }catch(e){}
   scheduleVisualizerFrame((visualizerActive || wheelGlassTiltPoint) ? 0 : 160);
 }
@@ -1179,7 +1204,6 @@ function setVisualizerActive(on){
       visualizerFrameTimer = 0;
     }
     scheduleVisualizerFrame(0);
-    scheduleLiquidGlassRender();
   }catch(e){}
 }
 
@@ -1200,7 +1224,6 @@ function setVisualizerStrength(value){
   try{ localStorage.setItem("debripod_visualizer_strength", visualizerStrength); }catch(e){}
   visualizerCanvasDpr = 0;
   renderVisualizerCanvas(performance.now());
-  scheduleLiquidGlassRender();
   try{ if(state && state.current && state.current.kind === "libinfo") viewLibInfo(false); }catch(e){}
 }
 
