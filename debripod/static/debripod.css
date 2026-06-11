@@ -42,7 +42,8 @@
       --radiusSm: 14px;
       --screenRadius: 20px;
       --screenFrame: 14px;
-      --screenInnerRadius: max(0px, calc(var(--screenRadius) - var(--screenFrame)));
+      --screenContentInset: calc(var(--screenFrame) - 1px);
+      --screenInnerRadius: max(0px, calc(var(--screenRadius) - var(--screenContentInset)));
       --barBlur: 26px;
       --uiFont: "Open Sans", "Segoe UI", Arial, sans-serif;
     }
@@ -158,7 +159,7 @@
     .liquidGlassCanvas{
       position: fixed !important;
       inset: 0 !important;
-      z-index: 10 !important;
+      z-index: 65 !important;
       pointer-events: none !important;
     }
 
@@ -362,6 +363,8 @@
 .topPills{
       width: 100vw;
       max-width: 100vw;
+      position: relative;
+      z-index: 80;
       padding: 10px 12px 8px;
       display:flex;
       align-items: center;
@@ -421,6 +424,8 @@
     }
     .wheelZone{
       width: 100%;
+      position: relative;
+      z-index: 80;
       flex: 1 1 auto;
       min-height: calc(var(--wheelSize) + (var(--wheelGap) * 2));
       display:flex;
@@ -450,17 +455,16 @@
       border-radius: var(--screenRadius);
       background: transparent;
       box-shadow: none;
-      padding: var(--screenFrame);
+      padding: var(--screenContentInset);
       position: relative;
       overflow:hidden;
       display:flex;
       flex-direction: column;
-      isolation:isolate;
     }
     .screenGlassFrame{
       position:absolute;
       inset:0;
-      z-index:20;
+      z-index:0;
       border-radius: var(--screenRadius);
       pointer-events:none;
       overflow:hidden;
@@ -472,7 +476,7 @@
 
     .ipodScreenContent{
       position:relative;
-      z-index:30;
+      z-index:auto;
       display:flex;
       flex-direction:column;
       flex:1 1 auto;
@@ -484,7 +488,6 @@
       background: rgb(8,8,10);
       border: 0;
       box-shadow: none;
-      isolation:isolate;
     }
 
     .visualizerBg{
@@ -715,10 +718,10 @@
       z-index:2;
       list-style:none;
       padding:0;
-      margin: 12px;
+      margin: 0;
       overflow:auto;
-      border-radius: 20px;
-      border: 1px solid rgba(255,255,255,.10);
+      border-radius: inherit;
+      border: 0;
       background: rgba(18,18,20,.88);
       flex: 1 1 auto;
       min-height: 0;
@@ -897,16 +900,15 @@
        overflow:hidden;
        overscroll-behavior: contain;
        text-align: left;
-       border-radius: 20px;
+       border-radius: inherit;
        opacity: 0;
        transform: translateY(10px);
        transition: opacity .22s ease, transform .22s ease;
-       will-change: opacity, transform;
        pointer-events: none;
      }
     .nowPlaying.npPageActive{
       opacity: 1;
-      transform: translateY(0);
+      transform: none;
       pointer-events: auto;
     }
 
@@ -955,9 +957,9 @@
   border: 0;
   background: transparent;
   box-shadow: none;
-  padding: 8px 10px 8px;
+  min-height: 82px;
   opacity: 1;
-  transform: translateY(0);
+  transform: none;
   transition: opacity .22s ease, transform .22s ease, visibility 0s linear 0s;
   will-change: opacity, transform;
 }
@@ -972,15 +974,27 @@
   box-shadow: inset 0 0 0 1px rgba(255,255,255,.10), inset 0 1px 0 rgba(255,255,255,.18), 0 10px 28px rgba(0,0,0,.18);
   opacity:1;
   transition: opacity .22s ease, transform .22s ease, visibility 0s linear 0s;
+  -webkit-backdrop-filter: blur(18px) saturate(1.25);
+  backdrop-filter: blur(18px) saturate(1.25);
 }
-.npOverlayContent{
-  position:relative;
-  z-index:40;
+.npOverlaySurface{
+  position:fixed;
+  left:0;
+  top:0;
+  width:0;
+  z-index:120;
+  border-radius:20px;
+  padding: 8px 10px 8px;
   min-width:0;
+  opacity:1;
+  visibility:visible;
+  transform:none;
+  pointer-events:auto;
+  transition: opacity .22s ease, transform .22s ease, visibility 0s linear 0s;
 }
 .npOverlayPill.npPillHidden{
   opacity: 0;
-  transform: translateY(10px);
+  transform: translateY(calc(100% + 16px));
   pointer-events: none;
   visibility: hidden;
   transition: opacity .22s ease, transform .22s ease, visibility 0s linear .22s;
@@ -994,12 +1008,26 @@
 .npOverlayPill.npPillHidden .npOverlayGlass,
 .npOverlayPill.npPillSwapHidden .npOverlayGlass{
   opacity:0;
-  transform: translateY(10px) scaleY(.001);
+  transform: translateY(calc(100% + 16px)) scaleY(.001);
   transform-origin: 50% 100%;
   visibility:hidden;
   transition: opacity .22s ease, transform .22s ease, visibility 0s linear .22s;
 }
-.npOverlayPill .npTitle{
+.npOverlaySurface.npSurfaceHidden{
+  opacity:0;
+  visibility:hidden;
+  transform: translateY(calc(100% + 16px));
+  pointer-events:none;
+  transition: opacity .22s ease, transform .22s ease, visibility 0s linear .22s;
+}
+.npOverlaySurface.npSurfaceSwapHidden{
+  opacity:0;
+  visibility:hidden;
+  transform: translateY(10px);
+  pointer-events:none;
+  transition: opacity .22s ease, transform .22s ease, visibility 0s linear .22s;
+}
+.npOverlaySurface .npTitle{
   font-weight: 800;
   font-size: 14px;
   margin: 0;
@@ -1008,7 +1036,7 @@
   text-overflow: ellipsis;
   text-shadow: 0 1px 0 rgba(0,0,0,.55);
 }
-.npOverlayPill .npSub{
+.npOverlaySurface .npSub{
   color: rgba(235,235,245,.62);
   font-size: 12px;
   margin-top: 2px;
@@ -1017,10 +1045,10 @@
   text-overflow: ellipsis;
   text-shadow: 0 1px 0 rgba(0,0,0,.55);
 }
-.npOverlayPill .npBarArea{margin-top: 8px;}
-.npOverlayPill .npTime{margin-top: 4px; display:flex; align-items:center; gap: 8px; font-size: 11px; color: rgba(235,235,245,.62); text-shadow: 0 1px 0 rgba(0,0,0,.55);} 
-.npOverlayPill .npTime #npCur, .npOverlayPill .npTime #npDur{min-width: 44px;} 
-.npOverlayPill .npTime .npTechInline{flex:1; text-align:center; white-space: nowrap; overflow:hidden; text-overflow: ellipsis;}
+.npOverlaySurface .npBarArea{margin-top: 8px;}
+.npOverlaySurface .npTime{margin-top: 4px; display:flex; align-items:center; gap: 8px; font-size: 11px; color: rgba(235,235,245,.62); text-shadow: 0 1px 0 rgba(0,0,0,.55);} 
+.npOverlaySurface .npTime #npCur, .npOverlaySurface .npTime #npDur{min-width: 44px;} 
+.npOverlaySurface .npTime .npTechInline{flex:1; text-align:center; white-space: nowrap; overflow:hidden; text-overflow: ellipsis;}
 
 .npVideoOverlay{
       position:absolute;
@@ -1239,7 +1267,7 @@
     }
     .ipodStage{
       position: relative;
-      z-index: 30;
+      z-index: auto;
       height: 100%;
       min-height: 100% !important;
     }
@@ -1264,7 +1292,7 @@
     }
     @media (min-width: 821px){
       .ipodScreen{
-        --screenRadius: 0px;
+        --screenRadius: 20px;
         position: fixed;
         inset: 0;
         width: 100vw;
@@ -1272,9 +1300,9 @@
         height: 100vh;
         height: 100dvh;
         margin: 0;
-        border-radius: 0;
+        border-radius: var(--screenRadius);
         aspect-ratio: auto;
-        z-index: 50;
+        z-index: auto;
       }
     }
 

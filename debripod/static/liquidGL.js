@@ -318,6 +318,20 @@
           float blend = 1.0 - smoothstep(0.0, 0.01, oob);
           vec2 sampleUV = mix(mapped, refracted, blend);
 
+          if (u_hollowInset > 0.0) {
+            vec2 sampledFlippedUV = (sampleUV - u_bounds.xy) / u_bounds.zw;
+            vec2 sampledLocalUV = vec2(sampledFlippedUV.x, 1.0 - sampledFlippedUV.y);
+            vec2 sampledP = (sampledLocalUV - 0.5) * u_resolution;
+            vec2 sampledB = 0.5 * u_resolution;
+            vec2 innerBForSample = max(vec2(0.0), sampledB - vec2(u_hollowInset));
+            float innerRadiusForSample = max(0.0, u_radius - u_hollowInset);
+            float sampledInnerD = udRoundBox(sampledP, innerBForSample, innerRadiusForSample);
+            float sampledInnerShape = 1.0 - smoothstep(-1.25, 1.25, sampledInnerD);
+            if (sampledInnerShape > 0.01) {
+              sampleUV = mapped;
+            }
+          }
+
           vec4 baseCol   = texture2D(u_tex, mapped);
 
           vec2 texel = 1.0 / u_textureResolution;
@@ -481,11 +495,44 @@
           const lensElements = this.lenses
             .flatMap((lens) => [lens.el, lens._shadowEl])
             .filter(Boolean);
+          const hollowLensHoles = this.lenses
+            .map((lens) => {
+              try {
+                lens.updateMetrics();
+                const inset = Number(lens.hollowInsetCss || 0);
+                if (!lens.rectPx || inset <= 0) return null;
+                return {
+                  left: lens.rectPx.left + inset,
+                  top: lens.rectPx.top + inset,
+                  right: lens.rectPx.left + lens.rectPx.width - inset,
+                  bottom: lens.rectPx.top + lens.rectPx.height - inset,
+                };
+              } catch (e) {
+                return null;
+              }
+            })
+            .filter(Boolean);
 
           const ignoreElementsFunc = (element) => {
             if (!element || !element.hasAttribute) return false;
             if (element === this.canvas || lensElements.includes(element)) {
               return true;
+            }
+            if (hollowLensHoles.length && element.getBoundingClientRect) {
+              const r = element.getBoundingClientRect();
+              if (
+                r.width > 0 &&
+                r.height > 0 &&
+                hollowLensHoles.some(
+                  (hole) =>
+                    r.left >= hole.left &&
+                    r.top >= hole.top &&
+                    r.right <= hole.right &&
+                    r.bottom <= hole.bottom
+                )
+              ) {
+                return true;
+              }
             }
             const style = window.getComputedStyle(element);
             if (style.position === "fixed") {
@@ -626,15 +673,18 @@
       const time = (Date.now() - this.startTime) / 1000;
       gl.uniform1f(this.u.time, time);
 
-      this._updateDynamicVideos();
-
-      this._updateDynamicNodes();
-
       this.lenses.forEach((lens) => {
         lens.updateMetrics();
         if (lens._mirrorActive && lens._mirrorClipUpdater) {
           lens._mirrorClipUpdater();
         }
+      });
+
+      this._updateDynamicVideos();
+
+      this._updateDynamicNodes();
+
+      this.lenses.forEach((lens) => {
         this._renderLens(lens);
       });
 
@@ -906,6 +956,28 @@
         a.top < b.top + b.height &&
         a.top + a.height > b.top;
 
+      const rectWithin = (a, b) =>
+        a.left >= b.left &&
+        a.top >= b.top &&
+        a.left + a.width <= b.left + b.width &&
+        a.top + a.height <= b.top + b.height;
+
+      const lensVisibleForRect = (lens, rect) => {
+        if (!lens || !lens.rectPx || !rectsIntersect(rect, lens.rectPx)) return false;
+        const inset = Number(lens.hollowInsetCss || 0);
+        if (inset > 0) {
+          const lr = lens.rectPx;
+          const inner = {
+            left: lr.left + inset,
+            top: lr.top + inset,
+            width: Math.max(0, lr.width - inset * 2),
+            height: Math.max(0, lr.height - inset * 2),
+          };
+          if (rectWithin(rect, inner)) return false;
+        }
+        return true;
+      };
+
       if (!this._compositeCtx) {
         this._compositeCtx = document.createElement("canvas").getContext("2d");
       }
@@ -944,6 +1016,15 @@
         if (!meta) return;
 
         if (meta.needsRecapture && !meta._capturing && !this._isScrolling) {
+          const imageCapture = this._captureImageElement(el);
+          if (imageCapture) {
+            meta.lastCapture = imageCapture;
+            meta.needsRecapture = false;
+            requestAnimationFrame(() => this.render());
+          }
+        }
+
+        if (meta.needsRecapture && !meta._capturing && !this._isScrolling) {
           meta._capturing = true;
 
           html2canvas(el, {
@@ -959,6 +1040,7 @@
               if (cv.width > 0 && cv.height > 0) {
                 meta.lastCapture = cv;
                 meta.needsRecapture = false;
+                requestAnimationFrame(() => this.render());
               }
             })
             .catch((e) => {
@@ -1013,7 +1095,7 @@
             return;
           }
 
-          if (!lensRects.some((lr) => rectsIntersect(rect, lr))) {
+          if (!this.lenses.some((lens) => lensVisibleForRect(lens, rect))) {
             meta.prevDrawRect = null;
             return;
           }
@@ -1155,6 +1237,45 @@
         return [v[0], v[1], v[4], v[5], v[12], v[13]];
       }
       return [1, 0, 0, 1, 0, 0];
+    }
+
+    _captureImageElement(el) {
+      try {
+        if (!el || el.tagName !== "IMG" || !el.complete || !el.naturalWidth || !el.naturalHeight) {
+          return null;
+        }
+        const rect = el.getBoundingClientRect();
+        const w = Math.max(1, Math.round(rect.width * this.scaleFactor));
+        const h = Math.max(1, Math.round(rect.height * this.scaleFactor));
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        const iw = el.naturalWidth;
+        const ih = el.naturalHeight;
+        const fit = window.getComputedStyle(el).objectFit || "fill";
+        let dw = w;
+        let dh = h;
+        let dx = 0;
+        let dy = 0;
+        if (fit === "cover") {
+          const s = Math.max(w / iw, h / ih);
+          dw = iw * s;
+          dh = ih * s;
+          dx = (w - dw) / 2;
+          dy = (h - dh) / 2;
+        } else if (fit === "contain") {
+          const s = Math.min(w / iw, h / ih);
+          dw = iw * s;
+          dh = ih * s;
+          dx = (w - dw) / 2;
+          dy = (h - dh) / 2;
+        }
+        ctx.drawImage(el, dx, dy, dw, dh);
+        return canvas;
+      } catch (e) {
+        return null;
+      }
     }
 
     /* ----------------------------- */
@@ -1462,6 +1583,56 @@
       return 0;
     }
 
+    _resolveCssLength(raw, fallback = 0) {
+      const value = String(raw || "").trim();
+      if (!value) return fallback;
+
+      const direct = parseFloat(value);
+      if (Number.isFinite(direct) && !value.includes("var(") && !value.includes("calc(")) {
+        return direct;
+      }
+
+      let probe = null;
+      try {
+        probe = document.createElement("div");
+        probe.style.position = "absolute";
+        probe.style.visibility = "hidden";
+        probe.style.pointerEvents = "none";
+        probe.style.width = value;
+        probe.style.height = "0";
+        this.el.appendChild(probe);
+        const resolved = parseFloat(window.getComputedStyle(probe).width);
+        if (Number.isFinite(resolved)) return resolved;
+      } catch (e) {
+      } finally {
+        try {
+          if (probe && probe.parentNode) probe.parentNode.removeChild(probe);
+        } catch (e) {}
+      }
+
+      return Number.isFinite(direct) ? direct : fallback;
+    }
+
+    _isEffectivelyHidden() {
+      let node = this.el;
+      while (node && node !== document.body) {
+        const style = window.getComputedStyle(node);
+        if (
+          style.display === "none" ||
+          style.visibility === "hidden" ||
+          parseFloat(style.opacity || "1") <= 0.01 ||
+          (node.classList &&
+            (node.classList.contains("npPillHidden") ||
+              node.classList.contains("npPillSwapHidden") ||
+              node.classList.contains("pathPillHidden")))
+        ) {
+          return true;
+        }
+        node = node.parentElement;
+      }
+      return false;
+    }
+
     /* ----------------------------- */
     updateMetrics() {
       const rect =
@@ -1474,7 +1645,8 @@
         rect.width <= 0 ||
         rect.height <= 0 ||
         style.display === "none" ||
-        style.visibility === "hidden"
+        style.visibility === "hidden" ||
+        this._isEffectivelyHidden()
       ) {
         this.rectPx = null;
         return;
@@ -1494,7 +1666,7 @@
         const pct = parseFloat(brRaw);
         brPx = (Math.min(rect.width, rect.height) * pct) / 100;
       } else {
-        brPx = parseFloat(brRaw);
+        brPx = this._resolveCssLength(brRaw, 0);
       }
       const maxAllowedCss = Math.min(rect.width, rect.height) * 0.5;
       this.radiusCss = Math.min(brPx, maxAllowedCss);
@@ -1504,8 +1676,8 @@
         this.el.getAttribute("data-liquid-hole-inset") ||
         "0"
       ).trim();
-      let insetPx = parseFloat(insetRaw);
-      if (!isFinite(insetPx)) insetPx = 0;
+      let insetPx = this._resolveCssLength(insetRaw, 0);
+      if (!Number.isFinite(insetPx)) insetPx = 0;
       this.hollowInsetCss = Math.max(0, Math.min(insetPx, maxAllowedCss));
 
       const dpr = Math.min(2, window.devicePixelRatio || 1);
