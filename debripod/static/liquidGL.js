@@ -112,6 +112,10 @@
       this.scaleFactor = 1;
       this.startTime = Date.now();
       this._scrollUpdateCounter = 0;
+      this._snapshotResolution = Math.max(
+        0.1,
+        Math.min(3.0, snapshotResolution)
+      );
 
       this._initGL();
 
@@ -189,11 +193,6 @@
       this._tmpCtx = this._tmpCanvas.getContext("2d");
 
       this.canvas.style.opacity = "0";
-
-      this._snapshotResolution = Math.max(
-        0.1,
-        Math.min(3.0, snapshotResolution)
-      );
 
       this.useExternalTicker = false;
 
@@ -279,6 +278,7 @@
         uniform float u_tiltY;
         uniform float u_magnify;
         uniform float u_hollowInset;
+        uniform bool  u_hollowMaskContent;
         uniform int   u_glassMode;
 
         float udRoundBox( vec2 p, vec2 b, float r ) {
@@ -296,6 +296,18 @@
           float bevel_px = u_bevelWidth * min(u_resolution.x, u_resolution.y);
           return 1.0 - smoothstep(0.0, bevel_px, d);
         }
+
+        float hollowInnerShapeAtTextureUV(vec2 textureUV) {
+          vec2 flippedUV = (textureUV - u_bounds.xy) / u_bounds.zw;
+          vec2 localUV = vec2(flippedUV.x, 1.0 - flippedUV.y);
+          vec2 p_px = (localUV - 0.5) * u_resolution;
+          vec2 b_px = 0.5 * u_resolution;
+          vec2 innerB = max(vec2(0.0), b_px - vec2(u_hollowInset));
+          float innerRadius = max(0.0, u_radius - u_hollowInset);
+          float innerD = udRoundBox(p_px, innerB, innerRadius);
+          return 1.0 - smoothstep(-1.25, 1.25, innerD);
+        }
+
         void main(){
           vec2 p = v_uv - 0.5;
           p.x *= u_resolution.x / u_resolution.y;
@@ -318,17 +330,18 @@
           float blend = 1.0 - smoothstep(0.0, 0.01, oob);
           vec2 sampleUV = mix(mapped, refracted, blend);
 
-          if (u_hollowInset > 0.0) {
-            vec2 sampledFlippedUV = (sampleUV - u_bounds.xy) / u_bounds.zw;
-            vec2 sampledLocalUV = vec2(sampledFlippedUV.x, 1.0 - sampledFlippedUV.y);
-            vec2 sampledP = (sampledLocalUV - 0.5) * u_resolution;
-            vec2 sampledB = 0.5 * u_resolution;
-            vec2 innerBForSample = max(vec2(0.0), sampledB - vec2(u_hollowInset));
-            float innerRadiusForSample = max(0.0, u_radius - u_hollowInset);
-            float sampledInnerD = udRoundBox(sampledP, innerBForSample, innerRadiusForSample);
-            float sampledInnerShape = 1.0 - smoothstep(-1.25, 1.25, sampledInnerD);
+          bool hollowBlockedSample = false;
+          bool hollowTransparentSample = false;
+          if (u_hollowInset > 0.0 && u_hollowMaskContent) {
+            float sampledInnerShape = hollowInnerShapeAtTextureUV(sampleUV);
             if (sampledInnerShape > 0.01) {
-              sampleUV = mapped;
+              float mappedInnerShape = hollowInnerShapeAtTextureUV(mapped);
+              hollowBlockedSample = true;
+              if (mappedInnerShape > 0.001) {
+                hollowTransparentSample = true;
+              } else {
+                sampleUV = mapped;
+              }
             }
           }
 
@@ -358,7 +371,10 @@
               refrCol /= 5.0;
           }
 
-          if (refrCol.a < 0.1) {
+          if (hollowTransparentSample) {
+              baseCol = vec4(0.0);
+              refrCol = vec4(0.0);
+          } else if (!hollowBlockedSample && refrCol.a < 0.1) {
               refrCol = baseCol;
           }
 
@@ -444,6 +460,7 @@
         tiltY: gl.getUniformLocation(this.program, "u_tiltY"),
         magnify: gl.getUniformLocation(this.program, "u_magnify"),
         hollowInset: gl.getUniformLocation(this.program, "u_hollowInset"),
+        hollowMaskContent: gl.getUniformLocation(this.program, "u_hollowMaskContent"),
         glassMode: gl.getUniformLocation(this.program, "u_glassMode"),
       };
     }
@@ -478,7 +495,7 @@
           const isMobileSafari = /iPad|iPhone|iPod/.test(navigator.userAgent);
 
           let scale = Math.min(
-            this._snapshotResolution,
+            Number.isFinite(this._snapshotResolution) ? this._snapshotResolution : 1.0,
             maxTex / fullW,
             maxTex / fullH
           );
@@ -495,44 +512,10 @@
           const lensElements = this.lenses
             .flatMap((lens) => [lens.el, lens._shadowEl])
             .filter(Boolean);
-          const hollowLensHoles = this.lenses
-            .map((lens) => {
-              try {
-                lens.updateMetrics();
-                const inset = Number(lens.hollowInsetCss || 0);
-                if (!lens.rectPx || inset <= 0) return null;
-                return {
-                  left: lens.rectPx.left + inset,
-                  top: lens.rectPx.top + inset,
-                  right: lens.rectPx.left + lens.rectPx.width - inset,
-                  bottom: lens.rectPx.top + lens.rectPx.height - inset,
-                };
-              } catch (e) {
-                return null;
-              }
-            })
-            .filter(Boolean);
-
           const ignoreElementsFunc = (element) => {
             if (!element || !element.hasAttribute) return false;
             if (element === this.canvas || lensElements.includes(element)) {
               return true;
-            }
-            if (hollowLensHoles.length && element.getBoundingClientRect) {
-              const r = element.getBoundingClientRect();
-              if (
-                r.width > 0 &&
-                r.height > 0 &&
-                hollowLensHoles.some(
-                  (hole) =>
-                    r.left >= hole.left &&
-                    r.top >= hole.top &&
-                    r.right <= hole.right &&
-                    r.bottom <= hole.bottom
-                )
-              ) {
-                return true;
-              }
             }
             const style = window.getComputedStyle(element);
             if (style.position === "fixed") {
@@ -557,8 +540,7 @@
             ignoreElements: ignoreElementsFunc,
           });
 
-          this._uploadTexture(snapCanvas);
-          return true;
+          return this._uploadTexture(snapCanvas);
         } catch (e) {
           liquidGLLog("error", "liquidGL snapshot failed on attempt " + attempt, e);
           if (attempt < maxAttempts) {
@@ -585,13 +567,13 @@
 
     /* ----------------------------- */
     _uploadTexture(srcCanvas) {
-      if (!srcCanvas) return;
+      if (!srcCanvas) return false;
 
       if (!(srcCanvas instanceof HTMLCanvasElement)) {
         const tmp = document.createElement("canvas");
         tmp.width = srcCanvas.width || 0;
         tmp.height = srcCanvas.height || 0;
-        if (tmp.width === 0 || tmp.height === 0) return;
+        if (tmp.width === 0 || tmp.height === 0) return false;
         try {
           const ctx = tmp.getContext("2d");
           ctx.drawImage(srcCanvas, 0, 0);
@@ -602,31 +584,48 @@
             "liquidGL: Unable to convert OffscreenCanvas for upload",
             e
           );
-          return;
+          return false;
         }
       }
 
-      if (srcCanvas.width === 0 || srcCanvas.height === 0) return;
-      this.staticSnapshotCanvas = srcCanvas;
+      if (srcCanvas.width === 0 || srcCanvas.height === 0) return false;
+      if (this._canvasLooksBlankForUpload(srcCanvas)) {
+        liquidGLLog("warn", "liquidGL: Refusing to replace texture with a blank snapshot.");
+        return false;
+      }
+
       const gl = this.gl;
-      if (!this.texture) this.texture = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, this.texture);
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-      gl.texImage2D(
-        gl.TEXTURE_2D,
-        0,
-        gl.RGBA,
-        gl.RGBA,
-        gl.UNSIGNED_BYTE,
-        srcCanvas
-      );
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      const nextTexture = gl.createTexture();
+      if (!nextTexture) return false;
+      try {
+        gl.bindTexture(gl.TEXTURE_2D, nextTexture);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+        gl.texImage2D(
+          gl.TEXTURE_2D,
+          0,
+          gl.RGBA,
+          gl.RGBA,
+          gl.UNSIGNED_BYTE,
+          srcCanvas
+        );
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      } catch (e) {
+        liquidGLLog("error", "liquidGL: Texture upload failed; keeping previous texture.", e);
+        gl.deleteTexture(nextTexture);
+        if (this.texture) gl.bindTexture(gl.TEXTURE_2D, this.texture);
+        return false;
+      }
+
+      const prevTexture = this.texture;
+      this.texture = nextTexture;
+      this.staticSnapshotCanvas = srcCanvas;
 
       this.textureWidth = srcCanvas.width;
       this.textureHeight = srcCanvas.height;
+      if (prevTexture) gl.deleteTexture(prevTexture);
 
       this.render();
 
@@ -634,6 +633,45 @@
         this._pendingReveal.forEach((ln) => ln._reveal());
         this._pendingReveal.length = 0;
       }
+
+      return true;
+    }
+
+    /* ----------------------------- */
+    _canvasLooksBlankForUpload(canvas) {
+      let ctx;
+      try {
+        ctx = canvas.getContext("2d", { willReadFrequently: true });
+      } catch (e) {
+        return false;
+      }
+      if (!ctx) return false;
+
+      const w = canvas.width || 0;
+      const h = canvas.height || 0;
+      if (w <= 0 || h <= 0) return true;
+
+      let allTransparent = true;
+      let allNearBlack = true;
+      const samples = 12;
+      try {
+        for (let y = 0; y < samples; y++) {
+          for (let x = 0; x < samples; x++) {
+            const px = Math.min(w - 1, Math.max(0, Math.round(((x + 0.5) / samples) * w)));
+            const py = Math.min(h - 1, Math.max(0, Math.round(((y + 0.5) / samples) * h)));
+            const data = ctx.getImageData(px, py, 1, 1).data;
+            const a = data[3];
+            if (a > 0) allTransparent = false;
+            if (!(a > 250 && data[0] <= 2 && data[1] <= 2 && data[2] <= 2)) {
+              allNearBlack = false;
+            }
+            if (!allTransparent && !allNearBlack) return false;
+          }
+        }
+      } catch (e) {
+        return false;
+      }
+      return allTransparent || allNearBlack;
     }
 
     /* ----------------------------- */
@@ -790,6 +828,7 @@
       gl.uniform1f(this.u.tiltX, lens.tiltX || 0);
       gl.uniform1f(this.u.tiltY, lens.tiltY || 0);
       gl.uniform1f(this.u.hollowInset, lens.hollowInsetGl || 0);
+      gl.uniform1i(this.u.hollowMaskContent, lens.hollowMaskContent ? 1 : 0);
       gl.uniform1i(this.u.glassMode, lens.glassModeIndex || 0);
 
       gl.drawArrays(gl.TRIANGLES, 0, 6);
@@ -1072,15 +1111,19 @@
                 h
               );
               gl.bindTexture(gl.TEXTURE_2D, this.texture);
-              gl.texSubImage2D(
-                gl.TEXTURE_2D,
-                0,
-                x,
-                y,
-                gl.RGBA,
-                gl.UNSIGNED_BYTE,
-                eraseCanvas
-              );
+              try {
+                gl.texSubImage2D(
+                  gl.TEXTURE_2D,
+                  0,
+                  x,
+                  y,
+                  gl.RGBA,
+                  gl.UNSIGNED_BYTE,
+                  eraseCanvas
+                );
+              } catch (e) {
+                liquidGLLog("warn", "liquidGL: Dynamic texture erase failed.", e);
+              }
             }
           }
 
@@ -1175,15 +1218,20 @@
           this._compositeCtx.restore();
 
           gl.bindTexture(gl.TEXTURE_2D, this.texture);
-          gl.texSubImage2D(
-            gl.TEXTURE_2D,
-            0,
-            dstX,
-            dstY,
-            gl.RGBA,
-            gl.UNSIGNED_BYTE,
-            compositeCanvas
-          );
+          try {
+            gl.texSubImage2D(
+              gl.TEXTURE_2D,
+              0,
+              dstX,
+              dstY,
+              gl.RGBA,
+              gl.UNSIGNED_BYTE,
+              compositeCanvas
+            );
+          } catch (e) {
+            liquidGLLog("warn", "liquidGL: Dynamic texture update failed.", e);
+            return;
+          }
 
           if (this._workerEnabled && meta._heavyAnim) {
             const jobId = `${Date.now()}_${Math.random()}`;
@@ -1529,6 +1577,7 @@
       this.radiusGl = 0;
       this.radiusCss = 0;
       this.hollowInsetGl = 0;
+      this.hollowMaskContent = this.el.hasAttribute("data-liquid-mask-content");
       this.glassModeIndex = this._glassModeIndex(this.options.glassMode);
       this.revealTypeIndex = this.options.reveal === "fade" ? 1 : 0;
       this._revealProgress = this.revealTypeIndex === 0 ? 1 : 0;
