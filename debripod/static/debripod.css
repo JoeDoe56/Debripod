@@ -764,7 +764,7 @@
       box-shadow: none;
       user-select:none;
       touch-action: none;
-      overflow: hidden;
+      overflow: visible;
       transform-style: preserve-3d;
     }
     .wheelGlassRing{
@@ -772,8 +772,8 @@
       inset:0;
       z-index:0;
       border-radius:999px;
-      overflow:hidden;
-      clip-path: circle(50% at 50% 50%);
+      overflow:visible;
+      clip-path: none;
       pointer-events:none;
       border: 0;
       background: transparent;
@@ -793,17 +793,17 @@
       box-shadow: none;
       cursor:pointer;
       touch-action: none;
-      overflow:hidden;
+      overflow:visible;
       isolation:isolate;
-      clip-path: circle(50% at 50% 50%);
+      clip-path: none;
     }
     .wheelCenterGlass{
       position:absolute;
-      inset:0;
+      inset:-2px;
       z-index:0;
       border-radius:999px;
-      overflow:hidden;
-      clip-path: circle(50% at 50% 50%);
+      overflow:visible;
+      clip-path: none;
       pointer-events:none;
       border: 0;
       background: transparent;
@@ -972,13 +972,13 @@
   transform: translateY(calc(100% + 16px));
   pointer-events: none;
   visibility: hidden;
-  transition: opacity .22s ease, transform .22s ease, visibility 0s linear .22s;
+  transition: opacity .18s ease, transform .18s ease, visibility 0s linear 0s;
 }
 .npOverlayPill.npPillSwapHidden{
   opacity: 0;
   transform: translateY(10px);
   visibility: hidden;
-  transition: opacity .22s ease, transform .22s ease, visibility 0s linear .22s;
+  transition: opacity .22s ease, transform .22s ease, visibility 0s linear 0s;
 }
 .npOverlaySurface .npTitle{
   font-weight: 800;
