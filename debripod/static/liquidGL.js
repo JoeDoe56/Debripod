@@ -88,7 +88,7 @@
    *  Shared renderer (one per page)
    * ------------------------------------------------*/
   class liquidGLRenderer {
-    constructor(snapshotSelector, snapshotResolution = 1.0, rendererKey = "default") {
+    constructor(snapshotSelector, snapshotResolution = 1.0, rendererKey = "default", sourceOptions = {}) {
       this.canvas = document.createElement("canvas");
       this.canvas.style.cssText = `position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:0;`;
       this.canvas.setAttribute("data-liquid-ignore", "");
@@ -119,6 +119,12 @@
         0.1,
         Math.min(3.0, snapshotResolution)
       );
+      this.sourceType = sourceOptions.sourceType || "visualizerCanvas";
+      this.sourceSelector = sourceOptions.sourceElement || sourceOptions.source || "#visualizerBg";
+      this._sourceElement = null;
+      this._sourceCssRect = null;
+      this._sourceTextureReady = false;
+      this._solidCanvas = null;
 
       this._initGL();
 
@@ -162,7 +168,7 @@
         this._metricsDirty = true;
         this.lenses.forEach((l) => l.updateMetrics());
         this._snapshotRectPx = this.snapshotTarget.getBoundingClientRect();
-        this.captureSnapshot();
+        this.refreshSourceTexture("resize");
       }, 250);
       window.addEventListener("resize", onResize, { passive: true });
 
@@ -187,9 +193,8 @@
       this._dynamicStyleSheet = styleEl.sheet;
 
       this._resizeCanvas();
-      this.captureSnapshot();
-
       this._pendingReveal = [];
+      this.refreshSourceTexture("init");
 
       /* --------------------------------------------------
        *  Dynamic media (video) support
@@ -480,140 +485,123 @@
     }
 
     /* ----------------------------- */
-    async captureSnapshot(reason = "") {
-      if (this._capturing || typeof html2canvas === "undefined") return;
-      this._capturing = true;
-
-      const undos = [];
-
-      const attemptCapture = async (
-        attempt = 1,
-        maxAttempts = 3,
-        delayMs = 500
-      ) => {
-        try {
-          const fullW = this.snapshotTarget.scrollWidth;
-          const fullH = this.snapshotTarget.scrollHeight;
-          const maxTex = this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE) || 8192;
-          const MAX_MOBILE_DIM = 4096;
-          const isMobileSafari = /iPad|iPhone|iPod/.test(navigator.userAgent);
-
-          let scale = Math.min(
-            Number.isFinite(this._snapshotResolution) ? this._snapshotResolution : 1.0,
-            maxTex / fullW,
-            maxTex / fullH
-          );
-
-          if (isMobileSafari) {
-            const over = (Math.max(fullW, fullH) * scale) / MAX_MOBILE_DIM;
-            if (over > 1) scale = scale / over;
-          }
-          this.scaleFactor = Math.max(0.1, scale);
-
-          const lensElements = this.lenses
-            .flatMap((lens) => [lens.el, lens._shadowEl])
-            .filter(Boolean);
-          const ignoreElementsFunc = (element) => {
-            if (!element || !element.hasAttribute) return false;
-            if (element === this.canvas || lensElements.includes(element)) {
-              return true;
-            }
-            const isVisualizer = element.id === "visualizerBg" || (element.classList && element.classList.contains("visualizerBg"));
-            if (isVisualizer) {
-              return this.rendererKey === "npOverlay";
-            }
-            if (
-              this.rendererKey === "npOverlay" &&
-              (element.id === "npVideoOverlay" ||
-                (element.closest && element.closest("#npVideoOverlay")))
-            ) {
-              return true;
-            }
-            const style = window.getComputedStyle(element);
-            if (style.position === "fixed") {
-              return true;
-            }
-            return (
-              element.hasAttribute("data-liquid-ignore") ||
-              element.closest("[data-liquid-ignore]")
-            );
-          };
-
-          const snapCanvas = await html2canvas(this.snapshotTarget, {
-            allowTaint: false,
-            useCORS: true,
-            backgroundColor: null,
-            removeContainer: true,
-            width: fullW,
-            height: fullH,
-            scrollX: 0,
-            scrollY: 0,
-            scale: scale,
-            ignoreElements: ignoreElementsFunc,
-          });
-
-          return this._uploadTexture(snapCanvas, reason);
-        } catch (e) {
-          liquidGLLog("error", "liquidGL snapshot failed on attempt " + attempt, e);
-          if (attempt < maxAttempts) {
-            liquidGLLog(
-              "log",
-              `Retrying snapshot capture (${attempt + 1}/${maxAttempts})...`
-            );
-            await new Promise((resolve) => setTimeout(resolve, delayMs));
-            return await attemptCapture(attempt + 1, maxAttempts, delayMs);
-          } else {
-            liquidGLLog("error", "liquidGL: All snapshot attempts failed.", e);
-            return false;
-          }
-        } finally {
-          for (let i = undos.length - 1; i >= 0; i--) {
-            undos[i]();
-          }
-          this._capturing = false;
-        }
-      };
-
-      return await attemptCapture();
+    captureSnapshot(reason = "") {
+      return this.refreshSourceTexture(reason || "direct source");
     }
 
-    /* ----------------------------- */
-    _uploadTexture(srcCanvas, reason = "") {
-      if (!srcCanvas) return false;
-
-      if (!(srcCanvas instanceof HTMLCanvasElement)) {
-        const tmp = document.createElement("canvas");
-        tmp.width = srcCanvas.width || 0;
-        tmp.height = srcCanvas.height || 0;
-        if (tmp.width === 0 || tmp.height === 0) return false;
-        try {
-          const ctx = tmp.getContext("2d");
-          ctx.drawImage(srcCanvas, 0, 0);
-          srcCanvas = tmp;
-        } catch (e) {
-          liquidGLLog(
-            "warn",
-            "liquidGL: Unable to convert OffscreenCanvas for upload",
-            e
-          );
-          return false;
-        }
+    _resolveSourceElement() {
+      if (this._sourceElement && document.documentElement.contains(this._sourceElement)) {
+        return this._sourceElement;
       }
+      if (this.sourceSelector && typeof this.sourceSelector === "string") {
+        this._sourceElement = document.querySelector(this.sourceSelector);
+      }
+      return this._sourceElement;
+    }
 
-      if (srcCanvas.width === 0 || srcCanvas.height === 0) return false;
-      if (this._canvasLooksBlankForUpload(srcCanvas)) {
-        liquidGLLog("warn", "liquidGL: Refusing to replace texture with a blank snapshot.", {
+    configureSource(options = {}) {
+      const nextType = options.sourceType || this.sourceType || "visualizerCanvas";
+      const nextSelector = options.sourceElement || options.source || this.sourceSelector || "#visualizerBg";
+      if (nextType !== this.sourceType || nextSelector !== this.sourceSelector) {
+        this.sourceType = nextType;
+        this.sourceSelector = nextSelector;
+        this._sourceElement = null;
+        this.refreshSourceTexture("source configured");
+      }
+    }
+
+    _fallbackCanvas(width = 8, height = 8, rgba = [5, 5, 7, 255]) {
+      if (!this._solidCanvas) this._solidCanvas = document.createElement("canvas");
+      if (this._solidCanvas.width !== width || this._solidCanvas.height !== height) {
+        this._solidCanvas.width = width;
+        this._solidCanvas.height = height;
+      }
+      const ctx = this._solidCanvas.getContext("2d");
+      ctx.fillStyle = `rgba(${rgba[0]},${rgba[1]},${rgba[2]},${(rgba[3] == null ? 255 : rgba[3]) / 255})`;
+      ctx.fillRect(0, 0, width, height);
+      return this._solidCanvas;
+    }
+
+    _sourceWidth(source) {
+      return source ? (source.videoWidth || source.naturalWidth || source.width || 0) : 0;
+    }
+
+    _sourceHeight(source) {
+      return source ? (source.videoHeight || source.naturalHeight || source.height || 0) : 0;
+    }
+
+    refreshSourceTexture(reason = "") {
+      const source = this._resolveSourceElement();
+      if (this.sourceType === "albumArtCanvasOrImage") {
+        if (source && source.complete && source.naturalWidth && source.naturalHeight) {
+          return this.updateTextureFromImage(source, { reason: reason || "album art" });
+        }
+        return this.updateTextureFromSolidColor(8, 8, [5, 5, 7, 255], { reason: reason || "album art fallback", allowDark: true });
+      }
+      if (this.sourceType === "liveVideoFrame") {
+        if (source && source.readyState >= 2 && source.videoWidth && source.videoHeight) {
+          return this.updateTextureFromVideo(source, { reason: reason || "video frame" });
+        }
+        return this.updateTextureFromSolidColor(8, 8, [0, 0, 0, 255], { reason: reason || "video fallback", allowDark: true });
+      }
+      if (source && source.width && source.height) {
+        return this.updateTextureFromCanvas(source, {
+          reason: reason || this.sourceType || "canvas source",
+          allowDark: true,
+          sourceRect: { left: 0, top: 0, width: window.innerWidth || source.width || 1, height: window.innerHeight || source.height || 1 },
+        });
+      }
+      return this.updateTextureFromSolidColor(8, 8, [0, 0, 0, 255], { reason: reason || "fallback", allowDark: true });
+    }
+
+    updateTextureFromCanvas(canvas, options = {}) {
+      if (!canvas || !canvas.width || !canvas.height) {
+        if (this.texture) return false;
+        return this.updateTextureFromSolidColor(8, 8, [0, 0, 0, 255], { reason: options.reason || "canvas fallback", allowDark: true });
+      }
+      if (options.sourceRect) this._sourceCssRect = options.sourceRect;
+      else this._sourceCssRect = { left: 0, top: 0, width: window.innerWidth || canvas.width || 1, height: window.innerHeight || canvas.height || 1 };
+      return this._uploadTextureSource(canvas, canvas.width, canvas.height, options.reason || "canvas source", { allowDark: options.allowDark === true });
+    }
+
+    updateTextureFromImage(img, options = {}) {
+      if (!img || !img.complete || !img.naturalWidth || !img.naturalHeight) return false;
+      this._sourceCssRect = null;
+      return this._uploadTextureSource(img, img.naturalWidth, img.naturalHeight, options.reason || "image source", { allowDark: true, skipBlankCheck: true });
+    }
+
+    updateTextureFromVideo(video, options = {}) {
+      if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return false;
+      this._sourceCssRect = null;
+      return this._uploadTextureSource(video, video.videoWidth, video.videoHeight, options.reason || "video source", { allowDark: options.allowDark === true, skipBlankCheck: true });
+    }
+
+    updateTextureFromSolidColor(width = 8, height = 8, rgba = [0, 0, 0, 255], options = {}) {
+      const canvas = this._fallbackCanvas(width, height, rgba);
+      this._sourceCssRect = null;
+      return this._uploadTextureSource(canvas, canvas.width, canvas.height, options.reason || "solid fallback", { allowDark: true, skipBlankCheck: true });
+    }
+
+    _uploadTexture(srcCanvas, reason = "") {
+      return this._uploadTextureSource(srcCanvas, this._sourceWidth(srcCanvas), this._sourceHeight(srcCanvas), reason, {});
+    }
+
+    _uploadTextureSource(source, width, height, reason = "", options = {}) {
+      if (!source || !(width > 0) || !(height > 0)) return false;
+      if (!options.skipBlankCheck && !options.allowDark && source instanceof HTMLCanvasElement && this._canvasLooksBlankForUpload(source)) {
+        liquidGLLog("warn", "liquidGL: Refusing to replace texture with a blank source.", {
           rendererKey: this.rendererKey,
           reason
         });
         return false;
       }
-
       const gl = this.gl;
-      const nextTexture = gl.createTexture();
-      if (!nextTexture) return false;
+      if (!this.texture) {
+        this.texture = gl.createTexture();
+        if (!this.texture) return false;
+      }
       try {
-        gl.bindTexture(gl.TEXTURE_2D, nextTexture);
+        gl.bindTexture(gl.TEXTURE_2D, this.texture);
         gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
         gl.texImage2D(
           gl.TEXTURE_2D,
@@ -621,7 +609,7 @@
           gl.RGBA,
           gl.RGBA,
           gl.UNSIGNED_BYTE,
-          srcCanvas
+          source
         );
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -629,17 +617,15 @@
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
       } catch (e) {
         liquidGLLog("error", "liquidGL: Texture upload failed; keeping previous texture.", e);
-        gl.deleteTexture(nextTexture);
         if (this.texture) gl.bindTexture(gl.TEXTURE_2D, this.texture);
         return false;
       }
 
-      const prevTexture = this.texture;
-      this.texture = nextTexture;
-      this.staticSnapshotCanvas = srcCanvas;
-
-      this.textureWidth = srcCanvas.width;
-      this.textureHeight = srcCanvas.height;
+      this._sourceTextureReady = true;
+      this.staticSnapshotCanvas = source instanceof HTMLCanvasElement ? source : null;
+      this.textureWidth = width;
+      this.textureHeight = height;
+      this.scaleFactor = 1;
       liquidGLLog("log", "liquidGL: Texture uploaded.", {
         rendererKey: this.rendererKey,
         reason,
@@ -650,9 +636,6 @@
         canvasClassName: this.canvas.className,
         canvasZIndex: window.getComputedStyle(this.canvas).zIndex
       });
-      if (prevTexture) gl.deleteTexture(prevTexture);
-
-      this.render();
 
       if (this._pendingReveal.length) {
         this._pendingReveal.forEach((ln) => ln._reveal());
@@ -720,6 +703,7 @@
     /* ----------------------------- */
     render(frameState) {
       const gl = this.gl;
+      if (!this.texture) this.refreshSourceTexture("render fallback");
       if (!this.texture) return;
       if (frameState) this._externalFrameState = frameState;
       const fs = this._externalFrameState || {};
@@ -748,10 +732,6 @@
         });
         this._metricsDirty = false;
       }
-
-      this._updateDynamicVideos();
-
-      this._updateDynamicNodes();
 
       this.lenses.forEach((lens) => {
         this._renderLens(lens);
@@ -827,13 +807,17 @@
       gl.viewport(x, y, w, h);
       gl.uniform2f(this.u.res, w, h);
 
-      const snapRect = this._snapshotRectPx || this.snapshotTarget.getBoundingClientRect();
-      const docX = rect.left - snapRect.left;
-      const docY = rect.top - snapRect.top;
-      const leftUV = (docX * this.scaleFactor) / this.textureWidth;
-      const topUV = (docY * this.scaleFactor) / this.textureHeight;
-      const wUV = (rect.width * this.scaleFactor) / this.textureWidth;
-      const hUV = (rect.height * this.scaleFactor) / this.textureHeight;
+      let leftUV = 0;
+      let topUV = 0;
+      let wUV = 1;
+      let hUV = 1;
+      if (this.sourceType !== "albumArtCanvasOrImage" && this.sourceType !== "liveVideoFrame") {
+        const srcRect = this._sourceCssRect || { left: 0, top: 0, width: window.innerWidth || 1, height: window.innerHeight || 1 };
+        leftUV = (rect.left - srcRect.left) / Math.max(1, srcRect.width);
+        topUV = (rect.top - srcRect.top) / Math.max(1, srcRect.height);
+        wUV = rect.width / Math.max(1, srcRect.width);
+        hUV = rect.height / Math.max(1, srcRect.height);
+      }
       if (
         !Number.isFinite(leftUV) ||
         !Number.isFinite(topUV) ||
@@ -1119,30 +1103,7 @@
         }
 
         if (meta.needsRecapture && !meta._capturing && !this._isScrolling) {
-          meta._capturing = true;
-
-          html2canvas(el, {
-            backgroundColor: null,
-            scale: this.scaleFactor,
-            useCORS: true,
-            removeContainer: true,
-            logging: false,
-            ignoreElements: (n) =>
-              n.tagName === "CANVAS" || n.hasAttribute("data-liquid-ignore"),
-          })
-            .then((cv) => {
-              if (cv.width > 0 && cv.height > 0) {
-                meta.lastCapture = cv;
-                meta.needsRecapture = false;
-                requestAnimationFrame(() => this.render());
-              }
-            })
-            .catch((e) => {
-              liquidGLLog("error", "liquidGL: Dynamic element capture failed.", e);
-            })
-            .finally(() => {
-              meta._capturing = false;
-            });
+          meta.needsRecapture = false;
         }
 
         if (meta.lastCapture) {
@@ -2292,6 +2253,8 @@
       tiltFactor: 5,
       magnify: 1,
       glassMode: "clear",
+      sourceType: "visualizerCanvas",
+      sourceElement: "#visualizerBg",
       on: {},
     };
     const options = { ...defaults, ...userOptions };
@@ -2333,7 +2296,9 @@
       rendererStore[rendererKey] ||
       (rendererKey === "default" ? window.__liquidGLRenderer__ : null);
     if (!renderer) {
-      renderer = new liquidGLRenderer(options.snapshot, options.resolution, rendererKey);
+      renderer = new liquidGLRenderer(options.snapshot, options.resolution, rendererKey, options);
+    } else if (renderer.configureSource) {
+      renderer.configureSource(options);
     }
     rendererStore[rendererKey] = renderer;
     if (rendererKey === "default") {
@@ -2376,13 +2341,7 @@
    *  Public helper: register elements that need live updates
    * ------------------------------------------------*/
   window.liquidGL.registerDynamic = function (elements) {
-    const renderer = window.__liquidGLRenderer__;
-    if (!renderer || !renderer.addDynamicElement) return;
-    if (typeof elements === "string" && elements.indexOf("visualizerBg") >= 0) return;
-    renderer.addDynamicElement(elements);
-    if (renderer.captureSnapshot) {
-      renderer.captureSnapshot();
-    }
+    liquidGLLog("log", "liquidGL: registerDynamic ignored; WebGL sources are direct textures.", elements);
   };
 
   /* --------------------------------------------------
