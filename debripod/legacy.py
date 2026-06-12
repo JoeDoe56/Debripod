@@ -1,4 +1,4 @@
-﻿
+
 import os
 import re
 import time
@@ -100,6 +100,17 @@ from .utils import (
     sha1_text,
 )
 from .playback.streaming import pick_mime, range_response
+from .playback.transcoding import (
+    _browser_compatible_for_target,
+    _build_smart_transcode_args,
+    _build_transcode_args,
+    _build_transmux_args,
+    _primary_stream_info,
+    configure_transcoding,
+    last_ffmpeg_error,
+    lock_for_key,
+    transcode_if_needed,
+)
 from .playback.probe import configure_probe, ffprobe_json, run_cmd
 
 # =========================
@@ -275,6 +286,12 @@ configure_probe(ffprobe_path_provider=lambda: FFPROBE_PATH)
 configure_paths(
     download_dir_provider=lambda: DOWNLOAD_DIR,
     cache_dir_name_provider=lambda: CACHE_DIR_NAME,
+)
+VIDEO_BROWSER_TARGET_EXT = "mp4"
+configure_transcoding(
+    audio_transcode_provider=lambda: AUDIO_TRANSCODE,
+    ffmpeg_path_provider=lambda: FFMPEG_PATH,
+    video_browser_target_ext_provider=lambda: VIDEO_BROWSER_TARGET_EXT,
 )
 configure_lastfm(
     api_key=LASTFM_API_KEY,
@@ -1052,452 +1069,6 @@ def smart_playlist_tracks_for_root(root_abs: str, playlist_rel: str, root_id: st
     return items
 
 
-def parse_audio_transcode_rules() -> List[Tuple[str, str]]:
-    rules = []
-    for part in (AUDIO_TRANSCODE or "").split(","):
-        part = part.strip()
-        if not part:
-            continue
-        if ":" not in part:
-            continue
-        a, b = part.split(":", 1)
-        a = a.strip().lower().lstrip(".")
-        b = b.strip().lower().lstrip(".")
-        if a and b:
-            rules.append((a, b))
-    return rules
-
-
-AUDIO_TRANSCODE_RULES_PARSED = parse_audio_transcode_rules()
-TRANSCODE_LOCKS: Dict[str, threading.Lock] = {}
-TRANSCODE_LOCKS_GUARD = threading.Lock()
-
-
-def lock_for_key(key: str) -> threading.Lock:
-    with TRANSCODE_LOCKS_GUARD:
-        lk = TRANSCODE_LOCKS.get(key)
-        if lk is None:
-            lk = threading.Lock()
-            TRANSCODE_LOCKS[key] = lk
-        return lk
-
-
-FFMPEG_ENCODERS_CACHE: Optional[set] = None
-FFMPEG_ENCODERS_CACHE_AT: float = 0.0
-FFMPEG_ENCODERS_CACHE_TTL_SECONDS: float = 300.0
-
-
-def _ffmpeg_encoders() -> set:
-    """Return a set of encoder names supported by the configured ffmpeg."""
-    global FFMPEG_ENCODERS_CACHE, FFMPEG_ENCODERS_CACHE_AT
-    now = time.time()
-    if FFMPEG_ENCODERS_CACHE is not None and (now - FFMPEG_ENCODERS_CACHE_AT) < FFMPEG_ENCODERS_CACHE_TTL_SECONDS:
-        return FFMPEG_ENCODERS_CACHE
-
-    code, out, err = run_cmd([FFMPEG_PATH, "-hide_banner", "-encoders"])
-    enc: set = set()
-    if code == 0 and out:
-        for line in (out or "").splitlines():
-            line = line.strip()
-            if not line or line.startswith("--") or line.startswith("Encoders:"):
-                continue
-            # Typical line: " V..... h264_nvenc NVIDIA NVENC H.264 encoder"
-            parts = line.split()
-            if len(parts) >= 2 and re.match(r"^[A-Za-z0-9_]+$", parts[1]):
-                enc.add(parts[1])
-    else:
-        # If this fails, keep cache empty and allow CPU fallback paths.
-        enc = set()
-
-    FFMPEG_ENCODERS_CACHE = enc
-    FFMPEG_ENCODERS_CACHE_AT = now
-    return enc
-
-
-def _safe_remove(p: str) -> None:
-    try:
-        if p and os.path.exists(p):
-            os.remove(p)
-    except OSError:
-        pass
-
-
-def ffmpeg_log_dir() -> str:
-    p = os.path.join(cache_dir(), "ffmpeg_logs")
-    try:
-        os.makedirs(p, exist_ok=True)
-    except OSError:
-        pass
-    return p
-
-
-_LAST_FFMPEG_LOCK = threading.Lock()
-_LAST_FFMPEG_ERROR: Dict[str, str] = {}
-
-
-def _cmdline_for_log(args: List[str]) -> str:
-    try:
-        return subprocess.list2cmdline(args)
-    except Exception:
-        return " ".join(args)
-
-
-def _record_ffmpeg_failure(stage: str, args: List[str], code: int, out: str, err: str, src_path: str, tmp_path: str) -> str:
-    ts = time.strftime("%Y%m%d_%H%M%S")
-    key = sha1_text(f"{src_path}|{tmp_path}|{stage}|{ts}|{uuid.uuid4().hex}")
-    log_path = os.path.join(ffmpeg_log_dir(), f"{ts}_{stage}_{key[:10]}.log")
-    body = []
-    body.append(f"timestamp: {ts}")
-    body.append(f"stage: {stage}")
-    body.append(f"src: {src_path}")
-    body.append(f"tmp: {tmp_path}")
-    body.append(f"exit_code: {code}")
-    body.append("")
-    body.append("command:")
-    body.append(_cmdline_for_log(args))
-    body.append("")
-    if out:
-        body.append("stdout:")
-        body.append(out)
-        body.append("")
-    if err:
-        body.append("stderr:")
-        body.append(err)
-        body.append("")
-    try:
-        with open(log_path, "w", encoding="utf-8", errors="ignore") as f:
-            f.write("\n".join(body))
-    except OSError:
-        log_path = ""
-
-    with _LAST_FFMPEG_LOCK:
-        _LAST_FFMPEG_ERROR.clear()
-        _LAST_FFMPEG_ERROR.update(
-            {
-                "timestamp": ts,
-                "stage": stage,
-                "src": src_path,
-                "tmp": tmp_path,
-                "exit_code": str(code),
-                "command": _cmdline_for_log(args),
-                "log_path": log_path,
-                "stderr_tail": (err or "")[-2000:],
-            }
-        )
-
-    return log_path
-
-
-def last_ffmpeg_error() -> Dict[str, str]:
-    with _LAST_FFMPEG_LOCK:
-        return dict(_LAST_FFMPEG_ERROR)
-
-
-def _run_ffmpeg_to_tmp(args: List[str], tmp_path: str, *, stage: str, src_path: str) -> Tuple[bool, str]:
-    code, out, err = run_cmd(args)
-    if code == 0 and os.path.exists(tmp_path) and os.path.getsize(tmp_path) > 0:
-        return True, ""
-    _safe_remove(tmp_path)
-    log_path = _record_ffmpeg_failure(stage, args, code, out, err, src_path, tmp_path)
-    msg = (err or "").strip() or "ffmpeg failed"
-    if log_path:
-        msg = msg + f"\nLog saved to: {log_path}"
-    msg = msg + f"\nCache dir: {transcode_cache_dir()}"
-    return False, msg
-
-
-
-
-def _is_audio_ext(ext_no_dot: str) -> bool:
-    e = "." + (ext_no_dot or "").lower().lstrip(".")
-    return e in AUDIO_EXTS and e not in VIDEO_EXTS
-
-
-def _pick_video_encoder_for_target(target_ext_no_dot: str) -> Tuple[str, List[str]]:
-    """Pick a video encoder for the requested container extension, preferring GPU if available."""
-    target = (target_ext_no_dot or "").lower().lstrip(".")
-    enc = _ffmpeg_encoders()
-
-    # For webm, prefer AV1 hardware if available, otherwise VP9 CPU fallback.
-    if target == "webm":
-        for name in ["av1_nvenc", "av1_qsv", "av1_amf"]:
-            if name in enc:
-                return name, []
-        return "libvpx-vp9", ["-b:v", "0", "-crf", "32"]
-
-    # Default: H.264 for broad compatibility.
-    for name in ["h264_nvenc", "h264_qsv", "h264_amf"]:
-        if name in enc:
-            return name, []
-    return "libx264", ["-preset", "veryfast", "-crf", "23"]
-
-
-def _pick_audio_encoder_for_target(target_ext_no_dot: str) -> Tuple[str, List[str]]:
-    target = (target_ext_no_dot or "").lower().lstrip(".")
-    if target == "mp3":
-        return "libmp3lame", ["-b:a", "192k"]
-    if target in ("m4a", "mp4", "m4v", "mov", "aac"):
-        return "aac", ["-b:a", "192k"]
-    if target == "opus":
-        return "libopus", ["-b:a", "128k"]
-    if target == "ogg":
-        return "libvorbis", ["-q:a", "5"]
-    if target == "flac":
-        return "flac", []
-    if target == "wav":
-        return "pcm_s16le", []
-    return "aac", ["-b:a", "192k"]
-
-
-def _build_transmux_args(src_path: str, target_ext_no_dot: str, tmp_path: str, *, first_audio_only: bool = False) -> List[str]:
-    target = (target_ext_no_dot or "").lower().lstrip(".")
-    audio_only = _is_audio_ext(target)
-    args = [FFMPEG_PATH, "-y", "-hide_banner", "-loglevel", "error", "-i", src_path]
-
-    if audio_only:
-        # Keep only audio for audio targets.
-        # (If the source audio codec is incompatible with the target container, this will fail and we will fall back.)
-        args += ["-vn", "-sn", "-dn", "-c:a", "copy"]
-        args += [tmp_path]
-        return args
-
-    # Video targets: be conservative about what we copy.
-    # Mapping "0" would include subtitles, attachments, and data streams which commonly make mp4/mov remux fail.
-    args += ["-map", "0:v:0"]
-    if first_audio_only:
-        args += ["-map", "0:a:0?"]
-    else:
-        args += ["-map", "0:a?"]
-    args += ["-sn", "-dn", "-c", "copy"]
-
-    if target in ("mp4", "m4v", "mov"):
-        args += ["-movflags", "+faststart"]
-
-    args += [tmp_path]
-    return args
-
-
-def _build_transcode_args(src_path: str, target_ext_no_dot: str, tmp_path: str) -> List[str]:
-    target = (target_ext_no_dot or "").lower().lstrip(".")
-    audio_only = _is_audio_ext(target)
-
-    args = [FFMPEG_PATH, "-y", "-hide_banner", "-loglevel", "error", "-i", src_path]
-
-    if audio_only:
-        aenc, aextra = _pick_audio_encoder_for_target(target)
-        args += ["-vn", "-sn", "-dn", "-c:a", aenc] + aextra
-        args += [tmp_path]
-        return args
-
-    venc, vextra = _pick_video_encoder_for_target(target)
-    aenc, aextra = _pick_audio_encoder_for_target("opus" if target == "webm" else "aac")
-
-    args += ["-map", "0:v:0", "-map", "0:a?", "-sn", "-dn"]
-    args += ["-c:v", venc]
-
-    if venc == "h264_nvenc":
-        args += ["-preset", "p5", "-rc", "vbr", "-cq", "23"]
-    elif venc == "h264_qsv":
-        args += ["-global_quality", "23"]
-    elif venc == "h264_amf":
-        args += ["-quality", "balanced", "-qp_i", "23", "-qp_p", "23"]
-    elif venc == "libx264":
-        args += vextra
-    elif venc == "libvpx-vp9":
-        args += vextra
-
-    # Compatibility pixel format for most browsers/players.
-    args += ["-pix_fmt", "yuv420p"]
-
-    args += ["-c:a", aenc] + aextra
-
-    if target in ("mp4", "m4v", "mov"):
-        args += ["-movflags", "+faststart"]
-
-    args += [tmp_path]
-    return args
-
-
-
-def _primary_stream_info(path: str) -> dict:
-    """
-    Return info about the first video stream and first audio stream (if present).
-    Uses ffprobe for reliable codec detection.
-    """
-    info = {"v_codec": None, "v_pix_fmt": None, "a_codec": None}
-    try:
-        j = ffprobe_json(path)
-    except Exception:
-        return info
-
-    streams = j.get("streams") or []
-    v = next((s for s in streams if s.get("codec_type") == "video"), None)
-    a = next((s for s in streams if s.get("codec_type") == "audio"), None)
-
-    if v:
-        info["v_codec"] = (v.get("codec_name") or "").lower() or None
-        info["v_pix_fmt"] = (v.get("pix_fmt") or "").lower() or None
-    if a:
-        info["a_codec"] = (a.get("codec_name") or "").lower() or None
-    return info
-
-
-def _browser_compatible_for_target(target_ext_no_dot: str, v_codec: Optional[str], v_pix_fmt: Optional[str], a_codec: Optional[str]) -> Tuple[bool, bool]:
-    """
-    Return (video_ok, audio_ok) for broad HTML5 playback in common desktop browsers.
-
-    For MP4/MOV/M4V we assume:
-      - Video should be H.264 (h264) with yuv420p for maximum compatibility (Firefox, Chromium, Safari).
-      - Audio should be AAC (aac) (mp3-in-mp4 is inconsistent across stacks).
-    For WEBM we assume:
-      - Video vp8/vp9/av1
-      - Audio opus/vorbis
-    """
-    target = (target_ext_no_dot or "").lower().lstrip(".")
-
-    # Audio-only targets: caller will handle separately.
-    if _is_audio_ext(target):
-        return True, True
-
-    if target in ("mp4", "m4v", "mov"):
-        video_ok = (v_codec == "h264") and (v_pix_fmt in (None, "", "yuv420p"))
-        audio_ok = (a_codec is None) or (a_codec == "aac")
-        return video_ok, audio_ok
-
-    if target == "webm":
-        video_ok = (v_codec in (None, "", "vp8", "vp9", "av1"))
-        audio_ok = (a_codec is None) or (a_codec in ("opus", "vorbis"))
-        return video_ok, audio_ok
-
-    # Unknown container: be conservative (force transcode).
-    return False, False
-
-
-def _build_smart_transcode_args(src_path: str, target_ext_no_dot: str, tmp_path: str, *, video_ok: bool, audio_ok: bool) -> List[str]:
-    target = (target_ext_no_dot or "").lower().lstrip(".")
-    audio_only = _is_audio_ext(target)
-
-    args = [FFMPEG_PATH, "-y", "-hide_banner", "-loglevel", "error", "-i", src_path]
-
-    if audio_only:
-        # For audio targets, if we got here we need an actual transcode (or a container-specific rewrap elsewhere).
-        aenc, aextra = _pick_audio_encoder_for_target(target)
-        args += ["-vn", "-sn", "-dn", "-c:a", aenc] + aextra
-        args += [tmp_path]
-        return args
-
-    # Map first video and first audio for browser playback reliability.
-    # (Most browsers won't let you choose tracks in a simple <video> element anyway.)
-    args += ["-map", "0:v:0?", "-map", "0:a:0?", "-sn", "-dn"]
-
-    if video_ok:
-        args += ["-c:v", "copy"]
-    else:
-        venc, vextra = _pick_video_encoder_for_target(target)
-        args += ["-c:v", venc]
-        if venc == "h264_nvenc":
-            args += ["-preset", "p5", "-rc", "vbr", "-cq", "23"]
-        elif venc == "h264_qsv":
-            args += ["-global_quality", "23"]
-        elif venc == "h264_amf":
-            args += ["-quality", "balanced", "-qp_i", "23", "-qp_p", "23"]
-        else:
-            args += vextra
-
-        # Compatibility pixel format for browsers.
-        args += ["-pix_fmt", "yuv420p"]
-
-    if audio_ok:
-        args += ["-c:a", "copy"]
-    else:
-        # For webm default to opus, else aac.
-        a_target = "opus" if target == "webm" else "aac"
-        aenc, aextra = _pick_audio_encoder_for_target(a_target)
-        args += ["-c:a", aenc] + aextra
-
-    if target in ("mp4", "m4v", "mov"):
-        args += ["-movflags", "+faststart"]
-
-    args += [tmp_path]
-    return args
-
-
-
-def audio_transcode_if_needed(src_path: str) -> str:
-    """Apply AUDIO_TRANSCODE rules as a cacheable pipeline, triggered at play time.
-
-    AUDIO_TRANSCODE is a comma separated list like "flac:mp3,alac:m4a".
-    Transmux (stream copy) is attempted first, then a full audio transcode.
-    """
-    ext = os.path.splitext(src_path)[1].lower().lstrip(".")
-    for a, b in AUDIO_TRANSCODE_RULES_PARSED:
-        if ext != a:
-            continue
-
-        key = sha1_text(os.path.abspath(src_path) + "|" + a + "->" + b)
-        out_path = os.path.join(transcode_cache_dir(), f"{key}.{b}")
-        lk = lock_for_key(out_path)
-
-        with lk:
-            try:
-                src_m = os.path.getmtime(src_path)
-            except OSError:
-                return src_path
-
-            if os.path.exists(out_path):
-                try:
-                    out_m = os.path.getmtime(out_path)
-                    if out_m >= src_m and os.path.getsize(out_path) > 0:
-                        return out_path
-                except OSError:
-                    pass
-
-            base_tmp, ext_tmp = os.path.splitext(out_path)
-            tmp_path = base_tmp + ".tmp" + ext_tmp
-            _safe_remove(tmp_path)
-
-            # 1) Try transmux (copy audio) first.
-            transmux_args = _build_transmux_args(src_path, b, tmp_path, first_audio_only=True)
-            ok1, err1 = _run_ffmpeg_to_tmp(transmux_args, tmp_path, stage="audio_transmux", src_path=src_path)
-            if ok1:
-                os.replace(tmp_path, out_path)
-                return out_path
-
-            _safe_remove(tmp_path)
-
-            # 2) Fall back to full transcode.
-            trans_args = _build_transcode_args(src_path, b, tmp_path)
-            ok2, err2 = _run_ffmpeg_to_tmp(trans_args, tmp_path, stage="audio_transcode", src_path=src_path)
-            if ok2:
-                os.replace(tmp_path, out_path)
-                return out_path
-
-            raise RuntimeError((err2 or err1 or "ffmpeg failed").strip())
-
-    return src_path
-
-
-def transcode_if_needed(src_path: str) -> str:
-    """Backwards compatible entry point used by the existing streaming routes.
-
-    Audio: uses AUDIO_TRANSCODE at play time.
-    Video: never transcodes at play time; prefers an already created browser compatible sibling output.
-    """
-    if is_audio(src_path):
-        return audio_transcode_if_needed(src_path)
-
-    if is_video(src_path):
-        base, _ = os.path.splitext(src_path)
-        # Prefer the download time browser compatible output when present.
-        cand = base + "." + VIDEO_BROWSER_TARGET_EXT
-        if os.path.exists(cand) and os.path.isfile(cand):
-            return cand
-        cand2 = base + ".browser." + VIDEO_BROWSER_TARGET_EXT
-        if os.path.exists(cand2) and os.path.isfile(cand2):
-            return cand2
-        return src_path
-
-    return src_path
 # =========================
 # =========================
 # YouTube search and yt-dlp integration
@@ -4776,8 +4347,6 @@ def rd_delete_torrent_best_effort(torrent_id: Optional[str]) -> None:
 # =========================
 # Video auto transcode queue
 # =========================
-
-VIDEO_BROWSER_TARGET_EXT = "mp4"
 
 _VIDEO_POST_QUEUE: "queue.Queue[Tuple[str, str]]" = queue.Queue()
 _VIDEO_POST_THREAD: Optional[threading.Thread] = None
