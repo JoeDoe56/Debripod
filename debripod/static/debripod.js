@@ -8,15 +8,64 @@
     "edge": {refraction: 0.047, bevelDepth: 0.136, bevelWidth: 0.076, frost: 2, shadow: true, specular: false}
   };
   const UI_SETTINGS_KEY = "debripod_ui_settings";
+  const VISUALIZER_PRESETS = {
+    album: {
+      label: "Orbit",
+      style: "orbit",
+      motion: 1
+    },
+    aurora: {
+      label: "Aurora",
+      style: "ribbon",
+      motion: 0.82
+    },
+    ember: {
+      label: "Ember",
+      style: "bloom",
+      motion: 0.72
+    },
+    prism: {
+      label: "Prism",
+      style: "prism",
+      motion: 1.18
+    },
+    sonar: {
+      label: "Sonar",
+      style: "rings",
+      motion: 0.94
+    },
+    cascade: {
+      label: "Cascade",
+      style: "cascade",
+      motion: 0.76
+    },
+    nova: {
+      label: "Nova",
+      style: "nova",
+      motion: 1.08
+    },
+    lattice: {
+      label: "Lattice",
+      style: "lattice",
+      motion: 0.88
+    }
+  };
+  const VISUALIZER_BAND_LABELS = ["low low", "low high", "low mids", "mids", "upper mids", "high low", "high high"];
   const DEFAULT_UI_SETTINGS = {
     visualizer: false,
     visualizerStrength: "medium",
+    visualizerPreset: "album",
     liquidGlassPreset: "default",
     liquidGlassMode: "clear"
   };
   function normalizeVisualizerStrength(value){
     const k = String(value || "medium").trim().toLowerCase();
     return (k === "low" || k === "medium" || k === "high") ? k : "medium";
+  }
+
+  function normalizeVisualizerPreset(value){
+    const k = String(value || "album").trim().toLowerCase();
+    return VISUALIZER_PRESETS[k] ? k : "album";
   }
 
   function normalizeLiquidGlassPreset(name){
@@ -38,6 +87,7 @@
         if(saved && typeof saved === "object"){
           out.visualizer = !!saved.visualizer;
           out.visualizerStrength = normalizeVisualizerStrength(saved.visualizerStrength);
+          out.visualizerPreset = normalizeVisualizerPreset(saved.visualizerPreset);
           out.liquidGlassPreset = normalizeLiquidGlassPreset(saved.liquidGlassPreset);
           out.liquidGlassMode = normalizeLiquidGlassMode(saved.liquidGlassMode);
           return out;
@@ -46,6 +96,7 @@
     }catch(e){}
     try{ out.visualizer = (localStorage.getItem("debripod_visualizer") || "") === "1"; }catch(e){}
     try{ out.visualizerStrength = normalizeVisualizerStrength(localStorage.getItem("debripod_visualizer_strength") || out.visualizerStrength); }catch(e){}
+    try{ out.visualizerPreset = normalizeVisualizerPreset(localStorage.getItem("debripod_visualizer_preset") || out.visualizerPreset); }catch(e){}
     try{ out.liquidGlassPreset = normalizeLiquidGlassPreset(localStorage.getItem("debripod_liquid_gl_preset") || out.liquidGlassPreset); }catch(e){}
     try{ out.liquidGlassMode = normalizeLiquidGlassMode(localStorage.getItem("debripod_liquid_gl_mode") || out.liquidGlassMode); }catch(e){}
     return out;
@@ -55,6 +106,7 @@
     try{ localStorage.setItem(UI_SETTINGS_KEY, JSON.stringify(uiSettings)); }catch(e){}
     try{ localStorage.setItem("debripod_visualizer", uiSettings.visualizer ? "1" : "0"); }catch(e){}
     try{ localStorage.setItem("debripod_visualizer_strength", uiSettings.visualizerStrength); }catch(e){}
+    try{ localStorage.setItem("debripod_visualizer_preset", uiSettings.visualizerPreset); }catch(e){}
     try{ localStorage.setItem("debripod_liquid_gl_preset", uiSettings.liquidGlassPreset); }catch(e){}
     try{ localStorage.setItem("debripod_liquid_gl_mode", uiSettings.liquidGlassMode); }catch(e){}
   }
@@ -157,6 +209,7 @@
         const t = Math.max(0, Math.min(1, (now - started) / duration));
         const eased = 1 - Math.pow(1 - t, 3);
         const mixed = Object.assign({}, toOptions);
+        mixed.glassMode = eased < 0.55 ? fromOptions.glassMode : toOptions.glassMode;
         numericKeys.forEach((key)=>{
           const a = Number(fromOptions[key]);
           const b = Number(toOptions[key]);
@@ -901,6 +954,8 @@ let visualizerActive = false;
 let visualizerTrackKey = "";
 let visualizerSampleNonce = 0;
 let visualizerStrength = normalizeVisualizerStrength(uiSettings.visualizerStrength);
+let visualizerPresetName = normalizeVisualizerPreset(uiSettings.visualizerPreset);
+let visualizerStrengthTransition = null;
 const defaultTheme = {
   accent: "rgba(10,132,255,.88)",
   accentStrong: "rgba(10,132,255,1)",
@@ -933,6 +988,12 @@ let visualizerEnergy = 0;
 let visualizerBass = 0;
 let visualizerMid = 0;
 let visualizerTreble = 0;
+let visualizerBands = [0, 0, 0, 0, 0, 0, 0];
+let visualizerBpm = 120;
+let visualizerBeatPulse = 0;
+let visualizerBeatLastTs = 0;
+let visualizerBeatEnergyAvg = 0;
+let visualizerBeatIntervals = [];
 let visualizerCtx = null;
 let visualizerCanvasDpr = 0;
 let visualizerCanvasW = 0;
@@ -948,6 +1009,47 @@ const VISUALIZER_STRENGTHS = {
   medium: {dpr: 0.86, interval: 17, bassFields: 2, midFields: 2, trebleFields: 2, speed: 0.82, alpha: 0.68, bright: 0.92, coverage: 1.0},
   high: {dpr: 1.05, interval: 17, bassFields: 3, midFields: 3, trebleFields: 3, speed: 1.02, alpha: 0.86, bright: 1.06, coverage: 1.22}
 };
+
+function visualizerStrengthConfigFor(name){
+  return VISUALIZER_STRENGTHS[normalizeVisualizerStrength(name)] || VISUALIZER_STRENGTHS.medium;
+}
+
+function mixVisualizerStrengthConfig(a, b, t){
+  const p = Math.max(0, Math.min(1, Number(t || 0)));
+  const out = {};
+  Object.keys(b || {}).forEach((key)=>{
+    const av = Number(a && a[key]);
+    const bv = Number(b && b[key]);
+    if(Number.isFinite(av) && Number.isFinite(bv)){
+      out[key] = av + (bv - av) * p;
+    }else{
+      out[key] = b[key];
+    }
+  });
+  out.bassFields = Math.max(1, Math.round(out.bassFields || b.bassFields || 1));
+  out.midFields = Math.max(1, Math.round(out.midFields || b.midFields || 1));
+  out.trebleFields = Math.max(1, Math.round(out.trebleFields || b.trebleFields || 1));
+  return out;
+}
+
+function currentVisualizerStrengthConfig(ts){
+  const target = visualizerStrengthConfigFor(visualizerStrength);
+  try{
+    const tr = visualizerStrengthTransition;
+    if(!tr) return target;
+    const now = Number(ts || performance.now() || 0);
+    const p = Math.max(0, Math.min(1, (now - tr.start) / tr.duration));
+    const eased = 1 - Math.pow(1 - p, 3);
+    if(p >= 1){
+      visualizerStrengthTransition = null;
+      return target;
+    }
+    return mixVisualizerStrengthConfig(tr.from, tr.to, eased);
+  }catch(e){
+    visualizerStrengthTransition = null;
+    return target;
+  }
+}
 
 function currentVisualizerMediaElement(){
   try{
@@ -968,8 +1070,8 @@ function ensureVisualizerAudioGraphFor(el){
     }
     if(!visualizerAnalyser){
       visualizerAnalyser = visualizerAudioCtx.createAnalyser();
-      visualizerAnalyser.fftSize = 128;
-      visualizerAnalyser.smoothingTimeConstant = 0.68;
+      visualizerAnalyser.fftSize = 256;
+      visualizerAnalyser.smoothingTimeConstant = 0.62;
       visualizerData = new Uint8Array(visualizerAnalyser.frequencyBinCount);
     }
     if(!visualizerSources.has(el)){
@@ -990,6 +1092,64 @@ function ensureVisualizerAudioGraphFor(el){
 function clamp01(n){
   const v = Number(n || 0);
   return Math.max(0, Math.min(1, Number.isFinite(v) ? v : 0));
+}
+
+function currentVisualizerPreset(){
+  return VISUALIZER_PRESETS[normalizeVisualizerPreset(visualizerPresetName)] || VISUALIZER_PRESETS.album;
+}
+
+function visualizerPresetLabel(name){
+  const preset = VISUALIZER_PRESETS[normalizeVisualizerPreset(name)];
+  return preset ? preset.label : "Orbit";
+}
+
+function foldedBpmFromInterval(ms){
+  let bpm = 60000 / Math.max(1, Number(ms || 0));
+  while(bpm < 72) bpm *= 2;
+  while(bpm > 168) bpm /= 2;
+  return Math.max(72, Math.min(168, bpm));
+}
+
+function updateVisualizerTempo(nowTs, bassLevel, energyLevel){
+  try{
+    const now = Number(nowTs || performance.now() || 0);
+    const energy = clamp01((Number(bassLevel || 0) * 0.72) + (Number(energyLevel || 0) * 0.28));
+    visualizerBeatEnergyAvg = visualizerBeatEnergyAvg ? (visualizerBeatEnergyAvg * 0.965 + energy * 0.035) : energy;
+    visualizerBeatPulse *= 0.86;
+    const threshold = Math.max(0.18, visualizerBeatEnergyAvg * 1.34 + 0.055);
+    const since = visualizerBeatLastTs ? now - visualizerBeatLastTs : 9999;
+    if(energy > threshold && since > 260){
+      visualizerBeatPulse = Math.min(1, 0.58 + energy * 0.55);
+      if(since < 1500){
+        visualizerBeatIntervals.push(since);
+        if(visualizerBeatIntervals.length > 10) visualizerBeatIntervals.shift();
+        const bpms = visualizerBeatIntervals.map(foldedBpmFromInterval).filter(v=>Number.isFinite(v));
+        if(bpms.length){
+          bpms.sort((a,b)=>a-b);
+          const median = bpms[Math.floor(bpms.length / 2)];
+          visualizerBpm = visualizerBpm + (median - visualizerBpm) * 0.18;
+        }
+      }
+      visualizerBeatLastTs = now;
+    }else if(since > 2600 && visualizerBpm !== 120){
+      visualizerBpm = visualizerBpm + (120 - visualizerBpm) * 0.01;
+    }
+  }catch(e){}
+}
+
+function visualizerMotionTime(ts){
+  const preset = currentVisualizerPreset();
+  const bpmRate = Math.max(0.55, Math.min(1.65, Number(visualizerBpm || 120) / 120));
+  return Number(ts || 0) * 0.001 * bpmRate * (Number(preset.motion || 1));
+}
+
+function resetVisualizerTempo(){
+  visualizerBpm = 120;
+  visualizerBeatPulse = 0;
+  visualizerBeatLastTs = 0;
+  visualizerBeatEnergyAvg = 0;
+  visualizerBeatIntervals = [];
+  visualizerBands = [0, 0, 0, 0, 0, 0, 0];
 }
 
 function rgbForPaletteIndex(i){
@@ -1097,16 +1257,19 @@ function blendVisualizerPalette(){
 function renderVisualizerCanvas(ts){
   try{
     if(!visualizerBg) return;
-    const cfg = VISUALIZER_STRENGTHS[visualizerStrength] || VISUALIZER_STRENGTHS.medium;
+    const cfg = currentVisualizerStrengthConfig(ts);
     if(!resizeVisualizerCanvas(cfg)) return;
     const ctx = visualizerCtx;
     const w = visualizerCanvasW;
     const h = visualizerCanvasH;
-    const t = Number(ts || 0) * 0.001 * cfg.speed;
+    const preset = currentVisualizerPreset();
+    const style = String(preset.style || "orbit");
+    const t = visualizerMotionTime(ts) * cfg.speed;
     const e = visualizerActive ? clamp01(visualizerEnergy) : 0;
     const b = visualizerActive ? clamp01(visualizerBass) : 0;
     const m = visualizerActive ? clamp01(visualizerMid) : 0;
     const tr = visualizerActive ? clamp01(visualizerTreble) : 0;
+    const beat = visualizerActive ? clamp01(visualizerBeatPulse) : 0;
     blendVisualizerPalette();
     const anchor = visualizerAnchorForCanvas(w, h, ts);
 
@@ -1119,31 +1282,118 @@ function renderVisualizerCanvas(ts){
     const maxDim = Math.max(w, h);
     ctx.globalCompositeOperation = "lighter";
 
+    if(style === "ribbon" || style === "prism" || style === "cascade"){
+      const bands = style === "prism" ? 6 : (style === "cascade" ? 5 : 4);
+      for(let i = 0; i < bands; i++){
+        const col = rgbForPaletteIndex(i + 1);
+        const swing = Math.sin(t * (style === "cascade" ? 1.25 : 0.72) + i * 1.7);
+        if(style === "cascade"){
+          const x = ((i + 0.2 + (t * (0.08 + i * 0.012))) % bands) / bands * w;
+          const drift = swing * anchor.rx * (0.18 + m * 0.16);
+          drawLinearGlow(ctx, w, h, x + drift, -h * 0.1, x - drift * 0.55, h * 1.08, col, cfg.alpha * (0.05 + visualizerBands[i % 7] * 0.13), cfg.bright * (0.76 + i * 0.08));
+        }else if(style === "prism"){
+          const xA = anchor.cx + Math.cos(i * 1.37 + t * 0.24) * anchor.rx * 1.55;
+          const yA = anchor.cy + Math.sin(i * 0.91 - t * 0.18) * anchor.ry * 1.38;
+          const xB = anchor.cx - Math.sin(i * 1.11 + t * 0.38) * anchor.rx * 1.62;
+          const yB = anchor.cy + Math.cos(i * 1.49 + t * 0.32) * anchor.ry * 1.46;
+          drawLinearGlow(ctx, w, h, xA, yA, xB, yB, col, cfg.alpha * (0.055 + tr * 0.12 + beat * 0.06), cfg.bright * 1.24);
+        }else{
+          const yA = anchor.cy + (i - (bands - 1) / 2) * anchor.ry * 0.42 + swing * anchor.ry * (0.32 + m * 0.18);
+          const yB = anchor.cy - (i - (bands - 1) / 2) * anchor.ry * 0.36 - swing * anchor.ry * (0.26 + tr * 0.18);
+          drawLinearGlow(ctx, w, h, -w * 0.05, yA, w * 1.05, yB, col, cfg.alpha * (0.05 + m * 0.12 + tr * 0.08), cfg.bright * 1.02);
+        }
+      }
+    }
+
+    if(style === "rings" || style === "nova"){
+      const ringCount = style === "nova" ? 4 : 6;
+      for(let i = 0; i < ringCount; i++){
+        const col = rgbForPaletteIndex(i);
+        const phase = (t * (style === "nova" ? 1.18 : 0.72) + i / ringCount) % 1;
+        const radius = (anchor.art * (style === "nova" ? 0.16 : 0.22) + minDim * (style === "nova" ? (phase * 0.34) : (0.10 + phase * 0.48))) * cfg.coverage * (1 + beat * (style === "nova" ? 0.32 : 0.14));
+        const alpha = cfg.alpha * (style === "nova" ? (0.08 + (1 - phase) * 0.20 + beat * 0.12) : (0.13 + (1 - phase) * 0.10 + (i < 2 ? b * 0.14 : tr * 0.10)));
+        drawRadialField(ctx, w, h, anchor.cx, anchor.cy, radius, col, alpha, cfg.bright * (style === "nova" ? (0.80 + i * 0.13) : (0.58 + i * 0.14)), style === "nova" ? 0.26 : 0.72);
+      }
+    }
+
+    if(style === "lattice"){
+      const lines = visualizerStrength === "high" ? 7 : 5;
+      for(let i = 0; i < lines; i++){
+        const level = clamp01(visualizerBands[i % 7] || (i < 2 ? b : (i < 4 ? m : tr)));
+        const col = rgbForPaletteIndex(i);
+        const phase = i / Math.max(1, lines - 1);
+        const skew = Math.sin(t * 0.42 + i * 0.8) * minDim * 0.10;
+        drawLinearGlow(ctx, w, h, w * phase + skew, 0, w * (1 - phase) - skew, h, col, cfg.alpha * (0.035 + level * 0.13), cfg.bright * (0.72 + i * 0.08));
+        drawLinearGlow(ctx, w, h, 0, h * phase - skew * 0.55, w, h * (1 - phase) + skew * 0.55, col, cfg.alpha * (0.026 + level * 0.08), cfg.bright * (0.68 + i * 0.06));
+      }
+    }
+
+    if(style === "bloom"){
+      const sparks = visualizerStrength === "high" ? 10 : 6;
+      for(let i = 0; i < sparks; i++){
+        const level = clamp01(visualizerBands[i % 7] || (i < 3 ? b : (i < 6 ? m : tr)));
+        const phase = (t * (0.10 + i * 0.006) + i * 0.173) % 1;
+        const side = (i % 2 ? -1 : 1);
+        const x = anchor.cx + side * anchor.rx * (0.18 + (i % 4) * 0.16) + Math.sin(t * 0.9 + i) * anchor.rx * 0.08;
+        const y = anchor.cy + anchor.ry * 0.52 - phase * anchor.ry * 1.65;
+        const radius = (anchor.art * 0.045 + minDim * 0.035) * (1 + level * 1.1 + beat * 0.22);
+        drawRadialField(ctx, w, h, x, y, radius, rgbForPaletteIndex(i + 2), cfg.alpha * (0.08 + level * 0.20), cfg.bright * (0.95 + phase * 0.28), 0.24);
+      }
+      drawRadialField(ctx, w, h, anchor.cx, anchor.cy + anchor.ry * 0.28, anchor.art * 0.58 * (1 + b * 0.22 + beat * 0.16), rgbForPaletteIndex(0), cfg.alpha * (0.12 + b * 0.28), cfg.bright * 0.62, 0.64);
+    }
+
+    if(visualizerStrength === "high"){
+      const layers = [
+        {idx:0, scale:.42, bright:.46, alpha:.18, orbit:.34},
+        {idx:1, scale:.52, bright:.58, alpha:.17, orbit:.50},
+        {idx:2, scale:.36, bright:.74, alpha:.15, orbit:.72},
+        {idx:3, scale:.30, bright:.92, alpha:.13, orbit:.92},
+        {idx:4, scale:.24, bright:1.05, alpha:.12, orbit:1.08},
+        {idx:5, scale:.18, bright:1.18, alpha:.11, orbit:1.22},
+        {idx:6, scale:.13, bright:1.30, alpha:.10, orbit:1.34}
+      ];
+      for(const layer of layers){
+        const level = clamp01(visualizerBands[layer.idx] || 0);
+        const angle = t * (0.42 + layer.idx * 0.09) + layer.idx * 0.92;
+        const wobble = Math.sin(t * (0.62 + layer.idx * 0.05) + layer.idx) * 0.10;
+        const orbit = layer.orbit + level * 0.16 + beat * 0.06;
+        const x = anchor.cx + Math.cos(angle + wobble) * anchor.rx * orbit;
+        const y = anchor.cy + Math.sin(angle - wobble) * anchor.ry * orbit;
+        const radius = (anchor.art * layer.scale + minDim * layer.scale * 0.72) * cfg.coverage * (1 + level * 0.42 + beat * 0.08);
+        drawRadialField(ctx, w, h, x, y, radius, rgbForPaletteIndex(layer.idx), cfg.alpha * (layer.alpha + level * 0.22), cfg.bright * layer.bright, 0.38);
+      }
+    }
+
     for(let i = 0; i < cfg.bassFields; i++){
       const col = rgbForPaletteIndex(i);
       const spread = cfg.bassFields <= 1 ? 0 : (i / (cfg.bassFields - 1) - 0.5);
-      const angle = Math.PI * 0.5 + spread * Math.PI * 0.72 + Math.sin(t * 0.10 + i) * 0.08;
-      const x = anchor.cx + Math.cos(angle) * anchor.rx * (0.88 + b * 0.10);
-      const y = anchor.cy + Math.sin(angle) * anchor.ry * (0.98 + b * 0.12);
-      const radius = (anchor.art * 0.42 + minDim * (0.26 + i * 0.055)) * cfg.coverage * (1 + b * 0.30 + e * 0.12);
+      const angleBase = style === "bloom" ? Math.PI * 0.5 : (style === "rings" ? t * 0.28 : (style === "nova" ? t * 0.95 : (style === "cascade" ? Math.PI * 0.08 : Math.PI * 0.5)));
+      const angle = angleBase + spread * Math.PI * (style === "prism" ? 1.35 : 0.72) + Math.sin(t * 0.72 + i) * 0.10;
+      const orbitScale = style === "bloom" ? 0.16 : (style === "rings" ? 0.36 : (style === "nova" ? 0.08 + beat * 0.12 : (style === "cascade" ? 0.58 : (style === "lattice" ? 0.72 : 0.88))));
+      const x = anchor.cx + Math.cos(angle) * anchor.rx * (orbitScale + b * 0.10);
+      const yOffset = style === "cascade" ? ((t * 0.11 + i * 0.28) % 1 - 0.5) * h * 0.72 : Math.sin(angle) * anchor.ry * (orbitScale + 0.10 + b * 0.12);
+      const y = style === "cascade" ? anchor.cy + yOffset : anchor.cy + yOffset;
+      const radius = (anchor.art * (style === "nova" ? 0.32 : 0.42) + minDim * (0.26 + i * 0.055)) * cfg.coverage * (1 + b * 0.30 + e * 0.12 + beat * (style === "nova" ? 0.38 : 0.16));
       drawRadialField(ctx, w, h, x, y, radius, col, cfg.alpha * (0.18 + b * 0.34 + e * 0.12), cfg.bright * 0.62, 0.52);
     }
 
     for(let i = 0; i < cfg.midFields; i++){
       const col = rgbForPaletteIndex(i + cfg.bassFields);
-      const angle = (i / Math.max(1, cfg.midFields)) * Math.PI * 2 + t * 0.16 + Math.sin(t * 0.18 + i) * 0.10;
-      const x = anchor.cx + Math.cos(angle) * anchor.rx * (1.02 + m * 0.12);
-      const y = anchor.cy + Math.sin(angle) * anchor.ry * (1.00 + m * 0.10);
-      const radius = (anchor.art * 0.24 + minDim * (0.15 + i * 0.035)) * cfg.coverage * (1 + m * 0.26 + e * 0.08);
+      const angle = (i / Math.max(1, cfg.midFields)) * Math.PI * 2 + t * (style === "prism" ? 1.18 : (style === "lattice" ? 0.18 : (style === "cascade" ? 0.68 : 0.46))) + Math.sin(t * 0.58 + i) * 0.12;
+      const spread = style === "bloom" ? 0.48 : (style === "rings" ? 0.78 : (style === "nova" ? 0.34 + beat * 0.20 : (style === "lattice" ? 1.18 : 1.02)));
+      const x = anchor.cx + Math.cos(angle) * anchor.rx * (spread + m * 0.12);
+      const y = anchor.cy + Math.sin(angle) * anchor.ry * (spread + m * 0.10);
+      const radius = (anchor.art * 0.24 + minDim * (0.15 + i * 0.035)) * cfg.coverage * (1 + m * 0.26 + e * 0.08 + beat * 0.08);
       drawRadialField(ctx, w, h, x, y, radius, col, cfg.alpha * (0.16 + m * 0.30 + e * 0.08), cfg.bright * 0.90, 0.42);
     }
 
     for(let i = 0; i < cfg.trebleFields; i++){
       const col = rgbForPaletteIndex(i + cfg.bassFields + cfg.midFields);
-      const angle = (i / Math.max(1, cfg.trebleFields)) * Math.PI * 2 + Math.PI / Math.max(2, cfg.trebleFields) + t * 0.38;
-      const x = anchor.cx + Math.cos(angle) * anchor.rx * (1.16 + tr * 0.14);
-      const y = anchor.cy + Math.sin(angle) * anchor.ry * (1.10 + tr * 0.12);
-      const radius = (anchor.art * 0.13 + minDim * (0.075 + i * 0.018)) * cfg.coverage * (1 + tr * 0.38 + e * 0.06);
+      const angle = (i / Math.max(1, cfg.trebleFields)) * Math.PI * 2 + Math.PI / Math.max(2, cfg.trebleFields) + t * (style === "ribbon" ? 1.12 : (style === "prism" ? -1.26 : (style === "nova" ? 1.72 : 0.88)));
+      const spread = style === "bloom" ? 1.05 : (style === "rings" ? 1.36 : (style === "cascade" ? 1.48 : (style === "lattice" ? 1.05 : 1.16)));
+      const x = anchor.cx + Math.cos(angle) * anchor.rx * (spread + tr * 0.14);
+      const y = anchor.cy + Math.sin(angle) * anchor.ry * (spread * 0.95 + tr * 0.12);
+      const radius = (anchor.art * 0.13 + minDim * (0.075 + i * 0.018)) * cfg.coverage * (1 + tr * 0.38 + e * 0.06 + beat * 0.10);
       drawRadialField(ctx, w, h, x, y, radius, col, cfg.alpha * (0.08 + tr * 0.30 + e * 0.08), cfg.bright * 1.16, 0.34);
     }
 
@@ -1173,6 +1423,9 @@ function currentVisualizerFrameState(ts){
     bass: visualizerBass,
     mid: visualizerMid,
     treble: visualizerTreble,
+    bands: visualizerBands,
+    bandLabels: VISUALIZER_BAND_LABELS,
+    bpm: visualizerBpm,
     palette: visualizerPalette
   };
 }
@@ -1196,7 +1449,7 @@ function visualizerFrame(ts){
   visualizerFrameHandle = 0;
   try{
     const nowTs = Number(ts || performance.now() || 0);
-    const cfg = VISUALIZER_STRENGTHS[visualizerStrength] || VISUALIZER_STRENGTHS.medium;
+    const cfg = currentVisualizerStrengthConfig(ts);
     const interval = (visualizerActive || wheelGlassTiltPoint) ? cfg.interval : 180;
     if(visualizerLastFrameTs && (nowTs - visualizerLastFrameTs) < interval){
       scheduleVisualizerFrame(interval - (nowTs - visualizerLastFrameTs));
@@ -1209,6 +1462,7 @@ function visualizerFrame(ts){
     let nextMid = 0;
     let nextTreble = 0;
     let nextEnergy = 0;
+    let nextBands = [0, 0, 0, 0, 0, 0, 0];
     if(canAnalyze){
       try{ visualizerAnalyser.getByteFrequencyData(visualizerData); }catch(e){}
       const n = visualizerData.length || 0;
@@ -1216,12 +1470,22 @@ function visualizerFrame(ts){
         const bassEnd = Math.max(1, Math.floor(n * 0.16));
         const midEnd = Math.max(bassEnd + 1, Math.floor(n * 0.50));
         let bassSum = 0, midSum = 0, trebleSum = 0, allSum = 0;
+        const bandCuts = [0, 0.055, 0.12, 0.24, 0.42, 0.60, 0.78, 1.0].map(x=>Math.max(0, Math.min(n, Math.round(n * x))));
+        const bandSums = [0, 0, 0, 0, 0, 0, 0];
+        const bandCounts = [0, 0, 0, 0, 0, 0, 0];
         for(let i = 0; i < n; i++){
           const v = Number(visualizerData[i] || 0) / 255;
           allSum += v;
           if(i < bassEnd) bassSum += v;
           else if(i < midEnd) midSum += v;
           else trebleSum += v;
+          for(let bi = 0; bi < 7; bi++){
+            if(i >= bandCuts[bi] && i < Math.max(bandCuts[bi] + 1, bandCuts[bi + 1])){
+              bandSums[bi] += v;
+              bandCounts[bi] += 1;
+              break;
+            }
+          }
         }
         nextBass = bassSum / Math.max(1, bassEnd);
         nextMid = midSum / Math.max(1, midEnd - bassEnd);
@@ -1235,6 +1499,12 @@ function visualizerFrame(ts){
         nextMid = Math.min(1, (nextMid * 0.62) + (midPeak * 0.88));
         nextTreble = Math.min(1, (nextTreble * 0.58) + (treblePeak * 0.92));
         nextEnergy = Math.min(1, (nextEnergy * 0.45) + (energyPeak * 1.05) + (bassPeak * 0.12));
+        nextBands = bandSums.map((sum, idx)=>{
+          const raw = sum / Math.max(1, bandCounts[idx]);
+          const lift = idx < 2 ? 1.95 : (idx < 5 ? 1.72 : 1.88);
+          const floor = idx < 2 ? 0.07 : (idx < 5 ? 0.055 : 0.045);
+          return Math.min(1, raw * 0.58 + Math.max(0, raw - floor) * lift);
+        });
       }
     }else if(visualizerEnabled && visualizerActive && !document.hidden){
       const idle = nowTs * 0.001;
@@ -1242,6 +1512,7 @@ function visualizerFrame(ts){
       nextMid = 0.08 + Math.sin(idle * 0.53 + 1.6) * 0.025;
       nextTreble = 0.06 + Math.sin(idle * 0.91 + 2.4) * 0.020;
       nextEnergy = 0.08 + Math.sin(idle * 0.43) * 0.025;
+      nextBands = [nextBass, nextBass * .82, nextMid * .86, nextMid, nextMid * .78, nextTreble * .86, nextTreble];
     }
     const easeUp = 0.42;
     const easeDown = 0.18;
@@ -1250,6 +1521,9 @@ function visualizerFrame(ts){
     visualizerMid = mixVal(visualizerMid, nextMid);
     visualizerTreble = mixVal(visualizerTreble, nextTreble);
     visualizerEnergy = mixVal(visualizerEnergy, nextEnergy);
+    visualizerBands = visualizerBands.map((prev, idx)=> mixVal(prev || 0, nextBands[idx] || 0));
+    updateVisualizerTempo(nowTs, nextBands[0] || nextBass, nextEnergy);
+    try{ if(state) state.visualizerBpm = Math.round(visualizerBpm); }catch(e){}
     sampleLiveVideoPalette(nowTs);
     renderVisualizerCanvas(nowTs);
     refreshLiquidGlassVisualizerSources("visualizer frame");
@@ -1456,16 +1730,23 @@ function setVisualizerEnabled(on){
   uiSettings.visualizer = visualizerEnabled;
   saveUiSettings();
   updateVisualizerState();
-  try{ if(state && state.current && state.current.kind === "libuisettings") viewLibUiSettings(false); }catch(e){}
 }
 
 function setVisualizerStrength(value){
-  visualizerStrength = normalizeVisualizerStrength(value);
+  const now = performance.now();
+  const next = normalizeVisualizerStrength(value);
+  visualizerStrengthTransition = {
+    from: currentVisualizerStrengthConfig(now),
+    to: visualizerStrengthConfigFor(next),
+    start: now,
+    duration: 460
+  };
+  visualizerStrength = next;
   uiSettings.visualizerStrength = visualizerStrength;
   saveUiSettings();
   visualizerCanvasDpr = 0;
-  renderVisualizerCanvas(performance.now());
-  try{ if(state && state.current && state.current.kind === "libuisettings") viewLibUiSettings(false); }catch(e){}
+  renderVisualizerCanvas(now);
+  scheduleVisualizerFrame(0);
 }
 
 function cycleVisualizerStrength(){
@@ -1503,6 +1784,31 @@ function setVisualizerPalette(palette){
     rootTheme.visualizerC = rgbaFrom(visualizerTargetPalette[2], .24);
   }
   applyThemeVars(rootTheme);
+}
+
+function applyVisualizerPresetPalette(){
+  if(visualizerTrackKey && visualizerPaletteCache.has(visualizerTrackKey)){
+    setVisualizerPalette(visualizerPaletteCache.get(visualizerTrackKey));
+  }else{
+    setVisualizerPalette(defaultVisualizerPalette);
+  }
+}
+
+function setVisualizerPreset(value){
+  visualizerPresetName = normalizeVisualizerPreset(value);
+  uiSettings.visualizerPreset = visualizerPresetName;
+  saveUiSettings();
+  try{ if(state) state.visualizerPreset = visualizerPresetName; }catch(e){}
+  resetVisualizerTempo();
+  applyVisualizerPresetPalette();
+  renderVisualizerCanvas(performance.now());
+  scheduleLiquidGlassSnapshot("visualizer preset", true);
+}
+
+function cycleVisualizerPreset(){
+  const order = Object.keys(VISUALIZER_PRESETS);
+  const idx = order.indexOf(normalizeVisualizerPreset(visualizerPresetName));
+  setVisualizerPreset(order[(idx + 1) % order.length] || "album");
 }
 
 function cacheVisualizerPalette(key, palette){
@@ -1589,6 +1895,7 @@ function sampleLiveVideoPalette(ts){
 function sampleThemeFromArt(src){
   const art = nowPlayingArtSrcValue(src);
   const key = nowPlayingArtCompareKey(art);
+  if(key && key !== visualizerTrackKey) resetVisualizerTempo();
   if(!key || !art){
     visualizerTrackKey = "";
     setVisualizerPalette(defaultVisualizerPalette);
@@ -1657,6 +1964,8 @@ function nowPlayingArtCompareKey(src){
     return (q[0] || "") + "|" + ver;
   }
 }
+
+applyVisualizerPresetPalette();
 
 function currentNowPlayingArtSrc(){
   try{
@@ -2608,6 +2917,8 @@ function fmtTime(sec){
     playOrderPlaylist: null,
     preloadedIndex: null,
     visualizerEnabled: visualizerEnabled,
+    visualizerPreset: visualizerPresetName,
+    visualizerBpm: visualizerBpm,
     streamQueue: [],
     streamQueueIndex: -1
   };
@@ -2618,6 +2929,7 @@ function fmtTime(sec){
     state.shuffleEnabled = (localStorage.getItem("debripod_shuffle") === "1");
   }catch(e){ state.shuffleEnabled = false; }
   applyThemeVars(defaultTheme);
+  applyVisualizerPresetPalette();
   updateVisualizerState();
 
   let playbackLastPostTs = 0;
@@ -4745,14 +5057,20 @@ async function libDoSearch(engine, q){
 
   async function viewLibUiSettings(push){
     showNowPlaying(false);
+    const restoreSel = (!push && state.current && state.current.kind === "libuisettings") ? state.sel : null;
+    const restoreScroll = (!push && state.current && state.current.kind === "libuisettings" && libList) ? libList.scrollTop : null;
     await setView({
       kind:"libuisettings",
       label:"UI Settings",
+      savedSel: restoreSel,
+      savedScroll: restoreScroll,
       load: async function(){
         libControlsHide();
         const items = [];
         items.push({kind:"libui_action", label:"Visualizer", action:"toggle_visualizer", pills:[visualizerEnabled ? "On" : "Off"]});
         items.push({kind:"libui_action", label:"Visualizer Strength", action:"cycle_visualizer_strength", pills:[titleCaseSetting(visualizerStrength)]});
+        items.push({kind:"libui_action", label:"Visualizer Preset", action:"cycle_visualizer_preset", pills:[visualizerPresetLabel(visualizerPresetName)]});
+        items.push({kind:"info", label:"Estimated Tempo", pills:[String(Math.round(visualizerBpm || 120)) + " BPM"]});
         items.push({kind:"libui_action", label:"Liquid Glass Preset", action:"cycle_liquid_preset", pills:[titleCaseSetting(liquidGlassPresetName)]});
         items.push({kind:"libui_action", label:"Liquid Glass Mode", action:"cycle_liquid_mode", pills:[titleCaseSetting(liquidGlassModeName)]});
         resetList(items);
@@ -4820,6 +5138,10 @@ async function libDoSearch(engine, q){
         return true;
       case "cycle_visualizer_strength":
         cycleVisualizerStrength();
+        await viewLibUiSettings(false);
+        return true;
+      case "cycle_visualizer_preset":
+        cycleVisualizerPreset();
         await viewLibUiSettings(false);
         return true;
       case "cycle_liquid_preset":
