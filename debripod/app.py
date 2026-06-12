@@ -1,14 +1,14 @@
 from __future__ import annotations
 
-from . import legacy
+from . import runtime
 
 
 def create_app():
-    return legacy.app
+    return runtime.app
 
 
 def main() -> None:
-    legacy.main()
+    runtime.main()
 
 
 if __name__ == "__main__":
