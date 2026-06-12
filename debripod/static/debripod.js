@@ -7,13 +7,66 @@
     "frost": {refraction: 0, bevelDepth: 0.035, bevelWidth: 0.119, frost: 0.9, shadow: true, specular: true},
     "edge": {refraction: 0.047, bevelDepth: 0.136, bevelWidth: 0.076, frost: 2, shadow: true, specular: false}
   };
-  let liquidGlassPresetName = "default";
-  let liquidGlassModeName = "clear";
-  let liquidGlassReady = false;
-  let liquidWheelLens = null;
-  let wheelGlassResetTimer = null;
-  let wheelGlassTiltFrame = 0;
-  let wheelGlassTiltPoint = null;
+  const UI_SETTINGS_KEY = "debripod_ui_settings";
+  const VISUALIZER_PRESETS = {
+    album: {
+      label: "Orbit",
+      style: "orbit",
+      motion: 1
+    },
+    aurora: {
+      label: "Aurora",
+      style: "ribbon",
+      motion: 0.82
+    },
+    ember: {
+      label: "Ember",
+      style: "bloom",
+      motion: 0.72
+    },
+    prism: {
+      label: "Prism",
+      style: "prism",
+      motion: 1.18
+    },
+    sonar: {
+      label: "Sonar",
+      style: "rings",
+      motion: 0.94
+    },
+    cascade: {
+      label: "Cascade",
+      style: "cascade",
+      motion: 0.76
+    },
+    nova: {
+      label: "Nova",
+      style: "nova",
+      motion: 1.08
+    },
+    lattice: {
+      label: "Lattice",
+      style: "lattice",
+      motion: 0.88
+    }
+  };
+  const VISUALIZER_BAND_LABELS = ["low low", "low high", "low mids", "mids", "upper mids", "high low", "high high"];
+  const DEFAULT_UI_SETTINGS = {
+    visualizer: false,
+    visualizerStrength: "medium",
+    visualizerPreset: "album",
+    liquidGlassPreset: "default",
+    liquidGlassMode: "clear"
+  };
+  function normalizeVisualizerStrength(value){
+    const k = String(value || "medium").trim().toLowerCase();
+    return (k === "low" || k === "medium" || k === "high") ? k : "medium";
+  }
+
+  function normalizeVisualizerPreset(value){
+    const k = String(value || "album").trim().toLowerCase();
+    return VISUALIZER_PRESETS[k] ? k : "album";
+  }
 
   function normalizeLiquidGlassPreset(name){
     const key = String(name || "default").trim().toLowerCase();
@@ -23,6 +76,56 @@
   function normalizeLiquidGlassMode(name){
     const key = String(name || "clear").trim().toLowerCase();
     return (key === "dark" || key === "light" || key === "clear") ? key : "clear";
+  }
+
+  function loadUiSettings(){
+    const out = Object.assign({}, DEFAULT_UI_SETTINGS);
+    try{
+      const raw = localStorage.getItem(UI_SETTINGS_KEY) || "";
+      if(raw){
+        const saved = JSON.parse(raw);
+        if(saved && typeof saved === "object"){
+          out.visualizer = !!saved.visualizer;
+          out.visualizerStrength = normalizeVisualizerStrength(saved.visualizerStrength);
+          out.visualizerPreset = normalizeVisualizerPreset(saved.visualizerPreset);
+          out.liquidGlassPreset = normalizeLiquidGlassPreset(saved.liquidGlassPreset);
+          out.liquidGlassMode = normalizeLiquidGlassMode(saved.liquidGlassMode);
+          return out;
+        }
+      }
+    }catch(e){}
+    try{ out.visualizer = (localStorage.getItem("debripod_visualizer") || "") === "1"; }catch(e){}
+    try{ out.visualizerStrength = normalizeVisualizerStrength(localStorage.getItem("debripod_visualizer_strength") || out.visualizerStrength); }catch(e){}
+    try{ out.visualizerPreset = normalizeVisualizerPreset(localStorage.getItem("debripod_visualizer_preset") || out.visualizerPreset); }catch(e){}
+    try{ out.liquidGlassPreset = normalizeLiquidGlassPreset(localStorage.getItem("debripod_liquid_gl_preset") || out.liquidGlassPreset); }catch(e){}
+    try{ out.liquidGlassMode = normalizeLiquidGlassMode(localStorage.getItem("debripod_liquid_gl_mode") || out.liquidGlassMode); }catch(e){}
+    return out;
+  }
+
+  function saveUiSettings(){
+    try{ localStorage.setItem(UI_SETTINGS_KEY, JSON.stringify(uiSettings)); }catch(e){}
+    try{ localStorage.setItem("debripod_visualizer", uiSettings.visualizer ? "1" : "0"); }catch(e){}
+    try{ localStorage.setItem("debripod_visualizer_strength", uiSettings.visualizerStrength); }catch(e){}
+    try{ localStorage.setItem("debripod_visualizer_preset", uiSettings.visualizerPreset); }catch(e){}
+    try{ localStorage.setItem("debripod_liquid_gl_preset", uiSettings.liquidGlassPreset); }catch(e){}
+    try{ localStorage.setItem("debripod_liquid_gl_mode", uiSettings.liquidGlassMode); }catch(e){}
+  }
+
+  let uiSettings = loadUiSettings();
+  let liquidGlassPresetName = uiSettings.liquidGlassPreset;
+  let liquidGlassModeName = uiSettings.liquidGlassMode;
+  let wheelRotationMaxDegrees = 0.95;
+  let liquidGlassReady = false;
+  let liquidWheelLens = null;
+  let wheelGlassResetTimer = null;
+  let wheelGlassTiltFrame = 0;
+  let wheelGlassTiltPoint = null;
+  let wheelGlassTiltRect = null;
+
+  function normalizeWheelRotationMaxDegrees(value){
+    const n = Number(value);
+    if(!Number.isFinite(n)) return 0.95;
+    return Math.max(0, Math.min(12, n));
   }
 
   function liquidGlassPresetOptions(){
@@ -38,46 +141,286 @@
     return options;
   }
 
+  function liquidGlassStyleOptions(presetName, modeName){
+    const preset = LIQUID_GL_PRESETS[normalizeLiquidGlassPreset(presetName)] || LIQUID_GL_PRESETS.default;
+    return Object.assign({
+      glassMode: normalizeLiquidGlassMode(modeName)
+    }, preset);
+  }
+
   function asLiquidArray(value){
     if(!value) return [];
     return Array.isArray(value) ? value : [value];
   }
 
+  function liquidGlassRenderers(){
+    const list = [];
+    try{
+      if(window.__liquidGLRenderer__) list.push(window.__liquidGLRenderer__);
+      const renderers = window.__liquidGLRenderers__;
+      if(renderers && typeof renderers === "object"){
+        Object.keys(renderers).forEach((key)=>{
+          const renderer = renderers[key];
+          if(renderer && list.indexOf(renderer) < 0) list.push(renderer);
+        });
+      }
+    }catch(e){}
+    return list;
+  }
+
+  function liquidGlassRendererByKey(key){
+    try{
+      const wanted = key || "default";
+      const renderers = window.__liquidGLRenderers__;
+      if(renderers && renderers[wanted]) return renderers[wanted];
+      if(wanted === "default") return window.__liquidGLRenderer__ || null;
+    }catch(e){}
+    return null;
+  }
+
+  function applyLiquidGlassStyleOptions(options){
+    try{
+      const opts = options || liquidGlassStyleOptions(liquidGlassPresetName, liquidGlassModeName);
+      liquidGlassRenderers().forEach((renderer)=>{
+        if(!renderer || !renderer.lenses) return;
+        renderer.lenses.forEach((lens)=>{
+          if(!lens || !lens.options) return;
+          ["refraction", "bevelDepth", "bevelWidth", "frost", "specular"].forEach((key)=>{
+            if(opts[key] !== undefined) lens.options[key] = opts[key];
+          });
+          lens.options.glassMode = normalizeLiquidGlassMode(opts.glassMode);
+          if(lens._glassModeIndex) lens.glassModeIndex = lens._glassModeIndex(lens.options.glassMode);
+        });
+        if(renderer.render) renderer.render(currentVisualizerFrameState());
+      });
+    }catch(e){}
+  }
+
+  function transitionLiquidGlassStyle(fromOptions, toOptions){
+    try{
+      if(!liquidGlassReady){
+        applyLiquidGlassStyleOptions(toOptions);
+        return;
+      }
+      const duration = 420;
+      const started = performance.now();
+      const numericKeys = ["refraction", "bevelDepth", "bevelWidth", "frost"];
+      const tick = (now)=>{
+        const t = Math.max(0, Math.min(1, (now - started) / duration));
+        const eased = 1 - Math.pow(1 - t, 3);
+        const mixed = Object.assign({}, toOptions);
+        mixed.glassMode = eased < 0.55 ? fromOptions.glassMode : toOptions.glassMode;
+        numericKeys.forEach((key)=>{
+          const a = Number(fromOptions[key]);
+          const b = Number(toOptions[key]);
+          mixed[key] = (Number.isFinite(a) ? a : 0) + ((Number.isFinite(b) ? b : 0) - (Number.isFinite(a) ? a : 0)) * eased;
+        });
+        applyLiquidGlassStyleOptions(mixed);
+        if(t < 1){
+          requestAnimationFrame(tick);
+        }else{
+          applyLiquidGlassStyleOptions(toOptions);
+          scheduleLiquidGlassSnapshot("ui settings", true);
+        }
+      };
+      requestAnimationFrame(tick);
+    }catch(e){
+      applyLiquidGlassStyleOptions(toOptions);
+    }
+  }
+
+  function setLiquidGlassSettings(presetName, modeName, smooth){
+    const fromOptions = liquidGlassStyleOptions(liquidGlassPresetName, liquidGlassModeName);
+    liquidGlassPresetName = normalizeLiquidGlassPreset(presetName);
+    liquidGlassModeName = normalizeLiquidGlassMode(modeName);
+    uiSettings.liquidGlassPreset = liquidGlassPresetName;
+    uiSettings.liquidGlassMode = liquidGlassModeName;
+    saveUiSettings();
+    const toOptions = liquidGlassStyleOptions(liquidGlassPresetName, liquidGlassModeName);
+    if(smooth){
+      transitionLiquidGlassStyle(fromOptions, toOptions);
+    }else{
+      applyLiquidGlassStyleOptions(toOptions);
+    }
+  }
+
   function mountLiquidCanvas(){
     try{
-      const renderer = window.__liquidGLRenderer__;
       const wrap = document.getElementById("divwrap");
-      if(!renderer || !renderer.canvas || !wrap) return;
-      renderer.canvas.classList.add("liquidGlassCanvas");
-      if(renderer.canvas.parentNode !== wrap){
-        const afterBg = document.getElementById("visualizerBg");
-        if(afterBg && afterBg.parentNode === wrap && afterBg.nextSibling){
-          wrap.insertBefore(renderer.canvas, afterBg.nextSibling);
-        }else{
-          wrap.insertBefore(renderer.canvas, wrap.firstChild);
+      if(!wrap) return;
+      liquidGlassRenderers().forEach((renderer)=>{
+        if(!renderer || !renderer.canvas) return;
+        renderer.canvas.classList.add("liquidGlassCanvas");
+        const key = renderer.rendererKey || (renderer === window.__liquidGLRenderer__ ? "default" : "");
+        renderer.canvas.classList.toggle("liquidGlassCanvasDefault", key === "default");
+        renderer.canvas.classList.toggle("liquidGlassCanvasScreenFrame", key === "screenFrame");
+        renderer.canvas.setAttribute("data-liquid-renderer", key || "unknown");
+        if(renderer.canvas.parentNode !== wrap){
+          const afterBg = document.getElementById("visualizerBg");
+          if(afterBg && afterBg.parentNode === wrap && afterBg.nextSibling){
+            wrap.insertBefore(renderer.canvas, afterBg.nextSibling);
+          }else{
+            wrap.insertBefore(renderer.canvas, wrap.firstChild);
+          }
         }
+        renderer.canvas.style.pointerEvents = "none";
+        renderer.canvas.style.zIndex = key === "screenFrame" ? "64" : "65";
+      });
+      debugLiquidGlassRenderers("mount");
+    }catch(e){}
+  }
+
+  function refreshLiquidGlassSource(renderer, reason){
+    try{
+      if(!renderer || !renderer.refreshSourceTexture) return;
+      renderer.refreshSourceTexture(reason || "app");
+    }catch(e){}
+  }
+
+  function refreshLiquidGlassVisualizerSources(reason){
+    try{
+      ["default", "screenFrame"].forEach((key)=>{
+        const renderer = liquidGlassRendererByKey(key);
+        if(!renderer) return;
+        if(visualizerBg && renderer.updateTextureFromCanvas){
+          renderer.updateTextureFromCanvas(visualizerBg, {reason: reason || "visualizer", allowDark: true, sourceRect: {left:0, top:0, width: window.innerWidth || 1, height: window.innerHeight || 1}});
+        }else{
+          refreshLiquidGlassSource(renderer, reason || "visualizer fallback");
+        }
+      });
+    }catch(e){}
+  }
+
+  function refreshNpOverlayGlassSource(reason){
+    try{
+      const renderer = liquidGlassRendererByKey("npOverlay");
+      if(!renderer) return;
+      const img = (npArt && npArt.complete && npArt.naturalWidth && npArt.naturalHeight) ? npArt : null;
+      if(img && renderer.updateTextureFromImage){
+        renderer.updateTextureFromImage(img, {reason: reason || "album art"});
+      }else if(renderer.updateTextureFromSolidColor){
+        renderer.updateTextureFromSolidColor(8, 8, [5, 5, 7, 255], {reason: reason || "album art fallback", allowDark: true});
+      }else{
+        refreshLiquidGlassSource(renderer, reason || "album art fallback");
       }
-      renderer.canvas.style.pointerEvents = "none";
-      renderer.canvas.style.zIndex = "10";
+    }catch(e){}
+  }
+
+  function renderLiquidGlassNow(frameState){
+    try{
+      liquidGlassRenderers().forEach((renderer)=>{
+        if(!renderer || !renderer.render) return;
+        renderer.render(frameState || currentVisualizerFrameState());
+      });
+    }catch(e){}
+  }
+
+  function renderLiquidGlassVisualizerSourceNow(frameState){
+    try{
+      ["default", "screenFrame"].forEach((key)=>{
+        const renderer = liquidGlassRendererByKey(key);
+        if(renderer && renderer.render) renderer.render(frameState || currentVisualizerFrameState());
+      });
+    }catch(e){}
+  }
+
+  function captureLiquidGlassSnapshot(reason, includeScreenFrame){
+    try{
+      refreshLiquidGlassVisualizerSources(reason || "app");
+      refreshNpOverlayGlassSource(reason || "app");
+      if(includeScreenFrame) refreshLiquidGlassSource(liquidGlassRendererByKey("screenFrame"), reason || "app");
+      renderLiquidGlassNow();
+    }catch(e){}
+  }
+
+  function scheduleLiquidGlassSnapshot(reason, includeScreenFrame){
+    try{ requestAnimationFrame(()=> captureLiquidGlassSnapshot(reason, includeScreenFrame)); }catch(e){}
+  }
+
+  function debugLiquidGlassRenderers(reason){
+    try{
+      const enabled = window.DEBRIPOD_UI_DEBUG === true || (localStorage.getItem("debripod_ui_debug") || "") === "1";
+      if(!enabled || !console || !console.log) return;
+      liquidGlassRenderers().forEach((renderer)=>{
+        const lenses = (renderer.lenses || []).map((lens)=> lens && lens.el ? {
+          className: lens.el.className,
+          id: lens.el.id || "",
+          hollow: !!lens.hollowMaskContent
+        } : null).filter(Boolean);
+        console.log("[Debripod LiquidGL]", reason || "state", {
+          rendererKey: renderer.rendererKey || "unknown",
+          texture: String(renderer.textureWidth || 0) + "x" + String(renderer.textureHeight || 0),
+          lensCount: renderer.lenses ? renderer.lenses.length : 0,
+          lenses: lenses,
+          canvasClassName: renderer.canvas ? renderer.canvas.className : "",
+          canvasZIndex: renderer.canvas ? window.getComputedStyle(renderer.canvas).zIndex : ""
+        });
+      });
+    }catch(e){}
+  }
+
+  function recaptureLiquidGlassElement(el){
+    try{
+      if(!el) return;
+      if(el.tagName === "IMG"){
+        refreshNpOverlayGlassSource("image " + (el.id || el.className || "load"));
+        renderLiquidGlassNow();
+        return;
+      }
+      renderLiquidGlassNow();
+    }catch(e){}
+  }
+
+  function scheduleLiquidGlassRender(){
+    try{ requestAnimationFrame(renderLiquidGlassNow); }catch(e){}
+  }
+
+  function scheduleNpOverlayGlassRender(){
+    try{
+      if(!npOverlayPill) return;
+      scheduleLiquidGlassRender();
     }catch(e){}
   }
 
   function initLiquidGlass(){
     try{
-      if(liquidGlassReady || typeof window.liquidGL !== "function" || typeof window.html2canvas !== "function") return;
+      if(liquidGlassReady || typeof window.liquidGL !== "function") return;
       const base = liquidGlassPresetOptions();
-      window.liquidGL(Object.assign({}, base, {
-        target: ".pathPillGlass.liquidGlass, .screenGlassFrame.liquidGlass, .npOverlayGlass.liquidGlass"
-      }));
-      const wheelInstances = asLiquidArray(window.liquidGL(Object.assign({}, base, {
-        target: ".wheelGlassRing.liquidGlass, .wheelCenterGlass.liquidGlass",
+      const sharedGlassOptions = Object.assign({}, base, {
+        target: ".pathPillGlass.liquidGlass, .wheelGlassRing.liquidGlass, .wheelCenterGlass.liquidGlass",
+        sourceType: "visualizerCanvas",
+        sourceElement: "#visualizerBg",
         shadow: false
-      })));
-      liquidWheelLens = wheelInstances.find(inst => inst && inst.el && inst.el.id === "wheelGlassRing") || null;
+      });
+      const sharedGlassInstances = asLiquidArray(window.liquidGL(sharedGlassOptions));
+      liquidWheelLens = sharedGlassInstances.find(inst => inst && inst.el && inst.el.id === "wheelGlassRing") || null;
+      window.liquidGL(Object.assign({}, base, {
+        target: ".npOverlayGlass.liquidGlass",
+        sourceType: "albumArtCanvasOrImage",
+        sourceElement: "#npArt",
+        rendererKey: "npOverlay",
+        shadow: false
+      }));
+      window.liquidGL(Object.assign({}, base, {
+        target: ".screenGlassFrame.liquidGlass",
+        rendererKey: "screenFrame",
+        sourceType: "visualizerCanvas",
+        sourceElement: "#visualizerBg",
+        shadow: false,
+        hollowMaskContent: true
+      }));
       mountLiquidCanvas();
-      try{
-        window.liquidGL.registerDynamic(".visualizerBg");
-      }catch(e){}
+      refreshLiquidGlassVisualizerSources("init");
+      refreshNpOverlayGlassSource("init");
+      liquidGlassRenderers().forEach((renderer)=>{
+        try{
+          renderer.useExternalTicker = true;
+          if(renderer._rafId){
+            cancelAnimationFrame(renderer._rafId);
+            renderer._rafId = null;
+          }
+        }catch(err){}
+      });
       liquidGlassReady = true;
     }catch(e){
       liquidGlassReady = true;
@@ -85,15 +428,28 @@
     }
   }
 
+  function cacheWheelGlassTiltRect(){
+    try{
+      const lens = liquidWheelLens;
+      if(!lens || !lens.el) return null;
+      if(lens.updateMetrics) lens.updateMetrics();
+      wheelGlassTiltRect = lens.rectPx || lens.el.getBoundingClientRect();
+      return wheelGlassTiltRect;
+    }catch(e){
+      wheelGlassTiltRect = null;
+      return null;
+    }
+  }
+
   function updateWheelGlassTilt(clientX, clientY){
     try{
       const lens = liquidWheelLens;
       if(!lens || !lens.el) return;
-      const rect = lens.el.getBoundingClientRect();
+      const rect = wheelGlassTiltRect || lens.rectPx || cacheWheelGlassTiltRect();
       if(!rect.width || !rect.height) return;
       const pctX = Math.max(-1, Math.min(1, (clientX - (rect.left + rect.width / 2)) / (rect.width / 2)));
       const pctY = Math.max(-1, Math.min(1, (clientY - (rect.top + rect.height / 2)) / (rect.height / 2)));
-      const maxTilt = 0.95;
+      const maxTilt = normalizeWheelRotationMaxDegrees(wheelRotationMaxDegrees);
       const rotY = pctX * maxTilt;
       const rotX = -pctY * maxTilt;
       lens.tiltX = rotX;
@@ -102,7 +458,6 @@
         wheel.style.transition = "none";
         wheel.style.transform = "perspective(900px) rotateX(" + rotX.toFixed(3) + "deg) rotateY(" + rotY.toFixed(3) + "deg)";
       }
-      try{ lens.updateMetrics(); }catch(e){}
       try{ if(lens.renderer && lens.renderer.render) lens.renderer.render(); }catch(e){}
     }catch(e){}
   }
@@ -134,6 +489,7 @@
         wheelGlassTiltFrame = 0;
       }
       wheelGlassTiltPoint = null;
+      wheelGlassTiltRect = null;
       lens.tiltX = 0;
       lens.tiltY = 0;
       if(wheel){
@@ -145,7 +501,7 @@
         wheelGlassResetTimer = null;
         try{ if(wheel) wheel.style.transform = ""; }catch(e){}
       }, 380);
-      try{ if(lens.renderer && lens.renderer.render) lens.renderer.render(); }catch(e){}
+      scheduleLiquidGlassRender();
     }catch(e){}
   }
   function humanBytes(bytes){
@@ -198,6 +554,7 @@ const libHeader = document.getElementById("libHeader");
     try{
       if(!libHeader) return;
       libHeader.classList.remove("pathPillHidden");
+      scheduleLiquidGlassSnapshot("path pill shown", false);
     }catch(e){}
     if(effectivePinned){
       try{ if(pathPillHideTimer) clearTimeout(pathPillHideTimer); }catch(e){}
@@ -216,6 +573,7 @@ const libHeader = document.getElementById("libHeader");
           const ae = document.activeElement;
           if(ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.tagName === "SELECT" || ae.isContentEditable)) return;
           libHeader.classList.add("pathPillHidden");
+          scheduleLiquidGlassSnapshot("path pill hidden", false);
         }catch(e){}
       }, (ms || 2500));
     }catch(e){}
@@ -271,6 +629,36 @@ const libHeader = document.getElementById("libHeader");
   const npVolumeFill = document.getElementById("npVolumeFill");
   const npSeekIndicator = document.getElementById("npSeekIndicator");
   const npOverlayPill = document.getElementById("npOverlayPill");
+  if(npOverlayPill){
+    npOverlayPill.addEventListener("transitionend", ()=>{ scheduleLiquidGlassRender(); }, {passive:true});
+    try{
+      new MutationObserver(()=>{ scheduleNpOverlayGlassRender(); }).observe(npOverlayPill, {
+        attributes: true,
+        attributeFilter: ["class"]
+      });
+    }catch(e){}
+  }
+  window.addEventListener("resize", ()=>{
+    wheelGlassTiltRect = null;
+    visualizerArtBounds = null;
+    visualizerArtBoundsLastTs = 0;
+    scheduleNpOverlayGlassRender();
+  }, {passive:true});
+  if(window.visualViewport){
+    window.visualViewport.addEventListener("resize", ()=>{
+      wheelGlassTiltRect = null;
+      visualizerArtBounds = null;
+      visualizerArtBoundsLastTs = 0;
+      scheduleNpOverlayGlassRender();
+    }, {passive:true});
+    window.visualViewport.addEventListener("scroll", ()=>{
+      wheelGlassTiltRect = null;
+      visualizerArtBounds = null;
+      visualizerArtBoundsLastTs = 0;
+      scheduleNpOverlayGlassRender();
+    }, {passive:true});
+  }
+  setTimeout(()=>{ scheduleNpOverlayGlassRender(); }, 0);
   const npArtSwap = document.getElementById("npArtSwap");
 
   const audioMain = document.getElementById("audioMain");
@@ -561,10 +949,13 @@ let seekIdleTimer = null;
 let npPillHideTimer = null;
 let npArtSwapTimer = null;
 let npPillSwapTimer = null;
-let visualizerEnabled = false;
+let visualizerEnabled = !!uiSettings.visualizer;
 let visualizerActive = false;
 let visualizerTrackKey = "";
 let visualizerSampleNonce = 0;
+let visualizerStrength = normalizeVisualizerStrength(uiSettings.visualizerStrength);
+let visualizerPresetName = normalizeVisualizerPreset(uiSettings.visualizerPreset);
+let visualizerStrengthTransition = null;
 const defaultTheme = {
   accent: "rgba(10,132,255,.88)",
   accentStrong: "rgba(10,132,255,1)",
@@ -577,23 +968,95 @@ const defaultTheme = {
   visualizerC: "rgba(255,69,58,.18)"
 };
 
+const defaultVisualizerPalette = [
+  {r:10,g:132,b:255},
+  {r:94,g:92,b:230},
+  {r:255,g:69,b:58},
+  {r:48,g:209,b:88}
+];
+const visualizerPaletteCache = new Map();
+let visualizerPalette = defaultVisualizerPalette.slice();
+let visualizerTargetPalette = defaultVisualizerPalette.slice();
 let visualizerAudioCtx = null;
 let visualizerAnalyser = null;
 let visualizerData = null;
 let visualizerSources = new WeakMap();
 let visualizerFrameHandle = 0;
+let visualizerFrameTimer = 0;
 let visualizerLastFrameTs = 0;
 let visualizerEnergy = 0;
 let visualizerBass = 0;
 let visualizerMid = 0;
 let visualizerTreble = 0;
+let visualizerBands = [0, 0, 0, 0, 0, 0, 0];
+let visualizerBpm = 120;
+let visualizerBeatPulse = 0;
+let visualizerBeatLastTs = 0;
+let visualizerBeatEnergyAvg = 0;
+let visualizerBeatIntervals = [];
+let visualizerCtx = null;
+let visualizerCanvasDpr = 0;
+let visualizerCanvasW = 0;
+let visualizerCanvasH = 0;
+let visualizerVideoSampleCanvas = null;
+let visualizerVideoSampleCtx = null;
+let visualizerVideoSampleLastTs = 0;
+let visualizerArtBounds = null;
+let visualizerArtBoundsLastTs = 0;
+
+const VISUALIZER_STRENGTHS = {
+  low: {dpr: 0.62, interval: 33, bassFields: 1, midFields: 1, trebleFields: 1, speed: 0.58, alpha: 0.42, bright: 0.72, coverage: 0.72},
+  medium: {dpr: 0.86, interval: 17, bassFields: 2, midFields: 2, trebleFields: 2, speed: 0.82, alpha: 0.68, bright: 0.92, coverage: 1.0},
+  high: {dpr: 1.05, interval: 17, bassFields: 3, midFields: 3, trebleFields: 3, speed: 1.02, alpha: 0.86, bright: 1.06, coverage: 1.22}
+};
+
+function visualizerStrengthConfigFor(name){
+  return VISUALIZER_STRENGTHS[normalizeVisualizerStrength(name)] || VISUALIZER_STRENGTHS.medium;
+}
+
+function mixVisualizerStrengthConfig(a, b, t){
+  const p = Math.max(0, Math.min(1, Number(t || 0)));
+  const out = {};
+  Object.keys(b || {}).forEach((key)=>{
+    const av = Number(a && a[key]);
+    const bv = Number(b && b[key]);
+    if(Number.isFinite(av) && Number.isFinite(bv)){
+      out[key] = av + (bv - av) * p;
+    }else{
+      out[key] = b[key];
+    }
+  });
+  out.bassFields = Math.max(1, Math.round(out.bassFields || b.bassFields || 1));
+  out.midFields = Math.max(1, Math.round(out.midFields || b.midFields || 1));
+  out.trebleFields = Math.max(1, Math.round(out.trebleFields || b.trebleFields || 1));
+  return out;
+}
+
+function currentVisualizerStrengthConfig(ts){
+  const target = visualizerStrengthConfigFor(visualizerStrength);
+  try{
+    const tr = visualizerStrengthTransition;
+    if(!tr) return target;
+    const now = Number(ts || performance.now() || 0);
+    const p = Math.max(0, Math.min(1, (now - tr.start) / tr.duration));
+    const eased = 1 - Math.pow(1 - p, 3);
+    if(p >= 1){
+      visualizerStrengthTransition = null;
+      return target;
+    }
+    return mixVisualizerStrengthConfig(tr.from, tr.to, eased);
+  }catch(e){
+    visualizerStrengthTransition = null;
+    return target;
+  }
+}
 
 function currentVisualizerMediaElement(){
   try{
     if(isVideoActive && isVideoActive() && npVideo) return npVideo;
   }catch(e){}
   try{
-    if(activeAudio && activeAudio.src && !activeAudio.paused) return activeAudio;
+    if(activeAudio && activeAudio.src) return activeAudio;
   }catch(e){}
   return null;
 }
@@ -607,8 +1070,8 @@ function ensureVisualizerAudioGraphFor(el){
     }
     if(!visualizerAnalyser){
       visualizerAnalyser = visualizerAudioCtx.createAnalyser();
-      visualizerAnalyser.fftSize = 128;
-      visualizerAnalyser.smoothingTimeConstant = 0.68;
+      visualizerAnalyser.fftSize = 256;
+      visualizerAnalyser.smoothingTimeConstant = 0.62;
       visualizerData = new Uint8Array(visualizerAnalyser.frequencyBinCount);
     }
     if(!visualizerSources.has(el)){
@@ -626,44 +1089,380 @@ function ensureVisualizerAudioGraphFor(el){
   }
 }
 
-function setVisualizerMotionVars(energy, bass, mid, treble){
-  const root = document.documentElement;
-  const e = Math.max(0, Math.min(1, Number(energy || 0)));
-  const b = Math.max(0, Math.min(1, Number(bass || 0)));
-  const m = Math.max(0, Math.min(1, Number(mid || 0)));
-  const t = Math.max(0, Math.min(1, Number(treble || 0)));
+function clamp01(n){
+  const v = Number(n || 0);
+  return Math.max(0, Math.min(1, Number.isFinite(v) ? v : 0));
+}
+
+function currentVisualizerPreset(){
+  return VISUALIZER_PRESETS[normalizeVisualizerPreset(visualizerPresetName)] || VISUALIZER_PRESETS.album;
+}
+
+function visualizerPresetLabel(name){
+  const preset = VISUALIZER_PRESETS[normalizeVisualizerPreset(name)];
+  return preset ? preset.label : "Orbit";
+}
+
+function foldedBpmFromInterval(ms){
+  let bpm = 60000 / Math.max(1, Number(ms || 0));
+  while(bpm < 72) bpm *= 2;
+  while(bpm > 168) bpm /= 2;
+  return Math.max(72, Math.min(168, bpm));
+}
+
+function updateVisualizerTempo(nowTs, bassLevel, energyLevel){
   try{
-    root.style.setProperty("--viz-energy", e.toFixed(4));
-    root.style.setProperty("--viz-bass", b.toFixed(4));
-    root.style.setProperty("--viz-mid", m.toFixed(4));
-    root.style.setProperty("--viz-treble", t.toFixed(4));
-    root.style.setProperty("--viz-x1", (50 + ((m - .5) * 24)).toFixed(2) + "%");
-    root.style.setProperty("--viz-y1", (30 + ((b - .5) * 24)).toFixed(2) + "%");
-    root.style.setProperty("--viz-x2", (20 + (b * 16)).toFixed(2) + "%");
-    root.style.setProperty("--viz-y2", (74 - (t * 22)).toFixed(2) + "%");
-    root.style.setProperty("--viz-x3", (80 - (m * 18)).toFixed(2) + "%");
-    root.style.setProperty("--viz-y3", (64 - (b * 14) + (t * 12)).toFixed(2) + "%");
-    root.style.setProperty("--viz-r1", (30 + (b * 30) + (e * 8)).toFixed(2) + "%");
-    root.style.setProperty("--viz-r2", (34 + (m * 32) + (e * 7)).toFixed(2) + "%");
-    root.style.setProperty("--viz-r3", (30 + (t * 34) + (e * 8)).toFixed(2) + "%");
-    root.style.setProperty("--viz-blur", (1.5 + (e * 8)).toFixed(2) + "px");
+    const now = Number(nowTs || performance.now() || 0);
+    const energy = clamp01((Number(bassLevel || 0) * 0.72) + (Number(energyLevel || 0) * 0.28));
+    visualizerBeatEnergyAvg = visualizerBeatEnergyAvg ? (visualizerBeatEnergyAvg * 0.965 + energy * 0.035) : energy;
+    visualizerBeatPulse *= 0.86;
+    const threshold = Math.max(0.18, visualizerBeatEnergyAvg * 1.34 + 0.055);
+    const since = visualizerBeatLastTs ? now - visualizerBeatLastTs : 9999;
+    if(energy > threshold && since > 260){
+      visualizerBeatPulse = Math.min(1, 0.58 + energy * 0.55);
+      if(since < 1500){
+        visualizerBeatIntervals.push(since);
+        if(visualizerBeatIntervals.length > 10) visualizerBeatIntervals.shift();
+        const bpms = visualizerBeatIntervals.map(foldedBpmFromInterval).filter(v=>Number.isFinite(v));
+        if(bpms.length){
+          bpms.sort((a,b)=>a-b);
+          const median = bpms[Math.floor(bpms.length / 2)];
+          visualizerBpm = visualizerBpm + (median - visualizerBpm) * 0.18;
+        }
+      }
+      visualizerBeatLastTs = now;
+    }else if(since > 2600 && visualizerBpm !== 120){
+      visualizerBpm = visualizerBpm + (120 - visualizerBpm) * 0.01;
+    }
+  }catch(e){}
+}
+
+function visualizerMotionTime(ts){
+  const preset = currentVisualizerPreset();
+  const bpmRate = Math.max(0.55, Math.min(1.65, Number(visualizerBpm || 120) / 120));
+  return Number(ts || 0) * 0.001 * bpmRate * (Number(preset.motion || 1));
+}
+
+function resetVisualizerTempo(){
+  visualizerBpm = 120;
+  visualizerBeatPulse = 0;
+  visualizerBeatLastTs = 0;
+  visualizerBeatEnergyAvg = 0;
+  visualizerBeatIntervals = [];
+  visualizerBands = [0, 0, 0, 0, 0, 0, 0];
+}
+
+function rgbForPaletteIndex(i){
+  const palette = visualizerPalette && visualizerPalette.length ? visualizerPalette : defaultVisualizerPalette;
+  return palette[i % palette.length] || defaultVisualizerPalette[i % defaultVisualizerPalette.length];
+}
+
+function rgbaCss(rgb, alpha, bright){
+  const b = Number.isFinite(bright) ? bright : 1;
+  return "rgba(" + clampByte((rgb.r || 0) * b) + "," + clampByte((rgb.g || 0) * b) + "," + clampByte((rgb.b || 0) * b) + "," + clamp01(alpha).toFixed(3) + ")";
+}
+
+function drawRadialField(ctx, w, h, x, y, radius, rgb, alpha, bright, midStop){
+  const grad = ctx.createRadialGradient(x, y, 0, x, y, Math.max(1, radius));
+  grad.addColorStop(0, rgbaCss(rgb, alpha, bright));
+  grad.addColorStop(Math.max(0.12, Math.min(0.82, midStop || 0.42)), rgbaCss(rgb, alpha * 0.32, bright));
+  grad.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, w, h);
+}
+
+function drawLinearGlow(ctx, w, h, x0, y0, x1, y1, rgb, alpha, bright){
+  const grad = ctx.createLinearGradient(x0, y0, x1, y1);
+  grad.addColorStop(0, "rgba(0,0,0,0)");
+  grad.addColorStop(0.50, rgbaCss(rgb, alpha, bright));
+  grad.addColorStop(1, "rgba(0,0,0,0)");
+  ctx.fillStyle = grad;
+  ctx.fillRect(0, 0, w, h);
+}
+
+function visualizerAnchorForCanvas(w, h, ts){
+  try{
+    const nowTs = Number(ts || performance.now() || 0);
+    if(nowTs - visualizerArtBoundsLastTs > 650){
+      visualizerArtBoundsLastTs = nowTs;
+      let rect = null;
+      try{
+        if(npArt && npArt.getBoundingClientRect && nowPlaying && nowPlaying.style.display === "block"){
+          const r = npArt.getBoundingClientRect();
+          if(r && r.width > 12 && r.height > 12){
+            rect = {left:r.left, top:r.top, width:r.width, height:r.height};
+          }
+        }
+      }catch(e){}
+      visualizerArtBounds = rect;
+    }
+    if(visualizerArtBounds){
+      const sx = w / Math.max(1, window.innerWidth || w);
+      const sy = h / Math.max(1, window.innerHeight || h);
+      const r = visualizerArtBounds;
+      const artW = r.width * sx;
+      const artH = r.height * sy;
+      return {
+        cx: (r.left + r.width * 0.5) * sx,
+        cy: (r.top + r.height * 0.5) * sy,
+        rx: artW * 0.54 + Math.min(w, h) * 0.08,
+        ry: artH * 0.54 + Math.min(w, h) * 0.08,
+        art: Math.max(artW, artH)
+      };
+    }
+  }catch(e){}
+  const minDim = Math.min(w, h);
+  return {cx: w * 0.5, cy: h * 0.50, rx: minDim * 0.22, ry: minDim * 0.22, art: minDim * 0.32};
+}
+
+function resizeVisualizerCanvas(cfg){
+  try{
+    if(!visualizerBg || !visualizerBg.getContext) return false;
+    const dpr = Math.max(0.45, Math.min(cfg.dpr, window.devicePixelRatio || 1));
+    const w = Math.max(1, Math.round(window.innerWidth * dpr));
+    const h = Math.max(1, Math.round(window.innerHeight * dpr));
+    if(!visualizerCtx) visualizerCtx = visualizerBg.getContext("2d", {alpha:true});
+    if(!visualizerCtx) return false;
+    if(w !== visualizerCanvasW || h !== visualizerCanvasH || dpr !== visualizerCanvasDpr){
+      visualizerBg.width = w;
+      visualizerBg.height = h;
+      visualizerCanvasW = w;
+      visualizerCanvasH = h;
+      visualizerCanvasDpr = dpr;
+    }
+    return true;
+  }catch(e){
+    return false;
+  }
+}
+
+function blendVisualizerPalette(){
+  try{
+    const target = visualizerTargetPalette && visualizerTargetPalette.length ? visualizerTargetPalette : defaultVisualizerPalette;
+    const maxLen = Math.max(4, target.length);
+    while(visualizerPalette.length < maxLen) visualizerPalette.push(target[visualizerPalette.length % target.length]);
+    for(let i = 0; i < maxLen; i++){
+      const cur = visualizerPalette[i] || target[i % target.length];
+      const nxt = target[i % target.length] || cur;
+      visualizerPalette[i] = {
+        r: cur.r + (nxt.r - cur.r) * 0.08,
+        g: cur.g + (nxt.g - cur.g) * 0.08,
+        b: cur.b + (nxt.b - cur.b) * 0.08
+      };
+    }
+    visualizerPalette.length = maxLen;
+  }catch(e){}
+}
+
+function renderVisualizerCanvas(ts){
+  try{
+    if(!visualizerBg) return;
+    const cfg = currentVisualizerStrengthConfig(ts);
+    if(!resizeVisualizerCanvas(cfg)) return;
+    const ctx = visualizerCtx;
+    const w = visualizerCanvasW;
+    const h = visualizerCanvasH;
+    const preset = currentVisualizerPreset();
+    const style = String(preset.style || "orbit");
+    const t = visualizerMotionTime(ts) * cfg.speed;
+    const e = visualizerActive ? clamp01(visualizerEnergy) : 0;
+    const b = visualizerActive ? clamp01(visualizerBass) : 0;
+    const m = visualizerActive ? clamp01(visualizerMid) : 0;
+    const tr = visualizerActive ? clamp01(visualizerTreble) : 0;
+    const beat = visualizerActive ? clamp01(visualizerBeatPulse) : 0;
+    blendVisualizerPalette();
+    const anchor = visualizerAnchorForCanvas(w, h, ts);
+
+    ctx.globalCompositeOperation = "source-over";
+    ctx.clearRect(0, 0, w, h);
+    ctx.fillStyle = "rgb(0,0,0)";
+    ctx.fillRect(0, 0, w, h);
+
+    const minDim = Math.min(w, h);
+    const maxDim = Math.max(w, h);
+    ctx.globalCompositeOperation = "lighter";
+
+    if(style === "ribbon" || style === "prism" || style === "cascade"){
+      const bands = style === "prism" ? 6 : (style === "cascade" ? 5 : 4);
+      for(let i = 0; i < bands; i++){
+        const col = rgbForPaletteIndex(i + 1);
+        const swing = Math.sin(t * (style === "cascade" ? 1.25 : 0.72) + i * 1.7);
+        if(style === "cascade"){
+          const x = ((i + 0.2 + (t * (0.08 + i * 0.012))) % bands) / bands * w;
+          const drift = swing * anchor.rx * (0.18 + m * 0.16);
+          drawLinearGlow(ctx, w, h, x + drift, -h * 0.1, x - drift * 0.55, h * 1.08, col, cfg.alpha * (0.05 + visualizerBands[i % 7] * 0.13), cfg.bright * (0.76 + i * 0.08));
+        }else if(style === "prism"){
+          const xA = anchor.cx + Math.cos(i * 1.37 + t * 0.24) * anchor.rx * 1.55;
+          const yA = anchor.cy + Math.sin(i * 0.91 - t * 0.18) * anchor.ry * 1.38;
+          const xB = anchor.cx - Math.sin(i * 1.11 + t * 0.38) * anchor.rx * 1.62;
+          const yB = anchor.cy + Math.cos(i * 1.49 + t * 0.32) * anchor.ry * 1.46;
+          drawLinearGlow(ctx, w, h, xA, yA, xB, yB, col, cfg.alpha * (0.055 + tr * 0.12 + beat * 0.06), cfg.bright * 1.24);
+        }else{
+          const yA = anchor.cy + (i - (bands - 1) / 2) * anchor.ry * 0.42 + swing * anchor.ry * (0.32 + m * 0.18);
+          const yB = anchor.cy - (i - (bands - 1) / 2) * anchor.ry * 0.36 - swing * anchor.ry * (0.26 + tr * 0.18);
+          drawLinearGlow(ctx, w, h, -w * 0.05, yA, w * 1.05, yB, col, cfg.alpha * (0.05 + m * 0.12 + tr * 0.08), cfg.bright * 1.02);
+        }
+      }
+    }
+
+    if(style === "rings" || style === "nova"){
+      const ringCount = style === "nova" ? 4 : 6;
+      for(let i = 0; i < ringCount; i++){
+        const col = rgbForPaletteIndex(i);
+        const phase = (t * (style === "nova" ? 1.18 : 0.72) + i / ringCount) % 1;
+        const radius = (anchor.art * (style === "nova" ? 0.16 : 0.22) + minDim * (style === "nova" ? (phase * 0.34) : (0.10 + phase * 0.48))) * cfg.coverage * (1 + beat * (style === "nova" ? 0.32 : 0.14));
+        const alpha = cfg.alpha * (style === "nova" ? (0.08 + (1 - phase) * 0.20 + beat * 0.12) : (0.13 + (1 - phase) * 0.10 + (i < 2 ? b * 0.14 : tr * 0.10)));
+        drawRadialField(ctx, w, h, anchor.cx, anchor.cy, radius, col, alpha, cfg.bright * (style === "nova" ? (0.80 + i * 0.13) : (0.58 + i * 0.14)), style === "nova" ? 0.26 : 0.72);
+      }
+    }
+
+    if(style === "lattice"){
+      const lines = visualizerStrength === "high" ? 7 : 5;
+      for(let i = 0; i < lines; i++){
+        const level = clamp01(visualizerBands[i % 7] || (i < 2 ? b : (i < 4 ? m : tr)));
+        const col = rgbForPaletteIndex(i);
+        const phase = i / Math.max(1, lines - 1);
+        const skew = Math.sin(t * 0.42 + i * 0.8) * minDim * 0.10;
+        drawLinearGlow(ctx, w, h, w * phase + skew, 0, w * (1 - phase) - skew, h, col, cfg.alpha * (0.035 + level * 0.13), cfg.bright * (0.72 + i * 0.08));
+        drawLinearGlow(ctx, w, h, 0, h * phase - skew * 0.55, w, h * (1 - phase) + skew * 0.55, col, cfg.alpha * (0.026 + level * 0.08), cfg.bright * (0.68 + i * 0.06));
+      }
+    }
+
+    if(style === "bloom"){
+      const sparks = visualizerStrength === "high" ? 10 : 6;
+      for(let i = 0; i < sparks; i++){
+        const level = clamp01(visualizerBands[i % 7] || (i < 3 ? b : (i < 6 ? m : tr)));
+        const phase = (t * (0.10 + i * 0.006) + i * 0.173) % 1;
+        const side = (i % 2 ? -1 : 1);
+        const x = anchor.cx + side * anchor.rx * (0.18 + (i % 4) * 0.16) + Math.sin(t * 0.9 + i) * anchor.rx * 0.08;
+        const y = anchor.cy + anchor.ry * 0.52 - phase * anchor.ry * 1.65;
+        const radius = (anchor.art * 0.045 + minDim * 0.035) * (1 + level * 1.1 + beat * 0.22);
+        drawRadialField(ctx, w, h, x, y, radius, rgbForPaletteIndex(i + 2), cfg.alpha * (0.08 + level * 0.20), cfg.bright * (0.95 + phase * 0.28), 0.24);
+      }
+      drawRadialField(ctx, w, h, anchor.cx, anchor.cy + anchor.ry * 0.28, anchor.art * 0.58 * (1 + b * 0.22 + beat * 0.16), rgbForPaletteIndex(0), cfg.alpha * (0.12 + b * 0.28), cfg.bright * 0.62, 0.64);
+    }
+
+    if(visualizerStrength === "high"){
+      const layers = [
+        {idx:0, scale:.42, bright:.46, alpha:.18, orbit:.34},
+        {idx:1, scale:.52, bright:.58, alpha:.17, orbit:.50},
+        {idx:2, scale:.36, bright:.74, alpha:.15, orbit:.72},
+        {idx:3, scale:.30, bright:.92, alpha:.13, orbit:.92},
+        {idx:4, scale:.24, bright:1.05, alpha:.12, orbit:1.08},
+        {idx:5, scale:.18, bright:1.18, alpha:.11, orbit:1.22},
+        {idx:6, scale:.13, bright:1.30, alpha:.10, orbit:1.34}
+      ];
+      for(const layer of layers){
+        const level = clamp01(visualizerBands[layer.idx] || 0);
+        const angle = t * (0.42 + layer.idx * 0.09) + layer.idx * 0.92;
+        const wobble = Math.sin(t * (0.62 + layer.idx * 0.05) + layer.idx) * 0.10;
+        const orbit = layer.orbit + level * 0.16 + beat * 0.06;
+        const x = anchor.cx + Math.cos(angle + wobble) * anchor.rx * orbit;
+        const y = anchor.cy + Math.sin(angle - wobble) * anchor.ry * orbit;
+        const radius = (anchor.art * layer.scale + minDim * layer.scale * 0.72) * cfg.coverage * (1 + level * 0.42 + beat * 0.08);
+        drawRadialField(ctx, w, h, x, y, radius, rgbForPaletteIndex(layer.idx), cfg.alpha * (layer.alpha + level * 0.22), cfg.bright * layer.bright, 0.38);
+      }
+    }
+
+    for(let i = 0; i < cfg.bassFields; i++){
+      const col = rgbForPaletteIndex(i);
+      const spread = cfg.bassFields <= 1 ? 0 : (i / (cfg.bassFields - 1) - 0.5);
+      const angleBase = style === "bloom" ? Math.PI * 0.5 : (style === "rings" ? t * 0.28 : (style === "nova" ? t * 0.95 : (style === "cascade" ? Math.PI * 0.08 : Math.PI * 0.5)));
+      const angle = angleBase + spread * Math.PI * (style === "prism" ? 1.35 : 0.72) + Math.sin(t * 0.72 + i) * 0.10;
+      const orbitScale = style === "bloom" ? 0.16 : (style === "rings" ? 0.36 : (style === "nova" ? 0.08 + beat * 0.12 : (style === "cascade" ? 0.58 : (style === "lattice" ? 0.72 : 0.88))));
+      const x = anchor.cx + Math.cos(angle) * anchor.rx * (orbitScale + b * 0.10);
+      const yOffset = style === "cascade" ? ((t * 0.11 + i * 0.28) % 1 - 0.5) * h * 0.72 : Math.sin(angle) * anchor.ry * (orbitScale + 0.10 + b * 0.12);
+      const y = style === "cascade" ? anchor.cy + yOffset : anchor.cy + yOffset;
+      const radius = (anchor.art * (style === "nova" ? 0.32 : 0.42) + minDim * (0.26 + i * 0.055)) * cfg.coverage * (1 + b * 0.30 + e * 0.12 + beat * (style === "nova" ? 0.38 : 0.16));
+      drawRadialField(ctx, w, h, x, y, radius, col, cfg.alpha * (0.18 + b * 0.34 + e * 0.12), cfg.bright * 0.62, 0.52);
+    }
+
+    for(let i = 0; i < cfg.midFields; i++){
+      const col = rgbForPaletteIndex(i + cfg.bassFields);
+      const angle = (i / Math.max(1, cfg.midFields)) * Math.PI * 2 + t * (style === "prism" ? 1.18 : (style === "lattice" ? 0.18 : (style === "cascade" ? 0.68 : 0.46))) + Math.sin(t * 0.58 + i) * 0.12;
+      const spread = style === "bloom" ? 0.48 : (style === "rings" ? 0.78 : (style === "nova" ? 0.34 + beat * 0.20 : (style === "lattice" ? 1.18 : 1.02)));
+      const x = anchor.cx + Math.cos(angle) * anchor.rx * (spread + m * 0.12);
+      const y = anchor.cy + Math.sin(angle) * anchor.ry * (spread + m * 0.10);
+      const radius = (anchor.art * 0.24 + minDim * (0.15 + i * 0.035)) * cfg.coverage * (1 + m * 0.26 + e * 0.08 + beat * 0.08);
+      drawRadialField(ctx, w, h, x, y, radius, col, cfg.alpha * (0.16 + m * 0.30 + e * 0.08), cfg.bright * 0.90, 0.42);
+    }
+
+    for(let i = 0; i < cfg.trebleFields; i++){
+      const col = rgbForPaletteIndex(i + cfg.bassFields + cfg.midFields);
+      const angle = (i / Math.max(1, cfg.trebleFields)) * Math.PI * 2 + Math.PI / Math.max(2, cfg.trebleFields) + t * (style === "ribbon" ? 1.12 : (style === "prism" ? -1.26 : (style === "nova" ? 1.72 : 0.88)));
+      const spread = style === "bloom" ? 1.05 : (style === "rings" ? 1.36 : (style === "cascade" ? 1.48 : (style === "lattice" ? 1.05 : 1.16)));
+      const x = anchor.cx + Math.cos(angle) * anchor.rx * (spread + tr * 0.14);
+      const y = anchor.cy + Math.sin(angle) * anchor.ry * (spread * 0.95 + tr * 0.12);
+      const radius = (anchor.art * 0.13 + minDim * (0.075 + i * 0.018)) * cfg.coverage * (1 + tr * 0.38 + e * 0.06 + beat * 0.10);
+      drawRadialField(ctx, w, h, x, y, radius, col, cfg.alpha * (0.08 + tr * 0.30 + e * 0.08), cfg.bright * 1.16, 0.34);
+    }
+
+    if(visualizerStrength !== "low"){
+      drawLinearGlow(ctx, w, h, anchor.cx - anchor.rx * 1.8, anchor.cy - anchor.ry * (0.95 + tr * 0.2), anchor.cx + anchor.rx * 1.8, anchor.cy + anchor.ry * (0.95 - m * 0.14), rgbForPaletteIndex(1), cfg.alpha * (0.035 + m * 0.08), cfg.bright);
+    }
+    if(visualizerStrength === "high"){
+      drawLinearGlow(ctx, w, h, anchor.cx - anchor.rx * 1.2, anchor.cy - anchor.ry * 1.65, anchor.cx + anchor.rx * 1.2, anchor.cy + anchor.ry * 1.65, rgbForPaletteIndex(3), cfg.alpha * (0.04 + tr * 0.10), cfg.bright * 1.08);
+    }
+
+    ctx.globalCompositeOperation = "source-over";
+    const vignette = ctx.createRadialGradient(w * .5, h * .5, minDim * .08, w * .5, h * .5, maxDim * .68);
+    vignette.addColorStop(0, "rgba(0,0,0,0)");
+    vignette.addColorStop(0.62, "rgba(0,0,0,.20)");
+    vignette.addColorStop(1, "rgba(0,0,0,.86)");
+    ctx.fillStyle = vignette;
+    ctx.fillRect(0, 0, w, h);
+  }catch(e){}
+}
+
+function currentVisualizerFrameState(ts){
+  return {
+    timestamp: Number(ts || performance.now() || 0),
+    active: !!visualizerActive,
+    strength: visualizerStrength,
+    energy: visualizerEnergy,
+    bass: visualizerBass,
+    mid: visualizerMid,
+    treble: visualizerTreble,
+    bands: visualizerBands,
+    bandLabels: VISUALIZER_BAND_LABELS,
+    bpm: visualizerBpm,
+    palette: visualizerPalette
+  };
+}
+
+function scheduleVisualizerFrame(delayMs){
+  try{
+    if(visualizerFrameHandle || visualizerFrameTimer) return;
+    const delay = Math.max(0, Number(delayMs || 0));
+    if(delay > 34){
+      visualizerFrameTimer = setTimeout(()=>{
+        visualizerFrameTimer = 0;
+        visualizerFrameHandle = requestAnimationFrame(visualizerFrame);
+      }, delay);
+      return;
+    }
+    visualizerFrameHandle = requestAnimationFrame(visualizerFrame);
   }catch(e){}
 }
 
 function visualizerFrame(ts){
+  visualizerFrameHandle = 0;
   try{
     const nowTs = Number(ts || performance.now() || 0);
-    if(visualizerLastFrameTs && (nowTs - visualizerLastFrameTs) < 33){
-      visualizerFrameHandle = requestAnimationFrame(visualizerFrame);
+    const cfg = currentVisualizerStrengthConfig(ts);
+    const interval = (visualizerActive || wheelGlassTiltPoint) ? cfg.interval : 180;
+    if(visualizerLastFrameTs && (nowTs - visualizerLastFrameTs) < interval){
+      scheduleVisualizerFrame(interval - (nowTs - visualizerLastFrameTs));
       return;
     }
     visualizerLastFrameTs = nowTs;
     const el = currentVisualizerMediaElement();
-    const canAnalyze = !!(visualizerEnabled && visualizerActive && el && ensureVisualizerAudioGraphFor(el) && visualizerAnalyser && visualizerData);
+    const canAnalyze = !!(visualizerEnabled && visualizerActive && !document.hidden && el && ensureVisualizerAudioGraphFor(el) && visualizerAnalyser && visualizerData);
     let nextBass = 0;
     let nextMid = 0;
     let nextTreble = 0;
     let nextEnergy = 0;
+    let nextBands = [0, 0, 0, 0, 0, 0, 0];
     if(canAnalyze){
       try{ visualizerAnalyser.getByteFrequencyData(visualizerData); }catch(e){}
       const n = visualizerData.length || 0;
@@ -671,12 +1470,22 @@ function visualizerFrame(ts){
         const bassEnd = Math.max(1, Math.floor(n * 0.16));
         const midEnd = Math.max(bassEnd + 1, Math.floor(n * 0.50));
         let bassSum = 0, midSum = 0, trebleSum = 0, allSum = 0;
+        const bandCuts = [0, 0.055, 0.12, 0.24, 0.42, 0.60, 0.78, 1.0].map(x=>Math.max(0, Math.min(n, Math.round(n * x))));
+        const bandSums = [0, 0, 0, 0, 0, 0, 0];
+        const bandCounts = [0, 0, 0, 0, 0, 0, 0];
         for(let i = 0; i < n; i++){
           const v = Number(visualizerData[i] || 0) / 255;
           allSum += v;
           if(i < bassEnd) bassSum += v;
           else if(i < midEnd) midSum += v;
           else trebleSum += v;
+          for(let bi = 0; bi < 7; bi++){
+            if(i >= bandCuts[bi] && i < Math.max(bandCuts[bi] + 1, bandCuts[bi + 1])){
+              bandSums[bi] += v;
+              bandCounts[bi] += 1;
+              break;
+            }
+          }
         }
         nextBass = bassSum / Math.max(1, bassEnd);
         nextMid = midSum / Math.max(1, midEnd - bassEnd);
@@ -690,7 +1499,20 @@ function visualizerFrame(ts){
         nextMid = Math.min(1, (nextMid * 0.62) + (midPeak * 0.88));
         nextTreble = Math.min(1, (nextTreble * 0.58) + (treblePeak * 0.92));
         nextEnergy = Math.min(1, (nextEnergy * 0.45) + (energyPeak * 1.05) + (bassPeak * 0.12));
+        nextBands = bandSums.map((sum, idx)=>{
+          const raw = sum / Math.max(1, bandCounts[idx]);
+          const lift = idx < 2 ? 1.95 : (idx < 5 ? 1.72 : 1.88);
+          const floor = idx < 2 ? 0.07 : (idx < 5 ? 0.055 : 0.045);
+          return Math.min(1, raw * 0.58 + Math.max(0, raw - floor) * lift);
+        });
       }
+    }else if(visualizerEnabled && visualizerActive && !document.hidden){
+      const idle = nowTs * 0.001;
+      nextBass = 0.10 + Math.sin(idle * 0.71) * 0.035;
+      nextMid = 0.08 + Math.sin(idle * 0.53 + 1.6) * 0.025;
+      nextTreble = 0.06 + Math.sin(idle * 0.91 + 2.4) * 0.020;
+      nextEnergy = 0.08 + Math.sin(idle * 0.43) * 0.025;
+      nextBands = [nextBass, nextBass * .82, nextMid * .86, nextMid, nextMid * .78, nextTreble * .86, nextTreble];
     }
     const easeUp = 0.42;
     const easeDown = 0.18;
@@ -699,22 +1521,24 @@ function visualizerFrame(ts){
     visualizerMid = mixVal(visualizerMid, nextMid);
     visualizerTreble = mixVal(visualizerTreble, nextTreble);
     visualizerEnergy = mixVal(visualizerEnergy, nextEnergy);
-    setVisualizerMotionVars(visualizerEnergy, visualizerBass, visualizerMid, visualizerTreble);
+    visualizerBands = visualizerBands.map((prev, idx)=> mixVal(prev || 0, nextBands[idx] || 0));
+    updateVisualizerTempo(nowTs, nextBands[0] || nextBass, nextEnergy);
+    try{ if(state) state.visualizerBpm = Math.round(visualizerBpm); }catch(e){}
+    sampleLiveVideoPalette(nowTs);
+    renderVisualizerCanvas(nowTs);
+    refreshLiquidGlassVisualizerSources("visualizer frame");
+    renderLiquidGlassVisualizerSourceNow(currentVisualizerFrameState(nowTs));
   }catch(e){}
-  visualizerFrameHandle = requestAnimationFrame(visualizerFrame);
+  scheduleVisualizerFrame((visualizerActive || wheelGlassTiltPoint) ? 0 : 160);
 }
 
 function ensureVisualizerFrameLoop(){
   try{
-    if(visualizerFrameHandle) return;
-    visualizerFrameHandle = requestAnimationFrame(visualizerFrame);
+    scheduleVisualizerFrame(0);
   }catch(e){}
 }
-try{
-  visualizerEnabled = (localStorage.getItem("debripod_visualizer") || "") === "1";
-}catch(e){}
-
 let npPillPinned = false;
+let npPillVisible = false;
 try{
   npPillPinned = (localStorage.getItem("debripod_np_pill_pinned") || "") === "1";
 }catch(e){}
@@ -723,26 +1547,73 @@ function setNpPillPinned(on){
   npPillPinned = !!on;
   try{ localStorage.setItem("debripod_np_pill_pinned", npPillPinned ? "1" : "0"); }catch(e){}
   if(npPillPinned){
-    showNpPill(true);
+    showNpPill(true, "pin");
   }else{
     npPillActivity(false);
   }
 }
 
-function hideNpPillImmediate(){
+function setNpOverlayLiquidGlassVisible(visible, reason){
+  try{
+    const renderer = liquidGlassRendererByKey("npOverlay");
+    if(!renderer) return;
+    if(visible){
+      if(renderer.setVisible) renderer.setVisible(true);
+      refreshNpOverlayGlassSource(reason || "np pill show");
+      if(renderer.render) renderer.render(currentVisualizerFrameState());
+    }else{
+      if(renderer.setVisible){
+        renderer.setVisible(false);
+      }else if(renderer.clear){
+        renderer.clear();
+      }else if(renderer.render){
+        renderer.render(currentVisualizerFrameState());
+      }
+    }
+  }catch(e){}
+}
+
+function setNpPillVisible(visible, reason, pinnedValue){
+  const nextVisible = !!visible;
+  if(typeof pinnedValue === "boolean"){
+    npPillPinned = !!pinnedValue;
+    try{ localStorage.setItem("debripod_np_pill_pinned", npPillPinned ? "1" : "0"); }catch(e){}
+  }
   try{ if(npPillHideTimer) clearTimeout(npPillHideTimer); }catch(e){}
   npPillHideTimer = null;
+  if(!nextVisible){
+    try{ if(npPillSwapTimer) clearTimeout(npPillSwapTimer); }catch(e){}
+    npPillSwapTimer = null;
+  }
+  npPillVisible = nextVisible;
   try{
-    if(npOverlayPill) npOverlayPill.classList.add("npPillHidden");
+    if(!npOverlayPill){
+      setNpOverlayLiquidGlassVisible(nextVisible, reason);
+      return;
+    }
+    if(nextVisible){
+      refreshNpOverlayGlassSource(reason || "np pill show");
+      npOverlayPill.classList.remove("npPillHidden");
+      npOverlayPill.classList.remove("npPillSwapHidden");
+      npOverlayPill.style.pointerEvents = "";
+      setNpOverlayLiquidGlassVisible(true, reason || "np pill show");
+    }else{
+      npOverlayPill.classList.add("npPillHidden");
+      npOverlayPill.classList.remove("npPillSwapHidden");
+      npOverlayPill.style.pointerEvents = "none";
+      setNpOverlayLiquidGlassVisible(false, reason || "np pill hide");
+    }
   }catch(e){}
+}
+
+function hideNpPillImmediate(reason, pinnedValue){
+  setNpPillVisible(false, reason || "immediate hide", pinnedValue);
 }
 
 function toggleNpPillFromArt(){
     if(nowPlaying.style.display !== "block") return;
     if(isNpPillShown()){
-      npPillPinned = false;
-      try{ localStorage.setItem("debripod_np_pill_pinned", "0"); }catch(e){}
-      hideNpPillImmediate();
+      hideNpPillImmediate("art toggle", false);
     }else{
       setNpPillPinned(true);
     }
@@ -750,15 +1621,21 @@ function toggleNpPillFromArt(){
 
 if(npArt){
   npArt.addEventListener("click", (ev)=>{ try{ ev.stopPropagation(); }catch(e){} toggleNpPillFromArt(); });
+  npArt.addEventListener("load", ()=>{
+    visualizerArtBounds = null;
+    visualizerArtBoundsLastTs = 0;
+    recaptureLiquidGlassElement(npArt);
+  }, {passive:true});
 }
 if(npArtSwap){
   npArtSwap.addEventListener("click", (ev)=>{ try{ ev.stopPropagation(); }catch(e){} toggleNpPillFromArt(); });
+  npArtSwap.addEventListener("load", ()=>{ recaptureLiquidGlassElement(npArtSwap); }, {passive:true});
 }
 if(nowPlaying){
   nowPlaying.addEventListener("click", (ev)=>{
     try{
       const tgt = ev.target;
-      if(tgt && tgt.closest && tgt.closest(".npOverlayPill, .npVideoOverlay, input, button, select, textarea")) return;
+      if(tgt && tgt.closest && tgt.closest(".npOverlayPill, .npOverlaySurface, .npVideoOverlay, input, button, select, textarea")) return;
       toggleNpPillFromArt();
     }catch(e){}
   });
@@ -821,9 +1698,8 @@ function applyThemeVars(theme){
 
 function visualizerShouldShow(){
   try{
-    const hasArt = !!(state && state.now && state.nowMeta && state.nowMeta.art);
     const media = currentVisualizerMediaElement();
-    return !!(visualizerEnabled && hasArt && media);
+    return !!(visualizerEnabled && media && !media.paused && !media.ended);
   }catch(e){
     return false;
   }
@@ -835,6 +1711,12 @@ function setVisualizerActive(on){
     if(!visualizerBg) return;
     visualizerBg.classList.toggle("active", !!on);
     visualizerBg.classList.toggle("off", !on);
+    renderVisualizerCanvas(performance.now());
+    if(on && visualizerFrameTimer){
+      clearTimeout(visualizerFrameTimer);
+      visualizerFrameTimer = 0;
+    }
+    scheduleVisualizerFrame(0);
   }catch(e){}
 }
 
@@ -845,29 +1727,199 @@ function updateVisualizerState(){
 
 function setVisualizerEnabled(on){
   visualizerEnabled = !!on;
-  try{ localStorage.setItem("debripod_visualizer", visualizerEnabled ? "1" : "0"); }catch(e){}
+  uiSettings.visualizer = visualizerEnabled;
+  saveUiSettings();
   updateVisualizerState();
-  try{ if(state && state.current && state.current.kind === "libinfo") viewLibInfo(false); }catch(e){}
+}
+
+function setVisualizerStrength(value){
+  const now = performance.now();
+  const next = normalizeVisualizerStrength(value);
+  visualizerStrengthTransition = {
+    from: currentVisualizerStrengthConfig(now),
+    to: visualizerStrengthConfigFor(next),
+    start: now,
+    duration: 460
+  };
+  visualizerStrength = next;
+  uiSettings.visualizerStrength = visualizerStrength;
+  saveUiSettings();
+  visualizerCanvasDpr = 0;
+  renderVisualizerCanvas(now);
+  scheduleVisualizerFrame(0);
+}
+
+function cycleVisualizerStrength(){
+  const order = ["low", "medium", "high"];
+  const idx = order.indexOf(normalizeVisualizerStrength(visualizerStrength));
+  setVisualizerStrength(order[(idx + 1) % order.length]);
+}
+
+function rgbDistance(a, b){
+  const dr = (a.r || 0) - (b.r || 0);
+  const dg = (a.g || 0) - (b.g || 0);
+  const db = (a.b || 0) - (b.b || 0);
+  return Math.sqrt(dr * dr + dg * dg + db * db);
+}
+
+function rgbSaturation(rgb){
+  const mx = Math.max(rgb.r || 0, rgb.g || 0, rgb.b || 0);
+  const mn = Math.min(rgb.r || 0, rgb.g || 0, rgb.b || 0);
+  return mx ? (mx - mn) / mx : 0;
+}
+
+function rgbLuma(rgb){
+  return ((rgb.r || 0) * .299 + (rgb.g || 0) * .587 + (rgb.b || 0) * .114) / 255;
+}
+
+function setVisualizerPalette(palette){
+  const colors = (Array.isArray(palette) && palette.length ? palette : defaultVisualizerPalette)
+    .map(c=>({r:clampByte(c.r), g:clampByte(c.g), b:clampByte(c.b)}))
+    .slice(0, 8);
+  visualizerTargetPalette = colors.length ? colors : defaultVisualizerPalette.slice();
+  const rootTheme = themeFromBase(visualizerTargetPalette[0] || defaultVisualizerPalette[0]);
+  if(visualizerTargetPalette.length >= 3){
+    rootTheme.visualizerA = rgbaFrom(visualizerTargetPalette[0], .46);
+    rootTheme.visualizerB = rgbaFrom(visualizerTargetPalette[1], .34);
+    rootTheme.visualizerC = rgbaFrom(visualizerTargetPalette[2], .24);
+  }
+  applyThemeVars(rootTheme);
+}
+
+function applyVisualizerPresetPalette(){
+  if(visualizerTrackKey && visualizerPaletteCache.has(visualizerTrackKey)){
+    setVisualizerPalette(visualizerPaletteCache.get(visualizerTrackKey));
+  }else{
+    setVisualizerPalette(defaultVisualizerPalette);
+  }
+}
+
+function setVisualizerPreset(value){
+  visualizerPresetName = normalizeVisualizerPreset(value);
+  uiSettings.visualizerPreset = visualizerPresetName;
+  saveUiSettings();
+  try{ if(state) state.visualizerPreset = visualizerPresetName; }catch(e){}
+  resetVisualizerTempo();
+  applyVisualizerPresetPalette();
+  renderVisualizerCanvas(performance.now());
+  scheduleLiquidGlassSnapshot("visualizer preset", true);
+}
+
+function cycleVisualizerPreset(){
+  const order = Object.keys(VISUALIZER_PRESETS);
+  const idx = order.indexOf(normalizeVisualizerPreset(visualizerPresetName));
+  setVisualizerPreset(order[(idx + 1) % order.length] || "album");
+}
+
+function cacheVisualizerPalette(key, palette){
+  try{
+    visualizerPaletteCache.set(key, palette);
+    while(visualizerPaletteCache.size > 48){
+      const first = visualizerPaletteCache.keys().next().value;
+      visualizerPaletteCache.delete(first);
+    }
+  }catch(e){}
+}
+
+function distinctPaletteFromImageData(data){
+  const buckets = new Map();
+  for(let i = 0; i < data.length; i += 4){
+    const a = Number(data[i + 3] || 0);
+    if(a < 24) continue;
+    const rr = Number(data[i] || 0);
+    const gg = Number(data[i + 1] || 0);
+    const bb = Number(data[i + 2] || 0);
+    const rgb = {r:rr, g:gg, b:bb};
+    const sat = rgbSaturation(rgb);
+    const lum = rgbLuma(rgb);
+    const colorful = sat >= .18 && lum >= .08 && lum <= .92;
+    const key2 = (rr >> 3) + "," + (gg >> 3) + "," + (bb >> 3);
+    const prev = buckets.get(key2);
+    const score = (colorful ? 2.2 : .25) * (sat + .15) * (1 - Math.abs(lum - .50) * .78);
+    if(!prev || score > prev.score){
+      buckets.set(key2, {rgb:rgb, score:score, colorful:colorful});
+    }
+  }
+  const candidates = Array.from(buckets.values())
+    .sort((a,b)=> b.score - a.score)
+    .map(x=>x.rgb);
+  const selected = [];
+  const saturated = candidates.filter(c=> rgbSaturation(c) >= .18 && rgbLuma(c) >= .08 && rgbLuma(c) <= .92);
+  const pool = saturated.length ? saturated : candidates;
+  const minDist = saturated.length ? 58 : 34;
+  for(const color of pool){
+    if(selected.every(prev=> rgbDistance(prev, color) >= minDist)){
+      selected.push(color);
+      if(selected.length >= 8) break;
+    }
+  }
+  while(selected.length < Math.min(4, pool.length)){
+    const next = pool.find(c=> selected.indexOf(c) < 0);
+    if(!next) break;
+    selected.push(next);
+  }
+  return selected;
+}
+
+function sampleLiveVideoPalette(ts){
+  try{
+    if(!visualizerEnabled || !visualizerActive || document.hidden) return;
+    if(!isVideoActive || !isVideoActive() || !npVideo || npVideo.paused || npVideo.readyState < 2) return;
+    const interval = visualizerStrength === "high" ? 1400 : (visualizerStrength === "low" ? 3200 : 2200);
+    const nowTs = Number(ts || performance.now() || 0);
+    if(visualizerVideoSampleLastTs && nowTs - visualizerVideoSampleLastTs < interval) return;
+    visualizerVideoSampleLastTs = nowTs;
+
+    if(!visualizerVideoSampleCanvas){
+      visualizerVideoSampleCanvas = document.createElement("canvas");
+      visualizerVideoSampleCtx = visualizerVideoSampleCanvas.getContext("2d", {willReadFrequently:true});
+    }
+    if(!visualizerVideoSampleCtx) return;
+    const vw = Number(npVideo.videoWidth || 0);
+    const vh = Number(npVideo.videoHeight || 0);
+    if(!(vw > 0) || !(vh > 0)) return;
+    const sampleW = visualizerStrength === "high" ? 42 : (visualizerStrength === "low" ? 24 : 32);
+    const sampleH = Math.max(12, Math.round(sampleW * Math.min(1.4, vh / vw)));
+    if(visualizerVideoSampleCanvas.width !== sampleW || visualizerVideoSampleCanvas.height !== sampleH){
+      visualizerVideoSampleCanvas.width = sampleW;
+      visualizerVideoSampleCanvas.height = sampleH;
+    }
+    visualizerVideoSampleCtx.clearRect(0, 0, sampleW, sampleH);
+    visualizerVideoSampleCtx.drawImage(npVideo, 0, 0, sampleW, sampleH);
+    const data = visualizerVideoSampleCtx.getImageData(0, 0, sampleW, sampleH).data;
+    const palette = distinctPaletteFromImageData(data);
+    if(palette && palette.length) setVisualizerPalette(palette);
+  }catch(e){}
 }
 
 function sampleThemeFromArt(src){
   const art = nowPlayingArtSrcValue(src);
   const key = nowPlayingArtCompareKey(art);
+  if(key && key !== visualizerTrackKey) resetVisualizerTempo();
   if(!key || !art){
     visualizerTrackKey = "";
-    applyThemeVars(defaultTheme);
+    setVisualizerPalette(defaultVisualizerPalette);
     updateVisualizerState();
     return;
   }
   visualizerTrackKey = key;
+  if(visualizerPaletteCache.has(key)){
+    setVisualizerPalette(visualizerPaletteCache.get(key));
+    updateVisualizerState();
+    return;
+  }
   const myNonce = ++visualizerSampleNonce;
   const img = new Image();
   img.decoding = "async";
+  try{
+    const u = new URL(art, window.location.href);
+    if(u.origin === window.location.origin) img.crossOrigin = "anonymous";
+  }catch(e){}
   img.onload = ()=>{
     if(myNonce !== visualizerSampleNonce) return;
     try{
-      const w = Math.max(8, Math.min(40, img.naturalWidth || 24));
-      const h = Math.max(8, Math.min(40, img.naturalHeight || 24));
+      const w = Math.max(12, Math.min(56, img.naturalWidth || 32));
+      const h = Math.max(12, Math.min(56, img.naturalHeight || 32));
       const canvas = document.createElement("canvas");
       canvas.width = w;
       canvas.height = h;
@@ -875,35 +1927,18 @@ function sampleThemeFromArt(src){
       if(!ctx) throw new Error("no canvas context");
       ctx.drawImage(img, 0, 0, w, h);
       const data = ctx.getImageData(0, 0, w, h).data;
-      let r = 0, g = 0, b = 0, c = 0;
-      for(let i = 0; i < data.length; i += 4){
-        const a = Number(data[i + 3] || 0);
-        if(a < 24) continue;
-        const rr = Number(data[i] || 0);
-        const gg = Number(data[i + 1] || 0);
-        const bb = Number(data[i + 2] || 0);
-        const mx = Math.max(rr, gg, bb);
-        const mn = Math.min(rr, gg, bb);
-        const sat = mx ? (mx - mn) / mx : 0;
-        const lum = (rr * .299 + gg * .587 + bb * .114) / 255;
-        if(lum < .08 || lum > .95) continue;
-        const weight = Math.max(.18, sat) * (0.65 + (1 - Math.abs(lum - .5) * 1.2));
-        r += rr * weight;
-        g += gg * weight;
-        b += bb * weight;
-        c += weight;
-      }
-      if(!(c > 0)) throw new Error("empty sample");
-      const base = {r: Math.round(r / c), g: Math.round(g / c), b: Math.round(b / c)};
-      applyThemeVars(themeFromBase(base));
+      const selected = distinctPaletteFromImageData(data);
+      if(!selected.length) throw new Error("empty sample");
+      cacheVisualizerPalette(key, selected);
+      setVisualizerPalette(selected);
     }catch(err){
-      applyThemeVars(defaultTheme);
+      setVisualizerPalette(defaultVisualizerPalette);
     }
     updateVisualizerState();
   };
   img.onerror = ()=>{
     if(myNonce !== visualizerSampleNonce) return;
-    applyThemeVars(defaultTheme);
+    setVisualizerPalette(defaultVisualizerPalette);
     updateVisualizerState();
   };
   img.src = art;
@@ -930,6 +1965,8 @@ function nowPlayingArtCompareKey(src){
   }
 }
 
+applyVisualizerPresetPalette();
+
 function currentNowPlayingArtSrc(){
   try{
     if(!npArt) return "";
@@ -945,8 +1982,10 @@ function setNowPlayingArtSrc(src){
     const v = nowPlayingArtSrcValue(src);
     if(v){
       npArt.src = v;
+      recaptureLiquidGlassElement(npArt);
     }else{
       npArt.removeAttribute("src");
+      recaptureLiquidGlassElement(npArt);
     }
   }catch(e){}
 }
@@ -973,11 +2012,12 @@ function setNowPlayingOverlayText(meta, fallbackLabel){
   try{ npTitle.textContent = m.title || fallbackLabel || "Track"; }catch(e){}
   try{ npSub.innerHTML = artistAlbumHtml(m.artist || "", m.album || ""); }catch(e){}
   try{ if(npTech) npTech.textContent = m.tech || ""; }catch(e){}
+  scheduleLiquidGlassRender();
 }
 
 function isNpPillShown(){
   try{
-    return !!(npOverlayPill && !npOverlayPill.classList.contains("npPillHidden"));
+    return !!(npOverlayPill && npPillVisible && !npOverlayPill.classList.contains("npPillHidden"));
   }catch(e){
     return false;
   }
@@ -1018,6 +2058,7 @@ async function updateNowPlayingDisplay(meta, fallbackLabel, opts){
   if(animatePill){
     try{
       npOverlayPill.classList.add("npPillSwapHidden");
+      scheduleLiquidGlassRender();
     }catch(e){}
   }
 
@@ -1043,7 +2084,10 @@ async function updateNowPlayingDisplay(meta, fallbackLabel, opts){
     npPillSwapTimer = setTimeout(()=>{
       try{ setNowPlayingOverlayText(m, fallbackLabel); }catch(e){}
       requestAnimationFrame(()=>{
-        try{ if(npOverlayPill) npOverlayPill.classList.remove("npPillSwapHidden"); }catch(e){}
+        try{
+          if(npOverlayPill) npOverlayPill.classList.remove("npPillSwapHidden");
+          scheduleLiquidGlassRender();
+        }catch(e){}
       });
       npPillSwapTimer = null;
     }, swapMs);
@@ -1052,12 +2096,9 @@ async function updateNowPlayingDisplay(meta, fallbackLabel, opts){
   }
 }
 
-function showNpPill(pinned){
+function showNpPill(pinned, reason){
   const effectivePinned = !!pinned || !!npPillPinned;
-  try{
-    if(!npOverlayPill) return;
-    npOverlayPill.classList.remove("npPillHidden");
-  }catch(e){}
+  setNpPillVisible(true, reason || "show", pinned ? true : undefined);
   if(effectivePinned){
     try{ if(npPillHideTimer) clearTimeout(npPillHideTimer); }catch(e){}
     npPillHideTimer = null;
@@ -1077,7 +2118,7 @@ function scheduleHideNpPill(ms){
         const m = wheelMedia();
         if(!m) return;
         if(m.paused) return;
-        npOverlayPill.classList.add("npPillHidden");
+        setNpPillVisible(false, "auto hide", false);
       }catch(e){}
     }, (ms || 2500));
   }catch(e){}
@@ -1085,7 +2126,7 @@ function scheduleHideNpPill(ms){
 
 function npPillActivity(pinned){
   const effectivePinned = !!pinned || !!npPillPinned;
-  showNpPill(effectivePinned);
+  showNpPill(effectivePinned, pinned ? "activity pinned" : "activity");
   if(!effectivePinned) scheduleHideNpPill(2500);
 }
 
@@ -1094,6 +2135,7 @@ function showProgressBar(){
   try{
     npProgressWrap.style.display = "block";
     npVolumeWrap.style.display = "none";
+    scheduleLiquidGlassRender();
   }catch(e){}
 }
 
@@ -1102,6 +2144,7 @@ function showVolumeBar(){
     npProgressWrap.style.display = "none";
     npVolumeWrap.style.display = "block";
     if(npVolumeFill) npVolumeFill.style.width = Math.round(userVol * 100) + "%";
+    scheduleLiquidGlassRender();
   }catch(e){}
 }
 
@@ -1874,6 +2917,8 @@ function fmtTime(sec){
     playOrderPlaylist: null,
     preloadedIndex: null,
     visualizerEnabled: visualizerEnabled,
+    visualizerPreset: visualizerPresetName,
+    visualizerBpm: visualizerBpm,
     streamQueue: [],
     streamQueueIndex: -1
   };
@@ -1884,6 +2929,7 @@ function fmtTime(sec){
     state.shuffleEnabled = (localStorage.getItem("debripod_shuffle") === "1");
   }catch(e){ state.shuffleEnabled = false; }
   applyThemeVars(defaultTheme);
+  applyVisualizerPresetPalette();
   updateVisualizerState();
 
   let playbackLastPostTs = 0;
@@ -1956,21 +3002,14 @@ function fmtTime(sec){
   function layoutNowPlayingToLibList(){
     try{
       const screen = document.querySelector(".ipodScreenContent") || document.querySelector(".ipodScreen");
-      if(!screen || !nowPlaying || !libList) return;
-      const sr = screen.getBoundingClientRect();
-      const lr = libList.getBoundingClientRect();
-      const pad = 2; // keep libList border visible
-      const left = (lr.left - sr.left) + pad;
-      const top = (lr.top - sr.top) + pad;
-      const w = lr.width - (pad * 2);
-      const h = lr.height - (pad * 2);
-      nowPlaying.style.left = Math.max(0, left) + "px";
-      nowPlaying.style.top = Math.max(0, top) + "px";
-      nowPlaying.style.width = Math.max(0, w) + "px";
-      nowPlaying.style.height = Math.max(0, h) + "px";
+      if(!screen || !nowPlaying) return;
+      nowPlaying.style.left = "0";
+      nowPlaying.style.top = "0";
+      nowPlaying.style.width = "100%";
+      nowPlaying.style.height = "100%";
       nowPlaying.style.right = "auto";
       nowPlaying.style.bottom = "auto";
-      nowPlaying.style.borderRadius = "20px";
+      nowPlaying.style.borderRadius = "inherit";
     }catch(e){}
   }
 
@@ -2009,29 +3048,38 @@ function fmtTime(sec){
       nowPlaying.style.display = "block";
       try{ nowPlaying.classList.remove("npPageActive"); }catch(e){}
       updateVisualizerState();
+      scheduleLiquidGlassSnapshot("now playing entering", true);
+      setTimeout(()=>{
+        try{
+          recaptureLiquidGlassElement(npArt);
+          recaptureLiquidGlassElement(npArtSwap);
+          scheduleLiquidGlassRender();
+        }catch(e){}
+      }, 80);
       requestAnimationFrame(()=>{
         requestAnimationFrame(()=>{
           try{
             if(fadeToken !== npPageFadeToken) return;
             nowPlaying.classList.add("npPageActive");
+            scheduleLiquidGlassSnapshot("now playing active", true);
           }catch(e){}
         });
       });
       npPillActivity(false);
     }else{
+      hideNpPillImmediate("now playing leaving");
       try{ libList.classList.remove("npUnderlay"); }catch(e){}
       try{ nowPlaying.classList.remove("npPageActive"); }catch(e){}
+      scheduleLiquidGlassSnapshot("now playing leaving", true);
       npPageFadeTimer = setTimeout(()=>{
         try{
           if(fadeToken !== npPageFadeToken) return;
           nowPlaying.style.display = "none";
           resetNowPlayingLayout();
-          if(npOverlayPill) npOverlayPill.classList.add("npPillHidden");
+          scheduleLiquidGlassSnapshot("now playing hidden", true);
         }catch(e){}
         npPageFadeTimer = null;
       }, fadeMs);
-      try{ if(npPillHideTimer) clearTimeout(npPillHideTimer); }catch(e){}
-      npPillHideTimer = null;
     }
     if(!on){
       stopVideoOverlay();
@@ -2139,8 +3187,8 @@ function fmtTime(sec){
     state.roots = js.roots || [];
     state.lastfmEnabled = !!js.lastfm_enabled;
     state.playbackStreamingMode = (String(js.playback_streaming_mode || "http").toLowerCase() === "hls") ? "hls" : "http";
-    liquidGlassPresetName = normalizeLiquidGlassPreset(js.liquid_gl_preset || "default");
-    liquidGlassModeName = normalizeLiquidGlassMode(js.liquid_gl_mode || "clear");
+    wheelRotationMaxDegrees = normalizeWheelRotationMaxDegrees(js.wheel_rotation_max_degrees);
+    setLiquidGlassSettings(uiSettings.liquidGlassPreset, uiSettings.liquidGlassMode, false);
     initLiquidGlass();
     return js;
   }
@@ -3981,10 +5029,50 @@ async function libDoSearch(engine, q){
         if(lfUser) lp.push("logged in as " + lfUser);
         items.push({kind:"libinfo_action", label:"Login to Last.fm", action:"lastfm_login", pills: lp});
 
+        items.push({kind:"libinfo_action", label:"UI Settings", action:"ui_settings_menu"});
         items.push({kind:"libinfo_action", label:"Full Screen", action:"force_fullscreen"});
-        items.push({kind:"libinfo_action", label:"Visualizer", action:"toggle_visualizer", pills:[visualizerEnabled ? "On" : "Off"]});
         items.push({kind:"libinfo_action", label:"Binds", action:"binds_menu"});
 
+        resetList(items);
+      }
+    }, push);
+  }
+
+  function titleCaseSetting(value){
+    const text = String(value || "").trim();
+    return text ? text.charAt(0).toUpperCase() + text.slice(1) : "";
+  }
+
+  function nextLiquidGlassPreset(){
+    const order = Object.keys(LIQUID_GL_PRESETS);
+    const idx = order.indexOf(normalizeLiquidGlassPreset(liquidGlassPresetName));
+    return order[(idx + 1) % order.length] || "default";
+  }
+
+  function nextLiquidGlassMode(){
+    const order = ["clear", "light", "dark"];
+    const idx = order.indexOf(normalizeLiquidGlassMode(liquidGlassModeName));
+    return order[(idx + 1) % order.length] || "clear";
+  }
+
+  async function viewLibUiSettings(push){
+    showNowPlaying(false);
+    const restoreSel = (!push && state.current && state.current.kind === "libuisettings") ? state.sel : null;
+    const restoreScroll = (!push && state.current && state.current.kind === "libuisettings" && libList) ? libList.scrollTop : null;
+    await setView({
+      kind:"libuisettings",
+      label:"UI Settings",
+      savedSel: restoreSel,
+      savedScroll: restoreScroll,
+      load: async function(){
+        libControlsHide();
+        const items = [];
+        items.push({kind:"libui_action", label:"Visualizer", action:"toggle_visualizer", pills:[visualizerEnabled ? "On" : "Off"]});
+        items.push({kind:"libui_action", label:"Visualizer Strength", action:"cycle_visualizer_strength", pills:[titleCaseSetting(visualizerStrength)]});
+        items.push({kind:"libui_action", label:"Visualizer Preset", action:"cycle_visualizer_preset", pills:[visualizerPresetLabel(visualizerPresetName)]});
+        items.push({kind:"info", label:"Estimated Tempo", pills:[String(Math.round(visualizerBpm || 120)) + " BPM"]});
+        items.push({kind:"libui_action", label:"Liquid Glass Preset", action:"cycle_liquid_preset", pills:[titleCaseSetting(liquidGlassPresetName)]});
+        items.push({kind:"libui_action", label:"Liquid Glass Mode", action:"cycle_liquid_mode", pills:[titleCaseSetting(liquidGlassModeName)]});
         resetList(items);
       }
     }, push);
@@ -4015,6 +5103,58 @@ async function libDoSearch(engine, q){
         resetList(items);
       }
     }, push);
+  }
+
+  async function handleLibInfoAction(action){
+    switch(action){
+      case "reindex":
+        await doLibraryReindex();
+        await viewLibInfo(false);
+        return true;
+      case "lastfm_login":
+        await startLastfmLoginFlow();
+        await viewLibInfo(false);
+        return true;
+      case "force_fullscreen":
+        await forceFullscreenOn();
+        await viewLibInfo(false);
+        return true;
+      case "ui_settings_menu":
+        await viewLibUiSettings(true);
+        return true;
+      case "binds_menu":
+        await viewLibBinds(true);
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  async function handleLibUiAction(action){
+    switch(action){
+      case "toggle_visualizer":
+        setVisualizerEnabled(!visualizerEnabled);
+        await viewLibUiSettings(false);
+        return true;
+      case "cycle_visualizer_strength":
+        cycleVisualizerStrength();
+        await viewLibUiSettings(false);
+        return true;
+      case "cycle_visualizer_preset":
+        cycleVisualizerPreset();
+        await viewLibUiSettings(false);
+        return true;
+      case "cycle_liquid_preset":
+        setLiquidGlassSettings(nextLiquidGlassPreset(), liquidGlassModeName, true);
+        await viewLibUiSettings(false);
+        return true;
+      case "cycle_liquid_mode":
+        setLiquidGlassSettings(liquidGlassPresetName, nextLiquidGlassMode(), true);
+        await viewLibUiSettings(false);
+        return true;
+      default:
+        return false;
+    }
   }
 
   function libBuildFileItemsFromRD(preview, title, magnet){
@@ -4833,11 +5973,7 @@ async function viewRecently(push){
 
 async function goBack(){
     if(nowPlaying.style.display === "block"){
-      if(seekMode){
-        showNpPill(true);
-      }else{
-        npPillActivity(false);
-      }
+      hideNpPillImmediate("go back");
       showNowPlaying(false);
       await waitNowPlayingFade(220);
       return;
@@ -4991,9 +6127,15 @@ async function goBack(){
     try{
       meta = Object.assign({}, await apiGet("/api/library/filemeta?root_id=" + encodeURIComponent(rootId) + "&rel=" + encodeURIComponent(rel)), {streamed: !!item.streamed, source: item.source || "", ext: item.ext || "", quality: item.quality || ""});
     }catch(e){ meta = {}; }
+    try{
+      if(!meta.art){
+        meta.art = String(item.art || item.thumbnail || item.poster || "");
+      }
+    }catch(e){}
 
     state.now = {rootId: rootId, rel: rel, media: "video", streamed: !!item.streamed};
     state.nowMeta = meta;
+    visualizerVideoSampleLastTs = 0;
     saveResumeNowPlaying();
 
     await updateNowPlayingDisplay(meta, item.label || "Video", {animateArt: true, animatePill: true});
@@ -5005,6 +6147,10 @@ async function goBack(){
       destroyHlsController("video");
       npVideo.removeAttribute("src");
       try{ npVideo.load(); }catch(e){}
+      try{
+        if(meta && meta.art) npVideo.poster = meta.art;
+        else npVideo.removeAttribute("poster");
+      }catch(e){}
       applyVolume();
       await loadPlaybackIntoElement(npVideo, rootId, rel, "video");
 
@@ -5881,31 +7027,11 @@ if(it.kind === "libtasks_entry"){
 
     
     if(it.kind === "libinfo_action"){
-      if(it.action === "reindex"){
-        await doLibraryReindex();
-        await viewLibInfo(false);
-        return;
-      }
-      if(it.action === "lastfm_login"){
-        await startLastfmLoginFlow();
-        await viewLibInfo(false);
-        return;
-      }
-      if(it.action === "force_fullscreen"){
-        await forceFullscreenOn();
-        // keep menu open
-        await viewLibInfo(false);
-        return;
-      }
-      if(it.action === "binds_menu"){
-        await viewLibBinds(true);
-        return;
-      }
-      if(it.action === "toggle_visualizer"){
-        setVisualizerEnabled(!visualizerEnabled);
-        await viewLibInfo(false);
-        return;
-      }
+      if(await handleLibInfoAction(it.action)) return;
+    }
+
+    if(it.kind === "libui_action"){
+      if(await handleLibUiAction(it.action)) return;
     }
 
 if(it.kind === "libsearch_history_action"){
@@ -6568,7 +7694,7 @@ if(it.kind === "root"){
 btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
     vibeTick();
     if(state.current && state.current.kind === "np_playlist_add") return;
-    if(nowPlaying.style.display === "block") npPillActivity(false);
+    if(nowPlaying.style.display === "block") hideNpPillImmediate("menu button");
     if(nowPlaying.style.display === "block" && seekMode && !isVideoActive() && lastfmIsEnabled()){
       lastfmToggleLoved(lastfmState.meta);
       resetSeekIdle();
@@ -6649,6 +7775,7 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
   let wheelStartY = 0;
   let wheelDownOnButton = false;
   let wheelClickSuppressUntil = 0;
+  let wheelPointerRect = null;
   const step = 18;
   const dragPx = 8;
 
@@ -6662,7 +7789,7 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
   }
 
   function angleFromEvent(ev){
-    const rect = wheel.getBoundingClientRect();
+    const rect = wheelPointerRect || wheel.getBoundingClientRect();
     const cx = rect.left + rect.width/2;
     const cy = rect.top + rect.height/2;
     const x = (ev.clientX - cx);
@@ -6689,8 +7816,10 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
     }
     wheelStartX = ev.clientX;
     wheelStartY = ev.clientY;
+    wheelPointerRect = wheel.getBoundingClientRect();
     lastAngle = angleFromEvent(ev);
     accum = 0;
+    cacheWheelGlassTiltRect();
 
     // Avoid capturing immediately so taps on buttons stay reliable.
     // If the user drags, we will capture on move after a small threshold.
@@ -6749,6 +7878,7 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
     wheelPointerDown = false;
     dragging = false;
     wheelDownOnButton = false;
+    wheelPointerRect = null;
     resetWheelGlassTilt();
   }
 

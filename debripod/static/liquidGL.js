@@ -88,16 +88,18 @@
    *  Shared renderer (one per page)
    * ------------------------------------------------*/
   class liquidGLRenderer {
-    constructor(snapshotSelector, snapshotResolution = 1.0) {
+    constructor(snapshotSelector, snapshotResolution = 1.0, rendererKey = "default", sourceOptions = {}) {
       this.canvas = document.createElement("canvas");
       this.canvas.style.cssText = `position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:0;`;
       this.canvas.setAttribute("data-liquid-ignore", "");
+      this.canvas.setAttribute("data-liquid-renderer", rendererKey || "default");
       document.body.appendChild(this.canvas);
 
+      const isMobileSafari = /iPad|iPhone|iPod/.test(navigator.userAgent);
       const ctxAttribs = {
         alpha: true,
         premultipliedAlpha: true,
-        preserveDrawingBuffer: true,
+        preserveDrawingBuffer: isMobileSafari,
       };
       this.gl =
         this.canvas.getContext("webgl2", ctxAttribs) ||
@@ -106,12 +108,24 @@
       if (!this.gl) throw new Error("liquidGL: WebGL unavailable");
 
       this.lenses = [];
+      this.rendererKey = rendererKey || "default";
       this.texture = null;
       this.textureWidth = 0;
       this.textureHeight = 0;
       this.scaleFactor = 1;
       this.startTime = Date.now();
       this._scrollUpdateCounter = 0;
+      this._snapshotResolution = Math.max(
+        0.1,
+        Math.min(3.0, snapshotResolution)
+      );
+      this.sourceType = sourceOptions.sourceType || "visualizerCanvas";
+      this.sourceSelector = sourceOptions.sourceElement || sourceOptions.source || "#visualizerBg";
+      this._sourceElement = null;
+      this._sourceCssRect = null;
+      this._sourceTextureReady = false;
+      this._solidCanvas = null;
+      this.visible = true;
 
       this._initGL();
 
@@ -152,8 +166,10 @@
         });
 
         this._resizeCanvas();
+        this._metricsDirty = true;
         this.lenses.forEach((l) => l.updateMetrics());
-        this.captureSnapshot();
+        this._snapshotRectPx = this.snapshotTarget.getBoundingClientRect();
+        this.refreshSourceTexture("resize");
       }, 250);
       window.addEventListener("resize", onResize, { passive: true });
 
@@ -167,6 +183,10 @@
       this._dynamicNodes = [];
       this._dynMeta = new WeakMap();
       this._lastDynamicUpdate = 0;
+      this._metricsDirty = true;
+      this._snapshotRectPx = null;
+      this._externalFrameState = null;
+      this._dpr = Math.min(2, window.devicePixelRatio || 1);
 
       const styleEl = document.createElement("style");
       styleEl.id = "liquid-gl-dynamic-styles";
@@ -174,9 +194,8 @@
       this._dynamicStyleSheet = styleEl.sheet;
 
       this._resizeCanvas();
-      this.captureSnapshot();
-
       this._pendingReveal = [];
+      this.refreshSourceTexture("init");
 
       /* --------------------------------------------------
        *  Dynamic media (video) support
@@ -189,11 +208,6 @@
       this._tmpCtx = this._tmpCanvas.getContext("2d");
 
       this.canvas.style.opacity = "0";
-
-      this._snapshotResolution = Math.max(
-        0.1,
-        Math.min(3.0, snapshotResolution)
-      );
 
       this.useExternalTicker = false;
 
@@ -279,6 +293,7 @@
         uniform float u_tiltY;
         uniform float u_magnify;
         uniform float u_hollowInset;
+        uniform bool  u_hollowMaskContent;
         uniform int   u_glassMode;
 
         float udRoundBox( vec2 p, vec2 b, float r ) {
@@ -296,6 +311,18 @@
           float bevel_px = u_bevelWidth * min(u_resolution.x, u_resolution.y);
           return 1.0 - smoothstep(0.0, bevel_px, d);
         }
+
+        float hollowInnerShapeAtTextureUV(vec2 textureUV) {
+          vec2 flippedUV = (textureUV - u_bounds.xy) / u_bounds.zw;
+          vec2 localUV = vec2(flippedUV.x, 1.0 - flippedUV.y);
+          vec2 p_px = (localUV - 0.5) * u_resolution;
+          vec2 b_px = 0.5 * u_resolution;
+          vec2 innerB = max(vec2(0.0), b_px - vec2(u_hollowInset));
+          float innerRadius = max(0.0, u_radius - u_hollowInset);
+          float innerD = udRoundBox(p_px, innerB, innerRadius);
+          return 1.0 - smoothstep(-1.25, 1.25, innerD);
+        }
+
         void main(){
           vec2 p = v_uv - 0.5;
           p.x *= u_resolution.x / u_resolution.y;
@@ -317,6 +344,14 @@
           float oob = max(max(-refracted.x, refracted.x - 1.0), max(-refracted.y, refracted.y - 1.0));
           float blend = 1.0 - smoothstep(0.0, 0.01, oob);
           vec2 sampleUV = mix(mapped, refracted, blend);
+
+          if (u_hollowInset > 0.0 && u_hollowMaskContent) {
+            float sampledInnerShape = hollowInnerShapeAtTextureUV(sampleUV);
+            if (sampledInnerShape > 0.01) {
+              float innerEdgeFade = smoothstep(0.01, 0.30, sampledInnerShape);
+              sampleUV = mix(sampleUV, mapped, innerEdgeFade);
+            }
+          }
 
           vec4 baseCol   = texture2D(u_tex, mapped);
 
@@ -368,12 +403,14 @@
           if (inShape <= 0.001) discard;
 
           if (u_specular) {
-            vec2 lp1 = vec2(0.30, 0.22);
-            vec2 lp2 = vec2(0.72, 0.68);
+            vec2 tilt = vec2(u_tiltY, -u_tiltX) * 0.010;
+            vec2 lp1 = vec2(0.27, 0.20) + tilt;
+            vec2 lp2 = vec2(0.72, 0.66) - tilt * 0.7;
             float h = 0.0;
-            h += smoothstep(0.36,0.0,distance(v_uv, lp1))*0.08;
-            h += smoothstep(0.48,0.0,distance(v_uv, lp2))*0.055;
-            final.rgb += h;
+            h += smoothstep(0.32,0.0,distance(v_uv, lp1))*0.18;
+            h += smoothstep(0.44,0.0,distance(v_uv, lp2))*0.11;
+            h += pow(edge, 2.2) * (0.11 + abs(u_tiltX + u_tiltY) * 0.012);
+            final.rgb += h * vec3(1.0, 0.97, 0.90);
           }
 
           if (u_glassMode == 1) {
@@ -430,163 +467,220 @@
         tiltY: gl.getUniformLocation(this.program, "u_tiltY"),
         magnify: gl.getUniformLocation(this.program, "u_magnify"),
         hollowInset: gl.getUniformLocation(this.program, "u_hollowInset"),
+        hollowMaskContent: gl.getUniformLocation(this.program, "u_hollowMaskContent"),
         glassMode: gl.getUniformLocation(this.program, "u_glassMode"),
       };
     }
 
     /* ----------------------------- */
     _resizeCanvas() {
-      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const isMobileSafari = /iPad|iPhone|iPod/.test(navigator.userAgent);
+      const dpr = Math.min(isMobileSafari ? 1.45 : 2, window.devicePixelRatio || 1);
+      this._dpr = dpr;
       this.canvas.width = innerWidth * dpr;
       this.canvas.height = innerHeight * dpr;
       this.canvas.style.width = `${innerWidth}px`;
       this.canvas.style.height = `${innerHeight}px`;
       this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+      this._metricsDirty = true;
     }
 
     /* ----------------------------- */
-    async captureSnapshot() {
-      if (this._capturing || typeof html2canvas === "undefined") return;
-      this._capturing = true;
-
-      const undos = [];
-
-      const attemptCapture = async (
-        attempt = 1,
-        maxAttempts = 3,
-        delayMs = 500
-      ) => {
-        try {
-          const fullW = this.snapshotTarget.scrollWidth;
-          const fullH = this.snapshotTarget.scrollHeight;
-          const maxTex = this.gl.getParameter(this.gl.MAX_TEXTURE_SIZE) || 8192;
-          const MAX_MOBILE_DIM = 4096;
-          const isMobileSafari = /iPad|iPhone|iPod/.test(navigator.userAgent);
-
-          let scale = Math.min(
-            this._snapshotResolution,
-            maxTex / fullW,
-            maxTex / fullH
-          );
-
-          if (isMobileSafari) {
-            const over = (Math.max(fullW, fullH) * scale) / MAX_MOBILE_DIM;
-            if (over > 1) scale = scale / over;
-          }
-          this.scaleFactor = Math.max(0.1, scale);
-
-          this.canvas.style.visibility = "hidden";
-          undos.push(() => (this.canvas.style.visibility = "visible"));
-
-          const lensElements = this.lenses
-            .flatMap((lens) => [lens.el, lens._shadowEl])
-            .filter(Boolean);
-
-          const ignoreElementsFunc = (element) => {
-            if (!element || !element.hasAttribute) return false;
-            if (element === this.canvas || lensElements.includes(element)) {
-              return true;
-            }
-            const style = window.getComputedStyle(element);
-            if (style.position === "fixed") {
-              return true;
-            }
-            return (
-              element.hasAttribute("data-liquid-ignore") ||
-              element.closest("[data-liquid-ignore]")
-            );
-          };
-
-          const snapCanvas = await html2canvas(this.snapshotTarget, {
-            allowTaint: false,
-            useCORS: true,
-            backgroundColor: null,
-            removeContainer: true,
-            width: fullW,
-            height: fullH,
-            scrollX: 0,
-            scrollY: 0,
-            scale: scale,
-            ignoreElements: ignoreElementsFunc,
-          });
-
-          this._uploadTexture(snapCanvas);
-          return true;
-        } catch (e) {
-          liquidGLLog("error", "liquidGL snapshot failed on attempt " + attempt, e);
-          if (attempt < maxAttempts) {
-            liquidGLLog(
-              "log",
-              `Retrying snapshot capture (${attempt + 1}/${maxAttempts})...`
-            );
-            await new Promise((resolve) => setTimeout(resolve, delayMs));
-            return await attemptCapture(attempt + 1, maxAttempts, delayMs);
-          } else {
-            liquidGLLog("error", "liquidGL: All snapshot attempts failed.", e);
-            return false;
-          }
-        } finally {
-          for (let i = undos.length - 1; i >= 0; i--) {
-            undos[i]();
-          }
-          this._capturing = false;
-        }
-      };
-
-      return await attemptCapture();
+    captureSnapshot(reason = "") {
+      return this.refreshSourceTexture(reason || "direct source");
     }
 
-    /* ----------------------------- */
-    _uploadTexture(srcCanvas) {
-      if (!srcCanvas) return;
+    _resolveSourceElement() {
+      if (this._sourceElement && document.documentElement.contains(this._sourceElement)) {
+        return this._sourceElement;
+      }
+      if (this.sourceSelector && typeof this.sourceSelector === "string") {
+        this._sourceElement = document.querySelector(this.sourceSelector);
+      }
+      return this._sourceElement;
+    }
 
-      if (!(srcCanvas instanceof HTMLCanvasElement)) {
-        const tmp = document.createElement("canvas");
-        tmp.width = srcCanvas.width || 0;
-        tmp.height = srcCanvas.height || 0;
-        if (tmp.width === 0 || tmp.height === 0) return;
-        try {
-          const ctx = tmp.getContext("2d");
-          ctx.drawImage(srcCanvas, 0, 0);
-          srcCanvas = tmp;
-        } catch (e) {
-          liquidGLLog(
-            "warn",
-            "liquidGL: Unable to convert OffscreenCanvas for upload",
-            e
-          );
-          return;
+    configureSource(options = {}) {
+      const nextType = options.sourceType || this.sourceType || "visualizerCanvas";
+      const nextSelector = options.sourceElement || options.source || this.sourceSelector || "#visualizerBg";
+      if (nextType !== this.sourceType || nextSelector !== this.sourceSelector) {
+        this.sourceType = nextType;
+        this.sourceSelector = nextSelector;
+        this._sourceElement = null;
+        this.refreshSourceTexture("source configured");
+      }
+    }
+
+    _fallbackCanvas(width = 8, height = 8, rgba = [5, 5, 7, 255]) {
+      if (!this._solidCanvas) this._solidCanvas = document.createElement("canvas");
+      if (this._solidCanvas.width !== width || this._solidCanvas.height !== height) {
+        this._solidCanvas.width = width;
+        this._solidCanvas.height = height;
+      }
+      const ctx = this._solidCanvas.getContext("2d");
+      ctx.fillStyle = `rgba(${rgba[0]},${rgba[1]},${rgba[2]},${(rgba[3] == null ? 255 : rgba[3]) / 255})`;
+      ctx.fillRect(0, 0, width, height);
+      return this._solidCanvas;
+    }
+
+    _sourceWidth(source) {
+      return source ? (source.videoWidth || source.naturalWidth || source.width || 0) : 0;
+    }
+
+    _sourceHeight(source) {
+      return source ? (source.videoHeight || source.naturalHeight || source.height || 0) : 0;
+    }
+
+    refreshSourceTexture(reason = "") {
+      const source = this._resolveSourceElement();
+      if (this.sourceType === "albumArtCanvasOrImage") {
+        if (source && source.complete && source.naturalWidth && source.naturalHeight) {
+          return this.updateTextureFromImage(source, { reason: reason || "album art" });
         }
+        return this.updateTextureFromSolidColor(8, 8, [5, 5, 7, 255], { reason: reason || "album art fallback", allowDark: true });
+      }
+      if (this.sourceType === "liveVideoFrame") {
+        if (source && source.readyState >= 2 && source.videoWidth && source.videoHeight) {
+          return this.updateTextureFromVideo(source, { reason: reason || "video frame" });
+        }
+        return this.updateTextureFromSolidColor(8, 8, [0, 0, 0, 255], { reason: reason || "video fallback", allowDark: true });
+      }
+      if (source && source.width && source.height) {
+        return this.updateTextureFromCanvas(source, {
+          reason: reason || this.sourceType || "canvas source",
+          allowDark: true,
+          sourceRect: { left: 0, top: 0, width: window.innerWidth || source.width || 1, height: window.innerHeight || source.height || 1 },
+        });
+      }
+      return this.updateTextureFromSolidColor(8, 8, [0, 0, 0, 255], { reason: reason || "fallback", allowDark: true });
+    }
+
+    updateTextureFromCanvas(canvas, options = {}) {
+      if (!canvas || !canvas.width || !canvas.height) {
+        if (this.texture) return false;
+        return this.updateTextureFromSolidColor(8, 8, [0, 0, 0, 255], { reason: options.reason || "canvas fallback", allowDark: true });
+      }
+      if (options.sourceRect) this._sourceCssRect = options.sourceRect;
+      else this._sourceCssRect = { left: 0, top: 0, width: window.innerWidth || canvas.width || 1, height: window.innerHeight || canvas.height || 1 };
+      return this._uploadTextureSource(canvas, canvas.width, canvas.height, options.reason || "canvas source", { allowDark: options.allowDark === true });
+    }
+
+    updateTextureFromImage(img, options = {}) {
+      if (!img || !img.complete || !img.naturalWidth || !img.naturalHeight) return false;
+      this._sourceCssRect = null;
+      return this._uploadTextureSource(img, img.naturalWidth, img.naturalHeight, options.reason || "image source", { allowDark: true, skipBlankCheck: true });
+    }
+
+    updateTextureFromVideo(video, options = {}) {
+      if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return false;
+      this._sourceCssRect = null;
+      return this._uploadTextureSource(video, video.videoWidth, video.videoHeight, options.reason || "video source", { allowDark: options.allowDark === true, skipBlankCheck: true });
+    }
+
+    updateTextureFromSolidColor(width = 8, height = 8, rgba = [0, 0, 0, 255], options = {}) {
+      const canvas = this._fallbackCanvas(width, height, rgba);
+      this._sourceCssRect = null;
+      return this._uploadTextureSource(canvas, canvas.width, canvas.height, options.reason || "solid fallback", { allowDark: true, skipBlankCheck: true });
+    }
+
+    _uploadTexture(srcCanvas, reason = "") {
+      return this._uploadTextureSource(srcCanvas, this._sourceWidth(srcCanvas), this._sourceHeight(srcCanvas), reason, {});
+    }
+
+    _uploadTextureSource(source, width, height, reason = "", options = {}) {
+      if (!source || !(width > 0) || !(height > 0)) return false;
+      if (!options.skipBlankCheck && !options.allowDark && source instanceof HTMLCanvasElement && this._canvasLooksBlankForUpload(source)) {
+        liquidGLLog("warn", "liquidGL: Refusing to replace texture with a blank source.", {
+          rendererKey: this.rendererKey,
+          reason
+        });
+        return false;
+      }
+      const gl = this.gl;
+      if (!this.texture) {
+        this.texture = gl.createTexture();
+        if (!this.texture) return false;
+      }
+      try {
+        gl.bindTexture(gl.TEXTURE_2D, this.texture);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+        gl.texImage2D(
+          gl.TEXTURE_2D,
+          0,
+          gl.RGBA,
+          gl.RGBA,
+          gl.UNSIGNED_BYTE,
+          source
+        );
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      } catch (e) {
+        liquidGLLog("error", "liquidGL: Texture upload failed; keeping previous texture.", e);
+        if (this.texture) gl.bindTexture(gl.TEXTURE_2D, this.texture);
+        return false;
       }
 
-      if (srcCanvas.width === 0 || srcCanvas.height === 0) return;
-      this.staticSnapshotCanvas = srcCanvas;
-      const gl = this.gl;
-      if (!this.texture) this.texture = gl.createTexture();
-      gl.bindTexture(gl.TEXTURE_2D, this.texture);
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-      gl.texImage2D(
-        gl.TEXTURE_2D,
-        0,
-        gl.RGBA,
-        gl.RGBA,
-        gl.UNSIGNED_BYTE,
-        srcCanvas
-      );
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-
-      this.textureWidth = srcCanvas.width;
-      this.textureHeight = srcCanvas.height;
-
-      this.render();
+      this._sourceTextureReady = true;
+      this.staticSnapshotCanvas = source instanceof HTMLCanvasElement ? source : null;
+      this.textureWidth = width;
+      this.textureHeight = height;
+      this.scaleFactor = 1;
+      liquidGLLog("log", "liquidGL: Texture uploaded.", {
+        rendererKey: this.rendererKey,
+        reason,
+        width: this.textureWidth,
+        height: this.textureHeight,
+        lensCount: this.lenses.length,
+        lensClasses: this.lenses.map((lens) => lens.el && lens.el.className).filter(Boolean),
+        canvasClassName: this.canvas.className,
+        canvasZIndex: window.getComputedStyle(this.canvas).zIndex
+      });
 
       if (this._pendingReveal.length) {
         this._pendingReveal.forEach((ln) => ln._reveal());
         this._pendingReveal.length = 0;
       }
+
+      return true;
+    }
+
+    /* ----------------------------- */
+    _canvasLooksBlankForUpload(canvas) {
+      let ctx;
+      try {
+        ctx = canvas.getContext("2d", { willReadFrequently: true });
+      } catch (e) {
+        return false;
+      }
+      if (!ctx) return false;
+
+      const w = canvas.width || 0;
+      const h = canvas.height || 0;
+      if (w <= 0 || h <= 0) return true;
+
+      let allTransparent = true;
+      let allNearBlack = true;
+      const samples = 12;
+      try {
+        for (let y = 0; y < samples; y++) {
+          for (let x = 0; x < samples; x++) {
+            const px = Math.min(w - 1, Math.max(0, Math.round(((x + 0.5) / samples) * w)));
+            const py = Math.min(h - 1, Math.max(0, Math.round(((y + 0.5) / samples) * h)));
+            const data = ctx.getImageData(px, py, 1, 1).data;
+            const a = data[3];
+            if (a > 0) allTransparent = false;
+            if (!(a > 250 && data[0] <= 2 && data[1] <= 2 && data[2] <= 2)) {
+              allNearBlack = false;
+            }
+            if (!allTransparent && !allNearBlack) return false;
+          }
+        }
+      } catch (e) {
+        return false;
+      }
+      return allTransparent || allNearBlack;
     }
 
     /* ----------------------------- */
@@ -608,9 +702,48 @@
     }
 
     /* ----------------------------- */
-    render() {
+    clear() {
+      try {
+        const gl = this.gl;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        if (this.canvas.width && this.canvas.height) {
+          gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+        }
+        gl.clearColor(0, 0, 0, 0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        if (this.canvas) this.canvas.style.opacity = "0";
+      } catch (e) {}
+    }
+
+    setVisible(on) {
+      const next = !!on;
+      if (this.visible === next) {
+        if (!next) this.clear();
+        return;
+      }
+      this.visible = next;
+      if (!next) {
+        this.lenses.forEach((lens) => {
+          lens.rectPx = null;
+        });
+        this.clear();
+        return;
+      }
+      if (this.canvas) this.canvas.style.opacity = "1";
+      this._metricsDirty = true;
+    }
+
+    /* ----------------------------- */
+    render(frameState) {
       const gl = this.gl;
+      if (!this.visible) {
+        this.clear();
+        return;
+      }
+      if (!this.texture) this.refreshSourceTexture("render fallback");
       if (!this.texture) return;
+      if (frameState) this._externalFrameState = frameState;
+      const fs = this._externalFrameState || {};
 
       if (this._isScrolling) {
         this._scrollUpdateCounter++;
@@ -623,18 +756,21 @@
       gl.bindTexture(gl.TEXTURE_2D, this.texture);
       gl.uniform1i(this.u.tex, 0);
 
-      const time = (Date.now() - this.startTime) / 1000;
+      const time = Number.isFinite(fs.timestamp) ? fs.timestamp / 1000 : (Date.now() - this.startTime) / 1000;
       gl.uniform1f(this.u.time, time);
 
-      this._updateDynamicVideos();
-
-      this._updateDynamicNodes();
+      if (this._metricsDirty || !this._snapshotRectPx) {
+        this._snapshotRectPx = this.snapshotTarget.getBoundingClientRect();
+        this.lenses.forEach((lens) => {
+          lens.updateMetrics();
+          if (lens._mirrorActive && lens._mirrorClipUpdater) {
+            lens._mirrorClipUpdater();
+          }
+        });
+        this._metricsDirty = false;
+      }
 
       this.lenses.forEach((lens) => {
-        lens.updateMetrics();
-        if (lens._mirrorActive && lens._mirrorClipUpdater) {
-          lens._mirrorClipUpdater();
-        }
         this._renderLens(lens);
       });
 
@@ -652,7 +788,7 @@
         }
       });
 
-      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const dpr = this._dpr || Math.min(2, window.devicePixelRatio || 1);
       this.lenses.forEach((ln) => {
         if (ln._mirrorActive && ln.rectPx) {
           const { left, top, width, height } = ln.rectPx;
@@ -686,8 +822,10 @@
       const gl = this.gl;
       const rect = lens.rectPx;
       if (!rect) return;
+      if (!this.texture || !this.textureWidth || !this.textureHeight) return;
+      if (!(rect.width > 0) || !(rect.height > 0)) return;
 
-      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const dpr = this._dpr || Math.min(2, window.devicePixelRatio || 1);
 
       let overscrollY = 0;
       let overscrollX = 0;
@@ -706,12 +844,31 @@
       gl.viewport(x, y, w, h);
       gl.uniform2f(this.u.res, w, h);
 
-      const docX = rect.left - this.snapshotTarget.getBoundingClientRect().left;
-      const docY = rect.top - this.snapshotTarget.getBoundingClientRect().top;
-      const leftUV = (docX * this.scaleFactor) / this.textureWidth;
-      const topUV = (docY * this.scaleFactor) / this.textureHeight;
-      const wUV = (rect.width * this.scaleFactor) / this.textureWidth;
-      const hUV = (rect.height * this.scaleFactor) / this.textureHeight;
+      let leftUV = 0;
+      let topUV = 0;
+      let wUV = 1;
+      let hUV = 1;
+      if (this.sourceType !== "albumArtCanvasOrImage" && this.sourceType !== "liveVideoFrame") {
+        const srcRect = this._sourceCssRect || { left: 0, top: 0, width: window.innerWidth || 1, height: window.innerHeight || 1 };
+        leftUV = (rect.left - srcRect.left) / Math.max(1, srcRect.width);
+        topUV = (rect.top - srcRect.top) / Math.max(1, srcRect.height);
+        wUV = rect.width / Math.max(1, srcRect.width);
+        hUV = rect.height / Math.max(1, srcRect.height);
+      }
+      if (
+        !Number.isFinite(leftUV) ||
+        !Number.isFinite(topUV) ||
+        !Number.isFinite(wUV) ||
+        !Number.isFinite(hUV) ||
+        wUV <= 0 ||
+        hUV <= 0 ||
+        leftUV + wUV <= -0.02 ||
+        topUV + hUV <= -0.02 ||
+        leftUV >= 1.02 ||
+        topUV >= 1.02
+      ) {
+        return;
+      }
       gl.uniform4f(this.u.bounds, leftUV, topUV, wUV, hUV);
 
       gl.uniform2f(
@@ -740,6 +897,7 @@
       gl.uniform1f(this.u.tiltX, lens.tiltX || 0);
       gl.uniform1f(this.u.tiltY, lens.tiltY || 0);
       gl.uniform1f(this.u.hollowInset, lens.hollowInsetGl || 0);
+      gl.uniform1i(this.u.hollowMaskContent, lens.hollowMaskContent ? 1 : 0);
       gl.uniform1i(this.u.glassMode, lens.glassModeIndex || 0);
 
       gl.drawArrays(gl.TRIANGLES, 0, 6);
@@ -771,7 +929,7 @@
         return;
       const gl = this.gl;
 
-      const snapRect = this.snapshotTarget.getBoundingClientRect();
+      const snapRect = this._snapshotRectPx || this.snapshotTarget.getBoundingClientRect();
 
       const maxLensZ = this._getMaxLensZ();
 
@@ -894,8 +1052,8 @@
     _updateDynamicNodes() {
       if (this._isScrolling && this._scrollUpdateCounter % 2 !== 0) return;
       const gl = this.gl;
-      if (!this.texture || !this._dynMeta) return;
-      const snapRect = this.snapshotTarget.getBoundingClientRect();
+      if (!this.texture || !this._dynMeta || !this._dynamicNodes.length) return;
+      const snapRect = this._snapshotRectPx || this.snapshotTarget.getBoundingClientRect();
       const maxLensZ = this._getMaxLensZ();
 
       const lensRects = this.lenses.map((ln) => ln.rectPx).filter(Boolean);
@@ -906,13 +1064,35 @@
         a.top < b.top + b.height &&
         a.top + a.height > b.top;
 
+      const rectWithin = (a, b) =>
+        a.left >= b.left &&
+        a.top >= b.top &&
+        a.left + a.width <= b.left + b.width &&
+        a.top + a.height <= b.top + b.height;
+
+      const lensVisibleForRect = (lens, rect) => {
+        if (!lens || !lens.rectPx || !rectsIntersect(rect, lens.rectPx)) return false;
+        const inset = Number(lens.hollowInsetCss || 0);
+        if (inset > 0) {
+          const lr = lens.rectPx;
+          const inner = {
+            left: lr.left + inset,
+            top: lr.top + inset,
+            width: Math.max(0, lr.width - inset * 2),
+            height: Math.max(0, lr.height - inset * 2),
+          };
+          if (rectWithin(rect, inner)) return false;
+        }
+        return true;
+      };
+
       if (!this._compositeCtx) {
         this._compositeCtx = document.createElement("canvas").getContext("2d");
       }
 
       const compositeVideos = (compositeCtx, dynamicElRect) => {
         this._videoNodes.forEach((vid) => {
-          if (effectiveZ(vid) >= maxLensZ) return;
+          if (effectiveZ(vid) > maxLensZ) return;
           const vidRect = vid.getBoundingClientRect();
 
           if (
@@ -944,29 +1124,23 @@
         if (!meta) return;
 
         if (meta.needsRecapture && !meta._capturing && !this._isScrolling) {
-          meta._capturing = true;
+          const imageCapture = this._captureImageElement(el);
+          if (imageCapture) {
+            meta.lastCapture = imageCapture;
+            meta.needsRecapture = false;
+            requestAnimationFrame(() => this.render());
+          } else if (el && el.tagName === "IMG") {
+            liquidGLLog(
+              "warn",
+              "liquidGL: Image dynamic capture failed; relying on the static snapshot.",
+              el.currentSrc || el.src || el
+            );
+            meta.needsRecapture = false;
+          }
+        }
 
-          html2canvas(el, {
-            backgroundColor: null,
-            scale: this.scaleFactor,
-            useCORS: true,
-            removeContainer: true,
-            logging: false,
-            ignoreElements: (n) =>
-              n.tagName === "CANVAS" || n.hasAttribute("data-liquid-ignore"),
-          })
-            .then((cv) => {
-              if (cv.width > 0 && cv.height > 0) {
-                meta.lastCapture = cv;
-                meta.needsRecapture = false;
-              }
-            })
-            .catch((e) => {
-              liquidGLLog("error", "liquidGL: Dynamic element capture failed.", e);
-            })
-            .finally(() => {
-              meta._capturing = false;
-            });
+        if (meta.needsRecapture && !meta._capturing && !this._isScrolling) {
+          meta.needsRecapture = false;
         }
 
         if (meta.lastCapture) {
@@ -990,21 +1164,25 @@
                 h
               );
               gl.bindTexture(gl.TEXTURE_2D, this.texture);
-              gl.texSubImage2D(
-                gl.TEXTURE_2D,
-                0,
-                x,
-                y,
-                gl.RGBA,
-                gl.UNSIGNED_BYTE,
-                eraseCanvas
-              );
+              try {
+                gl.texSubImage2D(
+                  gl.TEXTURE_2D,
+                  0,
+                  x,
+                  y,
+                  gl.RGBA,
+                  gl.UNSIGNED_BYTE,
+                  eraseCanvas
+                );
+              } catch (e) {
+                liquidGLLog("warn", "liquidGL: Dynamic texture erase failed.", e);
+              }
             }
           }
 
           const rect = el.getBoundingClientRect();
           if (
-            effectiveZ(el) >= maxLensZ ||
+            effectiveZ(el) > maxLensZ ||
             !document.contains(el) ||
             rect.width === 0 ||
             rect.height === 0
@@ -1013,7 +1191,7 @@
             return;
           }
 
-          if (!lensRects.some((lr) => rectsIntersect(rect, lr))) {
+          if (!this.lenses.some((lens) => lensVisibleForRect(lens, rect))) {
             meta.prevDrawRect = null;
             return;
           }
@@ -1093,15 +1271,20 @@
           this._compositeCtx.restore();
 
           gl.bindTexture(gl.TEXTURE_2D, this.texture);
-          gl.texSubImage2D(
-            gl.TEXTURE_2D,
-            0,
-            dstX,
-            dstY,
-            gl.RGBA,
-            gl.UNSIGNED_BYTE,
-            compositeCanvas
-          );
+          try {
+            gl.texSubImage2D(
+              gl.TEXTURE_2D,
+              0,
+              dstX,
+              dstY,
+              gl.RGBA,
+              gl.UNSIGNED_BYTE,
+              compositeCanvas
+            );
+          } catch (e) {
+            liquidGLLog("warn", "liquidGL: Dynamic texture update failed.", e);
+            return;
+          }
 
           if (this._workerEnabled && meta._heavyAnim) {
             const jobId = `${Date.now()}_${Math.random()}`;
@@ -1157,6 +1340,46 @@
       return [1, 0, 0, 1, 0, 0];
     }
 
+    _captureImageElement(el) {
+      try {
+        if (!el || el.tagName !== "IMG" || !el.complete || !el.naturalWidth || !el.naturalHeight) {
+          return null;
+        }
+        const rect = el.getBoundingClientRect();
+        const w = Math.max(1, Math.round(rect.width * this.scaleFactor));
+        const h = Math.max(1, Math.round(rect.height * this.scaleFactor));
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        const iw = el.naturalWidth;
+        const ih = el.naturalHeight;
+        const fit = window.getComputedStyle(el).objectFit || "fill";
+        let dw = w;
+        let dh = h;
+        let dx = 0;
+        let dy = 0;
+        if (fit === "cover") {
+          const s = Math.max(w / iw, h / ih);
+          dw = iw * s;
+          dh = ih * s;
+          dx = (w - dw) / 2;
+          dy = (h - dh) / 2;
+        } else if (fit === "contain") {
+          const s = Math.min(w / iw, h / ih);
+          dw = iw * s;
+          dh = ih * s;
+          dx = (w - dw) / 2;
+          dy = (h - dh) / 2;
+        }
+        ctx.drawImage(el, dx, dy, dw, dh);
+        return canvas;
+      } catch (e) {
+        liquidGLLog("warn", "liquidGL: Image element capture failed.", e);
+        return null;
+      }
+    }
+
     /* ----------------------------- */
     _getMaxLensZ() {
       let maxZ = 0;
@@ -1181,6 +1404,7 @@
         return;
       }
       if (!el.getBoundingClientRect) return;
+      if (el.id === "visualizerBg" || (el.classList && el.classList.contains("visualizerBg"))) return;
       if (el.closest && el.closest("[data-liquid-ignore]")) return;
       if (this._dynamicNodes.some((n) => n.el === el)) return;
 
@@ -1408,6 +1632,9 @@
       this.radiusGl = 0;
       this.radiusCss = 0;
       this.hollowInsetGl = 0;
+      this.hollowMaskContent =
+        !!this.options.hollowMaskContent ||
+        this.el.hasAttribute("data-liquid-mask-content");
       this.glassModeIndex = this._glassModeIndex(this.options.glassMode);
       this.revealTypeIndex = this.options.reveal === "fade" ? 1 : 0;
       this._revealProgress = this.revealTypeIndex === 0 ? 1 : 0;
@@ -1448,6 +1675,7 @@
 
       if (typeof ResizeObserver !== "undefined" && !this._sizeObs) {
         this._sizeObs = new ResizeObserver(() => {
+          this.renderer._metricsDirty = true;
           this.updateMetrics();
           this.renderer.render();
         });
@@ -1462,12 +1690,74 @@
       return 0;
     }
 
+    _resolveCssLength(raw, fallback = 0) {
+      const value = String(raw || "").trim();
+      if (!value) return fallback;
+
+      const direct = parseFloat(value);
+      if (Number.isFinite(direct) && !value.includes("var(") && !value.includes("calc(")) {
+        return direct;
+      }
+
+      let probe = null;
+      try {
+        probe = document.createElement("div");
+        probe.style.position = "absolute";
+        probe.style.visibility = "hidden";
+        probe.style.pointerEvents = "none";
+        probe.style.width = value;
+        probe.style.height = "0";
+        this.el.appendChild(probe);
+        const resolved = parseFloat(window.getComputedStyle(probe).width);
+        if (Number.isFinite(resolved)) return resolved;
+      } catch (e) {
+      } finally {
+        try {
+          if (probe && probe.parentNode) probe.parentNode.removeChild(probe);
+        } catch (e) {}
+      }
+
+      return Number.isFinite(direct) ? direct : fallback;
+    }
+
+    _isEffectivelyHidden() {
+      let node = this.el;
+      while (node && node !== document.body) {
+        const style = window.getComputedStyle(node);
+        if (
+          style.display === "none" ||
+          style.visibility === "hidden" ||
+          parseFloat(style.opacity || "1") <= 0.01 ||
+          (node.classList &&
+            (node.classList.contains("npPillHidden") ||
+              node.classList.contains("npPillSwapHidden") ||
+              node.classList.contains("pathPillHidden")))
+        ) {
+          return true;
+        }
+        node = node.parentElement;
+      }
+      return false;
+    }
+
     /* ----------------------------- */
     updateMetrics() {
       const rect =
         this._mirrorActive && this._baseRect
           ? this._baseRect
           : this.el.getBoundingClientRect();
+      const style = window.getComputedStyle(this.el);
+
+      if (
+        rect.width <= 0 ||
+        rect.height <= 0 ||
+        style.display === "none" ||
+        style.visibility === "hidden" ||
+        this._isEffectivelyHidden()
+      ) {
+        this.rectPx = null;
+        return;
+      }
 
       this.rectPx = {
         left: rect.left,
@@ -1476,7 +1766,6 @@
         height: rect.height,
       };
 
-      const style = window.getComputedStyle(this.el);
       const brRaw = style.borderTopLeftRadius.split(" ")[0];
       const isPct = brRaw.trim().endsWith("%");
       let brPx;
@@ -1484,7 +1773,7 @@
         const pct = parseFloat(brRaw);
         brPx = (Math.min(rect.width, rect.height) * pct) / 100;
       } else {
-        brPx = parseFloat(brRaw);
+        brPx = this._resolveCssLength(brRaw, 0);
       }
       const maxAllowedCss = Math.min(rect.width, rect.height) * 0.5;
       this.radiusCss = Math.min(brPx, maxAllowedCss);
@@ -1494,11 +1783,11 @@
         this.el.getAttribute("data-liquid-hole-inset") ||
         "0"
       ).trim();
-      let insetPx = parseFloat(insetRaw);
-      if (!isFinite(insetPx)) insetPx = 0;
+      let insetPx = this._resolveCssLength(insetRaw, 0);
+      if (!Number.isFinite(insetPx)) insetPx = 0;
       this.hollowInsetCss = Math.max(0, Math.min(insetPx, maxAllowedCss));
 
-      const dpr = Math.min(2, window.devicePixelRatio || 1);
+      const dpr = this.renderer && this.renderer._dpr ? this.renderer._dpr : Math.min(2, window.devicePixelRatio || 1);
       this.radiusGl = this.radiusCss * dpr;
       this.hollowInsetGl = this.hollowInsetCss * dpr;
 
@@ -1715,7 +2004,7 @@
           }
         }
 
-        const r = this._baseRect || this.el.getBoundingClientRect();
+        const r = this._baseRect || (this._baseRect = this.el.getBoundingClientRect());
         const cx = r.left + r.width / 2;
         const cy = r.top + r.height / 2;
 
@@ -1760,7 +2049,6 @@
           this._shadowEl.style.transform = transformStr;
         }
 
-        this.renderer.render();
       };
 
       this._smoothReset = () => {
@@ -1885,7 +2173,7 @@
         const y = e.clientY ?? (e.touches && e.touches[0].clientY);
         if (x === undefined || y === undefined) return;
 
-        const r = this.el.getBoundingClientRect();
+        const r = this._baseRect || (this._baseRect = this.el.getBoundingClientRect());
         const inside =
           x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
 
@@ -2002,6 +2290,8 @@
       tiltFactor: 5,
       magnify: 1,
       glassMode: "clear",
+      sourceType: "visualizerCanvas",
+      sourceElement: "#visualizerBg",
       on: {},
     };
     const options = { ...defaults, ...userOptions };
@@ -2025,9 +2315,10 @@
       const fallbackNodes = document.querySelectorAll(options.target);
       fallbackNodes.forEach((node) => {
         Object.assign(node.style, {
-          background: "rgba(255, 255, 255, 0.07)",
-          backdropFilter: "blur(12px)",
-          webkitBackdropFilter: "blur(12px)",
+          background: "transparent",
+          backdropFilter: "none",
+          webkitBackdropFilter: "none",
+          boxShadow: "none",
         });
       });
       return fallbackNodes.length === 1
@@ -2035,9 +2326,19 @@
         : Array.from(fallbackNodes);
     }
 
-    let renderer = window.__liquidGLRenderer__;
+    const rendererKey = options.rendererKey || "default";
+    const rendererStore =
+      window.__liquidGLRenderers__ || (window.__liquidGLRenderers__ = {});
+    let renderer =
+      rendererStore[rendererKey] ||
+      (rendererKey === "default" ? window.__liquidGLRenderer__ : null);
     if (!renderer) {
-      renderer = new liquidGLRenderer(options.snapshot, options.resolution);
+      renderer = new liquidGLRenderer(options.snapshot, options.resolution, rendererKey, options);
+    } else if (renderer.configureSource) {
+      renderer.configureSource(options);
+    }
+    rendererStore[rendererKey] = renderer;
+    if (rendererKey === "default") {
       window.__liquidGLRenderer__ = renderer;
     }
 
@@ -2053,6 +2354,14 @@
     const instances = Array.from(nodeList).map((el) =>
       renderer.addLens(el, options)
     );
+    liquidGLLog("log", "liquidGL: Renderer lenses registered.", {
+      rendererKey,
+      lensCount: renderer.lenses.length,
+      lensClasses: renderer.lenses.map((lens) => lens.el && lens.el.className).filter(Boolean),
+      hollowLensCount: renderer.lenses.filter((lens) => lens.hollowMaskContent).length,
+      canvasClassName: renderer.canvas.className,
+      canvasZIndex: window.getComputedStyle(renderer.canvas).zIndex
+    });
 
     if (!renderer._rafId && !renderer.useExternalTicker) {
       const loop = () => {
@@ -2069,12 +2378,7 @@
    *  Public helper: register elements that need live updates
    * ------------------------------------------------*/
   window.liquidGL.registerDynamic = function (elements) {
-    const renderer = window.__liquidGLRenderer__;
-    if (!renderer || !renderer.addDynamicElement) return;
-    renderer.addDynamicElement(elements);
-    if (renderer.captureSnapshot) {
-      renderer.captureSnapshot();
-    }
+    liquidGLLog("log", "liquidGL: registerDynamic ignored; WebGL sources are direct textures.", elements);
   };
 
   /* --------------------------------------------------
