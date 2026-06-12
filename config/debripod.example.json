@@ -2,8 +2,6 @@
   "HOST": "127.0.0.1",
   "PORT": 8083,
   "APP_NAME": "Debripod",
-  "LIQUID_GL_PRESET": "default",
-  "LIQUID_GL_MODE": "clear",
   "WHEEL_ROTATION_MAX_DEGREES": 0.95,
   "PLAYBACK_STREAMING_MODE": "http",
 

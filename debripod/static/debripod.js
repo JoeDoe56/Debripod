@@ -7,15 +7,17 @@
     "frost": {refraction: 0, bevelDepth: 0.035, bevelWidth: 0.119, frost: 0.9, shadow: true, specular: true},
     "edge": {refraction: 0.047, bevelDepth: 0.136, bevelWidth: 0.076, frost: 2, shadow: true, specular: false}
   };
-  let liquidGlassPresetName = "default";
-  let liquidGlassModeName = "clear";
-  let wheelRotationMaxDegrees = 0.95;
-  let liquidGlassReady = false;
-  let liquidWheelLens = null;
-  let wheelGlassResetTimer = null;
-  let wheelGlassTiltFrame = 0;
-  let wheelGlassTiltPoint = null;
-  let wheelGlassTiltRect = null;
+  const UI_SETTINGS_KEY = "debripod_ui_settings";
+  const DEFAULT_UI_SETTINGS = {
+    visualizer: false,
+    visualizerStrength: "medium",
+    liquidGlassPreset: "default",
+    liquidGlassMode: "clear"
+  };
+  function normalizeVisualizerStrength(value){
+    const k = String(value || "medium").trim().toLowerCase();
+    return (k === "low" || k === "medium" || k === "high") ? k : "medium";
+  }
 
   function normalizeLiquidGlassPreset(name){
     const key = String(name || "default").trim().toLowerCase();
@@ -26,6 +28,47 @@
     const key = String(name || "clear").trim().toLowerCase();
     return (key === "dark" || key === "light" || key === "clear") ? key : "clear";
   }
+
+  function loadUiSettings(){
+    const out = Object.assign({}, DEFAULT_UI_SETTINGS);
+    try{
+      const raw = localStorage.getItem(UI_SETTINGS_KEY) || "";
+      if(raw){
+        const saved = JSON.parse(raw);
+        if(saved && typeof saved === "object"){
+          out.visualizer = !!saved.visualizer;
+          out.visualizerStrength = normalizeVisualizerStrength(saved.visualizerStrength);
+          out.liquidGlassPreset = normalizeLiquidGlassPreset(saved.liquidGlassPreset);
+          out.liquidGlassMode = normalizeLiquidGlassMode(saved.liquidGlassMode);
+          return out;
+        }
+      }
+    }catch(e){}
+    try{ out.visualizer = (localStorage.getItem("debripod_visualizer") || "") === "1"; }catch(e){}
+    try{ out.visualizerStrength = normalizeVisualizerStrength(localStorage.getItem("debripod_visualizer_strength") || out.visualizerStrength); }catch(e){}
+    try{ out.liquidGlassPreset = normalizeLiquidGlassPreset(localStorage.getItem("debripod_liquid_gl_preset") || out.liquidGlassPreset); }catch(e){}
+    try{ out.liquidGlassMode = normalizeLiquidGlassMode(localStorage.getItem("debripod_liquid_gl_mode") || out.liquidGlassMode); }catch(e){}
+    return out;
+  }
+
+  function saveUiSettings(){
+    try{ localStorage.setItem(UI_SETTINGS_KEY, JSON.stringify(uiSettings)); }catch(e){}
+    try{ localStorage.setItem("debripod_visualizer", uiSettings.visualizer ? "1" : "0"); }catch(e){}
+    try{ localStorage.setItem("debripod_visualizer_strength", uiSettings.visualizerStrength); }catch(e){}
+    try{ localStorage.setItem("debripod_liquid_gl_preset", uiSettings.liquidGlassPreset); }catch(e){}
+    try{ localStorage.setItem("debripod_liquid_gl_mode", uiSettings.liquidGlassMode); }catch(e){}
+  }
+
+  let uiSettings = loadUiSettings();
+  let liquidGlassPresetName = uiSettings.liquidGlassPreset;
+  let liquidGlassModeName = uiSettings.liquidGlassMode;
+  let wheelRotationMaxDegrees = 0.95;
+  let liquidGlassReady = false;
+  let liquidWheelLens = null;
+  let wheelGlassResetTimer = null;
+  let wheelGlassTiltFrame = 0;
+  let wheelGlassTiltPoint = null;
+  let wheelGlassTiltRect = null;
 
   function normalizeWheelRotationMaxDegrees(value){
     const n = Number(value);
@@ -44,6 +87,13 @@
       glassMode: normalizeLiquidGlassMode(liquidGlassModeName)
     }, preset);
     return options;
+  }
+
+  function liquidGlassStyleOptions(presetName, modeName){
+    const preset = LIQUID_GL_PRESETS[normalizeLiquidGlassPreset(presetName)] || LIQUID_GL_PRESETS.default;
+    return Object.assign({
+      glassMode: normalizeLiquidGlassMode(modeName)
+    }, preset);
   }
 
   function asLiquidArray(value){
@@ -74,6 +124,71 @@
       if(wanted === "default") return window.__liquidGLRenderer__ || null;
     }catch(e){}
     return null;
+  }
+
+  function applyLiquidGlassStyleOptions(options){
+    try{
+      const opts = options || liquidGlassStyleOptions(liquidGlassPresetName, liquidGlassModeName);
+      liquidGlassRenderers().forEach((renderer)=>{
+        if(!renderer || !renderer.lenses) return;
+        renderer.lenses.forEach((lens)=>{
+          if(!lens || !lens.options) return;
+          ["refraction", "bevelDepth", "bevelWidth", "frost", "specular"].forEach((key)=>{
+            if(opts[key] !== undefined) lens.options[key] = opts[key];
+          });
+          lens.options.glassMode = normalizeLiquidGlassMode(opts.glassMode);
+          if(lens._glassModeIndex) lens.glassModeIndex = lens._glassModeIndex(lens.options.glassMode);
+        });
+        if(renderer.render) renderer.render(currentVisualizerFrameState());
+      });
+    }catch(e){}
+  }
+
+  function transitionLiquidGlassStyle(fromOptions, toOptions){
+    try{
+      if(!liquidGlassReady){
+        applyLiquidGlassStyleOptions(toOptions);
+        return;
+      }
+      const duration = 420;
+      const started = performance.now();
+      const numericKeys = ["refraction", "bevelDepth", "bevelWidth", "frost"];
+      const tick = (now)=>{
+        const t = Math.max(0, Math.min(1, (now - started) / duration));
+        const eased = 1 - Math.pow(1 - t, 3);
+        const mixed = Object.assign({}, toOptions);
+        numericKeys.forEach((key)=>{
+          const a = Number(fromOptions[key]);
+          const b = Number(toOptions[key]);
+          mixed[key] = (Number.isFinite(a) ? a : 0) + ((Number.isFinite(b) ? b : 0) - (Number.isFinite(a) ? a : 0)) * eased;
+        });
+        applyLiquidGlassStyleOptions(mixed);
+        if(t < 1){
+          requestAnimationFrame(tick);
+        }else{
+          applyLiquidGlassStyleOptions(toOptions);
+          scheduleLiquidGlassSnapshot("ui settings", true);
+        }
+      };
+      requestAnimationFrame(tick);
+    }catch(e){
+      applyLiquidGlassStyleOptions(toOptions);
+    }
+  }
+
+  function setLiquidGlassSettings(presetName, modeName, smooth){
+    const fromOptions = liquidGlassStyleOptions(liquidGlassPresetName, liquidGlassModeName);
+    liquidGlassPresetName = normalizeLiquidGlassPreset(presetName);
+    liquidGlassModeName = normalizeLiquidGlassMode(modeName);
+    uiSettings.liquidGlassPreset = liquidGlassPresetName;
+    uiSettings.liquidGlassMode = liquidGlassModeName;
+    saveUiSettings();
+    const toOptions = liquidGlassStyleOptions(liquidGlassPresetName, liquidGlassModeName);
+    if(smooth){
+      transitionLiquidGlassStyle(fromOptions, toOptions);
+    }else{
+      applyLiquidGlassStyleOptions(toOptions);
+    }
   }
 
   function mountLiquidCanvas(){
@@ -781,11 +896,11 @@ let seekIdleTimer = null;
 let npPillHideTimer = null;
 let npArtSwapTimer = null;
 let npPillSwapTimer = null;
-let visualizerEnabled = false;
+let visualizerEnabled = !!uiSettings.visualizer;
 let visualizerActive = false;
 let visualizerTrackKey = "";
 let visualizerSampleNonce = 0;
-let visualizerStrength = "medium";
+let visualizerStrength = normalizeVisualizerStrength(uiSettings.visualizerStrength);
 const defaultTheme = {
   accent: "rgba(10,132,255,.88)",
   accentStrong: "rgba(10,132,255,1)",
@@ -833,11 +948,6 @@ const VISUALIZER_STRENGTHS = {
   medium: {dpr: 0.86, interval: 17, bassFields: 2, midFields: 2, trebleFields: 2, speed: 0.82, alpha: 0.68, bright: 0.92, coverage: 1.0},
   high: {dpr: 1.05, interval: 17, bassFields: 3, midFields: 3, trebleFields: 3, speed: 1.02, alpha: 0.86, bright: 1.06, coverage: 1.22}
 };
-
-function normalizeVisualizerStrength(value){
-  const key = String(value || "medium").trim().toLowerCase();
-  return VISUALIZER_STRENGTHS[key] ? key : "medium";
-}
 
 function currentVisualizerMediaElement(){
   try{
@@ -1153,15 +1263,6 @@ function ensureVisualizerFrameLoop(){
     scheduleVisualizerFrame(0);
   }catch(e){}
 }
-try{
-  visualizerEnabled = (localStorage.getItem("debripod_visualizer") || "") === "1";
-}catch(e){}
-try{
-  visualizerStrength = normalizeVisualizerStrength(localStorage.getItem("debripod_visualizer_strength") || "medium");
-}catch(e){
-  visualizerStrength = "medium";
-}
-
 let npPillPinned = false;
 let npPillVisible = false;
 try{
@@ -1352,17 +1453,19 @@ function updateVisualizerState(){
 
 function setVisualizerEnabled(on){
   visualizerEnabled = !!on;
-  try{ localStorage.setItem("debripod_visualizer", visualizerEnabled ? "1" : "0"); }catch(e){}
+  uiSettings.visualizer = visualizerEnabled;
+  saveUiSettings();
   updateVisualizerState();
-  try{ if(state && state.current && state.current.kind === "libinfo") viewLibInfo(false); }catch(e){}
+  try{ if(state && state.current && state.current.kind === "libuisettings") viewLibUiSettings(false); }catch(e){}
 }
 
 function setVisualizerStrength(value){
   visualizerStrength = normalizeVisualizerStrength(value);
-  try{ localStorage.setItem("debripod_visualizer_strength", visualizerStrength); }catch(e){}
+  uiSettings.visualizerStrength = visualizerStrength;
+  saveUiSettings();
   visualizerCanvasDpr = 0;
   renderVisualizerCanvas(performance.now());
-  try{ if(state && state.current && state.current.kind === "libinfo") viewLibInfo(false); }catch(e){}
+  try{ if(state && state.current && state.current.kind === "libuisettings") viewLibUiSettings(false); }catch(e){}
 }
 
 function cycleVisualizerStrength(){
@@ -2772,9 +2875,8 @@ function fmtTime(sec){
     state.roots = js.roots || [];
     state.lastfmEnabled = !!js.lastfm_enabled;
     state.playbackStreamingMode = (String(js.playback_streaming_mode || "http").toLowerCase() === "hls") ? "hls" : "http";
-    liquidGlassPresetName = normalizeLiquidGlassPreset(js.liquid_gl_preset || "default");
-    liquidGlassModeName = normalizeLiquidGlassMode(js.liquid_gl_mode || "clear");
     wheelRotationMaxDegrees = normalizeWheelRotationMaxDegrees(js.wheel_rotation_max_degrees);
+    setLiquidGlassSettings(uiSettings.liquidGlassPreset, uiSettings.liquidGlassMode, false);
     initLiquidGlass();
     return js;
   }
@@ -4615,11 +4717,44 @@ async function libDoSearch(engine, q){
         if(lfUser) lp.push("logged in as " + lfUser);
         items.push({kind:"libinfo_action", label:"Login to Last.fm", action:"lastfm_login", pills: lp});
 
+        items.push({kind:"libinfo_action", label:"UI Settings", action:"ui_settings_menu"});
         items.push({kind:"libinfo_action", label:"Full Screen", action:"force_fullscreen"});
-        items.push({kind:"libinfo_action", label:"Visualizer", action:"toggle_visualizer", pills:[visualizerEnabled ? "On" : "Off"]});
-        items.push({kind:"libinfo_action", label:"Visualizer Strength", action:"cycle_visualizer_strength", pills:[visualizerStrength.charAt(0).toUpperCase() + visualizerStrength.slice(1)]});
         items.push({kind:"libinfo_action", label:"Binds", action:"binds_menu"});
 
+        resetList(items);
+      }
+    }, push);
+  }
+
+  function titleCaseSetting(value){
+    const text = String(value || "").trim();
+    return text ? text.charAt(0).toUpperCase() + text.slice(1) : "";
+  }
+
+  function nextLiquidGlassPreset(){
+    const order = Object.keys(LIQUID_GL_PRESETS);
+    const idx = order.indexOf(normalizeLiquidGlassPreset(liquidGlassPresetName));
+    return order[(idx + 1) % order.length] || "default";
+  }
+
+  function nextLiquidGlassMode(){
+    const order = ["clear", "light", "dark"];
+    const idx = order.indexOf(normalizeLiquidGlassMode(liquidGlassModeName));
+    return order[(idx + 1) % order.length] || "clear";
+  }
+
+  async function viewLibUiSettings(push){
+    showNowPlaying(false);
+    await setView({
+      kind:"libuisettings",
+      label:"UI Settings",
+      load: async function(){
+        libControlsHide();
+        const items = [];
+        items.push({kind:"libui_action", label:"Visualizer", action:"toggle_visualizer", pills:[visualizerEnabled ? "On" : "Off"]});
+        items.push({kind:"libui_action", label:"Visualizer Strength", action:"cycle_visualizer_strength", pills:[titleCaseSetting(visualizerStrength)]});
+        items.push({kind:"libui_action", label:"Liquid Glass Preset", action:"cycle_liquid_preset", pills:[titleCaseSetting(liquidGlassPresetName)]});
+        items.push({kind:"libui_action", label:"Liquid Glass Mode", action:"cycle_liquid_mode", pills:[titleCaseSetting(liquidGlassModeName)]});
         resetList(items);
       }
     }, push);
@@ -4650,6 +4785,54 @@ async function libDoSearch(engine, q){
         resetList(items);
       }
     }, push);
+  }
+
+  async function handleLibInfoAction(action){
+    switch(action){
+      case "reindex":
+        await doLibraryReindex();
+        await viewLibInfo(false);
+        return true;
+      case "lastfm_login":
+        await startLastfmLoginFlow();
+        await viewLibInfo(false);
+        return true;
+      case "force_fullscreen":
+        await forceFullscreenOn();
+        await viewLibInfo(false);
+        return true;
+      case "ui_settings_menu":
+        await viewLibUiSettings(true);
+        return true;
+      case "binds_menu":
+        await viewLibBinds(true);
+        return true;
+      default:
+        return false;
+    }
+  }
+
+  async function handleLibUiAction(action){
+    switch(action){
+      case "toggle_visualizer":
+        setVisualizerEnabled(!visualizerEnabled);
+        await viewLibUiSettings(false);
+        return true;
+      case "cycle_visualizer_strength":
+        cycleVisualizerStrength();
+        await viewLibUiSettings(false);
+        return true;
+      case "cycle_liquid_preset":
+        setLiquidGlassSettings(nextLiquidGlassPreset(), liquidGlassModeName, true);
+        await viewLibUiSettings(false);
+        return true;
+      case "cycle_liquid_mode":
+        setLiquidGlassSettings(liquidGlassPresetName, nextLiquidGlassMode(), true);
+        await viewLibUiSettings(false);
+        return true;
+      default:
+        return false;
+    }
   }
 
   function libBuildFileItemsFromRD(preview, title, magnet){
@@ -6522,36 +6705,11 @@ if(it.kind === "libtasks_entry"){
 
     
     if(it.kind === "libinfo_action"){
-      if(it.action === "reindex"){
-        await doLibraryReindex();
-        await viewLibInfo(false);
-        return;
-      }
-      if(it.action === "lastfm_login"){
-        await startLastfmLoginFlow();
-        await viewLibInfo(false);
-        return;
-      }
-      if(it.action === "force_fullscreen"){
-        await forceFullscreenOn();
-        // keep menu open
-        await viewLibInfo(false);
-        return;
-      }
-      if(it.action === "binds_menu"){
-        await viewLibBinds(true);
-        return;
-      }
-      if(it.action === "toggle_visualizer"){
-        setVisualizerEnabled(!visualizerEnabled);
-        await viewLibInfo(false);
-        return;
-      }
-      if(it.action === "cycle_visualizer_strength"){
-        cycleVisualizerStrength();
-        await viewLibInfo(false);
-        return;
-      }
+      if(await handleLibInfoAction(it.action)) return;
+    }
+
+    if(it.kind === "libui_action"){
+      if(await handleLibUiAction(it.action)) return;
     }
 
 if(it.kind === "libsearch_history_action"){
