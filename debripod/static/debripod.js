@@ -102,6 +102,42 @@
     }catch(e){}
   }
 
+  function refreshLiquidGlassSource(renderer, reason){
+    try{
+      if(!renderer || !renderer.refreshSourceTexture) return;
+      renderer.refreshSourceTexture(reason || "app");
+    }catch(e){}
+  }
+
+  function refreshLiquidGlassVisualizerSources(reason){
+    try{
+      ["default", "screenFrame"].forEach((key)=>{
+        const renderer = liquidGlassRendererByKey(key);
+        if(!renderer) return;
+        if(visualizerBg && renderer.updateTextureFromCanvas){
+          renderer.updateTextureFromCanvas(visualizerBg, {reason: reason || "visualizer", allowDark: true, sourceRect: {left:0, top:0, width: window.innerWidth || 1, height: window.innerHeight || 1}});
+        }else{
+          refreshLiquidGlassSource(renderer, reason || "visualizer fallback");
+        }
+      });
+    }catch(e){}
+  }
+
+  function refreshNpOverlayGlassSource(reason){
+    try{
+      const renderer = liquidGlassRendererByKey("npOverlay");
+      if(!renderer) return;
+      const img = (npArt && npArt.complete && npArt.naturalWidth && npArt.naturalHeight) ? npArt : null;
+      if(img && renderer.updateTextureFromImage){
+        renderer.updateTextureFromImage(img, {reason: reason || "album art"});
+      }else if(renderer.updateTextureFromSolidColor){
+        renderer.updateTextureFromSolidColor(8, 8, [5, 5, 7, 255], {reason: reason || "album art fallback", allowDark: true});
+      }else{
+        refreshLiquidGlassSource(renderer, reason || "album art fallback");
+      }
+    }catch(e){}
+  }
+
   function renderLiquidGlassNow(frameState){
     try{
       liquidGlassRenderers().forEach((renderer)=>{
@@ -111,24 +147,26 @@
     }catch(e){}
   }
 
+  function renderLiquidGlassVisualizerSourceNow(frameState){
+    try{
+      ["default", "screenFrame"].forEach((key)=>{
+        const renderer = liquidGlassRendererByKey(key);
+        if(renderer && renderer.render) renderer.render(frameState || currentVisualizerFrameState());
+      });
+    }catch(e){}
+  }
+
   function captureLiquidGlassSnapshot(reason, includeScreenFrame){
     try{
-      const defaultRenderer = liquidGlassRendererByKey("default");
-      if(defaultRenderer && defaultRenderer.captureSnapshot) defaultRenderer.captureSnapshot(reason || "app");
-      const npOverlayRenderer = liquidGlassRendererByKey("npOverlay");
-      if(npOverlayRenderer && npOverlayRenderer.captureSnapshot) npOverlayRenderer.captureSnapshot(reason || "app");
-      if(includeScreenFrame){
-        const screenRenderer = liquidGlassRendererByKey("screenFrame");
-        if(screenRenderer && screenRenderer.captureSnapshot) screenRenderer.captureSnapshot(reason || "app");
-      }
+      refreshLiquidGlassVisualizerSources(reason || "app");
+      refreshNpOverlayGlassSource(reason || "app");
+      if(includeScreenFrame) refreshLiquidGlassSource(liquidGlassRendererByKey("screenFrame"), reason || "app");
       renderLiquidGlassNow();
     }catch(e){}
   }
 
   function scheduleLiquidGlassSnapshot(reason, includeScreenFrame){
     try{ requestAnimationFrame(()=> captureLiquidGlassSnapshot(reason, includeScreenFrame)); }catch(e){}
-    setTimeout(()=> captureLiquidGlassSnapshot(reason, includeScreenFrame), 90);
-    setTimeout(()=> captureLiquidGlassSnapshot(reason, includeScreenFrame), 260);
   }
 
   function debugLiquidGlassRenderers(reason){
@@ -155,23 +193,18 @@
 
   function recaptureLiquidGlassElement(el){
     try{
-      const renderer = liquidGlassRendererByKey("default");
-      if(!renderer || !el) return;
+      if(!el) return;
       if(el.tagName === "IMG"){
-        captureLiquidGlassSnapshot("image " + (el.id || el.className || "load"), false);
+        refreshNpOverlayGlassSource("image " + (el.id || el.className || "load"));
+        renderLiquidGlassNow();
         return;
       }
-      if(typeof renderer.addDynamicElement === "function") renderer.addDynamicElement(el);
-      const meta = renderer._dynMeta && renderer._dynMeta.get ? renderer._dynMeta.get(el) : null;
-      if(meta) meta.needsRecapture = true;
       renderLiquidGlassNow();
     }catch(e){}
   }
 
   function scheduleLiquidGlassRender(){
     try{ requestAnimationFrame(renderLiquidGlassNow); }catch(e){}
-    setTimeout(renderLiquidGlassNow, 240);
-    setTimeout(renderLiquidGlassNow, 360);
   }
 
   function scheduleNpOverlayGlassRender(){
@@ -183,27 +216,34 @@
 
   function initLiquidGlass(){
     try{
-      if(liquidGlassReady || typeof window.liquidGL !== "function" || typeof window.html2canvas !== "function") return;
+      if(liquidGlassReady || typeof window.liquidGL !== "function") return;
       const base = liquidGlassPresetOptions();
       const sharedGlassOptions = Object.assign({}, base, {
         target: ".pathPillGlass.liquidGlass, .wheelGlassRing.liquidGlass, .wheelCenterGlass.liquidGlass",
+        sourceType: "visualizerCanvas",
+        sourceElement: "#visualizerBg",
         shadow: false
       });
       const sharedGlassInstances = asLiquidArray(window.liquidGL(sharedGlassOptions));
       liquidWheelLens = sharedGlassInstances.find(inst => inst && inst.el && inst.el.id === "wheelGlassRing") || null;
       window.liquidGL(Object.assign({}, base, {
         target: ".npOverlayGlass.liquidGlass",
-        snapshot: "#nowPlaying",
+        sourceType: "albumArtCanvasOrImage",
+        sourceElement: "#npArt",
         rendererKey: "npOverlay",
         shadow: false
       }));
       window.liquidGL(Object.assign({}, base, {
         target: ".screenGlassFrame.liquidGlass",
         rendererKey: "screenFrame",
+        sourceType: "visualizerCanvas",
+        sourceElement: "#visualizerBg",
         shadow: false,
         hollowMaskContent: true
       }));
       mountLiquidCanvas();
+      refreshLiquidGlassVisualizerSources("init");
+      refreshNpOverlayGlassSource("init");
       liquidGlassRenderers().forEach((renderer)=>{
         try{
           renderer.useExternalTicker = true;
@@ -432,15 +472,21 @@ const libHeader = document.getElementById("libHeader");
   }
   window.addEventListener("resize", ()=>{
     wheelGlassTiltRect = null;
+    visualizerArtBounds = null;
+    visualizerArtBoundsLastTs = 0;
     scheduleNpOverlayGlassRender();
   }, {passive:true});
   if(window.visualViewport){
     window.visualViewport.addEventListener("resize", ()=>{
       wheelGlassTiltRect = null;
+      visualizerArtBounds = null;
+      visualizerArtBoundsLastTs = 0;
       scheduleNpOverlayGlassRender();
     }, {passive:true});
     window.visualViewport.addEventListener("scroll", ()=>{
       wheelGlassTiltRect = null;
+      visualizerArtBounds = null;
+      visualizerArtBoundsLastTs = 0;
       scheduleNpOverlayGlassRender();
     }, {passive:true});
   }
@@ -779,6 +825,8 @@ let visualizerCanvasH = 0;
 let visualizerVideoSampleCanvas = null;
 let visualizerVideoSampleCtx = null;
 let visualizerVideoSampleLastTs = 0;
+let visualizerArtBounds = null;
+let visualizerArtBoundsLastTs = 0;
 
 const VISUALIZER_STRENGTHS = {
   low: {dpr: 0.62, interval: 33, bassFields: 1, midFields: 1, trebleFields: 1, speed: 0.58, alpha: 0.42, bright: 0.72, coverage: 0.72},
@@ -862,6 +910,41 @@ function drawLinearGlow(ctx, w, h, x0, y0, x1, y1, rgb, alpha, bright){
   ctx.fillRect(0, 0, w, h);
 }
 
+function visualizerAnchorForCanvas(w, h, ts){
+  try{
+    const nowTs = Number(ts || performance.now() || 0);
+    if(nowTs - visualizerArtBoundsLastTs > 650){
+      visualizerArtBoundsLastTs = nowTs;
+      let rect = null;
+      try{
+        if(npArt && npArt.getBoundingClientRect && nowPlaying && nowPlaying.style.display === "block"){
+          const r = npArt.getBoundingClientRect();
+          if(r && r.width > 12 && r.height > 12){
+            rect = {left:r.left, top:r.top, width:r.width, height:r.height};
+          }
+        }
+      }catch(e){}
+      visualizerArtBounds = rect;
+    }
+    if(visualizerArtBounds){
+      const sx = w / Math.max(1, window.innerWidth || w);
+      const sy = h / Math.max(1, window.innerHeight || h);
+      const r = visualizerArtBounds;
+      const artW = r.width * sx;
+      const artH = r.height * sy;
+      return {
+        cx: (r.left + r.width * 0.5) * sx,
+        cy: (r.top + r.height * 0.5) * sy,
+        rx: artW * 0.54 + Math.min(w, h) * 0.08,
+        ry: artH * 0.54 + Math.min(w, h) * 0.08,
+        art: Math.max(artW, artH)
+      };
+    }
+  }catch(e){}
+  const minDim = Math.min(w, h);
+  return {cx: w * 0.5, cy: h * 0.50, rx: minDim * 0.22, ry: minDim * 0.22, art: minDim * 0.32};
+}
+
 function resizeVisualizerCanvas(cfg){
   try{
     if(!visualizerBg || !visualizerBg.getContext) return false;
@@ -915,6 +998,7 @@ function renderVisualizerCanvas(ts){
     const m = visualizerActive ? clamp01(visualizerMid) : 0;
     const tr = visualizerActive ? clamp01(visualizerTreble) : 0;
     blendVisualizerPalette();
+    const anchor = visualizerAnchorForCanvas(w, h, ts);
 
     ctx.globalCompositeOperation = "source-over";
     ctx.clearRect(0, 0, w, h);
@@ -927,36 +1011,37 @@ function renderVisualizerCanvas(ts){
 
     for(let i = 0; i < cfg.bassFields; i++){
       const col = rgbForPaletteIndex(i);
-      const phase = t * (0.13 + i * 0.025) + i * 2.31;
-      const x = w * (0.50 + Math.sin(phase + b * 0.55) * (0.08 + i * 0.025));
-      const y = h * (0.62 + Math.cos(phase * 0.72) * (0.07 + i * 0.018));
-      const radius = minDim * cfg.coverage * (0.42 + i * 0.09 + b * 0.18 + e * 0.10);
+      const spread = cfg.bassFields <= 1 ? 0 : (i / (cfg.bassFields - 1) - 0.5);
+      const angle = Math.PI * 0.5 + spread * Math.PI * 0.72 + Math.sin(t * 0.10 + i) * 0.08;
+      const x = anchor.cx + Math.cos(angle) * anchor.rx * (0.88 + b * 0.10);
+      const y = anchor.cy + Math.sin(angle) * anchor.ry * (0.98 + b * 0.12);
+      const radius = (anchor.art * 0.42 + minDim * (0.26 + i * 0.055)) * cfg.coverage * (1 + b * 0.30 + e * 0.12);
       drawRadialField(ctx, w, h, x, y, radius, col, cfg.alpha * (0.18 + b * 0.34 + e * 0.12), cfg.bright * 0.62, 0.52);
     }
 
     for(let i = 0; i < cfg.midFields; i++){
       const col = rgbForPaletteIndex(i + cfg.bassFields);
-      const phase = t * (0.28 + i * 0.045) + i * 1.77;
-      const x = w * (0.48 + Math.sin(phase + m * 0.9) * (0.18 + i * 0.035));
-      const y = h * (0.48 + Math.cos(phase * 0.86 + b * 0.35) * (0.16 + i * 0.025));
-      const radius = minDim * cfg.coverage * (0.25 + i * 0.055 + m * 0.12 + e * 0.06);
+      const angle = (i / Math.max(1, cfg.midFields)) * Math.PI * 2 + t * 0.16 + Math.sin(t * 0.18 + i) * 0.10;
+      const x = anchor.cx + Math.cos(angle) * anchor.rx * (1.02 + m * 0.12);
+      const y = anchor.cy + Math.sin(angle) * anchor.ry * (1.00 + m * 0.10);
+      const radius = (anchor.art * 0.24 + minDim * (0.15 + i * 0.035)) * cfg.coverage * (1 + m * 0.26 + e * 0.08);
       drawRadialField(ctx, w, h, x, y, radius, col, cfg.alpha * (0.16 + m * 0.30 + e * 0.08), cfg.bright * 0.90, 0.42);
     }
 
     for(let i = 0; i < cfg.trebleFields; i++){
       const col = rgbForPaletteIndex(i + cfg.bassFields + cfg.midFields);
-      const phase = t * (0.58 + i * 0.08) + i * 2.04;
-      const x = w * (0.50 + Math.sin(phase + tr * 1.3) * (0.24 + i * 0.025));
-      const y = h * (0.36 + Math.cos(phase * 1.08 + m * 0.6) * (0.18 + i * 0.018));
-      const radius = minDim * cfg.coverage * (0.12 + i * 0.03 + tr * 0.09 + e * 0.035);
+      const angle = (i / Math.max(1, cfg.trebleFields)) * Math.PI * 2 + Math.PI / Math.max(2, cfg.trebleFields) + t * 0.38;
+      const x = anchor.cx + Math.cos(angle) * anchor.rx * (1.16 + tr * 0.14);
+      const y = anchor.cy + Math.sin(angle) * anchor.ry * (1.10 + tr * 0.12);
+      const radius = (anchor.art * 0.13 + minDim * (0.075 + i * 0.018)) * cfg.coverage * (1 + tr * 0.38 + e * 0.06);
       drawRadialField(ctx, w, h, x, y, radius, col, cfg.alpha * (0.08 + tr * 0.30 + e * 0.08), cfg.bright * 1.16, 0.34);
     }
 
     if(visualizerStrength !== "low"){
-      drawLinearGlow(ctx, w, h, 0, h * (0.24 + tr * 0.12), w, h * (0.70 - m * 0.10), rgbForPaletteIndex(1), cfg.alpha * (0.035 + m * 0.08), cfg.bright);
+      drawLinearGlow(ctx, w, h, anchor.cx - anchor.rx * 1.8, anchor.cy - anchor.ry * (0.95 + tr * 0.2), anchor.cx + anchor.rx * 1.8, anchor.cy + anchor.ry * (0.95 - m * 0.14), rgbForPaletteIndex(1), cfg.alpha * (0.035 + m * 0.08), cfg.bright);
     }
     if(visualizerStrength === "high"){
-      drawLinearGlow(ctx, w, h, w * 0.15, 0, w * 0.85, h, rgbForPaletteIndex(3), cfg.alpha * (0.04 + tr * 0.10), cfg.bright * 1.08);
+      drawLinearGlow(ctx, w, h, anchor.cx - anchor.rx * 1.2, anchor.cy - anchor.ry * 1.65, anchor.cx + anchor.rx * 1.2, anchor.cy + anchor.ry * 1.65, rgbForPaletteIndex(3), cfg.alpha * (0.04 + tr * 0.10), cfg.bright * 1.08);
     }
 
     ctx.globalCompositeOperation = "source-over";
@@ -1057,6 +1142,8 @@ function visualizerFrame(ts){
     visualizerEnergy = mixVal(visualizerEnergy, nextEnergy);
     sampleLiveVideoPalette(nowTs);
     renderVisualizerCanvas(nowTs);
+    refreshLiquidGlassVisualizerSources("visualizer frame");
+    renderLiquidGlassVisualizerSourceNow(currentVisualizerFrameState(nowTs));
   }catch(e){}
   scheduleVisualizerFrame((visualizerActive || wheelGlassTiltPoint) ? 0 : 160);
 }
@@ -1112,7 +1199,11 @@ function toggleNpPillFromArt(){
 
 if(npArt){
   npArt.addEventListener("click", (ev)=>{ try{ ev.stopPropagation(); }catch(e){} toggleNpPillFromArt(); });
-  npArt.addEventListener("load", ()=>{ recaptureLiquidGlassElement(npArt); }, {passive:true});
+  npArt.addEventListener("load", ()=>{
+    visualizerArtBounds = null;
+    visualizerArtBoundsLastTs = 0;
+    recaptureLiquidGlassElement(npArt);
+  }, {passive:true});
 }
 if(npArtSwap){
   npArtSwap.addEventListener("click", (ev)=>{ try{ ev.stopPropagation(); }catch(e){} toggleNpPillFromArt(); });
