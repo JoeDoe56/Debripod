@@ -48,6 +48,24 @@ from .Library.playlists import (
     scan_root_playlists,
     smart_playlist_tracks_for_root,
 )
+from .Library.metadata import (
+    art_cache_path,
+    art_for_media_path,
+    configure_metadata,
+    extract_art,
+    file_meta_cached,
+    pick_folder_art,
+)
+from .Library.index import (
+    build_index_for_root,
+    clear_index_cache,
+    configure_library_index,
+    ensure_index_async,
+    get_index,
+    index_building_status,
+    set_index_cache,
+    track_sort_key,
+)
 from .Library.roots import configure_library_roots, root_by_id, roots, safe_path_join
 from .media_types import (
     AUDIO_EXTS,
@@ -140,6 +158,15 @@ from .utils import (
     sha1_text,
 )
 from .playback.streaming import pick_mime, range_response
+from .playback.state import (
+    PLAYBACK_STATE,
+    PLAYBACK_STATE_LOCK,
+    configure_playback_state,
+    load_playback_state,
+    playback_snapshot_public,
+    playback_update_from_client,
+    save_playback_state_best_effort,
+)
 from .playback.transcoding import (
     _browser_compatible_for_target,
     _build_smart_transcode_args,
@@ -154,155 +181,18 @@ from .playback.transcoding import (
 from .playback.probe import configure_probe, ffprobe_json, run_cmd
 
 # =========================
-# User configurable settings
+# Runtime config
 # =========================
-
-# =========================
-# Debripod settings (including ffmpeg and ffprobe paths)
-# =========================
-HOST = "127.0.0.1"          # localhost only
-PORT = 8083                 # change the port here
-
-APP_NAME = "Debripod"
-WHEEL_ROTATION_MAX_DEGREES = 0.95
-PLAYBACK_STREAMING_MODE = "http"
-# Auto infer version from filename like debripod112.py
+# Auto infer version from filename like debripod112.py.
 _fn = os.path.basename(__file__)
 _m = re.search(r"debripod(\d+)", _fn, re.IGNORECASE)
 VERSION = _m.group(1) if _m else "dev"
 del _fn, _m
 
-RESULTS_PER_PAGE = 50
-MAX_FILES_PER_TORRENT = 50
-MAX_TORRENT_WAIT_SECONDS = 1800
-POLL_INTERVAL_SECONDS = 4
-REQUEST_TIMEOUT_SECONDS = 25
-
-SEARCH_STREAM_ROOT_ID = "__search_stream__"
-SEARCH_STREAM_SESSION_TTL_SECONDS = 6 * 60 * 60
-
-# How often the browser polls for task status updates
-TASKS_POLL_MS = 1200
-
-# MCP server settings
-MCP_PROTOCOL_VERSION = "2025-03-26"
-MCP_SEARCH_RESULT_LIMIT = 20
-
-# =========================
-# Knaben settings
-# =========================
-
-# Optional: Knaben API key. Leave empty for free tier.
-KNABEN_API_KEY = ""
-
-# Knaben API behavior controls
-KNABEN_MIN_SECONDS_BETWEEN_REQUESTS = 0.6
-KNABEN_CACHE_TTL_SECONDS = 120.0
-KNABEN_MAX_RETRIES = 5
-
-KNABEN_API_BASE = "https://api.knaben.org/v1"
-KNABEN_WEB_BASE = "https://knaben.org"
-
-# =========================
-# YouTube and yt-dlp settings
-# =========================
-
-YTDLP_CMD = "yt-dlp"
-YOUTUBE_DOWNLOAD_DIR = r"./data/youtube"
-YOUTUBE_STREAM_CACHE_SUBDIR = "youtube_streams"
-YOUTUBE_WEB_BASE = "https://www.youtube.com"
-YOUTUBE_SEARCH_LIMIT = 24
-YOUTUBE_CHANNEL_BROWSE_LIMIT = 0  # 0 means all channel videos
-YOUTUBE_REQUEST_HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36",
-    "Accept-Language": "en-US,en;q=0.9",
-}
-
-
-# ffmpeg and ffprobe paths (set absolute paths if not on PATH)
-FFMPEG_PATH = "C:\\Users\\bugma\\ffmpeg\\bin\\ffmpeg.exe"
-FFPROBE_PATH = "C:\\Users\\bugma\\ffmpeg\\bin\\ffprobe.exe"
-
-# Audio transcode (play time): comma separated list like "flac:mp3,m4a:mp3"
-# Only applied to audio playback. Leave empty to stream original audio.
-AUDIO_TRANSCODE = ""
-
-# Video auto transcode on download (browser compatibility)
-# When enabled, downloaded video files are checked with ffprobe. If codecs are compatible with a browser container,
-# Debripod will transmux into mp4 when possible, otherwise it will transcode to mp4.
-AUTO_TRANSCODE_FOR_BROWSER_COMPATIBILITY = True
-
-# If enabled, Debripod deletes the original file after a successful browser compatible output is produced,
-# and moves the output into the original folder (typically changing extension to .mp4).
-REPLACE_ORIGINAL = True
-
-# Preload next chunk of next file for smoother transitions (audio and video)
-PRELOAD_NEXT_FOR_GAPLESS = True
-PRELOAD_NEXT_CHUNK_BYTES = 2 * 1024 * 1024
-
-# Where to store transcoded and artwork cache files, as well as logs
-CACHE_DIR_NAME = r"_debripod_cache"
-
-# =========================
-# Real Debrid settings (including download dir)
-# =========================
-
-# Put your Real Debrid API token here (Authorization: Bearer <token>)
-REAL_DEBRID_API_KEY = ""
-RD_BASE = "https://api.real-debrid.com/rest/1.0"
-DOWNLOAD_DIR = r"./data/debrid"  # absolute path on your PC (parent folder)
-
-# =========================
-# Soulseek settings
-# =========================
-# Leave username/password blank to disable Soulseek features.
-SOULSEEK_USERNAME = ""
-SOULSEEK_PASSWORD = ""
-SOULSEEK_DOWNLOAD_DIR = r"./data/soulseek"
-# These are local listening ports on your machine. Keep UPNP disabled.
-SOULSEEK_LISTENING_PORT = 61000
-SOULSEEK_OBFUSCATED_PORT = 0
-# Search behavior
-SOULSEEK_SEARCH_TIMEOUT_SEC = 8
-SOULSEEK_SEARCH_MAX_RESULTS = 5000
-SOULSEEK_SEARCH_IDLE_STOP_SEC = 2.5
-SOULSEEK_SEARCH_HARD_MAX_SEC = 60
-
-# =========================
-# Lastfm settings
-# =========================
-# Last.fm scrobbling + likes (optional)
-# Debripod uses the Last.fm Web Services API (Scrobbling 2.0).
-# You need an API key + shared secret, and a user session key (sk).
-# After you connect once, Debripod stores the session key in its cache so you do not have to paste it here.
-LASTFM_API_KEY = ""
-LASTFM_API_SECRET = ""
-LASTFM_SESSION_KEY = ""   # optional override; normally loaded from cache after auth
-LASTFM_CALLBACK_URL = ""  # optional; leave empty to use desktop flow (no redirect)
-
-# =========================
-# Library settings
-# =========================
-# Configure library roots as a list of "path:mode" strings.
-# mode:
-#   - "list"  -> browse directories and files (classic folder view)
-#   - "meta"  -> browse artists/albums/genres/etc (metadata index view)
-#
-# If you omit ":mode", it defaults to "list".
-LIBRARY_FOLDERS: List[str] = [
-    r"./data/debrid:list",
-    r"./data/soulseek:meta",
-    r"./data/music:meta",
-   
-]
-
-# =========================
-# Runtime config overlay
-# =========================
-# Values above are safe defaults. User specific settings are loaded from
-# config/debripod.json, ~/.config/debripod/config.json, or DEBRIPOD_CONFIG.
+# Defaults live in debripod.config and are overlaid by config JSON files.
 try:
-    from .config import apply_config_to_module
+    from .config import CONFIG_KEYS, apply_config_to_module
+    globals().update({key: None for key in CONFIG_KEYS})
     apply_config_to_module(globals())
 except Exception as _config_error:
     print(f"Debripod config warning: {_config_error}")
@@ -313,7 +203,7 @@ configure_playlists(
     is_loved_provider=lambda artist, title, album: lastfm_is_loved(artist, title, album),
     get_index_provider=lambda root_id: get_index(root_id),
     build_index_provider=lambda root_abs: build_index_for_root(root_abs),
-    set_index_provider=lambda root_id, data: _set_playlist_index_cache(root_id, data),
+    set_index_provider=lambda root_id, data: set_index_cache(root_id, data),
 )
 configure_real_debrid(
     api_key_provider=lambda: REAL_DEBRID_API_KEY,
@@ -353,12 +243,17 @@ configure_soulseek_module(
     set_file_control_func=_set_file_control,
     get_file_control_func=_get_file_control,
 )
+configure_metadata(ffmpeg_path_provider=lambda: FFMPEG_PATH)
+configure_library_index(cache_dir_name_provider=lambda: CACHE_DIR_NAME)
+configure_playback_state(
+    search_stream_root_id_provider=lambda: SEARCH_STREAM_ROOT_ID,
+    search_stream_get_or_restore_provider=lambda rel: _search_stream_get_or_restore(rel),
+)
 configure_probe(ffprobe_path_provider=lambda: FFPROBE_PATH)
 configure_paths(
     download_dir_provider=lambda: DOWNLOAD_DIR,
     cache_dir_name_provider=lambda: CACHE_DIR_NAME,
 )
-VIDEO_BROWSER_TARGET_EXT = "mp4"
 configure_transcoding(
     audio_transcode_provider=lambda: AUDIO_TRANSCODE,
     ffmpeg_path_provider=lambda: FFMPEG_PATH,
@@ -369,6 +264,8 @@ configure_lastfm(
     api_secret=LASTFM_API_SECRET,
     session_key=LASTFM_SESSION_KEY,
     callback_url=LASTFM_CALLBACK_URL,
+    api_root=LASTFM_API_ROOT,
+    request_timeout_seconds=LASTFM_REQUEST_TIMEOUT_SECONDS,
 )
 
 def ensure_dirs() -> None:
@@ -386,6 +283,8 @@ def ensure_dirs() -> None:
         api_secret=LASTFM_API_SECRET,
         session_key=LASTFM_SESSION_KEY,
         callback_url=LASTFM_CALLBACK_URL,
+        api_root=LASTFM_API_ROOT,
+        request_timeout_seconds=LASTFM_REQUEST_TIMEOUT_SECONDS,
         session_cache_path=os.path.join(cache_dir(), "lastfm_session.json"),
         loved_db_path=os.path.join(cache_dir(), "lastfm_loved.json"),
     )
@@ -399,7 +298,11 @@ def ensure_dirs() -> None:
         pass
 
 
-configure_search_cache(cache_dir)
+configure_search_cache(
+    cache_dir,
+    history_max_items_provider=lambda: SEARCH_HISTORY_MAX_ITEMS,
+    disk_cache_ttl_seconds_provider=lambda: SEARCH_DISK_CACHE_TTL_SECONDS,
+)
 
 
 # =========================
@@ -1506,726 +1409,6 @@ def youtube_worker(task_id: str) -> None:
 
 
 # =========================
-# Metadata and artwork cache
-# =========================
-META_CACHE: Dict[str, Tuple[float, dict]] = {}
-META_LOCK = threading.Lock()
-
-
-
-def file_meta_cached(abs_path: str) -> dict:
-    try:
-        mtime = os.path.getmtime(abs_path)
-    except OSError:
-        return {}
-
-    with META_LOCK:
-        hit = META_CACHE.get(abs_path)
-        if hit and hit[0] == mtime:
-            return hit[1]
-
-    meta: dict = {}
-    try:
-        js = ffprobe_json(abs_path) or {}
-        fmt = js.get("format") or {}
-        tags = (fmt.get("tags") or {}) if isinstance(fmt, dict) else {}
-
-        streams = js.get("streams") or []
-        audio_stream = None
-        if isinstance(streams, list):
-            for s in streams:
-                if not isinstance(s, dict):
-                    continue
-                if (s.get("codec_type") or "").lower() != "audio":
-                    continue
-                if audio_stream is None:
-                    audio_stream = s
-                stags = s.get("tags")
-                if isinstance(stags, dict):
-                    for k, v in stags.items():
-                        if k not in tags:
-                            tags[k] = v
-
-        duration = None
-        try:
-            duration = float(fmt.get("duration")) if fmt.get("duration") is not None else None
-        except Exception:
-            duration = None
-
-        def pick(keys: List[str]) -> str:
-            for k in keys:
-                v = tags.get(k)
-                if v:
-                    return str(v).strip()
-            return ""
-
-        title = pick(["title", "TITLE"]) or os.path.splitext(os.path.basename(abs_path))[0]
-        album_artist = pick(["album_artist", "ALBUM_ARTIST", "albumartist", "ALBUMARTIST", "AlbumArtist", "album artist", "ALBUM ARTIST"])
-        track_artist = pick(["artist", "ARTIST"])
-        artist = track_artist or album_artist
-        album = pick(["album", "ALBUM"])
-        genre = pick(["genre", "GENRE"])
-        track = pick(["track", "TRACK"])
-
-        # Technical display for audio (codec, bit depth, sample rate, bitrate)
-        codec = ""
-        bits = None
-        sample_rate = None
-        bit_rate = None
-        if isinstance(audio_stream, dict):
-            codec = str(audio_stream.get("codec_name") or "").strip()
-            for k in ["bits_per_raw_sample", "bits_per_sample"]:
-                v = audio_stream.get(k)
-                try:
-                    iv = int(str(v))
-                    if iv > 0:
-                        bits = iv
-                        break
-                except Exception:
-                    pass
-            try:
-                sr = audio_stream.get("sample_rate")
-                if sr is not None:
-                    sample_rate = int(float(str(sr)))
-            except Exception:
-                sample_rate = None
-            try:
-                br = audio_stream.get("bit_rate")
-                if br is not None:
-                    bit_rate = int(float(str(br)))
-            except Exception:
-                bit_rate = None
-
-        if bit_rate is None:
-            try:
-                br = fmt.get("bit_rate") if isinstance(fmt, dict) else None
-                if br is not None:
-                    bit_rate = int(float(str(br)))
-            except Exception:
-                bit_rate = None
-
-        tech = ""
-        if codec:
-            tech = codec.upper()
-
-        if bits and sample_rate:
-            khz = sample_rate / 1000.0
-            if abs(khz - round(khz)) < 0.05:
-                khz_s = str(int(round(khz)))
-            else:
-                khz_s = f"{khz:.1f}".rstrip("0").rstrip(".")
-            tech = (tech + " " if tech else "") + f"{bits}/{khz_s}khz"
-
-        if bit_rate and bit_rate > 0:
-            kbps = bit_rate / 1000.0
-            if abs(kbps - round(kbps)) < 0.05:
-                kbps_s = str(int(round(kbps)))
-            else:
-                kbps_s = f"{kbps:.1f}".rstrip("0").rstrip(".")
-            tech = (tech + " " if tech else "") + f"{kbps_s}kbps"
-
-        meta = {
-            "title": title,
-            "artist": artist,
-            "album_artist": album_artist,
-            "album": album,
-            "genre": genre,
-            "track": track,
-            "duration": duration,
-            "tech": tech,
-        }
-    except Exception:
-        meta = {
-            "title": os.path.splitext(os.path.basename(abs_path))[0],
-            "artist": "",
-            "album_artist": "",
-            "album": "",
-            "genre": "",
-            "track": "",
-            "duration": None,
-            "tech": "",
-        }
-
-    with META_LOCK:
-        META_CACHE[abs_path] = (mtime, meta)
-    return meta
-
-
-def art_cache_path(abs_path: str) -> str:
-    key = sha1_text(os.path.abspath(abs_path))
-    return os.path.join(art_cache_dir(), f"{key}.jpg")
-
-
-
-IMAGE_EXTS = {".jpg", ".jpeg", ".png", ".webp", ".gif", ".bmp"}
-DIR_ART_CACHE: Dict[str, Tuple[float, Optional[str]]] = {}
-DIR_ART_LOCK = threading.Lock()
-
-
-def pick_folder_art(dir_path: str) -> Optional[str]:
-    """Pick an image file inside dir_path to use as album art.
-
-    Priority order is cover, folder, front, album, then any other image.
-    Result is cached keyed by directory mtime.
-    """
-    if not dir_path or not os.path.isdir(dir_path):
-        return None
-    try:
-        d_mtime = os.path.getmtime(dir_path)
-    except OSError:
-        d_mtime = 0.0
-
-    with DIR_ART_LOCK:
-        hit = DIR_ART_CACHE.get(dir_path)
-        if hit and hit[0] == d_mtime:
-            return hit[1]
-
-    try:
-        names = os.listdir(dir_path)
-    except OSError:
-        names = []
-
-    imgs = []
-    for n in names:
-        if not n or n.startswith("."):
-            continue
-        ext = os.path.splitext(n)[1].lower()
-        if ext in IMAGE_EXTS:
-            imgs.append(n)
-
-    if not imgs:
-        with DIR_ART_LOCK:
-            DIR_ART_CACHE[dir_path] = (d_mtime, None)
-        return None
-
-    prio = ["cover", "folder", "front", "album"]
-
-    def score(fn: str) -> Tuple[int, float, str]:
-        base = os.path.splitext(fn)[0].lower().strip()
-        # Exact matches win, then prefix matches, then alphabetical.
-        for i, key in enumerate(prio):
-            if base == key:
-                return (i, 0.0, fn.lower())
-            if base.startswith(key):
-                return (i, 1.0, fn.lower())
-        return (len(prio) + 1, 0.0, fn.lower())
-
-    imgs.sort(key=score)
-    chosen = os.path.join(dir_path, imgs[0])
-
-    with DIR_ART_LOCK:
-        DIR_ART_CACHE[dir_path] = (d_mtime, chosen)
-
-    return chosen
-
-
-def art_for_media_path(abs_path: str) -> Optional[str]:
-    """Return a path to a cover image for an audio file or directory.
-
-    Prefers folder image files, falls back to embedded artwork extraction.
-    """
-    if not abs_path:
-        return None
-    if os.path.isdir(abs_path):
-        return pick_folder_art(abs_path)
-    if os.path.isfile(abs_path):
-        d = os.path.dirname(abs_path)
-        p = pick_folder_art(d)
-        if p:
-            return p
-        # Fallback to embedded art when no folder image exists.
-        if is_audio(abs_path):
-            return extract_art(abs_path)
-    return None
-
-
-def extract_art(abs_path: str) -> Optional[str]:
-    outp = art_cache_path(abs_path)
-    try:
-        src_m = os.path.getmtime(abs_path)
-    except OSError:
-        return None
-
-    if os.path.exists(outp):
-        try:
-            if os.path.getmtime(outp) >= src_m and os.path.getsize(outp) > 0:
-                return outp
-        except OSError:
-            pass
-
-    base_tmp, ext_tmp = os.path.splitext(outp)
-    tmp = base_tmp + ".tmp" + ext_tmp
-    if os.path.exists(tmp):
-        try:
-            os.remove(tmp)
-        except OSError:
-            pass
-
-    args = [
-        FFMPEG_PATH,
-        "-y",
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-i",
-        abs_path,
-        "-an",
-        "-vf",
-        "scale=400:-1",
-        "-frames:v",
-        "1",
-        tmp,
-    ]
-    code, _, _ = run_cmd(args)
-    if code != 0 or not os.path.exists(tmp) or os.path.getsize(tmp) == 0:
-        try:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-        except OSError:
-            pass
-        return None
-
-    try:
-        os.replace(tmp, outp)
-        return outp
-    except OSError:
-        return None
-
-
-
-
-# =========================
-# Playback state (server-side)
-# =========================
-# Stored in cache folder so it persists across restarts and is shared across devices.
-# This keeps:
-#   - now_playing (audio or video) with last known position and navigation context
-#   - recently_played list (videos always resume, audio grouped into sessions)
-PLAYBACK_STATE_LOCK = threading.Lock()
-
-def playback_state_path() -> str:
-    return os.path.join(cache_dir(), "playback_state.json")
-
-def _default_playback_state() -> dict:
-    return {
-        "now": None,              # dict or None
-        "recent": [],             # list[dict], newest first
-        # session tracking is separate for audio and video so they never overwrite each other
-        "audio_session": {
-            "session_id": "",
-            "last_activity_ts": 0.0,   # updated while playing
-            "last_stop_ts": 0.0,       # updated on pause/stop/ended
-            # legacy key kept for backward compatibility
-            "last_play_ts": 0.0,
-        },
-        "video_session": {
-            "session_id": "",
-            "last_activity_ts": 0.0,
-            "last_stop_ts": 0.0,
-        },
-        # legacy unified key kept so older files still load, but it is not used anymore
-        "session": {
-            "session_id": "",
-            "last_activity_ts": 0.0,
-            "last_stop_ts": 0.0,
-        },
-        "ver": 3,
-        "updated": 0.0,
-    }
-
-PLAYBACK_STATE: dict = _default_playback_state()
-
-def load_playback_state() -> None:
-    global PLAYBACK_STATE
-    p = playback_state_path()
-    try:
-        if os.path.exists(p):
-            with open(p, "r", encoding="utf-8") as f:
-                js = json.load(f)
-            if isinstance(js, dict):
-                base = _default_playback_state()
-                base.update(js)
-
-                # recent must be a list
-                if not isinstance(base.get("recent"), list):
-                    base["recent"] = []
-
-                # normalize audio_session
-                a = base.get("audio_session")
-                if not isinstance(a, dict):
-                    a = {}
-                if "session_id" not in a:
-                    a["session_id"] = ""
-                # support old schema: last_play_ts used instead of last_activity_ts
-                if "last_play_ts" not in a:
-                    a["last_play_ts"] = 0.0
-                if "last_activity_ts" not in a:
-                    try:
-                        a["last_activity_ts"] = float(a.get("last_play_ts") or 0.0)
-                    except Exception:
-                        a["last_activity_ts"] = 0.0
-                if "last_stop_ts" not in a:
-                    a["last_stop_ts"] = 0.0
-                base["audio_session"] = a
-
-                # normalize video_session
-                v = base.get("video_session")
-                if not isinstance(v, dict):
-                    v = {}
-                if "session_id" not in v:
-                    v["session_id"] = ""
-                if "last_activity_ts" not in v:
-                    v["last_activity_ts"] = 0.0
-                if "last_stop_ts" not in v:
-                    v["last_stop_ts"] = 0.0
-                base["video_session"] = v
-
-                # keep legacy unified session if present, but do not rely on it
-                sess = base.get("session")
-                if not isinstance(sess, dict):
-                    sess = {"session_id": "", "last_activity_ts": 0.0, "last_stop_ts": 0.0}
-                if "session_id" not in sess:
-                    sess["session_id"] = ""
-                if "last_activity_ts" not in sess:
-                    sess["last_activity_ts"] = 0.0
-                if "last_stop_ts" not in sess:
-                    sess["last_stop_ts"] = 0.0
-                base["session"] = sess
-
-                PLAYBACK_STATE = base
-    except Exception:
-        PLAYBACK_STATE = _default_playback_state()
-
-def save_playback_state_best_effort() -> None:
-    p = playback_state_path()
-    tmp = p + ".tmp"
-    try:
-        data = None
-        with PLAYBACK_STATE_LOCK:
-            PLAYBACK_STATE["updated"] = time.time()
-            data = json.dumps(PLAYBACK_STATE, indent=2)
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(data)
-        os.replace(tmp, p)
-    except Exception:
-        try:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-        except Exception:
-            pass
-
-def _media_key(media: str, root_id: str, rel: str) -> str:
-    return f"{(media or '').strip().lower()}::{(root_id or '').strip()}::{(rel or '').strip()}"
-
-def _trim_recent(recent: list, max_items: int = 60) -> list:
-    out = recent[:max_items] if isinstance(recent, list) else []
-    return out
-
-def _recent_list_key(media: str, root_id: str, rel: str, nav: dict) -> str:
-    """Return a stable key that represents the *list context* an item was played from.
-
-    This is used to decide whether the newest recently-played entry should overwrite the previous entry
-    (same list), or create a new entry (different list).
-    """
-    try:
-        rid = str(root_id or "").strip()
-        rrel = str(rel or "").strip()
-        nav_d = nav if isinstance(nav, dict) else {}
-        kind = str(nav_d.get("kind") or "").strip().lower()
-        nav_rid = str(nav_d.get("root_id") or rid).strip() or rid
-
-        # Directory fallback (for unknown nav kinds)
-        dir_rel = ""
-        try:
-            if "/" in rrel:
-                dir_rel = rrel.rsplit("/", 1)[0]
-            else:
-                dir_rel = ""
-        except Exception:
-            dir_rel = ""
-
-        base = ""
-        if kind == "folder":
-            base = "folder|" + nav_rid + "|" + str(nav_d.get("rel") or "")
-        elif kind == "metalist":
-            base = "meta|" + nav_rid + "|" + str(nav_d.get("level") or "") + "|" + str(nav_d.get("value") or "")
-        elif kind:
-            base = kind + "|" + nav_rid + "|" + str(nav_d.get("label") or "")
-        else:
-            base = "dir|" + nav_rid + "|" + dir_rel
-
-        m = str(media or "").strip().lower()
-        if m not in ("audio", "video"):
-            m = "other"
-        return m + "|" + base
-    except Exception:
-        try:
-            m = str(media or "").strip().lower()
-            if m not in ("audio", "video"):
-                m = "other"
-            return m + "|unknown"
-        except Exception:
-            return "unknown"
-
-
-def playback_snapshot_public() -> dict:
-    with PLAYBACK_STATE_LOCK:
-        now = PLAYBACK_STATE.get("now")
-        recent = PLAYBACK_STATE.get("recent") or []
-        # remove internal fields from each entry if present
-        rp = []
-        for it in recent:
-            if not isinstance(it, dict):
-                continue
-            d = dict(it)
-            d.pop("_key", None)
-            d.pop("_sess", None)
-            d.pop("_list", None)
-            d.pop("_stream_item", None)
-            rp.append(d)
-        out_now = dict(now) if isinstance(now, dict) else None
-        if isinstance(out_now, dict):
-            out_now.pop("_key", None)
-            out_now.pop("_sess", None)
-            out_now.pop("_list", None)
-            out_now.pop("_stream_item", None)
-        return {"now": out_now, "recent": rp}
-
-def playback_update_from_client(payload: dict) -> dict:
-    # payload fields (best-effort):
-    #   media: "audio"|"video"
-    #   root_id, rel
-    #   label, title, artist, album, art
-    #   position, duration
-    #   playing: bool
-    #   nav: dict (navigation context to restore list/album/folder)
-    #   event: "start"|"time"|"pause"|"stop"|"ended"
-    js = payload if isinstance(payload, dict) else {}
-    media = str(js.get("media") or "").strip().lower()
-    if media not in ("audio", "video"):
-        return {"ok": False, "error": "bad media"}
-    root_id = str(js.get("root_id") or "").strip()
-    rel = str(js.get("rel") or "").strip()
-    stream_item = None
-    if root_id == SEARCH_STREAM_ROOT_ID and rel:
-        stream_item = _search_stream_get_or_restore(rel)
-    if (not root_id or not rel) or (root_id == SEARCH_STREAM_ROOT_ID and not stream_item):
-        return {"ok": False, "error": "missing root_id or rel"}
-
-    label = str(js.get("label") or "").strip()
-    title = str(js.get("title") or "").strip()
-    artist = str(js.get("artist") or "").strip()
-    album = str(js.get("album") or "").strip()
-    art = str(js.get("art") or "").strip()
-    nav = js.get("nav") if isinstance(js.get("nav"), dict) else {}
-    ev = str(js.get("event") or "").strip().lower()
-
-    pos = js.get("position")
-    dur = js.get("duration")
-    try:
-        pos_f = float(pos) if pos is not None and str(pos).strip() else 0.0
-    except Exception:
-        pos_f = 0.0
-    try:
-        dur_f = float(dur) if dur is not None and str(dur).strip() else None
-    except Exception:
-        dur_f = None
-
-    playing = bool(js.get("playing")) if "playing" in js else None
-
-    k = _media_key(media, root_id, rel)
-    now_entry = {
-        "_key": k,
-        "media": media,
-        "root_id": root_id,
-        "rel": rel,
-        "label": label,
-        "title": title,
-        "artist": artist,
-        "album": album,
-        "art": art,
-        "position": max(0.0, pos_f),
-        "duration": dur_f,
-        "playing": bool(playing) if playing is not None else False,
-        "nav": nav,
-        "ts": time.time(),
-        "streamed": bool(js.get("streamed")),
-        "source": str(js.get("source") or "").strip().lower(),
-        "ext": str(js.get("ext") or "").strip().lower(),
-        "quality": str(js.get("quality") or "").strip(),
-    }
-
-
-    playlist_ctx = js.get("playlist") if isinstance(js.get("playlist"), dict) else None
-    if playlist_ctx:
-        # best-effort sanity limits
-        items = playlist_ctx.get("items")
-        if not isinstance(items, list):
-            playlist_ctx = None
-        else:
-            if len(items) > 600:
-                playlist_ctx["items"] = items[:600]
-            try:
-                playlist_ctx["index"] = int(playlist_ctx.get("index") or 0)
-            except Exception:
-                playlist_ctx["index"] = 0
-            # strip unexpected large fields
-            clean_items = []
-            for itx in playlist_ctx.get("items") or []:
-                if not isinstance(itx, dict):
-                    continue
-                rid = str(itx.get("root_id") or "").strip()
-                rrel = str(itx.get("rel") or "").strip()
-                m2 = str(itx.get("media") or media).strip().lower()
-                lbl2 = str(itx.get("label") or "").strip()
-                if not rid or not rrel:
-                    continue
-                clean_items.append({"root_id": rid, "rel": rrel, "media": m2, "label": lbl2})
-            playlist_ctx["items"] = clean_items
-
-    if playlist_ctx:
-        now_entry["playlist"] = playlist_ctx
-    if stream_item:
-        now_entry["streamed"] = True
-        now_entry["source"] = str(stream_item.get("source") or now_entry.get("source") or "").strip().lower()
-        stream_title = str(stream_item.get("title") or stream_item.get("name") or "").strip()
-        stream_name = str(stream_item.get("name") or stream_item.get("title") or "").strip()
-        if now_entry.get("source") == "youtube" and stream_title:
-            now_entry["title"] = stream_title
-            now_entry["label"] = stream_title
-        else:
-            if not now_entry.get("title"):
-                now_entry["title"] = stream_title
-            if not now_entry.get("label"):
-                now_entry["label"] = stream_name
-        if not now_entry.get("album"):
-            now_entry["album"] = str(stream_item.get("album") or "")
-        if not now_entry.get("artist"):
-            now_entry["artist"] = str(stream_item.get("artist") or "")
-        if not now_entry.get("art"):
-            now_entry["art"] = str(stream_item.get("art") or "")
-        if not now_entry.get("ext"):
-            now_entry["ext"] = str(stream_item.get("ext") or "").strip().lower()
-        if not now_entry.get("quality"):
-            now_entry["quality"] = str(stream_item.get("quality") or "")
-        keep_keys = (
-            "item_id", "queue_index", "queue_count", "session_title",
-            "media", "name", "title", "artist", "album", "art", "size",
-            "source", "streamed", "ext", "quality", "url", "youtube_url",
-            "format_id", "itag", "mime", "requires_local_mux"
-        )
-        now_entry["_stream_item"] = {k: stream_item.get(k) for k in keep_keys if k in stream_item}
-
-    
-    # recently played overwrite key (list or directory context)
-    now_entry["_list"] = _recent_list_key(media, root_id, rel, nav)
-
-    with PLAYBACK_STATE_LOCK:
-        # update now playing
-        if playing is not None:
-            now_entry["playing"] = bool(playing)
-        PLAYBACK_STATE["now"] = now_entry
-
-        # recent list
-        recent = PLAYBACK_STATE.get("recent") or []
-        if not isinstance(recent, list):
-            recent = []
-
-        # per-media session tracking so audio and video never overwrite each other
-        sess_key = "audio_session" if media == "audio" else "video_session"
-        sess = PLAYBACK_STATE.get(sess_key) or {}
-        if not isinstance(sess, dict):
-            sess = {}
-
-        if "session_id" not in sess:
-            sess["session_id"] = ""
-        if "last_activity_ts" not in sess:
-            # migrate from legacy audio_session key if present
-            try:
-                sess["last_activity_ts"] = float(sess.get("last_play_ts") or 0.0)
-            except Exception:
-                sess["last_activity_ts"] = 0.0
-        if "last_stop_ts" not in sess:
-            sess["last_stop_ts"] = 0.0
-
-        now_ts = time.time()
-        session_gap_seconds = 150.0
-
-        sess_id = str(sess.get("session_id") or "")
-        try:
-            last_act = float(sess.get("last_activity_ts") or 0.0)
-        except Exception:
-            last_act = 0.0
-        try:
-            last_stop = float(sess.get("last_stop_ts") or 0.0)
-        except Exception:
-            last_stop = 0.0
-
-        ev_s = (ev or "").strip().lower()
-        is_playing_now = bool(now_entry.get("playing"))
-
-        # update markers
-        if is_playing_now:
-            sess["last_activity_ts"] = now_ts
-            last_act = now_ts
-            # legacy audio key kept up to date
-            if media == "audio":
-                sess["last_play_ts"] = now_ts
-        if ev_s in ("pause", "stop", "ended"):
-            sess["last_stop_ts"] = now_ts
-            last_stop = now_ts
-
-        # decide whether to start a new session based on last activity (play or stop)
-        last_any = max(last_act, last_stop)
-        start_new_session = False
-        if not sess_id:
-            start_new_session = True
-        elif last_any > 0.0 and (now_ts - last_any) > session_gap_seconds:
-            start_new_session = True
-
-        # only create a new session id when playback is actually running
-        if (ev_s in ("start", "time")) and is_playing_now and start_new_session:
-            prefix = "a" if media == "audio" else "v"
-            sess_id = prefix + str(int(now_ts)) + "_" + uuid.uuid4().hex[:8]
-            sess["session_id"] = sess_id
-
-        if sess_id:
-            now_entry["_sess"] = sess_id
-
-                # recently played: overwrite the previous entry when the list/directory context is the same;
-        # otherwise add a new entry.
-        found_by_key = None
-        for i, it2 in enumerate(recent):
-            if isinstance(it2, dict) and it2.get("_key") == k:
-                found_by_key = i
-                break
-
-        if ev_s == "start":
-            if recent and isinstance(recent[0], dict) and recent[0].get("_list") == now_entry.get("_list"):
-                recent[0] = dict(now_entry)
-            else:
-                if found_by_key is not None:
-                    try:
-                        recent.pop(found_by_key)
-                    except Exception:
-                        pass
-                recent.insert(0, dict(now_entry))
-        else:
-            # Do not reorder on time/pause/stop updates; just refresh fields if we can find a matching entry.
-            if found_by_key is not None and isinstance(recent[found_by_key], dict):
-                recent[found_by_key].update(dict(now_entry))
-            elif recent and isinstance(recent[0], dict) and recent[0].get("_list") == now_entry.get("_list"):
-                recent[0].update(dict(now_entry))
-            elif not recent and (ev_s in ("time", "start")) and is_playing_now:
-                recent.insert(0, dict(now_entry))
-        PLAYBACK_STATE[sess_key] = sess
-        PLAYBACK_STATE["recent"] = _trim_recent(recent)
-
-    save_playback_state_best_effort()
-    return {"ok": True}
-
-
-# =========================
 # Flask app and templates
 # =========================
 app = Flask(__name__)
@@ -2247,8 +1430,6 @@ SEARCH_STREAMS_LOCK = threading.Lock()
 
 MCP_SESSIONS: Dict[str, Dict[str, Any]] = {}
 MCP_SESSIONS_LOCK = threading.Lock()
-MCP_SSE_KEEPALIVE_SECONDS = 15
-MCP_SESSION_TTL_SECONDS = 12 * 60 * 60
 
 
 def _guess_media_from_name(name: str) -> str:
@@ -4131,6 +3312,18 @@ def api_library_config():
     )
 
 
+@app.route("/api/library/reindex", methods=["POST"])
+def api_library_reindex():
+    clear_index_cache()
+    return jsonify({"ok": True})
+
+
+@app.route("/api/library/building", methods=["GET"])
+def api_library_building():
+    any_building, roots_status = index_building_status()
+    return jsonify({"ok": True, "any_building": any_building, "roots": roots_status})
+
+
 
 
 
@@ -4212,194 +3405,6 @@ def api_library_browse():
         media = "video" if is_video(p) else ("audio" if is_audio(p) else "")
         entries.append({"type": "file", "name": f, "rel": relp, "media": media})
     return jsonify({"entries": entries})
-
-
-def build_index_for_root(root_abs: str) -> dict:
-    tracks = []
-    videos = []
-    for base, dirs, files in os.walk(root_abs):
-        dirs[:] = [d for d in dirs if not d.startswith(".") and d != CACHE_DIR_NAME]
-        for fn in files:
-            ext = os.path.splitext(fn)[1].lower()
-            if ext not in AUDIO_EXTS and ext not in VIDEO_EXTS:
-                continue
-            abs_p = os.path.join(base, fn)
-            rel = os.path.relpath(abs_p, root_abs).replace("\\", "/")
-            if ext in VIDEO_EXTS:
-                meta = file_meta_cached(abs_p)
-                videos.append({"rel": rel, "name": fn, "title": meta.get("title") or fn})
-                continue
-
-            meta = file_meta_cached(abs_p)
-            title = meta.get("title") or os.path.splitext(fn)[0]
-            artist = (meta.get("artist") or "").strip()
-            album_artist = (meta.get("album_artist") or artist or "").strip()
-            artist = album_artist or artist
-            album = (meta.get("album") or "").strip()
-            genre = (meta.get("genre") or "").strip()
-            track = (meta.get("track") or "").strip()
-            duration = meta.get("duration")
-            tracks.append(
-                {
-                    "rel": rel,
-                    "name": fn,
-                    "title": title,
-                    "artist": artist,
-                    "album_artist": album_artist,
-                    "album": album,
-                    "genre": genre,
-                    "folder": ("/" + os.path.dirname(rel).replace("\\", "/").strip("/")) if os.path.dirname(rel).strip() else "/",
-                    "track": track,
-                    "duration": duration,
-                }
-            )
-    return {"tracks": tracks, "videos": videos}
-
-
-def _index_cache_dir() -> str:
-    p = os.path.join(cache_dir(), "library_index")
-    try:
-        os.makedirs(p, exist_ok=True)
-    except OSError:
-        pass
-    return p
-
-
-def _index_cache_path(root_id: str) -> str:
-    rid = re.sub(r"[^a-fA-F0-9]", "", str(root_id or ""))[:64] or sha1_text(str(root_id or ""))
-    return os.path.join(_index_cache_dir(), f"{rid}.json")
-
-
-def _index_cache_payload(root_id: str, root_abs: str, data: dict) -> dict:
-    return {
-        "version": 1,
-        "root_id": str(root_id or ""),
-        "root_abs": os.path.abspath(root_abs),
-        "saved_at": time.time(),
-        "data": data if isinstance(data, dict) else {"tracks": [], "videos": []},
-    }
-
-
-def _save_index_to_disk(root_id: str, root_abs: str, data: dict) -> None:
-    try:
-        _atomic_write_json(_index_cache_path(root_id), _index_cache_payload(root_id, root_abs, data))
-    except Exception:
-        pass
-
-
-def _load_index_from_disk(root_id: str, root_abs: str) -> Optional[dict]:
-    try:
-        js = _read_json_file(_index_cache_path(root_id))
-        if not isinstance(js, dict):
-            return None
-        cached_root = os.path.abspath(str(js.get("root_abs") or ""))
-        if cached_root != os.path.abspath(root_abs):
-            return None
-        data = js.get("data")
-        if not isinstance(data, dict):
-            return None
-        tracks = data.get("tracks")
-        videos = data.get("videos")
-        if not isinstance(tracks, list) or not isinstance(videos, list):
-            return None
-        return {"tracks": tracks, "videos": videos}
-    except Exception:
-        return None
-
-
-def _clear_index_disk_cache() -> None:
-    try:
-        root = _index_cache_dir()
-        for fn in os.listdir(root):
-            if fn.endswith('.json'):
-                try:
-                    os.remove(os.path.join(root, fn))
-                except Exception:
-                    pass
-    except Exception:
-        pass
-
-
-INDEX_CACHE: Dict[str, Tuple[float, dict]] = {}
-INDEX_BUILDING: Dict[str, bool] = {}
-INDEX_LOCK = threading.Lock()
-
-
-def _set_playlist_index_cache(root_id: str, data: dict) -> None:
-    with INDEX_LOCK:
-        INDEX_CACHE[root_id] = (time.time(), data)
-
-
-def ensure_index_async(root_id: str, root_abs: str) -> None:
-    now = time.time()
-    with INDEX_LOCK:
-        hit = INDEX_CACHE.get(root_id)
-        if hit and (now - hit[0]) < 600:
-            return
-        if not hit:
-            disk = _load_index_from_disk(root_id, root_abs)
-            if disk is not None:
-                INDEX_CACHE[root_id] = (now, disk)
-                return
-        if INDEX_BUILDING.get(root_id):
-            return
-        INDEX_BUILDING[root_id] = True
-
-    def build():
-        try:
-            data = build_index_for_root(root_abs)
-            _save_index_to_disk(root_id, root_abs, data)
-            with INDEX_LOCK:
-                INDEX_CACHE[root_id] = (time.time(), data)
-        finally:
-            with INDEX_LOCK:
-                INDEX_BUILDING[root_id] = False
-
-    threading.Thread(target=build, daemon=True).start()
-
-
-def get_index(root_id: str) -> Optional[dict]:
-    with INDEX_LOCK:
-        hit = INDEX_CACHE.get(root_id)
-        if hit:
-            return hit[1]
-    r = root_by_id(root_id)
-    if not r:
-        return None
-    _, _, root_abs, _ = r
-    disk = _load_index_from_disk(root_id, root_abs)
-    if disk is None:
-        return None
-    with INDEX_LOCK:
-        INDEX_CACHE[root_id] = (time.time(), disk)
-    return disk
-
-
-@app.route("/api/library/reindex", methods=["POST"])
-def api_library_reindex():
-    with INDEX_LOCK:
-        INDEX_CACHE.clear()
-        INDEX_BUILDING.clear()
-    _clear_index_disk_cache()
-    return jsonify({"ok": True})
-
-@app.route("/api/library/building", methods=["GET"])
-def api_library_building():
-    with INDEX_LOCK:
-        roots_status = {str(k): bool(v) for k, v in (INDEX_BUILDING or {}).items()}
-        any_building = any(roots_status.values())
-    return jsonify({"ok": True, "any_building": any_building, "roots": roots_status})
-
-
-
-def track_sort_key(track_s: str) -> Tuple[int, str]:
-    s = (track_s or "").strip()
-    if not s:
-        return (10**9, "")
-    m = re.match(r"(\d+)", s)
-    if not m:
-        return (10**9, s)
-    return (int(m.group(1)), s)
 
 
 @app.route("/api/library/metadata", methods=["GET"])

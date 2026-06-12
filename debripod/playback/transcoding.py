@@ -14,8 +14,8 @@ from ..utils import is_audio, is_video, sha1_text
 from .probe import ffprobe_json, run_cmd
 
 _audio_transcode_provider: Callable[[], str] = lambda: ""
-_ffmpeg_path_provider: Callable[[], str] = lambda: "ffmpeg"
-_video_browser_target_ext_provider: Callable[[], str] = lambda: "mp4"
+_ffmpeg_path_provider: Callable[[], str] = lambda: ""
+_video_browser_target_ext_provider: Callable[[], str] = lambda: ""
 
 
 def configure_transcoding(
@@ -36,7 +36,7 @@ def _ffmpeg_path() -> str:
 
 
 def _video_browser_target_ext() -> str:
-    return (_video_browser_target_ext_provider() or "mp4").lower().lstrip(".")
+    return (_video_browser_target_ext_provider() or "").lower().lstrip(".")
 
 
 def parse_audio_transcode_rules() -> List[Tuple[str, str]]:

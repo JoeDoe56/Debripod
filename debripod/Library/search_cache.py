@@ -9,15 +9,22 @@ from typing import Callable, List, Optional
 
 from ..utils import sha1_text
 
-SEARCH_HISTORY_MAX_ITEMS = 50
-SEARCH_DISK_CACHE_TTL_SECONDS = 7 * 24 * 60 * 60
 _SEARCH_DISK_LOCK = threading.Lock()
-_cache_dir_provider: Callable[[], str] = lambda: "_debripod_cache"
+_cache_dir_provider: Callable[[], str] = lambda: ""
+_history_max_items_provider: Callable[[], int] = lambda: 0
+_disk_cache_ttl_seconds_provider: Callable[[], int] = lambda: 0
 
 
-def configure_search_cache(cache_dir_provider: Callable[[], str]) -> None:
-    global _cache_dir_provider
+def configure_search_cache(
+    cache_dir_provider: Callable[[], str],
+    *,
+    history_max_items_provider: Callable[[], int],
+    disk_cache_ttl_seconds_provider: Callable[[], int],
+) -> None:
+    global _cache_dir_provider, _history_max_items_provider, _disk_cache_ttl_seconds_provider
     _cache_dir_provider = cache_dir_provider
+    _history_max_items_provider = history_max_items_provider
+    _disk_cache_ttl_seconds_provider = disk_cache_ttl_seconds_provider
 
 
 def _search_cache_root_dir() -> str:
@@ -80,7 +87,8 @@ def _disk_cache_get(key: str) -> Optional[dict]:
         created = float(d.get("created") or 0.0)
     except Exception:
         created = 0.0
-    if created > 0 and (time.time() - created) > SEARCH_DISK_CACHE_TTL_SECONDS:
+    ttl_seconds = int(_disk_cache_ttl_seconds_provider() or 0)
+    if ttl_seconds > 0 and created > 0 and (time.time() - created) > ttl_seconds:
         return None
     return d
 
@@ -117,13 +125,15 @@ def _load_search_history() -> List[dict]:
                 continue
             out.append({"q": q, "engine": eng, "cache_key": key, "ts": ts})
     out.sort(key=lambda x: float(x.get("ts") or 0.0), reverse=True)
-    return out[:SEARCH_HISTORY_MAX_ITEMS]
+    max_items = int(_history_max_items_provider() or 0)
+    return out[:max_items] if max_items > 0 else out
 
 
 def _save_search_history(items: List[dict]) -> None:
     p = _search_history_path()
     out = []
-    for it in (items or [])[:SEARCH_HISTORY_MAX_ITEMS]:
+    max_items = int(_history_max_items_provider() or 0)
+    for it in (items or [])[:max_items if max_items > 0 else None]:
         if not isinstance(it, dict):
             continue
         q = str(it.get("q") or "").strip()

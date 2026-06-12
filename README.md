@@ -10,7 +10,7 @@ This repository layout is designed so the app can be pushed to GitHub without co
 debripod/
   app.py                 Application entry point
   config.py              Runtime JSON config loader
-  legacy.py              Current working Debripod app, scrubbed of private defaults
+  runtime.py             Current working Debripod app runtime
   services/              Service import facades for gradual refactoring
   library/               Library and playlist import facades
   playback/              Playback and transcoding import facades
@@ -64,10 +64,10 @@ The config file is JSON. See `config/debripod.example.json` for all common setti
 
 ## GitHub safety notes
 
-The original script had machine specific paths and credentials near the top. This packaged version removes those defaults from `debripod/legacy.py` and moves user specific values into JSON config. Keep `config/debripod.json` private when it contains real credentials.
+The original script had machine specific paths and credentials near the top. This packaged version removes those defaults from `debripod/runtime.py` and moves user specific values into JSON config. Keep `config/debripod.json` private when it contains real credentials.
 
 The `.gitignore` file excludes virtual environments, caches, local media folders, logs, and common private config variants.
 
 ## Refactoring note
 
-The current app logic is still mostly preserved in `debripod/legacy.py` so the app can keep running. The package directories and facade modules are included to make future cleanup easier. You can gradually move code from `legacy.py` into the matching modules without changing public imports all at once.
+The remaining app runtime is in `debripod/runtime.py` so the app can keep running while route and worker code continue moving into modules.

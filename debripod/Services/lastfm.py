@@ -14,14 +14,31 @@ LASTFM_API_KEY = ""
 LASTFM_API_SECRET = ""
 LASTFM_SESSION_KEY = ""
 LASTFM_CALLBACK_URL = ""
+LASTFM_API_ROOT = ""
+LASTFM_REQUEST_TIMEOUT_SECONDS = 0
 
-def configure_lastfm(*, api_key: str, api_secret: str, session_key: str, callback_url: str, session_cache_path: str = "", loved_db_path: str = "") -> None:
+def configure_lastfm(
+    *,
+    api_key: str,
+    api_secret: str,
+    session_key: str,
+    callback_url: str,
+    api_root: str = "",
+    request_timeout_seconds: int = 0,
+    session_cache_path: str = "",
+    loved_db_path: str = "",
+) -> None:
     global LASTFM_API_KEY, LASTFM_API_SECRET, LASTFM_SESSION_KEY, LASTFM_CALLBACK_URL
+    global LASTFM_API_ROOT, LASTFM_REQUEST_TIMEOUT_SECONDS
     global _LASTFM_SESSION_CACHE_PATH, _LASTFM_LOVED_DB_PATH
     LASTFM_API_KEY = api_key or ""
     LASTFM_API_SECRET = api_secret or ""
     LASTFM_SESSION_KEY = session_key or ""
     LASTFM_CALLBACK_URL = callback_url or ""
+    if api_root:
+        LASTFM_API_ROOT = api_root
+    if request_timeout_seconds:
+        LASTFM_REQUEST_TIMEOUT_SECONDS = int(request_timeout_seconds)
     if session_cache_path:
         _LASTFM_SESSION_CACHE_PATH = session_cache_path
     if loved_db_path:
@@ -35,9 +52,6 @@ def initialize_lastfm_cache() -> None:
 def lastfm_loved_updated() -> int:
     with _LASTFM_LOVED_LOCK:
         return int(_LASTFM_LOVED.get("updated") or 0)
-
-LASTFM_API_ROOT = "https://ws.audioscrobbler.com/2.0/"
-LASTFM_REQUEST_TIMEOUT_SECONDS = 12
 
 _LASTFM_SESSION_LOCK = threading.Lock()
 _LASTFM_SESSION_CACHE_PATH = ""  # set after CACHE_DIR is initialized
