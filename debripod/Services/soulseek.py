@@ -15,9 +15,9 @@ from ..media_types import AUDIO_EXTS, VIDEO_EXTS
 from ..paths import cache_dir
 from ..utils import sanitize_folder_name
 
-SOULSEEK_DOWNLOAD_DIR = r"./data/soulseek"
-SOULSEEK_SEARCH_IDLE_STOP_SEC = 2.5
-SOULSEEK_SEARCH_HARD_MAX_SEC = 60
+SOULSEEK_DOWNLOAD_DIR = ""
+SOULSEEK_SEARCH_IDLE_STOP_SEC = 0.0
+SOULSEEK_SEARCH_HARD_MAX_SEC = 0.0
 TASKS: Dict[str, Any] = {}
 TASKS_LOCK = threading.Lock()
 
@@ -59,8 +59,8 @@ def configure_soulseek_module(
     global SOULSEEK_DOWNLOAD_DIR, SOULSEEK_SEARCH_IDLE_STOP_SEC, SOULSEEK_SEARCH_HARD_MAX_SEC
     global TASKS, TASKS_LOCK, get_task, set_task, _set_file_control, _get_file_control
     SOULSEEK_DOWNLOAD_DIR = download_dir
-    SOULSEEK_SEARCH_IDLE_STOP_SEC = float(search_idle_stop_sec or 2.5)
-    SOULSEEK_SEARCH_HARD_MAX_SEC = float(search_hard_max_sec or 60)
+    SOULSEEK_SEARCH_IDLE_STOP_SEC = float(search_idle_stop_sec or 0.0)
+    SOULSEEK_SEARCH_HARD_MAX_SEC = float(search_hard_max_sec or 0.0)
     TASKS = tasks
     TASKS_LOCK = tasks_lock
     get_task = get_task_func

@@ -14,18 +14,15 @@ from ..paths import cache_dir
 from ..playback.probe import run_cmd
 from ..utils import human_bytes, sha1_text
 
-_ytdlp_cmd_provider: Callable[[], str] = lambda: "yt-dlp"
-_youtube_download_dir_provider: Callable[[], str] = lambda: "./data/youtube"
-_download_dir_provider: Callable[[], str] = lambda: "./data/debrid"
-_stream_cache_subdir_provider: Callable[[], str] = lambda: "youtube_streams"
-_web_base_provider: Callable[[], str] = lambda: "https://www.youtube.com"
-_search_limit_provider: Callable[[], int] = lambda: 24
+_ytdlp_cmd_provider: Callable[[], str] = lambda: ""
+_youtube_download_dir_provider: Callable[[], str] = lambda: ""
+_download_dir_provider: Callable[[], str] = lambda: ""
+_stream_cache_subdir_provider: Callable[[], str] = lambda: ""
+_web_base_provider: Callable[[], str] = lambda: ""
+_search_limit_provider: Callable[[], int] = lambda: 0
 _channel_browse_limit_provider: Callable[[], int] = lambda: 0
-_request_headers_provider: Callable[[], dict] = lambda: {
-    "User-Agent": "Mozilla/5.0",
-    "Accept-Language": "en-US,en;q=0.9",
-}
-_timeout_provider: Callable[[], int] = lambda: 25
+_request_headers_provider: Callable[[], dict] = lambda: {}
+_timeout_provider: Callable[[], int] = lambda: 0
 _ffmpeg_path_provider: Callable[[], str] = lambda: ""
 
 
@@ -59,7 +56,7 @@ def configure_youtube(
 
 
 def _youtube_web_base() -> str:
-    return (_web_base_provider() or "https://www.youtube.com").rstrip("/")
+    return (_web_base_provider() or "").rstrip("/")
 
 
 def _youtube_watch_url(video_id: str) -> str:

@@ -3,8 +3,8 @@ from __future__ import annotations
 import os
 from typing import Callable
 
-_download_dir_provider: Callable[[], str] = lambda: "./data/debrid"
-_cache_dir_name_provider: Callable[[], str] = lambda: "_debripod_cache"
+_download_dir_provider: Callable[[], str] = lambda: ""
+_cache_dir_name_provider: Callable[[], str] = lambda: ""
 
 
 def configure_paths(

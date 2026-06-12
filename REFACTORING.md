@@ -11,6 +11,6 @@ Suggested extraction order:
 5. Move task state and download workers into `debripod/tasks/`.
 6. Move library indexing, playlists, smart playlists, and metadata into `debripod/library/`.
 7. Move Flask routes into blueprints under `debripod/routes/`.
-8. Replace `legacy.py` with a small app factory once all route registration has moved.
+8. Split the remaining `runtime.py` routes/workers into focused modules, then reduce it to a small app factory.
 
-The facade modules already expose some common functions from `legacy.py`. That lets new code import from stable module names while the internal migration continues.
+The former `legacy.py` facades have been moved into modules. New code should import from the focused package modules instead of the app runtime.

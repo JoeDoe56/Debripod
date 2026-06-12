@@ -9,13 +9,13 @@ from urllib.parse import quote
 import requests
 
 _api_key_provider: Callable[[], str] = lambda: ""
-_min_interval_provider: Callable[[], float] = lambda: 0.6
-_cache_ttl_provider: Callable[[], float] = lambda: 120.0
-_max_retries_provider: Callable[[], int] = lambda: 5
-_api_base_provider: Callable[[], str] = lambda: "https://api.knaben.org/v1"
-_web_base_provider: Callable[[], str] = lambda: "https://knaben.org"
-_timeout_provider: Callable[[], int] = lambda: 25
-_results_per_page_provider: Callable[[], int] = lambda: 50
+_min_interval_provider: Callable[[], float] = lambda: 0.0
+_cache_ttl_provider: Callable[[], float] = lambda: 0.0
+_max_retries_provider: Callable[[], int] = lambda: 0
+_api_base_provider: Callable[[], str] = lambda: ""
+_web_base_provider: Callable[[], str] = lambda: ""
+_timeout_provider: Callable[[], int] = lambda: 0
+_results_per_page_provider: Callable[[], int] = lambda: 0
 
 KNABEN_SESSION = requests.Session()
 KNABEN_SESSION.headers.update(
