@@ -96,17 +96,13 @@ The visual design is meant to feel like a modern iPod style web app. The current
 
 ```text
 debripod/
-  __main__.py             Package runner for python -m debripod
-  app.py                  Flask app entry point
-  config.py               JSON config loader and safe secret redaction helpers
-  legacy.py               Main app implementation while refactoring continues
-  media_types.py          Media extensions, playlist folder names, and smart playlist template
-  paths.py                Cache, art, and transcode path helpers
-  Library/                Library root and search cache helpers
-  Routes/                 Modular Flask route groups
-  Services/               Real Debrid, Knaben, and Last.fm service helpers
-  Tasks/                  Task model and task manager helpers
-  playback/               Streaming, range response, ffprobe, and command helpers
+  app.py                 Application entry point
+  config.py              Runtime JSON config loader
+  runtime.py             Current working Debripod app runtime
+  services/              Service import facades for gradual refactoring
+  library/               Library and playlist import facades
+  playback/              Playback and transcoding import facades
+  tasks/                 Task manager import facades
 config/
   debripod.example.json   Full example config
   debripod.json           Safe default config when present
@@ -272,10 +268,10 @@ python -m debripod
 
 `debripod/app.py` exposes `create_app()` for Flask style app loading, and `debripod/__main__.py` calls the same main function used by the direct package runner.
 
-## Safety notes
+The original script had machine specific paths and credentials near the top. This packaged version removes those defaults from `debripod/runtime.py` and moves user specific values into JSON config. Keep `config/debripod.json` private when it contains real credentials.
 
 DebriPod is intended to run as a local app. Keep `HOST` set to `127.0.0.1` unless you understand the security implications of exposing it to other devices.
 
 Never commit real API keys, Real Debrid tokens, Soulseek credentials, Last.fm secrets, private paths, downloaded media, cache files, or local runtime files.
 
-Use `config/debripod.local.json` for private settings and keep it ignored by Git.
+The remaining app runtime is in `debripod/runtime.py` so the app can keep running while route and worker code continue moving into modules.
