@@ -125,6 +125,7 @@
       this._sourceCssRect = null;
       this._sourceTextureReady = false;
       this._solidCanvas = null;
+      this.visible = true;
 
       this._initGL();
 
@@ -701,8 +702,44 @@
     }
 
     /* ----------------------------- */
+    clear() {
+      try {
+        const gl = this.gl;
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        if (this.canvas.width && this.canvas.height) {
+          gl.viewport(0, 0, this.canvas.width, this.canvas.height);
+        }
+        gl.clearColor(0, 0, 0, 0);
+        gl.clear(gl.COLOR_BUFFER_BIT);
+        if (this.canvas) this.canvas.style.opacity = "0";
+      } catch (e) {}
+    }
+
+    setVisible(on) {
+      const next = !!on;
+      if (this.visible === next) {
+        if (!next) this.clear();
+        return;
+      }
+      this.visible = next;
+      if (!next) {
+        this.lenses.forEach((lens) => {
+          lens.rectPx = null;
+        });
+        this.clear();
+        return;
+      }
+      if (this.canvas) this.canvas.style.opacity = "1";
+      this._metricsDirty = true;
+    }
+
+    /* ----------------------------- */
     render(frameState) {
       const gl = this.gl;
+      if (!this.visible) {
+        this.clear();
+        return;
+      }
       if (!this.texture) this.refreshSourceTexture("render fallback");
       if (!this.texture) return;
       if (frameState) this._externalFrameState = frameState;

@@ -1163,6 +1163,7 @@ try{
 }
 
 let npPillPinned = false;
+let npPillVisible = false;
 try{
   npPillPinned = (localStorage.getItem("debripod_np_pill_pinned") || "") === "1";
 }catch(e){}
@@ -1171,27 +1172,73 @@ function setNpPillPinned(on){
   npPillPinned = !!on;
   try{ localStorage.setItem("debripod_np_pill_pinned", npPillPinned ? "1" : "0"); }catch(e){}
   if(npPillPinned){
-    showNpPill(true);
+    showNpPill(true, "pin");
   }else{
     npPillActivity(false);
   }
 }
 
-function hideNpPillImmediate(){
+function setNpOverlayLiquidGlassVisible(visible, reason){
+  try{
+    const renderer = liquidGlassRendererByKey("npOverlay");
+    if(!renderer) return;
+    if(visible){
+      if(renderer.setVisible) renderer.setVisible(true);
+      refreshNpOverlayGlassSource(reason || "np pill show");
+      if(renderer.render) renderer.render(currentVisualizerFrameState());
+    }else{
+      if(renderer.setVisible){
+        renderer.setVisible(false);
+      }else if(renderer.clear){
+        renderer.clear();
+      }else if(renderer.render){
+        renderer.render(currentVisualizerFrameState());
+      }
+    }
+  }catch(e){}
+}
+
+function setNpPillVisible(visible, reason, pinnedValue){
+  const nextVisible = !!visible;
+  if(typeof pinnedValue === "boolean"){
+    npPillPinned = !!pinnedValue;
+    try{ localStorage.setItem("debripod_np_pill_pinned", npPillPinned ? "1" : "0"); }catch(e){}
+  }
   try{ if(npPillHideTimer) clearTimeout(npPillHideTimer); }catch(e){}
   npPillHideTimer = null;
+  if(!nextVisible){
+    try{ if(npPillSwapTimer) clearTimeout(npPillSwapTimer); }catch(e){}
+    npPillSwapTimer = null;
+  }
+  npPillVisible = nextVisible;
   try{
-    if(npOverlayPill) npOverlayPill.classList.add("npPillHidden");
-    scheduleLiquidGlassRender();
+    if(!npOverlayPill){
+      setNpOverlayLiquidGlassVisible(nextVisible, reason);
+      return;
+    }
+    if(nextVisible){
+      refreshNpOverlayGlassSource(reason || "np pill show");
+      npOverlayPill.classList.remove("npPillHidden");
+      npOverlayPill.classList.remove("npPillSwapHidden");
+      npOverlayPill.style.pointerEvents = "";
+      setNpOverlayLiquidGlassVisible(true, reason || "np pill show");
+    }else{
+      npOverlayPill.classList.add("npPillHidden");
+      npOverlayPill.classList.remove("npPillSwapHidden");
+      npOverlayPill.style.pointerEvents = "none";
+      setNpOverlayLiquidGlassVisible(false, reason || "np pill hide");
+    }
   }catch(e){}
+}
+
+function hideNpPillImmediate(reason, pinnedValue){
+  setNpPillVisible(false, reason || "immediate hide", pinnedValue);
 }
 
 function toggleNpPillFromArt(){
     if(nowPlaying.style.display !== "block") return;
     if(isNpPillShown()){
-      npPillPinned = false;
-      try{ localStorage.setItem("debripod_np_pill_pinned", "0"); }catch(e){}
-      hideNpPillImmediate();
+      hideNpPillImmediate("art toggle", false);
     }else{
       setNpPillPinned(true);
     }
@@ -1558,7 +1605,7 @@ function setNowPlayingOverlayText(meta, fallbackLabel){
 
 function isNpPillShown(){
   try{
-    return !!(npOverlayPill && !npOverlayPill.classList.contains("npPillHidden"));
+    return !!(npOverlayPill && npPillVisible && !npOverlayPill.classList.contains("npPillHidden"));
   }catch(e){
     return false;
   }
@@ -1637,13 +1684,9 @@ async function updateNowPlayingDisplay(meta, fallbackLabel, opts){
   }
 }
 
-function showNpPill(pinned){
+function showNpPill(pinned, reason){
   const effectivePinned = !!pinned || !!npPillPinned;
-  try{
-    if(!npOverlayPill) return;
-    npOverlayPill.classList.remove("npPillHidden");
-    scheduleLiquidGlassRender();
-  }catch(e){}
+  setNpPillVisible(true, reason || "show", pinned ? true : undefined);
   if(effectivePinned){
     try{ if(npPillHideTimer) clearTimeout(npPillHideTimer); }catch(e){}
     npPillHideTimer = null;
@@ -1663,8 +1706,7 @@ function scheduleHideNpPill(ms){
         const m = wheelMedia();
         if(!m) return;
         if(m.paused) return;
-        npOverlayPill.classList.add("npPillHidden");
-        scheduleLiquidGlassRender();
+        setNpPillVisible(false, "auto hide", false);
       }catch(e){}
     }, (ms || 2500));
   }catch(e){}
@@ -1672,7 +1714,7 @@ function scheduleHideNpPill(ms){
 
 function npPillActivity(pinned){
   const effectivePinned = !!pinned || !!npPillPinned;
-  showNpPill(effectivePinned);
+  showNpPill(effectivePinned, pinned ? "activity pinned" : "activity");
   if(!effectivePinned) scheduleHideNpPill(2500);
 }
 
@@ -2610,6 +2652,7 @@ function fmtTime(sec){
       });
       npPillActivity(false);
     }else{
+      hideNpPillImmediate("now playing leaving");
       try{ libList.classList.remove("npUnderlay"); }catch(e){}
       try{ nowPlaying.classList.remove("npPageActive"); }catch(e){}
       scheduleLiquidGlassSnapshot("now playing leaving", true);
@@ -2618,16 +2661,10 @@ function fmtTime(sec){
           if(fadeToken !== npPageFadeToken) return;
           nowPlaying.style.display = "none";
           resetNowPlayingLayout();
-          if(npOverlayPill){
-            npOverlayPill.classList.add("npPillHidden");
-            scheduleLiquidGlassRender();
-          }
           scheduleLiquidGlassSnapshot("now playing hidden", true);
         }catch(e){}
         npPageFadeTimer = null;
       }, fadeMs);
-      try{ if(npPillHideTimer) clearTimeout(npPillHideTimer); }catch(e){}
-      npPillHideTimer = null;
     }
     if(!on){
       stopVideoOverlay();
@@ -5431,11 +5468,7 @@ async function viewRecently(push){
 
 async function goBack(){
     if(nowPlaying.style.display === "block"){
-      if(seekMode){
-        showNpPill(true);
-      }else{
-        npPillActivity(false);
-      }
+      hideNpPillImmediate("go back");
       showNowPlaying(false);
       await waitNowPlayingFade(220);
       return;
@@ -7181,7 +7214,7 @@ if(it.kind === "root"){
 btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
     vibeTick();
     if(state.current && state.current.kind === "np_playlist_add") return;
-    if(nowPlaying.style.display === "block") npPillActivity(false);
+    if(nowPlaying.style.display === "block") hideNpPillImmediate("menu button");
     if(nowPlaying.style.display === "block" && seekMode && !isVideoActive() && lastfmIsEnabled()){
       lastfmToggleLoved(lastfmState.meta);
       resetSeekIdle();
