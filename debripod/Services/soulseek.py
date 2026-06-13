@@ -13,13 +13,14 @@ from typing import Any, Dict, List, Optional, Tuple
 
 from ..media_types import AUDIO_EXTS, VIDEO_EXTS
 from ..paths import cache_dir
-from ..utils import sanitize_folder_name
+from ..utils import sanitize_filename, sanitize_folder_name
 
 SOULSEEK_DOWNLOAD_DIR = ""
 SOULSEEK_SEARCH_IDLE_STOP_SEC = 0.0
 SOULSEEK_SEARCH_HARD_MAX_SEC = 0.0
 TASKS: Dict[str, Any] = {}
 TASKS_LOCK = threading.Lock()
+SOULSEEK_ENQUEUE_SEMAPHORE = asyncio.Semaphore(3)
 
 
 def _missing_task(_task_id: str) -> Any:
@@ -336,10 +337,35 @@ def _slsk_norm_remote_path(p: str) -> str:
     return s
 
 
+def _slsk_safe_remote_parts(p: str) -> List[str]:
+    s = _slsk_norm_remote_path(p)
+    if "\x00" in s or re.match(r"^[A-Za-z]:", s) or s.startswith("\\\\"):
+        return []
+    reserved = {"con", "prn", "aux", "nul", "clock$"}
+    reserved.update({f"com{i}" for i in range(1, 10)})
+    reserved.update({f"lpt{i}" for i in range(1, 10)})
+    out: List[str] = []
+    for part in s.split("\\"):
+        raw = part.strip()
+        clean = raw.rstrip(". ")
+        if not clean or clean in {".", ".."}:
+            continue
+        if clean.lower() in reserved:
+            continue
+        out.append(sanitize_filename(clean))
+    return [x for x in out if x]
+
+
 def _slsk_local_path(download_dir: str, remote_path: str) -> str:
-    rp = _slsk_norm_remote_path(remote_path)
-    parts = [x for x in rp.split("\\") if x]
-    return os.path.join(download_dir, *parts) if parts else download_dir
+    parts = _slsk_safe_remote_parts(remote_path)
+    base = os.path.realpath(os.path.abspath(download_dir))
+    candidate = os.path.realpath(os.path.abspath(os.path.join(base, *parts))) if parts else base
+    try:
+        if os.path.commonpath([base, candidate]) != base:
+            return base
+    except Exception:
+        return base
+    return candidate
 
 
 def soulseek_log_file_path() -> str:
@@ -369,8 +395,11 @@ def _slsk_relative_under_directory(remote_directory: str, remote_path: str) -> s
         rel = p[len(d) + 1 :]
     else:
         rel = p.split("\\")[-1]
-    rel = rel.lstrip("\\")
-    return rel or (p.split("\\")[-1] if p else "")
+    parts = _slsk_safe_remote_parts(rel.lstrip("\\"))
+    if parts:
+        return "\\".join(parts)
+    fallback_parts = _slsk_safe_remote_parts(p.split("\\")[-1] if p else "")
+    return "\\".join(fallback_parts)
 
 
 
@@ -1891,18 +1920,19 @@ class SoulseekService:
         if not user or not paths:
             return
 
-        # Create transfers (idempotent: aioslsk returns existing transfer if already present)
-        for rp in paths:
-            if get_task(task_id) and get_task(task_id).cancel_event.is_set():
-                break
-            tm = getattr(self._client, "transfers", None)
-            if tm is not None and hasattr(tm, "download"):
-                await tm.download(user, rp)
-            else:
-                tm_old = getattr(self._client, "transfer_manager", None)
-                if tm_old is None or not hasattr(tm_old, "download"):
-                    raise RuntimeError("Soulseek client does not expose transfers manager")
-                await tm_old.download(user, rp, paused=False)
+        async with SOULSEEK_ENQUEUE_SEMAPHORE:
+            # Create transfers (idempotent: aioslsk returns existing transfer if already present)
+            for rp in paths:
+                if get_task(task_id) and get_task(task_id).cancel_event.is_set():
+                    break
+                tm = getattr(self._client, "transfers", None)
+                if tm is not None and hasattr(tm, "download"):
+                    await tm.download(user, rp)
+                else:
+                    tm_old = getattr(self._client, "transfer_manager", None)
+                    if tm_old is None or not hasattr(tm_old, "download"):
+                        raise RuntimeError("Soulseek client does not expose transfers manager")
+                    await tm_old.download(user, rp, paused=False)
 
         set_task(task_id, state="downloading", message="Soulseek downloads queued")
 

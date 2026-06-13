@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
@@ -299,11 +300,38 @@ def _json_safe(v: Any, depth: int = 0) -> Any:
         return "<?>"
 
 
+_PATH_FIELD_NAMES = {"task_dir", "local_path", "incoming_path", "out_path", "path", "abs_path"}
+
+
+def _display_path(value: Any) -> str:
+    s = str(value or "")
+    if not s:
+        return ""
+    return os.path.basename(s.rstrip("\\/")) or s
+
+
+def _redact_paths(v: Any, depth: int = 0) -> Any:
+    if depth > 6:
+        return _json_safe(v, depth)
+    if isinstance(v, list):
+        return [_redact_paths(x, depth + 1) for x in v]
+    if isinstance(v, dict):
+        out: Dict[str, Any] = {}
+        for k, val in v.items():
+            key = str(k)
+            if key in _PATH_FIELD_NAMES:
+                out[key] = _display_path(val)
+            else:
+                out[key] = _redact_paths(val, depth + 1)
+        return out
+    return _json_safe(v, depth)
+
+
 def task_public_dict(t: Task) -> dict:
     return {
         "id": t.id,
         "title": t.title,
-        "task_dir": t.task_dir,
+        "task_dir": _display_path(t.task_dir),
         "created": t.created,
         "paused": bool(getattr(t, "paused", False)),
         "state": t.state,
@@ -314,17 +342,17 @@ def task_public_dict(t: Task) -> dict:
         "overall_total": (int(t.overall_total) if t.overall_total is not None else None),
         "slsk_user": t.slsk_user,
         "slsk_directory": t.slsk_directory,
-        "slsk_files": _json_safe(list(t.slsk_files or [])),
-        "rd_files": _json_safe(list(getattr(t, "rd_files", []) or [])),
-        "downloaded_files": _json_safe(list(t.downloaded_files or [])),
-        "current_file": t.current_file,
+        "slsk_files": _redact_paths(list(t.slsk_files or [])),
+        "rd_files": _redact_paths(list(getattr(t, "rd_files", []) or [])),
+        "downloaded_files": [_display_path(p) for p in list(t.downloaded_files or [])],
+        "current_file": _display_path(t.current_file),
         "current_done": int(t.current_done or 0),
         "current_total": (int(t.current_total) if t.current_total is not None else None),
         "video_post_total": int(t.video_post_total or 0),
         "video_post_done": int(t.video_post_done or 0),
         "video_post_state": t.video_post_state,
         "video_post_message": t.video_post_message,
-        "video_post_current_file": t.video_post_current_file,
+        "video_post_current_file": _display_path(t.video_post_current_file),
         "video_post_current_done": int(t.video_post_current_done or 0),
         "video_post_current_total": (int(t.video_post_current_total) if t.video_post_current_total is not None else None),
         "downloads_complete": bool(t.downloads_complete),

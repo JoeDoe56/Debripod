@@ -164,48 +164,45 @@ DebriPod loads config from the first available source in this order:
 3. `./config/debripod.json`
 4. `~/.config/debripod/config.json`
 
-The config file is JSON. See `config/debripod.example.json` for the full set of common settings.
+The startup config file is JSON. Normal app settings are managed after login in the Info panel and stored in `data/settings.json`.
 
-Common settings include:
+Startup settings include:
 
 ```json
 {
-  "HOST": "127.0.0.1",
+  "_HOST_NOTE": "Debripod always binds to 127.0.0.1; only PORT is configurable.",
   "PORT": 8083,
-  "APP_NAME": "DebriPod",
-  "LIQUID_GL_PRESET": "default",
-  "LIQUID_GL_MODE": "clear",
-  "PLAYBACK_STREAMING_MODE": "http",
-  "DOWNLOAD_DIR": "./data/debrid",
-  "SOULSEEK_DOWNLOAD_DIR": "./data/soulseek",
-  "YOUTUBE_DOWNLOAD_DIR": "./data/youtube",
-  "CACHE_DIR_NAME": "_debripod_cache",
-  "FFMPEG_PATH": "ffmpeg",
-  "FFPROBE_PATH": "ffprobe",
-  "YTDLP_CMD": "yt-dlp",
-  "REAL_DEBRID_API_KEY": "",
-  "SOULSEEK_USERNAME": "",
-  "SOULSEEK_PASSWORD": "",
-  "LASTFM_API_KEY": "",
-  "LASTFM_API_SECRET": "",
-  "KNABEN_API_KEY": "",
-  "LIBRARY_FOLDERS": [
-    { "path": "./data/debrid", "mode": "list" },
-    { "path": "./data/soulseek", "mode": "meta" },
-    { "path": "./data/music", "mode": "meta" }
-  ]
+  "USERS": [],
+  "APP_SECRET_KEY": "",
+  "ENABLE_MCP": false,
+  "MCP_TOKEN": "",
+  "SETUP_COMPLETE": false
 }
 ```
 
-Keep real credentials in `config/debripod.local.json` or another ignored local config file. Do not commit personal tokens, account credentials, or private paths.
+On first run, DebriPod creates `APP_SECRET_KEY` and shows a local setup screen for the first admin user. API keys are optional and are configured later under Info > Services.
 
 ## Library folders
 
-`LIBRARY_FOLDERS` controls what DebriPod shows in the library.
+Library folders are managed under Info > Library.
 
 Use `list` mode when you want the UI to behave like a folder browser. This is useful for downloads, mixed media folders, and folders where the structure matters.
 
 Use `meta` mode when you want DebriPod to build music views from metadata tags. This is useful for organized music folders where artist, album, genre, track number, and liked status should drive browsing.
+
+## ffmpeg and ffprobe
+
+On macOS and Linux, install `ffmpeg` through your package manager and leave the Playback settings as `ffmpeg` and `ffprobe` so DebriPod finds them on `PATH`.
+
+Examples:
+
+```text
+brew install ffmpeg
+sudo apt install ffmpeg
+sudo dnf install ffmpeg
+```
+
+On Windows, you can either put ffmpeg on `PATH` or pick `ffmpeg.exe` and `ffprobe.exe` from Info > Playback.
 
 ## Playlists
 
@@ -276,7 +273,7 @@ python -m debripod
 
 ## Safety notes
 
-DebriPod is intended to run as a local app. Keep `HOST` set to `127.0.0.1` unless you understand the security implications of exposing it to other devices.
+DebriPod is intended to run as a local app and always binds to `127.0.0.1`; `PORT` is the only listener setting meant to change.
 
 Never commit real API keys, Real Debrid tokens, Soulseek credentials, Last.fm secrets, private paths, downloaded media, cache files, or local runtime files.
 

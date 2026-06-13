@@ -1,5 +1,26 @@
 ﻿(function(){
   const APP_INFO = window.DEBRIPOD_APP_INFO || {};
+  const CSRF_TOKEN = String(window.DEBRIPOD_CSRF_TOKEN || "");
+  const nativeFetch = window.fetch ? window.fetch.bind(window) : null;
+  if(nativeFetch){
+    window.fetch = function(input, init){
+      const opts = Object.assign({}, init || {});
+      const method = String(opts.method || (input && input.method) || "GET").toUpperCase();
+      if(["POST", "PUT", "PATCH", "DELETE"].indexOf(method) >= 0 && CSRF_TOKEN){
+        let sameOrigin = true;
+        try{
+          const u = new URL((typeof input === "string") ? input : input.url, window.location.href);
+          sameOrigin = u.origin === window.location.origin;
+        }catch(e){}
+        if(sameOrigin){
+          const headers = new Headers(opts.headers || (input && input.headers) || {});
+          if(!headers.has("X-CSRF-Token")) headers.set("X-CSRF-Token", CSRF_TOKEN);
+          opts.headers = headers;
+        }
+      }
+      return nativeFetch(input, opts);
+    };
+  }
   const LIQUID_GL_PRESETS = {
     "default": {refraction: 0, bevelDepth: 0.052, bevelWidth: 0.211, frost: 2, shadow: true, specular: true},
     "alien": {refraction: 0.073, bevelDepth: 0.2, bevelWidth: 0.156, frost: 2, shadow: true, specular: false},
@@ -4614,6 +4635,280 @@ function vibeTick(){
     resetList(items);
   }
 
+  async function settingsLoad(){
+    const js = await apiGet("/api/settings");
+    state.settingsData = js || {};
+    state.appSettings = Object.assign({}, (js && js.settings) || {});
+    state.startupSettings = Object.assign({}, (js && js.startup) || {});
+    state.toolStatus = Object.assign({}, (js && js.tools) || {});
+    return js;
+  }
+
+  function settingsRestartPill(){
+    return {text:"Restart after save", tone:"warn"};
+  }
+
+  async function settingsSave(updates, startupUpdates){
+    const res = await apiPost("/api/settings/save", {settings: updates || {}, startup: startupUpdates || {}});
+    const js = (res && res.json) ? res.json : {};
+    if(!res || !res.ok || !js.ok){
+      throw new Error((js && js.error) ? js.error : "Failed to save settings");
+    }
+    await settingsLoad();
+    return js;
+  }
+
+  function settingValueLabel(value){
+    if(Array.isArray(value)) return value.length ? (String(value.length) + " hosts") : "Unset";
+    if(value === true) return "On";
+    if(value === false) return "Off";
+    if(value == null || value === "") return "Unset";
+    if(value === "***") return "Saved";
+    return String(value);
+  }
+
+  function settingPathBase(value){
+    const s = String(value || "");
+    if(!s) return "Unset";
+    const parts = s.replace(/\\/g, "/").split("/").filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : s;
+  }
+
+  function libraryFolders(){
+    const s = state.appSettings || {};
+    return Array.isArray(s.LIBRARY_FOLDERS) ? s.LIBRARY_FOLDERS.slice() : [];
+  }
+
+  function settingRowsForCategory(cat){
+    const s = state.appSettings || {};
+    const startup = state.startupSettings || {};
+    if(cat === "ui"){
+      return [
+        {key:"WHEEL_ROTATION_MAX_DEGREES", label:"Wheel sensitivity", type:"number", value:s.WHEEL_ROTATION_MAX_DEGREES},
+        {key:"TASKS_POLL_MS", label:"Task refresh", type:"number", value:s.TASKS_POLL_MS, advanced:true}
+      ];
+    }
+    if(cat === "downloads"){
+      return [
+        {key:"DOWNLOAD_DIR", label:"Real Debrid folder", type:"directory", value:s.DOWNLOAD_DIR},
+        {key:"SOULSEEK_DOWNLOAD_DIR", label:"Soulseek folder", type:"directory", value:s.SOULSEEK_DOWNLOAD_DIR},
+        {key:"YOUTUBE_DOWNLOAD_DIR", label:"YouTube folder", type:"directory", value:s.YOUTUBE_DOWNLOAD_DIR},
+        {key:"REPLACE_ORIGINAL", label:"Replace original", type:"bool", value:s.REPLACE_ORIGINAL, advanced:true}
+      ];
+    }
+    if(cat === "services"){
+      return [
+        {key:"REAL_DEBRID_API_KEY", label:"Real Debrid token", type:"secret", value:s.REAL_DEBRID_API_KEY},
+        {key:"SOULSEEK_USERNAME", label:"Soulseek username", type:"secret", value:s.SOULSEEK_USERNAME},
+        {key:"SOULSEEK_PASSWORD", label:"Soulseek password", type:"secret", value:s.SOULSEEK_PASSWORD},
+        {key:"LASTFM_API_KEY", label:"Last.fm API key", type:"secret", value:s.LASTFM_API_KEY},
+        {key:"LASTFM_API_SECRET", label:"Last.fm secret", type:"secret", value:s.LASTFM_API_SECRET},
+        {key:"YTDLP_CMD", label:"yt-dlp command", type:"text", value:s.YTDLP_CMD, advanced:true}
+      ];
+    }
+    if(cat === "playback"){
+      const tools = state.toolStatus || {};
+      const ffmpeg = tools.ffmpeg || {};
+      const ffprobe = tools.ffprobe || {};
+      return [
+        {key:"PLAYBACK_STREAMING_MODE", label:"Streaming mode", type:"choice", choices:["http","hls"], value:s.PLAYBACK_STREAMING_MODE},
+        {key:"PRELOAD_NEXT_FOR_GAPLESS", label:"Preload next", type:"bool", value:s.PRELOAD_NEXT_FOR_GAPLESS},
+        {key:"FFMPEG_PATH", label:"ffmpeg", type:"tool_path", value:s.FFMPEG_PATH, tool:"ffmpeg", toolStatus:ffmpeg, sub_label: ffmpeg.ok ? ("Detected: " + (ffmpeg.found || "ffmpeg")) : (ffmpeg.install_hint || "Install ffmpeg or set a path."), advanced:true},
+        {key:"FFPROBE_PATH", label:"ffprobe", type:"tool_path", value:s.FFPROBE_PATH, tool:"ffprobe", toolStatus:ffprobe, sub_label: ffprobe.ok ? ("Detected: " + (ffprobe.found || "ffprobe")) : (ffprobe.install_hint || "Install ffprobe or set a path."), advanced:true}
+      ];
+    }
+    return [
+      {key:"PORT", label:"Port", type:"startup_number", value:startup.PORT},
+      {key:"ENABLE_MCP", label:"MCP enabled", type:"startup_bool", value:startup.ENABLE_MCP},
+      {key:"MCP_TOKEN", label:"Reset MCP token", type:"mcp_token", value:startup.MCP_TOKEN_SET ? "Saved" : "Unset"},
+      {key:"CACHE_DIR_NAME", label:"Cache folder name", type:"text", value:s.CACHE_DIR_NAME},
+      {key:"STREAM_PROXY_ALLOWED_HOST_SUFFIXES", label:"Stream proxy hosts", type:"csv_list", value:s.STREAM_PROXY_ALLOWED_HOST_SUFFIXES},
+      {key:"AUDIO_TRANSCODE", label:"Audio transcode rules", type:"text", value:s.AUDIO_TRANSCODE},
+      {key:"VIDEO_BROWSER_TARGET_EXT", label:"Video target", type:"text", value:s.VIDEO_BROWSER_TARGET_EXT},
+      {key:"REQUEST_TIMEOUT_SECONDS", label:"Request timeout", type:"number", value:s.REQUEST_TIMEOUT_SECONDS}
+    ];
+  }
+
+  async function viewSettings(push){
+    const view = {
+      kind:"settings",
+      label:"Settings",
+      load: async function(){
+        await settingsLoad();
+        resetList([
+          {kind:"settings_category", category:"ui", label:"UI Settings"},
+          {kind:"settings_library", label:"Library"},
+          {kind:"settings_category", category:"downloads", label:"Downloads"},
+          {kind:"settings_category", category:"services", label:"Services"},
+          {kind:"settings_category", category:"playback", label:"Playback"},
+          {kind:"settings_category", category:"advanced", label:"Advanced"}
+        ]);
+      }
+    };
+    await setView(view, !!push);
+  }
+
+  async function viewSettingsCategory(category, push){
+    const labels = {ui:"UI Settings", downloads:"Downloads", services:"Services", playback:"Playback", advanced:"Advanced"};
+    const view = {
+      kind:"settings_category",
+      category:category,
+      label:labels[category] || "Settings",
+      load: async function(){
+        await settingsLoad();
+        const rows = settingRowsForCategory(category).map(r=>({
+          kind:"setting_value",
+          label:r.label,
+          sub_label: r.sub_label || (r.advanced ? "Advanced" : ""),
+          key:r.key,
+          settingType:r.type,
+          choices:r.choices || [],
+          value:r.value,
+          tool:r.tool || "",
+          toolStatus:r.toolStatus || null,
+          pills:[{text:settingValueLabel(r.value)}, settingsRestartPill()]
+        }));
+        resetList(rows);
+      }
+    };
+    await setView(view, !!push);
+  }
+
+  async function viewSettingsLibrary(push){
+    const view = {
+      kind:"settings_library",
+      label:"Library",
+      load: async function(){
+        await settingsLoad();
+        const folders = libraryFolders();
+        const items = [{kind:"settings_add_library_folder", label:"Add folder"}];
+        folders.forEach((f, idx)=>{
+          const mode = String((f && f.mode) || "list").toLowerCase();
+          items.push({
+            kind:"settings_library_folder",
+            label:settingPathBase(f && f.path),
+            sub_label:String((f && f.path) || ""),
+            folderIndex:idx,
+            pills:[{text: mode === "meta" ? "Metadata" : "List"}]
+          });
+        });
+        if(!folders.length) items.push({kind:"info", label:"No library folders"});
+        resetList(items);
+      }
+    };
+    await setView(view, !!push);
+  }
+
+  async function viewSettingsLibraryMode(folderPath, folderIndex, push){
+    const isExisting = typeof folderIndex === "number" && folderIndex >= 0;
+    const view = {
+      kind:"settings_library_mode",
+      label:"Folder Type",
+      folderPath:String(folderPath || ""),
+      folderIndex:isExisting ? folderIndex : -1,
+      load: async function(){
+        resetList([
+          {
+            kind:"settings_library_mode_choice",
+            mode:"meta",
+            label:"Metadata folder",
+            sub_label:"Indexes tags for Artists, Albums, Songs, Genres, liked songs, and richer browsing."
+          },
+          {
+            kind:"settings_library_mode_choice",
+            mode:"list",
+            label:"List folder",
+            sub_label:"Uses simple folder-by-folder browsing without tag indexing."
+          },
+          ...(isExisting ? [{kind:"settings_library_remove", label:"Remove folder", sub_label:String(folderPath || ""), pills:[{text:"Delete", tone:"warn"}]}] : [])
+        ]);
+      }
+    };
+    await setView(view, !!push);
+  }
+
+  async function settingsPickPath(kind){
+    const res = await apiPost("/api/settings/pick_path", {kind:kind || "directory"});
+    const js = (res && res.json) ? res.json : {};
+    if(res && res.ok && js && js.ok && js.path) return String(js.path || "");
+    const fallback = prompt("Enter path", "");
+    return fallback ? String(fallback).trim() : "";
+  }
+
+  async function editSettingRow(row){
+    const key = String(row.key || "");
+    const type = String(row.settingType || "text");
+    if(!key) return;
+    if(type === "mcp_token"){
+      const ok = confirm("Reset the MCP token? The new token will be shown once.");
+      if(!ok) return;
+      const res = await apiPost("/api/settings/mcp_reset_token", {});
+      const js = (res && res.json) ? res.json : {};
+      if(!res || !res.ok || !js.ok) throw new Error((js && js.error) ? js.error : "Failed to reset token");
+      alert("New MCP token:\n\n" + String(js.token || ""));
+      await viewSettingsCategory("advanced", false);
+      return;
+    }
+    if(type === "bool" || type === "startup_bool"){
+      const next = !(row.value === true || String(row.value).toLowerCase() === "true");
+      if(type === "startup_bool") await settingsSave({}, {[key]: next});
+      else await settingsSave({[key]: next}, {});
+      await viewSettingsCategory((state.current && state.current.category) || "advanced", false);
+      return;
+    }
+    if(type === "choice"){
+      const choices = Array.isArray(row.choices) ? row.choices : [];
+      const current = String(row.value || "");
+      const idx = choices.indexOf(current);
+      const next = choices[(idx + 1 + choices.length) % choices.length] || current;
+      await settingsSave({[key]: next}, {});
+      await viewSettingsCategory((state.current && state.current.category) || "advanced", false);
+      return;
+    }
+    if(type === "tool_path"){
+      const status = row.toolStatus || {};
+      const platform = String(status.platform || "");
+      let picked = "";
+      if(platform.indexOf("win") === 0){
+        picked = await settingsPickPath("file");
+      }else{
+        const hint = status.install_hint || "Install this tool with your package manager and keep the command on PATH.";
+        const current = (row.value === "***") ? "" : String(row.value == null ? "" : row.value);
+        picked = prompt(hint + "\n\nCommand or path:", current || String(row.tool || row.key || ""));
+      }
+      if(!picked) return;
+      await settingsSave({[key]: String(picked).trim()}, {});
+      await viewSettingsCategory((state.current && state.current.category) || "advanced", false);
+      return;
+    }
+    if(type === "directory" || type === "file"){
+      const picked = await settingsPickPath(type === "file" ? "file" : "directory");
+      if(!picked) return;
+      await settingsSave({[key]: picked}, {});
+      await viewSettingsCategory((state.current && state.current.category) || "advanced", false);
+      return;
+    }
+    if(type === "csv_list"){
+      const current = Array.isArray(row.value) ? row.value.join(", ") : String(row.value == null ? "" : row.value);
+      const raw = prompt(row.label || key, current);
+      if(raw == null) return;
+      const values = String(raw || "").split(",").map(x=>x.trim()).filter(Boolean);
+      await settingsSave({[key]: values}, {});
+      await viewSettingsCategory((state.current && state.current.category) || "advanced", false);
+      return;
+    }
+    const raw = prompt(row.label || key, (row.value === "***") ? "" : String(row.value == null ? "" : row.value));
+    if(raw == null) return;
+    let value = raw;
+    if(type === "number" || type === "startup_number"){
+      value = Number(raw);
+      if(!Number.isFinite(value)) return;
+    }
+    if(type === "startup_number") await settingsSave({}, {[key]: value});
+    else await settingsSave({[key]: value}, {});
+    await viewSettingsCategory((state.current && state.current.category) || "advanced", false);
+  }
+
 
   
   
@@ -5220,6 +5515,11 @@ async function libDoSearch(engine, q){
         items.push({kind:"libinfo_action", label:"Login to Last.fm", action:"lastfm_login", pills: lp});
 
         items.push({kind:"libinfo_action", label:"UI Settings", action:"ui_settings_menu"});
+        items.push({kind:"libinfo_action", label:"Library", action:"settings_library"});
+        items.push({kind:"libinfo_action", label:"Downloads", action:"settings_downloads"});
+        items.push({kind:"libinfo_action", label:"Services", action:"settings_services"});
+        items.push({kind:"libinfo_action", label:"Playback", action:"settings_playback"});
+        items.push({kind:"libinfo_action", label:"Advanced", action:"settings_advanced"});
         items.push({kind:"libinfo_action", label:"Full Screen", action:"force_fullscreen"});
         items.push({kind:"libinfo_action", label:"Binds", action:"binds_menu"});
 
@@ -5311,6 +5611,21 @@ async function libDoSearch(engine, q){
         return true;
       case "ui_settings_menu":
         await viewLibUiSettings(true);
+        return true;
+      case "settings_library":
+        await viewSettingsLibrary(true);
+        return true;
+      case "settings_downloads":
+        await viewSettingsCategory("downloads", true);
+        return true;
+      case "settings_services":
+        await viewSettingsCategory("services", true);
+        return true;
+      case "settings_playback":
+        await viewSettingsCategory("playback", true);
+        return true;
+      case "settings_advanced":
+        await viewSettingsCategory("advanced", true);
         return true;
       case "binds_menu":
         await viewLibBinds(true);
@@ -7218,6 +7533,67 @@ if(it.kind === "libtasks_entry"){
     
     if(it.kind === "libinfo_action"){
       if(await handleLibInfoAction(it.action)) return;
+    }
+
+    if(it.kind === "setting_value"){
+      try{
+        await editSettingRow(it);
+      }catch(e){
+        alert(String(e && e.message ? e.message : e));
+      }
+      return;
+    }
+
+    if(it.kind === "settings_add_library_folder"){
+      const picked = await settingsPickPath("directory");
+      if(!picked) return;
+      await viewSettingsLibraryMode(picked, -1, true);
+      return;
+    }
+
+    if(it.kind === "settings_library_folder"){
+      const folders = libraryFolders();
+      const f = folders[Number(it.folderIndex || 0)] || {};
+      await viewSettingsLibraryMode(String(f.path || ""), Number(it.folderIndex || 0), true);
+      return;
+    }
+
+    if(it.kind === "settings_library_mode_choice"){
+      const cur = state.current || {};
+      const folders = libraryFolders();
+      const idx = Number(cur.folderIndex);
+      const entry = {path:String(cur.folderPath || ""), mode:String(it.mode || "list")};
+      if(!entry.path) return;
+      if(Number.isFinite(idx) && idx >= 0 && idx < folders.length){
+        folders[idx] = entry;
+      }else{
+        folders.push(entry);
+      }
+      try{
+        await settingsSave({LIBRARY_FOLDERS: folders}, {});
+        await goBack();
+        await viewSettingsLibrary(false);
+      }catch(e){
+        alert(String(e && e.message ? e.message : e));
+      }
+      return;
+    }
+
+    if(it.kind === "settings_library_remove"){
+      const cur = state.current || {};
+      const idx = Number(cur.folderIndex);
+      const folders = libraryFolders();
+      if(Number.isFinite(idx) && idx >= 0 && idx < folders.length){
+        folders.splice(idx, 1);
+        try{
+          await settingsSave({LIBRARY_FOLDERS: folders}, {});
+          await goBack();
+          await viewSettingsLibrary(false);
+        }catch(e){
+          alert(String(e && e.message ? e.message : e));
+        }
+      }
+      return;
     }
 
     if(it.kind === "libui_action"){
