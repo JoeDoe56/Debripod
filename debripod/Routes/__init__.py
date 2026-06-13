@@ -1,1 +1,1 @@
-"""Routes are currently registered by debripod.runtime during import."""
+"""Route registration helpers used by the Debripod app factory."""
