@@ -848,7 +848,7 @@
       let topUV = 0;
       let wUV = 1;
       let hUV = 1;
-      if (this.sourceType !== "albumArtCanvasOrImage" && this.sourceType !== "liveVideoFrame") {
+      if (this._sourceCssRect || (this.sourceType !== "albumArtCanvasOrImage" && this.sourceType !== "liveVideoFrame")) {
         const srcRect = this._sourceCssRect || { left: 0, top: 0, width: window.innerWidth || 1, height: window.innerHeight || 1 };
         leftUV = (rect.left - srcRect.left) / Math.max(1, srcRect.width);
         topUV = (rect.top - srcRect.top) / Math.max(1, srcRect.height);

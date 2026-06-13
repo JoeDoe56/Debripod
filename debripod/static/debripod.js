@@ -116,11 +116,14 @@
   let liquidGlassModeName = uiSettings.liquidGlassMode;
   let wheelRotationMaxDegrees = 0.95;
   let liquidGlassReady = false;
-  let liquidWheelLens = null;
+  let liquidWheelLenses = [];
   let wheelGlassResetTimer = null;
+  let wheelGlassResetFrame = 0;
   let wheelGlassTiltFrame = 0;
   let wheelGlassTiltPoint = null;
   let wheelGlassTiltRect = null;
+  let wheelGlassTiltX = 0;
+  let wheelGlassTiltY = 0;
 
   function normalizeWheelRotationMaxDegrees(value){
     const n = Number(value);
@@ -176,6 +179,10 @@
       if(wanted === "default") return window.__liquidGLRenderer__ || null;
     }catch(e){}
     return null;
+  }
+
+  function liquidWheelRenderer(){
+    return liquidGlassRendererByKey("wheel");
   }
 
   function applyLiquidGlassStyleOptions(options){
@@ -253,9 +260,17 @@
         renderer.canvas.classList.add("liquidGlassCanvas");
         const key = renderer.rendererKey || (renderer === window.__liquidGLRenderer__ ? "default" : "");
         renderer.canvas.classList.toggle("liquidGlassCanvasDefault", key === "default");
+        renderer.canvas.classList.toggle("liquidGlassCanvasWheel", key === "wheel");
+        renderer.canvas.classList.toggle("liquidGlassCanvasNpOverlay", key === "npOverlay");
         renderer.canvas.classList.toggle("liquidGlassCanvasScreenFrame", key === "screenFrame");
         renderer.canvas.setAttribute("data-liquid-renderer", key || "unknown");
-        if(renderer.canvas.parentNode !== wrap){
+        if(key === "wheel"){
+          const wheelHost = document.getElementById("wheel") || document.querySelector(".ipodWheelWrap");
+          if(wheelHost && renderer.canvas.parentNode !== wheelHost){
+            wheelHost.insertBefore(renderer.canvas, wheelHost.firstChild);
+          }
+          positionWheelLiquidCanvas();
+        }else if(renderer.canvas.parentNode !== wrap){
           const afterBg = document.getElementById("visualizerBg");
           if(afterBg && afterBg.parentNode === wrap && afterBg.nextSibling){
             wrap.insertBefore(renderer.canvas, afterBg.nextSibling);
@@ -264,9 +279,30 @@
           }
         }
         renderer.canvas.style.pointerEvents = "none";
-        renderer.canvas.style.zIndex = key === "screenFrame" ? "64" : "65";
+        renderer.canvas.style.setProperty("z-index", key === "screenFrame" ? "64" : (key === "npOverlay" ? "75" : (key === "wheel" ? "10" : "65")), "important");
       });
       debugLiquidGlassRenderers("mount");
+    }catch(e){}
+  }
+
+  function positionWheelLiquidCanvas(){
+    try{
+      const renderer = liquidWheelRenderer();
+      const canvas = renderer && renderer.canvas;
+      const host = document.getElementById("wheel") || document.querySelector(".ipodWheelWrap");
+      if(!canvas || !host) return;
+      const rect = wheelGlassTiltRect || host.getBoundingClientRect();
+      canvas.style.position = "absolute";
+      canvas.style.setProperty("position", "absolute", "important");
+      canvas.style.setProperty("inset", "auto", "important");
+      canvas.style.setProperty("left", (-Math.round(rect.left || 0)) + "px", "important");
+      canvas.style.setProperty("top", (-Math.round(rect.top || 0)) + "px", "important");
+      canvas.style.right = "auto";
+      canvas.style.bottom = "auto";
+      canvas.style.setProperty("width", (window.innerWidth || canvas.width || 1) + "px", "important");
+      canvas.style.setProperty("height", (window.innerHeight || canvas.height || 1) + "px", "important");
+      canvas.style.setProperty("pointer-events", "none", "important");
+      canvas.style.setProperty("z-index", "10", "important");
     }catch(e){}
   }
 
@@ -279,7 +315,7 @@
 
   function refreshLiquidGlassVisualizerSources(reason){
     try{
-      ["default", "screenFrame"].forEach((key)=>{
+      ["default", "wheel", "screenFrame"].forEach((key)=>{
         const renderer = liquidGlassRendererByKey(key);
         if(!renderer) return;
         if(visualizerBg && renderer.updateTextureFromCanvas){
@@ -296,13 +332,118 @@
       const renderer = liquidGlassRendererByKey("npOverlay");
       if(!renderer) return;
       const img = (npArt && npArt.complete && npArt.naturalWidth && npArt.naturalHeight) ? npArt : null;
-      if(img && renderer.updateTextureFromImage){
-        renderer.updateTextureFromImage(img, {reason: reason || "album art"});
+      if(img && renderer.updateTextureFromCanvas){
+        const rect = img.getBoundingClientRect();
+        const cssW = Math.max(1, Math.round(rect.width || 0));
+        const cssH = Math.max(1, Math.round(rect.height || 0));
+        if(cssW > 1 && cssH > 1){
+          if(!refreshNpOverlayGlassSource._canvas){
+            refreshNpOverlayGlassSource._canvas = document.createElement("canvas");
+            refreshNpOverlayGlassSource._ctx = refreshNpOverlayGlassSource._canvas.getContext("2d");
+          }
+          const canvas = refreshNpOverlayGlassSource._canvas;
+          const ctx = refreshNpOverlayGlassSource._ctx;
+          const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+          const drawW = Math.max(1, Math.round(cssW * dpr));
+          const drawH = Math.max(1, Math.round(cssH * dpr));
+          if(canvas.width !== drawW || canvas.height !== drawH){
+            canvas.width = drawW;
+            canvas.height = drawH;
+          }
+          if(ctx){
+            const iw = img.naturalWidth || 1;
+            const ih = img.naturalHeight || 1;
+            const coverScale = Math.max(cssW / iw, cssH / ih);
+            const srcW = Math.max(1, cssW / coverScale);
+            const srcH = Math.max(1, cssH / coverScale);
+            const sx = Math.max(0, (iw - srcW) / 2);
+            const sy = Math.max(0, (ih - srcH) / 2);
+            ctx.clearRect(0, 0, drawW, drawH);
+            ctx.drawImage(img, sx, sy, srcW, srcH, 0, 0, drawW, drawH);
+            renderer.updateTextureFromCanvas(canvas, {
+              reason: reason || "album art visible crop",
+              allowDark: true,
+              sourceRect: {left: rect.left, top: rect.top, width: rect.width || cssW, height: rect.height || cssH}
+            });
+          }else if(renderer.updateTextureFromImage){
+            renderer.updateTextureFromImage(img, {reason: reason || "album art"});
+          }
+        }else if(renderer.updateTextureFromImage){
+          renderer.updateTextureFromImage(img, {reason: reason || "album art"});
+        }
       }else if(renderer.updateTextureFromSolidColor){
         renderer.updateTextureFromSolidColor(8, 8, [5, 5, 7, 255], {reason: reason || "album art fallback", allowDark: true});
       }else{
-        refreshLiquidGlassSource(renderer, reason || "album art fallback");
+      refreshLiquidGlassSource(renderer, reason || "album art fallback");
       }
+    }catch(e){}
+  }
+
+  function npOverlayPillRenderOpacity(){
+    try{
+      if(!npOverlayPill) return 1;
+      const value = parseFloat(window.getComputedStyle(npOverlayPill).opacity || "1");
+      return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 1;
+    }catch(e){
+      return 1;
+    }
+  }
+
+  function forceNpOverlayGlassRender(reason, refreshSource){
+    try{
+      const renderer = liquidGlassRendererByKey("npOverlay");
+      if(!renderer) return;
+      if(renderer.setVisible) renderer.setVisible(true);
+      renderer._metricsDirty = true;
+      renderer._snapshotRectPx = null;
+      if(renderer.lenses && renderer.lenses.length){
+        renderer.lenses.forEach((lens)=>{
+          try{
+            lens.rectPx = null;
+            if(lens.updateMetrics) lens.updateMetrics();
+          }catch(e){}
+        });
+      }
+      if(refreshSource !== false) refreshNpOverlayGlassSource(reason || "np overlay render");
+      const opacity = npOverlayPillRenderOpacity();
+      if(renderer.lenses && renderer.lenses.length){
+        renderer.lenses.forEach((lens)=>{
+          try{ lens._revealProgress = opacity; }catch(e){}
+        });
+      }
+      if(renderer.render) renderer.render(currentVisualizerFrameState());
+      if(renderer.canvas) renderer.canvas.style.opacity = String(opacity);
+    }catch(e){}
+  }
+
+  function animateNpOverlayGlassTransition(reason, durationMs){
+    try{
+      const renderer = liquidGlassRendererByKey("npOverlay");
+      if(!renderer) return;
+      const dur = Math.max(80, Number(durationMs || 240));
+      const token = ((animateNpOverlayGlassTransition._token || 0) + 1);
+      animateNpOverlayGlassTransition._token = token;
+      const started = performance.now();
+      let didRefresh = false;
+      const tick = ()=>{
+        try{
+          if(animateNpOverlayGlassTransition._token !== token) return;
+          const elapsed = performance.now() - started;
+          forceNpOverlayGlassRender(reason || "np overlay transition", !didRefresh);
+          didRefresh = true;
+          if(elapsed < dur){
+            requestAnimationFrame(tick);
+          }else{
+            forceNpOverlayGlassRender((reason || "np overlay transition") + " end", false);
+            try{
+              if(npOverlayPill && npOverlayPill.classList.contains("npPillHidden") && renderer.setVisible){
+                renderer.setVisible(false);
+              }
+            }catch(e){}
+          }
+        }catch(e){}
+      };
+      requestAnimationFrame(tick);
     }catch(e){}
   }
 
@@ -317,7 +458,7 @@
 
   function renderLiquidGlassVisualizerSourceNow(frameState){
     try{
-      ["default", "screenFrame"].forEach((key)=>{
+      ["default", "wheel", "screenFrame"].forEach((key)=>{
         const renderer = liquidGlassRendererByKey(key);
         if(renderer && renderer.render) renderer.render(frameState || currentVisualizerFrameState());
       });
@@ -378,7 +519,9 @@
   function scheduleNpOverlayGlassRender(){
     try{
       if(!npOverlayPill) return;
-      scheduleLiquidGlassRender();
+      requestAnimationFrame(()=>{
+        forceNpOverlayGlassRender("np overlay scheduled", true);
+      });
     }catch(e){}
   }
 
@@ -387,13 +530,20 @@
       if(liquidGlassReady || typeof window.liquidGL !== "function") return;
       const base = liquidGlassPresetOptions();
       const sharedGlassOptions = Object.assign({}, base, {
-        target: ".pathPillGlass.liquidGlass, .wheelGlassRing.liquidGlass, .wheelCenterGlass.liquidGlass",
+        target: ".pathPillGlass.liquidGlass",
         sourceType: "visualizerCanvas",
         sourceElement: "#visualizerBg",
         shadow: false
       });
-      const sharedGlassInstances = asLiquidArray(window.liquidGL(sharedGlassOptions));
-      liquidWheelLens = sharedGlassInstances.find(inst => inst && inst.el && inst.el.id === "wheelGlassRing") || null;
+      window.liquidGL(sharedGlassOptions);
+      const wheelGlassInstances = asLiquidArray(window.liquidGL(Object.assign({}, base, {
+        target: ".wheelGlassRing.liquidGlass, .wheelCenterGlass.liquidGlass",
+        rendererKey: "wheel",
+        sourceType: "visualizerCanvas",
+        sourceElement: "#visualizerBg",
+        shadow: false
+      })));
+      liquidWheelLenses = wheelGlassInstances.filter(inst => inst && inst.el);
       window.liquidGL(Object.assign({}, base, {
         target: ".npOverlayGlass.liquidGlass",
         sourceType: "albumArtCanvasOrImage",
@@ -430,10 +580,13 @@
 
   function cacheWheelGlassTiltRect(){
     try{
-      const lens = liquidWheelLens;
+      const lens = liquidWheelLenses[0];
       if(!lens || !lens.el) return null;
-      if(lens.updateMetrics) lens.updateMetrics();
+      liquidWheelLenses.forEach((item)=>{
+        try{ if(item && item.updateMetrics) item.updateMetrics(); }catch(e){}
+      });
       wheelGlassTiltRect = lens.rectPx || lens.el.getBoundingClientRect();
+      positionWheelLiquidCanvas();
       return wheelGlassTiltRect;
     }catch(e){
       wheelGlassTiltRect = null;
@@ -441,10 +594,33 @@
     }
   }
 
+  function setWheelLensTilt(rotX, rotY){
+    try{
+      wheelGlassTiltX = Number.isFinite(rotX) ? rotX : 0;
+      wheelGlassTiltY = Number.isFinite(rotY) ? rotY : 0;
+      liquidWheelLenses.forEach((lens)=>{
+        if(!lens) return;
+        lens.tiltX = wheelGlassTiltX;
+        lens.tiltY = wheelGlassTiltY;
+      });
+    }catch(e){}
+  }
+
+  function renderWheelLiquidGlass(frameState){
+    try{
+      const renderer = liquidWheelRenderer();
+      if(renderer && renderer.render) renderer.render(frameState || currentVisualizerFrameState());
+    }catch(e){}
+  }
+
   function updateWheelGlassTilt(clientX, clientY){
     try{
-      const lens = liquidWheelLens;
+      const lens = liquidWheelLenses[0];
       if(!lens || !lens.el) return;
+      if(wheelGlassResetFrame){
+        cancelAnimationFrame(wheelGlassResetFrame);
+        wheelGlassResetFrame = 0;
+      }
       const rect = wheelGlassTiltRect || lens.rectPx || cacheWheelGlassTiltRect();
       if(!rect.width || !rect.height) return;
       const pctX = Math.max(-1, Math.min(1, (clientX - (rect.left + rect.width / 2)) / (rect.width / 2)));
@@ -452,13 +628,12 @@
       const maxTilt = normalizeWheelRotationMaxDegrees(wheelRotationMaxDegrees);
       const rotY = pctX * maxTilt;
       const rotX = -pctY * maxTilt;
-      lens.tiltX = rotX;
-      lens.tiltY = rotY;
+      setWheelLensTilt(rotX, rotY);
       if(wheel){
         wheel.style.transition = "none";
         wheel.style.transform = "perspective(900px) rotateX(" + rotX.toFixed(3) + "deg) rotateY(" + rotY.toFixed(3) + "deg)";
       }
-      try{ if(lens.renderer && lens.renderer.render) lens.renderer.render(); }catch(e){}
+      renderWheelLiquidGlass();
     }catch(e){}
   }
 
@@ -482,26 +657,44 @@
 
   function resetWheelGlassTilt(){
     try{
-      const lens = liquidWheelLens;
-      if(!lens || !lens.el) return;
+      if(!liquidWheelLenses.length) return;
       if(wheelGlassTiltFrame){
         cancelAnimationFrame(wheelGlassTiltFrame);
         wheelGlassTiltFrame = 0;
       }
       wheelGlassTiltPoint = null;
       wheelGlassTiltRect = null;
-      lens.tiltX = 0;
-      lens.tiltY = 0;
+      const startX = wheelGlassTiltX;
+      const startY = wheelGlassTiltY;
+      const started = performance.now();
+      const duration = 360;
+      if(wheelGlassResetFrame){
+        cancelAnimationFrame(wheelGlassResetFrame);
+        wheelGlassResetFrame = 0;
+      }
       if(wheel){
         wheel.style.transition = "transform 360ms cubic-bezier(0.33,1,0.68,1)";
         wheel.style.transform = "perspective(900px) rotateX(0deg) rotateY(0deg)";
       }
+      const tick = (now)=>{
+        const t = Math.max(0, Math.min(1, (Number(now || performance.now()) - started) / duration));
+        const eased = 1 - Math.pow(1 - t, 3);
+        setWheelLensTilt(startX * (1 - eased), startY * (1 - eased));
+        renderWheelLiquidGlass();
+        if(t < 1){
+          wheelGlassResetFrame = requestAnimationFrame(tick);
+        }else{
+          wheelGlassResetFrame = 0;
+          setWheelLensTilt(0, 0);
+          renderWheelLiquidGlass();
+        }
+      };
+      wheelGlassResetFrame = requestAnimationFrame(tick);
       if(wheelGlassResetTimer) clearTimeout(wheelGlassResetTimer);
       wheelGlassResetTimer = setTimeout(()=>{
         wheelGlassResetTimer = null;
         try{ if(wheel) wheel.style.transform = ""; }catch(e){}
       }, 380);
-      scheduleLiquidGlassRender();
     }catch(e){}
   }
   function humanBytes(bytes){
@@ -630,7 +823,7 @@ const libHeader = document.getElementById("libHeader");
   const npSeekIndicator = document.getElementById("npSeekIndicator");
   const npOverlayPill = document.getElementById("npOverlayPill");
   if(npOverlayPill){
-    npOverlayPill.addEventListener("transitionend", ()=>{ scheduleLiquidGlassRender(); }, {passive:true});
+    npOverlayPill.addEventListener("transitionend", ()=>{ scheduleNpOverlayGlassRender(); }, {passive:true});
     try{
       new MutationObserver(()=>{ scheduleNpOverlayGlassRender(); }).observe(npOverlayPill, {
         attributes: true,
@@ -1450,7 +1643,7 @@ function visualizerFrame(ts){
   try{
     const nowTs = Number(ts || performance.now() || 0);
     const cfg = currentVisualizerStrengthConfig(ts);
-    const interval = (visualizerActive || wheelGlassTiltPoint) ? cfg.interval : 180;
+    const interval = visualizerActive ? cfg.interval : 180;
     if(visualizerLastFrameTs && (nowTs - visualizerLastFrameTs) < interval){
       scheduleVisualizerFrame(interval - (nowTs - visualizerLastFrameTs));
       return;
@@ -1529,7 +1722,7 @@ function visualizerFrame(ts){
     refreshLiquidGlassVisualizerSources("visualizer frame");
     renderLiquidGlassVisualizerSourceNow(currentVisualizerFrameState(nowTs));
   }catch(e){}
-  scheduleVisualizerFrame((visualizerActive || wheelGlassTiltPoint) ? 0 : 160);
+  scheduleVisualizerFrame(visualizerActive ? 0 : 160);
 }
 
 function ensureVisualizerFrameLoop(){
@@ -1559,16 +1752,10 @@ function setNpOverlayLiquidGlassVisible(visible, reason){
     if(!renderer) return;
     if(visible){
       if(renderer.setVisible) renderer.setVisible(true);
-      refreshNpOverlayGlassSource(reason || "np pill show");
-      if(renderer.render) renderer.render(currentVisualizerFrameState());
+      forceNpOverlayGlassRender(reason || "np pill show", true);
+      animateNpOverlayGlassTransition(reason || "np pill show", 260);
     }else{
-      if(renderer.setVisible){
-        renderer.setVisible(false);
-      }else if(renderer.clear){
-        renderer.clear();
-      }else if(renderer.render){
-        renderer.render(currentVisualizerFrameState());
-      }
+      animateNpOverlayGlassTransition(reason || "np pill hide", 220);
     }
   }catch(e){}
 }
@@ -1625,11 +1812,12 @@ if(npArt){
     visualizerArtBounds = null;
     visualizerArtBoundsLastTs = 0;
     recaptureLiquidGlassElement(npArt);
+    scheduleNpOverlayGlassRender();
   }, {passive:true});
 }
 if(npArtSwap){
   npArtSwap.addEventListener("click", (ev)=>{ try{ ev.stopPropagation(); }catch(e){} toggleNpPillFromArt(); });
-  npArtSwap.addEventListener("load", ()=>{ recaptureLiquidGlassElement(npArtSwap); }, {passive:true});
+  npArtSwap.addEventListener("load", ()=>{ recaptureLiquidGlassElement(npArtSwap); scheduleNpOverlayGlassRender(); }, {passive:true});
 }
 if(nowPlaying){
   nowPlaying.addEventListener("click", (ev)=>{
@@ -2058,7 +2246,8 @@ async function updateNowPlayingDisplay(meta, fallbackLabel, opts){
   if(animatePill){
     try{
       npOverlayPill.classList.add("npPillSwapHidden");
-      scheduleLiquidGlassRender();
+      scheduleNpOverlayGlassRender();
+      animateNpOverlayGlassTransition("np pill swap out", swapMs);
     }catch(e){}
   }
 
@@ -2086,7 +2275,8 @@ async function updateNowPlayingDisplay(meta, fallbackLabel, opts){
       requestAnimationFrame(()=>{
         try{
           if(npOverlayPill) npOverlayPill.classList.remove("npPillSwapHidden");
-          scheduleLiquidGlassRender();
+          scheduleNpOverlayGlassRender();
+          animateNpOverlayGlassTransition("np pill swap in", swapMs);
         }catch(e){}
       });
       npPillSwapTimer = null;
@@ -2135,7 +2325,7 @@ function showProgressBar(){
   try{
     npProgressWrap.style.display = "block";
     npVolumeWrap.style.display = "none";
-    scheduleLiquidGlassRender();
+    scheduleNpOverlayGlassRender();
   }catch(e){}
 }
 
@@ -2144,7 +2334,7 @@ function showVolumeBar(){
     npProgressWrap.style.display = "none";
     npVolumeWrap.style.display = "block";
     if(npVolumeFill) npVolumeFill.style.width = Math.round(userVol * 100) + "%";
-    scheduleLiquidGlassRender();
+    scheduleNpOverlayGlassRender();
   }catch(e){}
 }
 
@@ -7741,6 +7931,15 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
     }
   }
 
+  function pulseWheelCenter(){
+    try{
+      if(!btnCenter) return;
+      btnCenter.classList.remove("centerPulse");
+      void btnCenter.offsetWidth;
+      btnCenter.classList.add("centerPulse");
+    }catch(e){}
+  }
+
   btnPlay.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return; vibeTick(); if(nowPlaying.style.display === "block") npPillActivity(false); playButtonPress(); });
   btnRev.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return; vibeTick(); if(nowPlaying.style.display === "block") npPillActivity(false); revButtonPress(); });
   btnFwd.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return; vibeTick(); if(nowPlaying.style.display === "block") npPillActivity(false); fwdButtonPress(); });
@@ -7762,7 +7961,11 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
     selectItem();
   }
 
-  btnCenter.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return; vibeTick(); if(nowPlaying.style.display === "block") npPillActivity(false); centerPress(); });
+  btnCenter.addEventListener("animationend", (ev)=>{
+    try{ if(ev.animationName === "wheelCenterPulse") btnCenter.classList.remove("centerPulse"); }catch(e){}
+  });
+  btnCenter.addEventListener("pointerdown", pulseWheelCenter, {passive:true});
+  btnCenter.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return; pulseWheelCenter(); vibeTick(); if(nowPlaying.style.display === "block") npPillActivity(false); centerPress(); });
 
   updateWheelLabels();
 
@@ -7931,6 +8134,7 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
       revButtonPress();
     }else if(k === "s" || k === "S"){
       ev.preventDefault();
+      pulseWheelCenter();
       centerPress();
     }else if(k === " "){
       ev.preventDefault();
