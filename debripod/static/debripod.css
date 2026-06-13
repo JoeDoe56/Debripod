@@ -162,6 +162,15 @@
       pointer-events: none !important;
     }
     .liquidGlassCanvasDefault{ z-index: 65 !important; }
+    .liquidGlassCanvasWheel{
+      position: absolute !important;
+      right: auto !important;
+      bottom: auto !important;
+      inset: auto !important;
+      z-index: 10 !important;
+      pointer-events: none !important;
+    }
+    .liquidGlassCanvasNpOverlay{ z-index: 75 !important; }
     .liquidGlassCanvasScreenFrame{ z-index: 64 !important; }
 
     
@@ -765,12 +774,13 @@
       user-select:none;
       touch-action: none;
       overflow: visible;
+      isolation: isolate;
       transform-style: preserve-3d;
     }
     .wheelGlassRing{
       position:absolute;
       inset:0;
-      z-index:0;
+      z-index:1;
       border-radius:999px;
       overflow:visible;
       clip-path: none;
@@ -796,11 +806,21 @@
       overflow:visible;
       isolation:isolate;
       clip-path: none;
+      will-change: transform;
+    }
+    .wheelCenter.centerPulse{
+      animation: wheelCenterPulse .24s cubic-bezier(0.2, 0.9, 0.2, 1);
+    }
+    @keyframes wheelCenterPulse{
+      0%{ transform: translate(-50%,-50%) scale(1); }
+      42%{ transform: translate(-50%,-50%) scale(1.075); }
+      72%{ transform: translate(-50%,-50%) scale(0.985); }
+      100%{ transform: translate(-50%,-50%) scale(1); }
     }
     .wheelCenterGlass{
       position:absolute;
       inset:-2px;
-      z-index:0;
+      z-index:1;
       border-radius:999px;
       overflow:visible;
       clip-path: none;
@@ -867,6 +887,7 @@
       border-radius: 999px;
       opacity:0;
       touch-action: none;
+      pointer-events: auto;
     }
 
     /* Now Playing */
@@ -972,13 +993,13 @@
   transform: translateY(calc(100% + 16px));
   pointer-events: none;
   visibility: hidden;
-  transition: opacity .18s ease, transform .18s ease, visibility 0s linear 0s;
+  transition: opacity .18s ease, transform .18s ease, visibility 0s linear .18s;
 }
 .npOverlayPill.npPillSwapHidden{
   opacity: 0;
   transform: translateY(10px);
   visibility: hidden;
-  transition: opacity .22s ease, transform .22s ease, visibility 0s linear 0s;
+  transition: opacity .22s ease, transform .22s ease, visibility 0s linear .22s;
 }
 .npOverlaySurface .npTitle{
   font-weight: 800;
@@ -998,7 +1019,7 @@
   text-overflow: ellipsis;
   text-shadow: 0 1px 0 rgba(0,0,0,.55);
 }
-.npOverlaySurface .npBarArea{margin-top: 8px;}
+.npOverlaySurface .npBarArea{margin-top: 8px; height: 24px; position:relative;}
 .npOverlaySurface .npTime{margin-top: 4px; display:flex; align-items:center; gap: 8px; font-size: 11px; color: rgba(235,235,245,.62); text-shadow: 0 1px 0 rgba(0,0,0,.55);} 
 .npOverlaySurface .npTime #npCur, .npOverlaySurface .npTime #npDur{min-width: 44px;} 
 .npOverlaySurface .npTime .npTechInline{flex:1; text-align:center; white-space: nowrap; overflow:hidden; text-overflow: ellipsis;}
@@ -1043,8 +1064,8 @@
       height: 24px;
       transition: accent-color .45s ease;
     }
-    .npBarArea{margin-top: 10px;}
-    .npProgressWrap{position: relative;}
+    .npBarArea{margin-top: 10px; height: 24px; position:relative;}
+    .npProgressWrap{position: relative; height: 24px;}
     .npBufferedBar{
       position:absolute;
       left: 9px;
@@ -1074,8 +1095,13 @@
       display:none;
       pointer-events:none;
     }
-    .npVolumeWrap{display:none;}
+    .npVolumeWrap{display:none; position:relative; height: 24px;}
     .npVolumeBar{
+      position:absolute;
+      left: 0;
+      right: 0;
+      top: 50%;
+      transform: translateY(-50%);
       height: 10px;
       border-radius: 999px;
       border: 1px solid rgba(255,255,255,.10);
