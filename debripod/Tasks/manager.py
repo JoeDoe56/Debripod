@@ -13,6 +13,7 @@ class Task:
     title: str
     magnet: str
     task_dir: str
+    owner: str = ""
     source: str = "rd"  # "rd", "soulseek", or "youtube"
 
     # Pause control (set pause_event to pause; clear to resume)
@@ -93,6 +94,23 @@ def get_task(task_id: str) -> Optional[Task]:
 def list_tasks() -> List[Task]:
     with TASKS_LOCK:
         return sorted(TASKS.values(), key=lambda x: x.created, reverse=True)
+
+
+def list_tasks_for_owner(owner: str) -> List[Task]:
+    clean_owner = str(owner or "").strip()
+    with TASKS_LOCK:
+        return sorted(
+            [t for t in TASKS.values() if str(getattr(t, "owner", "") or "").strip() == clean_owner],
+            key=lambda x: x.created,
+            reverse=True,
+        )
+
+
+def task_belongs_to_owner(task_id: str, owner: str) -> bool:
+    clean_owner = str(owner or "").strip()
+    with TASKS_LOCK:
+        t = TASKS.get(task_id)
+        return bool(t and str(getattr(t, "owner", "") or "").strip() == clean_owner)
 
 
 def cancel_task(task_id: str) -> bool:
@@ -388,10 +406,13 @@ def clear_task(task_id: str) -> bool:
     return True
 
 
-def clear_all_tasks() -> None:
+def clear_all_tasks(owner: str | None = None) -> None:
     slsk_ids: List[str] = []
+    clean_owner = str(owner or "").strip()
     with TASKS_LOCK:
         for t in list(TASKS.values()):
+            if owner is not None and str(getattr(t, "owner", "") or "").strip() != clean_owner:
+                continue
             if t.state not in ("done", "error", "canceled"):
                 try:
                     t.cancel_event.set()
@@ -399,7 +420,7 @@ def clear_all_tasks() -> None:
                     pass
             if (t.source or "").lower() == "soulseek":
                 slsk_ids.append(t.id)
-        TASKS.clear()
+            TASKS.pop(t.id, None)
 
     if slsk_ids:
         svc = _soulseek_service_provider()

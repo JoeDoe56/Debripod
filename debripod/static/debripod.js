@@ -3968,8 +3968,14 @@ function fmtTime(sec){
       const li = document.createElement("li");
 
       const isSel = (i === state.sel);
-      const twoLine = (it.kind === "libsearch_result" || it.kind === "libsearch_file" || it.kind === "libtask_file");
-      li.className = "ipodItem" + (isSel ? " sel" : "") + (it.kind === "info" ? " info" : "") + (it.kind === "random" ? " random" : "") + (twoLine ? " twoLine" : "");
+      const settingsTall = (
+        it.kind === "setting_value" ||
+        it.kind === "settings_library_folder" ||
+        it.kind === "settings_library_mode_choice" ||
+        it.kind === "settings_library_remove"
+      );
+      const twoLine = (settingsTall || it.kind === "libsearch_result" || it.kind === "libsearch_file" || it.kind === "libtask_file");
+      li.className = "ipodItem" + (isSel ? " sel" : "") + (it.kind === "info" ? " info" : "") + (it.kind === "random" ? " random" : "") + (twoLine ? " twoLine" : "") + (settingsTall ? " settingRow" : "");
 
       if(it.kind === "smart_playlist_rules_text"){
         li.className += " editing";
@@ -4644,6 +4650,14 @@ function vibeTick(){
     return js;
   }
 
+  async function authStatusLoad(){
+    try{
+      return await apiGet("/api/auth/status");
+    }catch(e){
+      return {ok:false, logged_in:false, username:"", users:[]};
+    }
+  }
+
   function settingsRestartPill(){
     return {text:"Restart after save", tone:"warn"};
   }
@@ -4746,6 +4760,36 @@ function vibeTick(){
       }
     };
     await setView(view, !!push);
+  }
+
+  async function viewAccountSettings(push){
+    showNowPlaying(false);
+    await setView({
+      kind:"account_settings",
+      label:"Account",
+      load: async function(){
+        libControlsHide();
+        const js = await authStatusLoad();
+        const items = [];
+        const username = String((js && js.username) || "");
+        items.push({kind:"info", label:"Signed in", pills:[username || "Unknown"]});
+        items.push({kind:"account_action", label:"Create user", action:"create_user"});
+        items.push({kind:"account_action", label:"Log out", action:"logout"});
+        const users = Array.isArray(js.users) ? js.users : [];
+        if(users.length){
+          items.push({kind:"info", label:"Users"});
+          users.forEach((u)=>{
+            const name = String((u && u.username) || "");
+            if(name) items.push({kind:"info", label:name, pills:[name === username ? "current" : "user"]});
+          });
+        }
+        resetList(items);
+      }
+    }, !!push);
+  }
+
+  async function createUserFromInfo(){
+    window.location.href = "/account/create";
   }
 
   async function viewSettingsCategory(category, push){
@@ -5514,6 +5558,7 @@ async function libDoSearch(engine, q){
         if(lfUser) lp.push("logged in as " + lfUser);
         items.push({kind:"libinfo_action", label:"Login to Last.fm", action:"lastfm_login", pills: lp});
 
+        items.push({kind:"libinfo_action", label:"Account", action:"account_settings"});
         items.push({kind:"libinfo_action", label:"UI Settings", action:"ui_settings_menu"});
         items.push({kind:"libinfo_action", label:"Library", action:"settings_library"});
         items.push({kind:"libinfo_action", label:"Downloads", action:"settings_downloads"});
@@ -5611,6 +5656,9 @@ async function libDoSearch(engine, q){
         return true;
       case "ui_settings_menu":
         await viewLibUiSettings(true);
+        return true;
+      case "account_settings":
+        await viewAccountSettings(true);
         return true;
       case "settings_library":
         await viewSettingsLibrary(true);
@@ -7533,6 +7581,17 @@ if(it.kind === "libtasks_entry"){
     
     if(it.kind === "libinfo_action"){
       if(await handleLibInfoAction(it.action)) return;
+    }
+
+    if(it.kind === "account_action"){
+      if(it.action === "create_user"){
+        await createUserFromInfo();
+        return;
+      }
+      if(it.action === "logout"){
+        window.location.href = "/logout";
+        return;
+      }
     }
 
     if(it.kind === "setting_value"){
