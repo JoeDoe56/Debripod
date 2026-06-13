@@ -29,11 +29,11 @@ def register_task_routes(app) -> None:
                     out.append({
                         "id": getattr(t, "id", ""),
                         "title": getattr(t, "title", "Task"),
-                        "task_dir": getattr(t, "task_dir", ""),
+                        "task_dir": "",
                         "created": getattr(t, "created", time.time()),
                         "paused": bool(getattr(t, "paused", False)),
                         "state": "error",
-                        "message": "Task serialization error: " + str(e),
+                        "message": "Task serialization error",
                         "torrent_id": getattr(t, "torrent_id", None),
                         "source": getattr(t, "source", "rd"),
                         "overall_done": 0,

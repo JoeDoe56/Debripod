@@ -46,9 +46,6 @@ def main() -> None:
         state.configure_aioslsk_logging()
     except Exception:
         pass
-    if not state.REAL_DEBRID_API_KEY:
-        raise RuntimeError("Set REAL_DEBRID_API_KEY at the top of this file before running")
-
     if (state.SOULSEEK_USERNAME or "").strip() and (state.SOULSEEK_PASSWORD or "").strip():
         try:
             state.SOULSEEK_SERVICE = state.SoulseekService(
@@ -70,7 +67,7 @@ def main() -> None:
         state.SOULSEEK_SERVICE = None
 
     _sync_shared_state()
-    create_app().run(host=state.HOST, port=state.PORT, debug=False, threaded=True)
+    create_app().run(host="127.0.0.1", port=state.PORT, debug=False, threaded=True)
 
 
 def __getattr__(name: str) -> Any:

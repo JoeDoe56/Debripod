@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+import re
 from typing import Callable, List, Optional, Tuple
 
 from ..utils import sha1_text
@@ -75,9 +76,21 @@ def root_by_id(root_id: str) -> Optional[Tuple[str, str, str, str]]:
 def safe_path_join(root_abs: str, rel: str) -> str:
     rel = rel or ""
     rel = rel.replace("\\", "/")
+    if "\x00" in rel:
+        raise ValueError("Invalid path")
+    if os.path.isabs(rel) or re.match(r"^[A-Za-z]:", rel) or rel.startswith("//"):
+        raise ValueError("Invalid path")
+    parts = [p for p in rel.split("/") if p]
+    reserved = {"con", "prn", "aux", "nul", "clock$"}
+    reserved.update({f"com{i}" for i in range(1, 10)})
+    reserved.update({f"lpt{i}" for i in range(1, 10)})
+    for part in parts:
+        clean = part.strip().rstrip(". ").lower()
+        if part in {".", ".."} or clean in reserved:
+            raise ValueError("Invalid path")
     rel = rel.lstrip("/")
-    joined = os.path.abspath(os.path.join(root_abs, rel.replace("/", os.sep)))
-    root_abs = os.path.abspath(root_abs)
+    joined = os.path.realpath(os.path.abspath(os.path.join(root_abs, rel.replace("/", os.sep))))
+    root_abs = os.path.realpath(os.path.abspath(root_abs))
     try:
         common = os.path.commonpath([root_abs, joined])
     except Exception:

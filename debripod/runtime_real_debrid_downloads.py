@@ -3,9 +3,17 @@ from __future__ import annotations
 from .runtime_state import *
 from .runtime_video_post import *
 
+RD_API_SEMAPHORE = threading.BoundedSemaphore(4)
+RD_DOWNLOAD_SEMAPHORE = threading.BoundedSemaphore(2)
+
 
 def download_stream(url: str, out_path: str, task: Task, file_id: Optional[str] = None) -> None:
     # Supports task-level pause and per-file pause/cancel via TASKS[file].file_controls
+    with RD_DOWNLOAD_SEMAPHORE:
+        _download_stream_inner(url, out_path, task, file_id=file_id)
+
+
+def _download_stream_inner(url: str, out_path: str, task: Task, file_id: Optional[str] = None) -> None:
     with requests.get(url, stream=True, timeout=REQUEST_TIMEOUT_SECONDS) as r:
         r.raise_for_status()
         total = r.headers.get("Content-Length")
@@ -197,8 +205,8 @@ def _rd_download_from_queue(task_id: str) -> List[str]:
             un = rd_unrestrict(link)
             dl_url = un["download"]
             filename = sanitize_filename(un.get("filename") or next_entry.get("name") or f"file_{seq or 1}")
-        except Exception as e:
-            _update_task_file_entry(task_id, "rd_files", file_id, state="failed", error=str(e))
+        except Exception:
+            _update_task_file_entry(task_id, "rd_files", file_id, state="failed", error="Real Debrid request failed")
             _rd_recompute_overall_from_files(task_id)
             continue
 
@@ -242,8 +250,8 @@ def _rd_download_from_queue(task_id: str) -> List[str]:
             _update_task_file_entry(task_id, "rd_files", file_id, state="canceled", error="")
         except Cancelled:
             raise
-        except Exception as e:
-            _update_task_file_entry(task_id, "rd_files", file_id, state="failed", error=str(e))
+        except Exception:
+            _update_task_file_entry(task_id, "rd_files", file_id, state="failed", error="Download failed")
 
         _rd_recompute_overall_from_files(task_id)
 
@@ -290,8 +298,8 @@ def rd_download_remaining_worker(task_id: str) -> None:
             set_task(task_id, state="downloading", message="Downloading")
     except Cancelled:
         set_task(task_id, state="canceled", message="Canceled", current_file="", current_done=0, current_total=None)
-    except Exception as e:
-        set_task(task_id, state="error", message=str(e), current_file="", current_done=0, current_total=None)
+    except Exception:
+        set_task(task_id, state="error", message="Real Debrid download failed", current_file="", current_done=0, current_total=None)
 
 
 
@@ -403,8 +411,8 @@ def worker(task_id: str) -> None:
     except Cancelled:
         rd_delete_torrent_best_effort(task.torrent_id)
         set_task(task_id, state="canceled", message="Canceled", current_file="", current_done=0, current_total=None)
-    except Exception as e:
-        set_task(task_id, state="error", message=str(e), current_file="", current_done=0, current_total=None)
+    except Exception:
+        set_task(task_id, state="error", message="Real Debrid download failed", current_file="", current_done=0, current_total=None)
 
 
 

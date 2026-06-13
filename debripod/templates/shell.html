@@ -111,6 +111,7 @@
 <script>
   window.DEBRIPOD_APP_INFO = {{ info_json|safe }};
   window.DEBRIPOD_TASKS_POLL_MS = {{ tasks_poll_ms }};
+  window.DEBRIPOD_CSRF_TOKEN = {{ csrf_token|tojson }};
 </script>
 <script src="{{ url_for('static', filename='debripod.js') }}?v={{ icon_v }}"></script>
 </body>
