@@ -3,25 +3,32 @@ from __future__ import annotations
 import time
 from typing import List
 
-from flask import jsonify, request
+from flask import jsonify, request, session
 
 from ..Tasks.manager import (
     cancel_task,
     clear_all_tasks,
     clear_task,
-    list_tasks,
+    list_tasks_for_owner,
     pause_task,
     resume_task,
+    task_belongs_to_owner,
     task_file_action,
     task_public_dict,
 )
 
 
 def register_task_routes(app) -> None:
+    def current_owner() -> str:
+        return str(session.get("username") or "").strip()
+
+    def owns_task(task_id: str) -> bool:
+        return task_belongs_to_owner(task_id, current_owner())
+
     @app.route("/api/tasks", methods=["GET"])
     def api_tasks_list():
         out: List[dict] = []
-        for t in list_tasks():
+        for t in list_tasks_for_owner(current_owner()):
             try:
                 out.append(task_public_dict(t))
             except Exception as e:
@@ -63,6 +70,8 @@ def register_task_routes(app) -> None:
     def api_tasks_pause():
         data = request.get_json(silent=True) or {}
         task_id = (data.get("task_id") or "").strip()
+        if not owns_task(task_id):
+            return jsonify({"ok": False}), 404
         ok = pause_task(task_id)
         return jsonify({"ok": bool(ok)})
 
@@ -70,6 +79,8 @@ def register_task_routes(app) -> None:
     def api_tasks_resume():
         data = request.get_json(silent=True) or {}
         task_id = (data.get("task_id") or "").strip()
+        if not owns_task(task_id):
+            return jsonify({"ok": False}), 404
         ok = resume_task(task_id)
         return jsonify({"ok": bool(ok)})
 
@@ -79,6 +90,8 @@ def register_task_routes(app) -> None:
         task_id = (data.get("task_id") or "").strip()
         file_id = (data.get("file_id") or "").strip()
         action = (data.get("action") or "").strip()
+        if not owns_task(task_id):
+            return jsonify({"ok": False}), 404
         ok = task_file_action(task_id, file_id, action)
         return jsonify({"ok": bool(ok)})
 
@@ -88,6 +101,8 @@ def register_task_routes(app) -> None:
         tid = (data.get("task_id") or request.form.get("task_id") or "").strip()
         if not tid:
             return jsonify({"ok": False, "error": "missing task_id"}), 400
+        if not owns_task(tid):
+            return jsonify({"ok": False}), 404
         ok = bool(cancel_task(tid))
         return jsonify({"ok": ok})
 
@@ -97,10 +112,12 @@ def register_task_routes(app) -> None:
         tid = (data.get("task_id") or request.form.get("task_id") or "").strip()
         if not tid:
             return jsonify({"ok": False, "error": "missing task_id"}), 400
+        if not owns_task(tid):
+            return jsonify({"ok": False}), 404
         ok = bool(clear_task(tid))
         return jsonify({"ok": ok})
 
     @app.route("/api/tasks/clear_all", methods=["POST"])
     def api_tasks_clear_all():
-        clear_all_tasks()
+        clear_all_tasks(current_owner())
         return jsonify({"ok": True})

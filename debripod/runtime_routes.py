@@ -4,17 +4,24 @@ import ipaddress
 import secrets
 import socket
 
+from flask import session
+
+from . import runtime_downloads as downloads_module
+from . import runtime_route_state as route_state_module
+from . import runtime_state as state_module
 from .factory import DeferredApp
 from .auth import register_auth
 from .config import _coerce_config_value, ensure_startup_security_config, save_config
+from .Tasks.manager import task_belongs_to_owner
 from .runtime_state import *
 from .runtime_downloads import *
-from .settings import executable_status, masked_settings, pick_system_path, save_app_settings
+from .settings import executable_status, ensure_app_settings, masked_settings, pick_system_path, save_app_settings
 
 # =========================
 # Flask app and templates
 # =========================
 app = DeferredApp()
+_ACTIVE_SETTINGS_USERNAME = ""
 
 
 from .runtime_route_state import *
@@ -29,6 +36,46 @@ register_lastfm_routes(
     api_secret_provider=lambda: LASTFM_API_SECRET,
 )
 register_task_routes(app)
+
+
+def _current_settings_username() -> str:
+    try:
+        return str(session.get("username") or "").strip()
+    except Exception:
+        return ""
+
+
+def _apply_runtime_settings_for_user(username: str) -> dict[str, Any]:
+    global _ACTIVE_SETTINGS_USERNAME
+    if not username:
+        return {}
+    settings = ensure_app_settings(username=username)
+    modules = (state_module, downloads_module, route_state_module, mcp_routes)
+    for key, raw_value in settings.items():
+        key_upper = str(key).upper()
+        if key_upper not in CONFIG_KEYS:
+            continue
+        value = _coerce_config_value(key_upper, raw_value)
+        globals()[key_upper] = value
+        for module in modules:
+            if hasattr(module, key_upper):
+                setattr(module, key_upper, value)
+    if _ACTIVE_SETTINGS_USERNAME != username:
+        load_playback_state()
+        try:
+            with route_state_module.SEARCH_STREAMS_LOCK:
+                route_state_module.SEARCH_STREAMS.clear()
+        except Exception:
+            pass
+        _ACTIVE_SETTINGS_USERNAME = username
+    return settings
+
+
+@app.before_request
+def apply_user_settings_before_request():
+    username = _current_settings_username()
+    if username:
+        _apply_runtime_settings_for_user(username)
 
 
 @app.context_processor
@@ -579,7 +626,7 @@ def enqueue():
     task_dir = build_task_dir(task_id, title)
     os.makedirs(task_dir, exist_ok=True)
 
-    t = Task(id=task_id, title=title, magnet=magnet, task_dir=task_dir, state="queued", message="Queued")
+    t = Task(id=task_id, title=title, magnet=magnet, task_dir=task_dir, owner=_current_settings_username(), state="queued", message="Queued")
     with TASKS_LOCK:
         TASKS[task_id] = t
 
@@ -675,7 +722,7 @@ def api_youtube_enqueue():
     folder = sanitize_folder_name(f"{stamp}_{base}_{task_id[:6]}")
     task_dir = os.path.join(youtube_root, folder)
     os.makedirs(task_dir, exist_ok=True)
-    t = Task(id=task_id, title=title, magnet=url, task_dir=task_dir, source='youtube', state='queued', message='Queued', rd_files=entries)
+    t = Task(id=task_id, title=title, magnet=url, task_dir=task_dir, owner=_current_settings_username(), source='youtube', state='queued', message='Queued', rd_files=entries)
     with TASKS_LOCK:
         TASKS[task_id] = t
     th = threading.Thread(target=worker, args=(task_id,), daemon=True)
@@ -792,6 +839,7 @@ def api_rd_enqueue_selected():
         title=title,
         magnet=magnet,
         task_dir=task_dir,
+        owner=_current_settings_username(),
         state="queued",
         message="Queued",
         torrent_id=torrent_id,
@@ -882,6 +930,7 @@ def api_soulseek_enqueue():
         title=title,
         magnet="",
         task_dir=task_download_dir,
+        owner=_current_settings_username(),
         source="soulseek",
         state="queued",
         message="Queued",
@@ -909,6 +958,8 @@ def cancel():
     task_id = (request.form.get("task_id") or "").strip()
     if not task_id:
         abort(400)
+    if not task_belongs_to_owner(task_id, _current_settings_username()):
+        abort(404)
     cancel_task(task_id)
     return redirect(url_for("tasks"))
 
@@ -945,6 +996,8 @@ def api_library_reindex():
 @app.route("/api/settings", methods=["GET"])
 def api_settings_get():
     cfg = ensure_startup_security_config()
+    username = _current_settings_username()
+    settings = _apply_runtime_settings_for_user(username) if username else ensure_app_settings()
     return jsonify({
         "ok": True,
         "startup": {
@@ -952,10 +1005,10 @@ def api_settings_get():
             "ENABLE_MCP": bool(cfg.get("ENABLE_MCP")),
             "MCP_TOKEN_SET": bool(str(cfg.get("MCP_TOKEN") or "").strip()),
         },
-        "settings": masked_settings({key: globals().get(key) for key in CONFIG_KEYS if key in globals()}),
+        "settings": masked_settings(settings),
         "tools": {
-            "ffmpeg": executable_status(str(FFMPEG_PATH or "ffmpeg")),
-            "ffprobe": executable_status(str(FFPROBE_PATH or "ffprobe")),
+            "ffmpeg": executable_status(str(settings.get("FFMPEG_PATH") or "ffmpeg")),
+            "ffprobe": executable_status(str(settings.get("FFPROBE_PATH") or "ffprobe")),
         },
         "picker_available": True,
     })
@@ -973,7 +1026,8 @@ def api_settings_save():
         if value == "***":
             continue
         clean_settings[key_upper] = value
-    saved = save_app_settings(clean_settings)
+    username = _current_settings_username()
+    saved = save_app_settings(clean_settings, username=username)
 
     cfg = ensure_startup_security_config()
     if "PORT" in startup_updates:
@@ -990,6 +1044,8 @@ def api_settings_save():
     for key, value in saved.items():
         if key in CONFIG_KEYS:
             globals()[key] = _coerce_config_value(key, value)
+    if username:
+        _apply_runtime_settings_for_user(username)
     return jsonify({"ok": True, "settings": masked_settings(saved), "restart_required": True})
 
 

@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import hashlib
 import shutil
 import sys
 from pathlib import Path
@@ -81,11 +82,7 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "LASTFM_CALLBACK_URL": "",
     "LASTFM_API_ROOT": "https://ws.audioscrobbler.com/2.0/",
     "LASTFM_REQUEST_TIMEOUT_SECONDS": 12,
-    "LIBRARY_FOLDERS": [
-        {"path": "./data/debrid", "mode": "list"},
-        {"path": "./data/soulseek", "mode": "meta"},
-        {"path": "./data/music", "mode": "meta"},
-    ],
+    "LIBRARY_FOLDERS": [],
 }
 
 APP_SETTING_KEYS = set(DEFAULT_APP_SETTINGS)
@@ -99,8 +96,38 @@ SECRET_SETTING_KEYS = {
     "LASTFM_SESSION_KEY",
 }
 
+LEGACY_DEFAULT_LIBRARY_FOLDERS = [
+    {"path": "./data/debrid", "mode": "list"},
+    {"path": "./data/soulseek", "mode": "meta"},
+    {"path": "./data/music", "mode": "meta"},
+]
 
-def _settings_path() -> Path:
+
+def _user_settings_path(username: str) -> Path:
+    raw = str(username or "").strip().lower()
+    digest = hashlib.sha1(raw.encode("utf-8", "ignore")).hexdigest()[:16]
+    return PACKAGE_ROOT / "data" / "users" / digest / "settings.json"
+
+
+def _user_data_dir(username: str) -> Path:
+    return _user_settings_path(username).parent
+
+
+def default_app_settings(username: str | None = None) -> dict[str, Any]:
+    out = dict(DEFAULT_APP_SETTINGS)
+    if str(username or "").strip():
+        base = _user_data_dir(str(username))
+        out["DOWNLOAD_DIR"] = str(base / "debrid")
+        out["SOULSEEK_DOWNLOAD_DIR"] = str(base / "soulseek")
+        out["YOUTUBE_DOWNLOAD_DIR"] = str(base / "youtube")
+        out["LIBRARY_FOLDERS"] = []
+    return out
+
+
+def _settings_path(username: str | None = None) -> Path:
+    username = str(username or "").strip()
+    if username:
+        return _user_settings_path(username)
     return SETTINGS_PATH
 
 
@@ -169,8 +196,12 @@ def _coerce_setting(key: str, value: Any) -> Any:
     return "" if value is None else str(value)
 
 
-def normalize_settings(data: dict[str, Any]) -> dict[str, Any]:
-    out = dict(DEFAULT_APP_SETTINGS)
+def _matches_legacy_default_library_folders(value: Any) -> bool:
+    return _coerce_setting("LIBRARY_FOLDERS", value) == LEGACY_DEFAULT_LIBRARY_FOLDERS
+
+
+def normalize_settings(data: dict[str, Any], username: str | None = None) -> dict[str, Any]:
+    out = default_app_settings(username)
     for key, value in (data or {}).items():
         key_upper = str(key).upper()
         if key_upper in APP_SETTING_KEYS:
@@ -178,30 +209,40 @@ def normalize_settings(data: dict[str, Any]) -> dict[str, Any]:
     return out
 
 
-def ensure_app_settings(startup_config: dict[str, Any] | None = None) -> dict[str, Any]:
-    path = _settings_path()
+def ensure_app_settings(startup_config: dict[str, Any] | None = None, username: str | None = None) -> dict[str, Any]:
+    path = _settings_path(username)
     raw = _read_json(path)
     changed = not path.is_file()
     merged = dict(raw)
-    for key, value in (startup_config or {}).items():
-        key_upper = str(key).upper()
-        if key_upper in APP_SETTING_KEYS and key_upper not in merged:
-            merged[key_upper] = value
+    if not username:
+        for key, value in (startup_config or {}).items():
+            key_upper = str(key).upper()
+            if key_upper in APP_SETTING_KEYS and key_upper not in merged:
+                merged[key_upper] = value
+                changed = True
+    else:
+        user_defaults = default_app_settings(username)
+        if _matches_legacy_default_library_folders(merged.get("LIBRARY_FOLDERS")):
+            merged["LIBRARY_FOLDERS"] = []
             changed = True
-    normalized = normalize_settings(merged)
+        for key in ("DOWNLOAD_DIR", "SOULSEEK_DOWNLOAD_DIR", "YOUTUBE_DOWNLOAD_DIR"):
+            if str(merged.get(key) or "").strip() == str(DEFAULT_APP_SETTINGS.get(key) or "").strip():
+                merged[key] = user_defaults[key]
+                changed = True
+    normalized = normalize_settings(merged, username=username)
     if changed or normalized != raw:
         _atomic_write_json(path, normalized)
     return normalized
 
 
-def save_app_settings(updates: dict[str, Any]) -> dict[str, Any]:
-    current = ensure_app_settings()
+def save_app_settings(updates: dict[str, Any], username: str | None = None) -> dict[str, Any]:
+    current = ensure_app_settings(username=username)
     for key, value in (updates or {}).items():
         key_upper = str(key).upper()
         if key_upper in APP_SETTING_KEYS:
             current[key_upper] = _coerce_setting(key_upper, value)
-    current = normalize_settings(current)
-    _atomic_write_json(_settings_path(), current)
+    current = normalize_settings(current, username=username)
+    _atomic_write_json(_settings_path(username), current)
     return current
 
 

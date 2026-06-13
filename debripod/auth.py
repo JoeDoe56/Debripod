@@ -106,14 +106,26 @@ def _users() -> list[dict[str, Any]]:
     return users if isinstance(users, list) else []
 
 
+def _valid_users() -> list[dict[str, Any]]:
+    out: list[dict[str, Any]] = []
+    for user in _users():
+        if not isinstance(user, dict):
+            continue
+        username = str(user.get("username") or "").strip()
+        password_hash = str(user.get("password_hash") or "").strip()
+        if username and password_hash:
+            out.append(user)
+    return out
+
+
 def _setup_needed() -> bool:
     cfg = _security_config()
-    return not (bool(cfg.get("SETUP_COMPLETE")) and bool(cfg.get("USERS")))
+    return not (bool(cfg.get("SETUP_COMPLETE")) and bool(_valid_users()))
 
 
 def _find_user(username: str) -> dict[str, Any] | None:
     wanted = username.strip().lower()
-    for user in _users():
+    for user in _valid_users():
         if not isinstance(user, dict):
             continue
         if str(user.get("username") or "").strip().lower() == wanted:
@@ -123,6 +135,30 @@ def _find_user(username: str) -> dict[str, Any] | None:
 
 def _is_logged_in() -> bool:
     return bool(session.get("username"))
+
+
+def _public_user(user: dict[str, Any]) -> dict[str, Any]:
+    return {"username": str(user.get("username") or "").strip()}
+
+
+def _save_users(users: list[dict[str, Any]]) -> None:
+    cfg = _security_config()
+    cfg["USERS"] = users
+    cfg["SETUP_COMPLETE"] = bool(users)
+    save_config(cfg)
+
+
+def _create_user(username: str, password: str) -> tuple[bool, str]:
+    username = (username or "").strip()
+    password = password or ""
+    if len(username) < 2 or len(password) < 8:
+        return False, "Invalid user details"
+    users = _valid_users()
+    if any(str(u.get("username") or "").strip().lower() == username.lower() for u in users):
+        return False, "User already exists"
+    users.append({"username": username, "password_hash": generate_password_hash(password)})
+    _save_users(users)
+    return True, ""
 
 
 def _mcp_bearer_token_valid() -> bool:
@@ -226,10 +262,7 @@ def register_auth(app: Any) -> None:
             elif len(password) < 8 or password != confirm:
                 error = "Could not create account."
             else:
-                cfg2 = _security_config()
-                cfg2["USERS"] = [{"username": username, "password_hash": generate_password_hash(password)}]
-                cfg2["SETUP_COMPLETE"] = True
-                save_config(cfg2)
+                _save_users([{"username": username, "password_hash": generate_password_hash(password)}])
                 session.clear()
                 session["username"] = username
                 _csrf_token()
@@ -283,3 +316,57 @@ def register_auth(app: Any) -> None:
     def logout() -> Any:
         session.clear()
         return redirect(url_for("login"))
+
+    @app.route("/account/create", methods=["GET", "POST"])
+    def account_create() -> Any:
+        if _setup_needed():
+            return redirect(url_for("setup"))
+        error = ""
+        if request.method == "POST":
+            username = (request.form.get("username") or "").strip()
+            password = request.form.get("password") or ""
+            confirm = request.form.get("confirm_password") or ""
+            if password != confirm:
+                error = "Could not create account."
+            else:
+                ok, _err = _create_user(username, password)
+                if ok:
+                    session.clear()
+                    return redirect(url_for("login"))
+                error = "Could not create account."
+        return render_template_string(
+            LOGIN_TEMPLATE,
+            title="Create Account",
+            subtitle="Create another local Debripod user.",
+            action=url_for("account_create"),
+            button="Create Account",
+            error=error,
+            setup=True,
+            csrf_token=_csrf_token(),
+            password_autocomplete="new-password",
+        )
+
+    @app.route("/api/auth/status", methods=["GET"])
+    def api_auth_status() -> Any:
+        return jsonify(
+            {
+                "ok": True,
+                "setup_required": _setup_needed(),
+                "logged_in": _is_logged_in(),
+                "username": str(session.get("username") or ""),
+                "users": [_public_user(u) for u in _valid_users()],
+            }
+        )
+
+    @app.route("/api/auth/users", methods=["POST"])
+    def api_auth_create_user() -> Any:
+        js = request.get_json(silent=True) or {}
+        username = str(js.get("username") or "").strip()
+        password = str(js.get("password") or "")
+        confirm = str(js.get("confirm_password") or "")
+        if password != confirm:
+            return jsonify({"ok": False, "error": "Could not create user"}), 400
+        ok, _err = _create_user(username, password)
+        if not ok:
+            return jsonify({"ok": False, "error": "Could not create user"}), 400
+        return jsonify({"ok": True, "users": [_public_user(u) for u in _valid_users()]})
