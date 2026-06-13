@@ -99,10 +99,12 @@ debripod/
   __main__.py             Package runner for python -m debripod
   app.py                  Flask app entry point
   config.py               JSON config loader and safe secret redaction helpers
-  legacy.py               Main app implementation while refactoring continues
   media_types.py          Media extensions, playlist folder names, and smart playlist template
   paths.py                Cache, art, and transcode path helpers
+  runtime.py              App factory, startup, and backward-compatible runtime facade
+  runtime_*.py            Split runtime state, routes, and download workers
   Library/                Library root and search cache helpers
+  MCP/                    MCP HTTP/SSE route helpers
   Routes/                 Modular Flask route groups
   Services/               Real Debrid, Knaben, and Last.fm service helpers
   Tasks/                  Task model and task manager helpers
@@ -262,7 +264,7 @@ These files should usually stay out of Git. The repository `.gitignore` is set u
 
 ## Development notes
 
-The app is currently in the middle of a refactor. `debripod/legacy.py` still contains most of the running application logic. New package directories and route or service modules exist so code can be moved out gradually without breaking imports all at once.
+The app runtime is split across focused package modules. `debripod/app.py` exposes the Flask-style factory entry point, while `debripod/runtime.py` keeps startup behavior and a small backward-compatible facade for older scripts.
 
 The current package entry point is:
 

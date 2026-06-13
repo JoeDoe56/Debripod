@@ -1,0 +1,302 @@
+from __future__ import annotations
+
+from .runtime_state import *
+from .runtime_downloads import *
+
+class _DropStaticAccessLogFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            msg = record.getMessage()
+            return " /static/" not in msg
+        except Exception:
+            return True
+
+
+logging.getLogger("werkzeug").addFilter(_DropStaticAccessLogFilter())
+
+SEARCH_STREAMS: Dict[str, Dict[str, Any]] = {}
+SEARCH_STREAMS_LOCK = threading.Lock()
+
+MCP_SESSIONS: Dict[str, Dict[str, Any]] = {}
+MCP_SESSIONS_LOCK = threading.Lock()
+
+
+def _guess_media_from_name(name: str) -> str:
+    ext = os.path.splitext(str(name or "").strip().lower())[1]
+    if ext in AUDIO_EXTS:
+        return "audio"
+    if ext in VIDEO_EXTS:
+        return "video"
+    mime, _ = mimetypes.guess_type(str(name or ""))
+    if mime:
+        if mime.startswith("audio/"):
+            return "audio"
+        if mime.startswith("video/"):
+            return "video"
+    return ""
+
+
+def _search_stream_rel(session_id: str, item_id: str) -> str:
+    return f"{session_id}/{item_id}"
+
+
+def _search_stream_cleanup_locked(now_ts: Optional[float] = None) -> None:
+    if now_ts is None:
+        now_ts = time.time()
+    stale = []
+    for sid, sess in SEARCH_STREAMS.items():
+        try:
+            ts = float(sess.get("ts") or 0.0)
+        except Exception:
+            ts = 0.0
+        if (now_ts - ts) > SEARCH_STREAM_SESSION_TTL_SECONDS:
+            stale.append(sid)
+    for sid in stale:
+        SEARCH_STREAMS.pop(sid, None)
+
+
+def _search_stream_get(rel: str) -> Optional[Dict[str, Any]]:
+    raw = str(rel or "").strip().strip("/")
+    if not raw or "/" not in raw:
+        return None
+    session_id, item_id = raw.split("/", 1)
+    if not session_id or not item_id:
+        return None
+    with SEARCH_STREAMS_LOCK:
+        _search_stream_cleanup_locked()
+        sess = SEARCH_STREAMS.get(session_id)
+        if not isinstance(sess, dict):
+            return None
+        sess["ts"] = time.time()
+        for it in (sess.get("items") or []):
+            if isinstance(it, dict) and str(it.get("item_id") or "") == item_id:
+                out = dict(it)
+                out["session_id"] = session_id
+                out["queue_index"] = int(it.get("queue_index") or 0)
+                out["queue_count"] = len(sess.get("items") or [])
+                out["session_title"] = str(sess.get("title") or "")
+                return out
+    return None
+
+
+def _playback_stream_item_for_rel(rel: str) -> Optional[Dict[str, Any]]:
+    raw = str(rel or "").strip().strip("/")
+    if not raw:
+        return None
+    with PLAYBACK_STATE_LOCK:
+        candidates = []
+        now = PLAYBACK_STATE.get("now")
+        if isinstance(now, dict):
+            candidates.append(now)
+        recent = PLAYBACK_STATE.get("recent") or []
+        if isinstance(recent, list):
+            candidates.extend([it for it in recent if isinstance(it, dict)])
+    for entry in candidates:
+        try:
+            if str(entry.get("root_id") or "").strip() != SEARCH_STREAM_ROOT_ID:
+                continue
+            if str(entry.get("rel") or "").strip().strip("/") != raw:
+                continue
+            stream_item = entry.get("_stream_item")
+            if isinstance(stream_item, dict):
+                out = dict(stream_item)
+                sess_id, item_id = raw.split("/", 1)
+                out["session_id"] = sess_id
+                out["item_id"] = str(out.get("item_id") or item_id)
+                out["queue_index"] = int(out.get("queue_index") or 0)
+                out["queue_count"] = int(out.get("queue_count") or 1)
+                return out
+        except Exception:
+            continue
+    return None
+
+
+def _search_stream_get_or_restore(rel: str) -> Optional[Dict[str, Any]]:
+    it = _search_stream_get(rel)
+    if it:
+        return it
+    restored = _playback_stream_item_for_rel(rel)
+    if not restored:
+        return None
+    try:
+        raw = str(rel or "").strip().strip("/")
+        session_id, item_id = raw.split("/", 1)
+    except Exception:
+        return restored
+    with SEARCH_STREAMS_LOCK:
+        _search_stream_cleanup_locked()
+        sess = SEARCH_STREAMS.get(session_id)
+        if not isinstance(sess, dict):
+            sess = {"ts": time.time(), "title": str(restored.get("session_title") or restored.get("title") or restored.get("album") or "Search stream"), "source": str(restored.get("source") or ""), "items": []}
+            SEARCH_STREAMS[session_id] = sess
+        sess["ts"] = time.time()
+        items = list(sess.get("items") or [])
+        if not any(isinstance(x, dict) and str(x.get("item_id") or "") == item_id for x in items):
+            add = dict(restored)
+            add["item_id"] = item_id
+            items.append(add)
+            sess["items"] = items
+    return _search_stream_get(rel) or restored
+
+
+def _rd_wait_for_selected_links(torrent_id: str, selected_ids: List[int], timeout_seconds: int = MAX_TORRENT_WAIT_SECONDS) -> Tuple[dict, List[str]]:
+    wanted = [int(x) for x in (selected_ids or []) if str(x).strip()]
+    end_time = time.time() + max(30, int(timeout_seconds or 0))
+    while time.time() < end_time:
+        info = rd_torrent_info(torrent_id)
+        links = info.get("links") or []
+        if info.get("status") == "downloaded" and isinstance(links, list) and links:
+            if wanted and len(links) == len(wanted):
+                return info, [str(x) for x in links]
+            if not wanted:
+                return info, [str(x) for x in links]
+        status = str(info.get("status") or "")
+        if status in {"error", "virus", "dead"}:
+            raise RuntimeError(f"Real Debrid reported status: {status}")
+        time.sleep(POLL_INTERVAL_SECONDS)
+    raise RuntimeError("Timed out waiting for Real Debrid stream links")
+
+
+def _engine_prepare_stream_session(payload: dict) -> dict:
+    src = str(payload.get("source") or "").strip().lower()
+    if src == "youtube":
+        url = str(payload.get('url') or '').strip()
+        selected = payload.get('selected') or []
+        title = str(payload.get('title') or payload.get('directory_title') or 'YouTube').strip() or 'YouTube'
+        selected_fallback_url = ''
+        items = []
+        for it in selected:
+            if not isinstance(it, dict):
+                continue
+            format_id = str(it.get('format_id') or it.get('itag') or it.get('file_id') or '').strip()
+            if not format_id:
+                continue
+            name = str(it.get('name') or it.get('title') or ('Format ' + format_id)).strip() or 'Format'
+            media = str(it.get('media') or '').strip().lower() or ('audio' if str(it.get('ext') or '').lower() in ('mp3','m4a','aac','ogg','opus','wav','flac') else 'video')
+            item_url = str(it.get('url') or '').strip()
+            if not selected_fallback_url and item_url:
+                selected_fallback_url = item_url
+            stream_source_url = url or item_url
+            if not stream_source_url:
+                continue
+            item_id = uuid.uuid4().hex[:12]
+            items.append({
+                'item_id': item_id,
+                'queue_index': len(items),
+                'media': media,
+                'name': name,
+                'title': title,
+                'artist': str(payload.get('channel') or payload.get('user') or ''),
+                'album': title,
+                'art': str(payload.get('thumbnail') or ''),
+                'size': int(it.get('size') or 0) if str(it.get('size') or '').strip() else 0,
+                'source': src,
+                'streamed': True,
+                'ext': str(it.get('ext') or '').lower(),
+                'quality': str(it.get('quality') or it.get('bitrate') or ''),
+                'url': stream_source_url,
+                'youtube_url': stream_source_url,
+                'format_id': format_id,
+                'itag': format_id,
+                'mime': '',
+                'requires_local_mux': bool(media != 'audio'),
+            })
+        if not items and selected_fallback_url:
+            url = selected_fallback_url
+        if not items:
+            raise RuntimeError('No selected YouTube formats were streamable')
+        session_id = uuid.uuid4().hex
+        with SEARCH_STREAMS_LOCK:
+            _search_stream_cleanup_locked()
+            SEARCH_STREAMS[session_id] = {'ts': time.time(), 'title': title, 'source': src, 'items': items}
+        out_items = []
+        for it in items:
+            rel = _search_stream_rel(session_id, str(it.get('item_id') or ''))
+            out_items.append({'root_id': SEARCH_STREAM_ROOT_ID, 'rel': rel, 'media': it.get('media') or '', 'label': it.get('name') or '', 'title': it.get('title') or '', 'artist': it.get('artist') or '', 'album': it.get('album') or '', 'art': it.get('art') or '', 'streamed': True, 'source': it.get('source') or src, 'ext': it.get('ext') or '', 'quality': it.get('quality') or '', 'size': int(it.get('size') or 0)})
+        return {'session_id': session_id, 'title': title, 'items': out_items}
+    if src != "knaben":
+        raise RuntimeError("Streaming is not available for this source")
+    torrent_id = str(payload.get("torrent_id") or "").strip()
+    selected = payload.get("selected") or []
+    title = str(payload.get("title") or payload.get("directory_title") or payload.get("directory") or "Search stream").strip() or "Search stream"
+    if not torrent_id:
+        raise RuntimeError("Missing torrent id")
+    clean_ids = []
+    selected_by_id = {}
+    for it in selected:
+        if not isinstance(it, dict):
+            continue
+        try:
+            fid = int(it.get("file_id"))
+        except Exception:
+            continue
+        clean_ids.append(fid)
+        selected_by_id[fid] = it
+    if not clean_ids:
+        raise RuntimeError("No files selected")
+    rd_select_files(torrent_id, clean_ids)
+    _info, links = _rd_wait_for_selected_links(torrent_id, clean_ids)
+    items = []
+    for idx, fid in enumerate(clean_ids):
+        meta = selected_by_id.get(fid) or {}
+        name = str(meta.get("name") or meta.get("title") or f"File {fid}")
+        media = _guess_media_from_name(name)
+        if media not in ("audio", "video"):
+            continue
+        un = rd_unrestrict(str(links[idx]))
+        item_id = uuid.uuid4().hex[:12]
+        items.append({
+            "item_id": item_id,
+            "queue_index": len(items),
+            "media": media,
+            "name": name,
+            "title": name,
+            "artist": "",
+            "album": title,
+            "art": "",
+            "size": int(meta.get("size") or 0),
+            "source": src,
+            "streamed": True,
+            "ext": str(meta.get("ext") or os.path.splitext(name)[1].lstrip('.')).lower(),
+            "quality": str(meta.get("quality") or meta.get("bitrate") or ""),
+            "url": str(un.get("download") or ""),
+            "mime": str(un.get("mimeType") or un.get("mime_type") or ""),
+        })
+    if not items:
+        raise RuntimeError("No selected files were streamable")
+    session_id = uuid.uuid4().hex
+    with SEARCH_STREAMS_LOCK:
+        _search_stream_cleanup_locked()
+        SEARCH_STREAMS[session_id] = {"ts": time.time(), "title": title, "source": src, "items": items}
+    out_items = []
+    for it in items:
+        rel = _search_stream_rel(session_id, str(it.get("item_id") or ""))
+        out_items.append({
+            "root_id": SEARCH_STREAM_ROOT_ID,
+            "rel": rel,
+            "media": it.get("media") or "",
+            "label": it.get("name") or "",
+            "title": it.get("title") or "",
+            "artist": it.get("artist") or "",
+            "album": it.get("album") or "",
+            "art": it.get("art") or "",
+            "streamed": True,
+            "source": it.get("source") or src,
+            "ext": it.get("ext") or "",
+            "quality": it.get("quality") or "",
+            "size": int(it.get("size") or 0),
+        })
+    return {"session_id": session_id, "title": title, "items": out_items}
+
+
+
+def build_task_dir(task_id: str, title: str) -> str:
+    stamp = time.strftime("%Y%m%d_%H%M%S")
+    base = sanitize_folder_name(title)
+    folder = f"{stamp}_{base}_{task_id[:6]}"
+    folder = sanitize_folder_name(folder)
+    return os.path.join(DOWNLOAD_DIR, folder)
+
+
+
+__all__ = [name for name in globals() if not name.startswith("__")]
