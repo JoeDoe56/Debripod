@@ -1308,4 +1308,31 @@
         z-index: auto;
       }
     }
-
+    @media (min-aspect-ratio: 1/1){
+      .wheelZone,
+      .ipodWheelWrap,
+      .liquidGlassCanvasWheel{
+        display: none !important;
+      }
+      .wheelZone{
+        height: 0 !important;
+        min-height: 0 !important;
+        flex: 0 0 0 !important;
+        padding: 0 !important;
+      }
+      .ipodScreen{
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        max-width: 100vw;
+        height: 100vh;
+        height: 100dvh;
+        margin: 0;
+        aspect-ratio: auto;
+      }
+      .npArt,
+      .npArtSwapLayer{
+        object-fit: contain;
+        background: #000;
+      }
+    }
