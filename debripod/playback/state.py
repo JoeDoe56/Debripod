@@ -127,9 +127,13 @@ def load_playback_state() -> None:
                     sess["last_stop_ts"] = 0.0
                 base["session"] = sess
 
-                PLAYBACK_STATE = base
+                with PLAYBACK_STATE_LOCK:
+                    PLAYBACK_STATE.clear()
+                    PLAYBACK_STATE.update(base)
     except Exception:
-        PLAYBACK_STATE = _default_playback_state()
+        with PLAYBACK_STATE_LOCK:
+            PLAYBACK_STATE.clear()
+            PLAYBACK_STATE.update(_default_playback_state())
 
 def save_playback_state_best_effort() -> None:
     p = playback_state_path()

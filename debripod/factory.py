@@ -21,6 +21,10 @@ class DeferredApp:
         self._registrations.append(("context_processor", (), {}, fn))
         return fn
 
+    def before_request(self, fn: Callable[..., Any]) -> Callable[..., Any]:
+        self._registrations.append(("before_request", (), {}, fn))
+        return fn
+
     def apply_to(self, app: Any) -> Any:
         app.config.update(self.config)
         for kind, args, kwargs, fn in self._registrations:
@@ -28,4 +32,6 @@ class DeferredApp:
                 app.route(*args, **kwargs)(fn)
             elif kind == "context_processor":
                 app.context_processor(fn)
+            elif kind == "before_request":
+                app.before_request(fn)
         return app

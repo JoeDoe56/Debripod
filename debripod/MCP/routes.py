@@ -494,8 +494,8 @@ def _mcp_handle_tool_call(name: str, args: dict) -> dict:
             return _mcp_tool_result({'ok': False, 'error': 'Missing identifier'}, 'Error: Missing identifier', is_error=True)
         try:
             payload = _mcp_identifier_decode(ident)
-        except Exception as e:
-            return _mcp_tool_result({'ok': False, 'error': 'Invalid identifier: ' + str(e)}, 'Error: Invalid identifier: ' + str(e), is_error=True)
+        except Exception:
+            return _mcp_tool_result({'ok': False, 'error': 'Invalid identifier'}, 'Error: Invalid identifier', is_error=True)
         kind = str(payload.get('kind') or '').strip().lower()
         try:
             if kind == 'slsk_dir':
@@ -514,8 +514,8 @@ def _mcp_handle_tool_call(name: str, args: dict) -> dict:
                 text = f"Knaben download started. Files are downloading to {out.get('task_dir')}."
                 return _mcp_tool_result(data, text)
             return _mcp_tool_result({'ok': False, 'error': 'Unsupported identifier type'}, 'Error: Unsupported identifier type', is_error=True)
-        except Exception as e:
-            return _mcp_tool_result({'ok': False, 'error': str(e)}, 'Error: ' + str(e), is_error=True)
+        except Exception:
+            return _mcp_tool_result({'ok': False, 'error': 'Tool call failed'}, 'Error: Tool call failed', is_error=True)
 
     if name == 'debripod_get_tasks':
         tasks = []
@@ -549,8 +549,8 @@ def _mcp_tools_list() -> List[dict]:
     return [
         {
             'name': 'debripod_knaben_search',
-            'title': 'Debripod Knaben Search',
-            'description': 'Search Knaben torrent results. Returns Debripod download identifiers.',
+            'title': 'DebriPod Knaben Search',
+            'description': 'Search Knaben torrent results. Returns DebriPod download identifiers.',
             'inputSchema': {
                 'type': 'object',
                 'properties': {
@@ -562,8 +562,8 @@ def _mcp_tools_list() -> List[dict]:
         },
         {
             'name': 'debripod_soulseek_search',
-            'title': 'Debripod Soulseek Search',
-            'description': 'Search Soulseek directory results. Returns Debripod download identifiers.',
+            'title': 'DebriPod Soulseek Search',
+            'description': 'Search Soulseek directory results. Returns DebriPod download identifiers.',
             'inputSchema': {
                 'type': 'object',
                 'properties': {
@@ -575,8 +575,8 @@ def _mcp_tools_list() -> List[dict]:
         },
         {
             'name': 'debripod_download',
-            'title': 'Debripod Download',
-            'description': 'Start a Debripod download from a search result identifier. Soulseek downloads use whole directories. Knaben downloads queue the whole torrent selection.',
+            'title': 'DebriPod Download',
+            'description': 'Start a DebriPod download from a search result identifier. Soulseek downloads use whole directories. Knaben downloads queue the whole torrent selection.',
             'inputSchema': {
                 'type': 'object',
                 'properties': {'identifier': {'type': 'string'}},
@@ -585,19 +585,19 @@ def _mcp_tools_list() -> List[dict]:
         },
         {
             'name': 'debripod_get_tasks',
-            'title': 'Debripod Get Tasks',
-            'description': 'List current Debripod tasks and their status.',
+            'title': 'DebriPod Get Tasks',
+            'description': 'List current DebriPod tasks and their status.',
             'inputSchema': {'type': 'object', 'properties': {}},
         },
         {
             'name': 'debripod_get_library',
-            'title': 'Debripod Get Library',
+            'title': 'DebriPod Get Library',
             'description': 'Return a folder tree for every configured library root. Files are omitted.',
             'inputSchema': {'type': 'object', 'properties': {}},
         },
         {
             'name': 'debripod_get_recents',
-            'title': 'Debripod Get Recents',
+            'title': 'DebriPod Get Recents',
             'description': 'Return recently watched and recently listened items.',
             'inputSchema': {
                 'type': 'object',
@@ -674,8 +674,8 @@ def mcp_post():
         return bad
     try:
         body = request.get_json(force=True, silent=False)
-    except Exception as e:
-        return _mcp_error(None, -32700, 'Parse error', data=str(e), status=400)
+    except Exception:
+        return _mcp_error(None, -32700, 'Parse error', status=400)
     header_session_id = (request.headers.get('Mcp-Session-Id') or '').strip()
     msgs = body if isinstance(body, list) else [body]
     replies = []

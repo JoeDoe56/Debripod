@@ -20,7 +20,7 @@ _results_per_page_provider: Callable[[], int] = lambda: 0
 KNABEN_SESSION = requests.Session()
 KNABEN_SESSION.headers.update(
     {
-        "User-Agent": "Debripod/1.0",
+        "User-Agent": "DebriPod/1.0",
         "Accept": "application/json",
     }
 )

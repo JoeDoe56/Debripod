@@ -1,5 +1,32 @@
-﻿(function(){
+(function(){
+  try{
+    const ua = String(navigator.userAgent || "");
+    const platform = String(navigator.platform || "");
+    const isiPhone = /iPhone|iPod/i.test(ua) || (platform === "MacIntel" && navigator.maxTouchPoints > 1 && Math.min(screen.width || 0, screen.height || 0) < 820);
+    document.documentElement.classList.toggle("isIphone", !!isiPhone);
+  }catch(e){}
   const APP_INFO = window.DEBRIPOD_APP_INFO || {};
+  const CSRF_TOKEN = String(window.DEBRIPOD_CSRF_TOKEN || "");
+  const nativeFetch = window.fetch ? window.fetch.bind(window) : null;
+  if(nativeFetch){
+    window.fetch = function(input, init){
+      const opts = Object.assign({}, init || {});
+      const method = String(opts.method || (input && input.method) || "GET").toUpperCase();
+      if(["POST", "PUT", "PATCH", "DELETE"].indexOf(method) >= 0 && CSRF_TOKEN){
+        let sameOrigin = true;
+        try{
+          const u = new URL((typeof input === "string") ? input : input.url, window.location.href);
+          sameOrigin = u.origin === window.location.origin;
+        }catch(e){}
+        if(sameOrigin){
+          const headers = new Headers(opts.headers || (input && input.headers) || {});
+          if(!headers.has("X-CSRF-Token")) headers.set("X-CSRF-Token", CSRF_TOKEN);
+          opts.headers = headers;
+        }
+      }
+      return nativeFetch(input, opts);
+    };
+  }
   const LIQUID_GL_PRESETS = {
     "default": {refraction: 0, bevelDepth: 0.052, bevelWidth: 0.211, frost: 2, shadow: true, specular: true},
     "alien": {refraction: 0.073, bevelDepth: 0.2, bevelWidth: 0.156, frost: 2, shadow: true, specular: false},
@@ -56,8 +83,21 @@
     visualizerStrength: "medium",
     visualizerPreset: "album",
     liquidGlassPreset: "default",
-    liquidGlassMode: "clear"
+    liquidGlassMode: "clear",
+    centerBounceAmount: 0.075,
+    centerBounceDuration: 240,
+    centerBounceOvershoot: 0.9,
+    wheelClickTiltAmount: 0.5,
+    wheelTiltRampDuration: 90,
+    wheelTiltReleaseDuration: 360,
+    infoPillDarkMultiplier: 1,
+    infoPillLightMultiplier: 1
   };
+  function clampNumber(value, fallback, min, max){
+    const n = Number(value);
+    if(!Number.isFinite(n)) return fallback;
+    return Math.max(min, Math.min(max, n));
+  }
   function normalizeVisualizerStrength(value){
     const k = String(value || "medium").trim().toLowerCase();
     return (k === "low" || k === "medium" || k === "high") ? k : "medium";
@@ -90,6 +130,14 @@
           out.visualizerPreset = normalizeVisualizerPreset(saved.visualizerPreset);
           out.liquidGlassPreset = normalizeLiquidGlassPreset(saved.liquidGlassPreset);
           out.liquidGlassMode = normalizeLiquidGlassMode(saved.liquidGlassMode);
+          out.centerBounceAmount = clampNumber(saved.centerBounceAmount, out.centerBounceAmount, 0, 0.3);
+          out.centerBounceDuration = clampNumber(saved.centerBounceDuration, out.centerBounceDuration, 0, 1000);
+          out.centerBounceOvershoot = clampNumber(saved.centerBounceOvershoot, out.centerBounceOvershoot, 0, 1.4);
+          out.wheelClickTiltAmount = clampNumber(saved.wheelClickTiltAmount, out.wheelClickTiltAmount, 0, 1);
+          out.wheelTiltRampDuration = clampNumber(saved.wheelTiltRampDuration, out.wheelTiltRampDuration, 0, 1000);
+          out.wheelTiltReleaseDuration = clampNumber(saved.wheelTiltReleaseDuration, out.wheelTiltReleaseDuration, 0, 1200);
+          out.infoPillDarkMultiplier = clampNumber(saved.infoPillDarkMultiplier, out.infoPillDarkMultiplier, 0, 4);
+          out.infoPillLightMultiplier = clampNumber(saved.infoPillLightMultiplier, out.infoPillLightMultiplier, 0, 4);
           return out;
         }
       }
@@ -114,7 +162,7 @@
   let uiSettings = loadUiSettings();
   let liquidGlassPresetName = uiSettings.liquidGlassPreset;
   let liquidGlassModeName = uiSettings.liquidGlassMode;
-  let wheelRotationMaxDegrees = 0.95;
+  let wheelRotationMaxDegrees = 10;
   let liquidGlassReady = false;
   let liquidWheelLenses = [];
   let wheelGlassResetTimer = null;
@@ -124,10 +172,26 @@
   let wheelGlassTiltRect = null;
   let wheelGlassTiltX = 0;
   let wheelGlassTiltY = 0;
+  let wheelTiltRenderX = 0;
+  let wheelTiltRenderY = 0;
+  let wheelTiltTargetX = 0;
+  let wheelTiltTargetY = 0;
+  let wheelTiltAnimFrame = 0;
+  let wheelTiltAnimUntil = 0;
+
+  function applyUiTuningCss(){
+    try{
+      const root = document.documentElement;
+      root.style.setProperty("--centerBounceScale", String(1 + clampNumber(uiSettings.centerBounceAmount, DEFAULT_UI_SETTINGS.centerBounceAmount, 0, 0.3)));
+      root.style.setProperty("--centerBounceDuration", String(clampNumber(uiSettings.centerBounceDuration, DEFAULT_UI_SETTINGS.centerBounceDuration, 0, 1000)) + "ms");
+      root.style.setProperty("--centerBounceOvershoot", String(clampNumber(uiSettings.centerBounceOvershoot, DEFAULT_UI_SETTINGS.centerBounceOvershoot, 0, 1.4)));
+    }catch(e){}
+  }
+  applyUiTuningCss();
 
   function normalizeWheelRotationMaxDegrees(value){
     const n = Number(value);
-    if(!Number.isFinite(n)) return 0.95;
+    if(!Number.isFinite(n)) return 10;
     return Math.max(0, Math.min(12, n));
   }
 
@@ -379,6 +443,19 @@
     }catch(e){}
   }
 
+  function applyNpOverlayGlassTuning(renderer){
+    try{
+      if(!renderer || !renderer.lenses) return;
+      const dark = 0.18 * clampNumber(uiSettings.infoPillDarkMultiplier, 1, 0, 4);
+      const light = 0.18 * clampNumber(uiSettings.infoPillLightMultiplier, 1, 0, 4);
+      renderer.lenses.forEach((lens)=>{
+        if(!lens || !lens.options) return;
+        lens.options.glassDarkAmount = dark;
+        lens.options.glassLightAmount = light;
+      });
+    }catch(e){}
+  }
+
   function npOverlayPillRenderOpacity(){
     try{
       if(!npOverlayPill) return 1;
@@ -393,6 +470,7 @@
     try{
       const renderer = liquidGlassRendererByKey("npOverlay");
       if(!renderer) return;
+      applyNpOverlayGlassTuning(renderer);
       if(renderer.setVisible) renderer.setVisible(true);
       renderer._metricsDirty = true;
       renderer._snapshotRectPx = null;
@@ -451,6 +529,7 @@
     try{
       liquidGlassRenderers().forEach((renderer)=>{
         if(!renderer || !renderer.render) return;
+        if((renderer.rendererKey || "") === "npOverlay") applyNpOverlayGlassTuning(renderer);
         renderer.render(frameState || currentVisualizerFrameState());
       });
     }catch(e){}
@@ -462,6 +541,7 @@
         const renderer = liquidGlassRendererByKey(key);
         if(renderer && renderer.render) renderer.render(frameState || currentVisualizerFrameState());
       });
+      if(isPathPillVisible()) forcePathPillGlassRender("visualizer frame", false);
     }catch(e){}
   }
 
@@ -488,7 +568,7 @@
           id: lens.el.id || "",
           hollow: !!lens.hollowMaskContent
         } : null).filter(Boolean);
-        console.log("[Debripod LiquidGL]", reason || "state", {
+        console.log("[DebriPod LiquidGL]", reason || "state", {
           rendererKey: renderer.rendererKey || "unknown",
           texture: String(renderer.textureWidth || 0) + "x" + String(renderer.textureHeight || 0),
           lensCount: renderer.lenses ? renderer.lenses.length : 0,
@@ -606,6 +686,48 @@
     }catch(e){}
   }
 
+  function applyWheelTiltTransform(rotX, rotY){
+    try{
+      setWheelLensTilt(rotX, rotY);
+      if(wheel){
+        wheel.style.transition = "none";
+        wheel.style.transform = "perspective(900px) rotateX(" + rotX.toFixed(3) + "deg) rotateY(" + rotY.toFixed(3) + "deg)";
+      }
+      renderWheelLiquidGlass();
+    }catch(e){}
+  }
+
+  function wheelTiltEaseStep(){
+    wheelTiltAnimFrame = 0;
+    try{
+      const dx = wheelTiltTargetX - wheelTiltRenderX;
+      const dy = wheelTiltTargetY - wheelTiltRenderY;
+      const dur = Math.max(1, Number(wheelTiltAnimUntil || 90));
+      const factor = dur <= 16 ? 1 : Math.min(1, 16.7 / dur);
+      wheelTiltRenderX += dx * factor;
+      wheelTiltRenderY += dy * factor;
+      if(Math.abs(dx) < 0.002 && Math.abs(dy) < 0.002){
+        wheelTiltRenderX = wheelTiltTargetX;
+        wheelTiltRenderY = wheelTiltTargetY;
+      }
+      applyWheelTiltTransform(wheelTiltRenderX, wheelTiltRenderY);
+      if(wheelTiltRenderX !== wheelTiltTargetX || wheelTiltRenderY !== wheelTiltTargetY){
+        wheelTiltAnimFrame = requestAnimationFrame(wheelTiltEaseStep);
+      }else if(wheelTiltRenderX === 0 && wheelTiltRenderY === 0){
+        try{ if(wheel) wheel.style.transform = ""; }catch(e){}
+      }
+    }catch(e){}
+  }
+
+  function setWheelTiltTarget(rotX, rotY, durationMs){
+    try{
+      wheelTiltTargetX = Number.isFinite(rotX) ? rotX : 0;
+      wheelTiltTargetY = Number.isFinite(rotY) ? rotY : 0;
+      wheelTiltAnimUntil = Math.max(0, Number(durationMs || 0));
+      if(!wheelTiltAnimFrame) wheelTiltAnimFrame = requestAnimationFrame(wheelTiltEaseStep);
+    }catch(e){}
+  }
+
   function renderWheelLiquidGlass(frameState){
     try{
       const renderer = liquidWheelRenderer();
@@ -615,25 +737,19 @@
 
   function updateWheelGlassTilt(clientX, clientY){
     try{
-      const lens = liquidWheelLenses[0];
-      if(!lens || !lens.el) return;
       if(wheelGlassResetFrame){
         cancelAnimationFrame(wheelGlassResetFrame);
         wheelGlassResetFrame = 0;
       }
-      const rect = wheelGlassTiltRect || lens.rectPx || cacheWheelGlassTiltRect();
+      const lens = liquidWheelLenses[0] || null;
+      const rect = wheelGlassTiltRect || (lens && lens.rectPx) || cacheWheelGlassTiltRect() || (wheel ? wheel.getBoundingClientRect() : null);
       if(!rect.width || !rect.height) return;
       const pctX = Math.max(-1, Math.min(1, (clientX - (rect.left + rect.width / 2)) / (rect.width / 2)));
       const pctY = Math.max(-1, Math.min(1, (clientY - (rect.top + rect.height / 2)) / (rect.height / 2)));
       const maxTilt = normalizeWheelRotationMaxDegrees(wheelRotationMaxDegrees);
       const rotY = pctX * maxTilt;
       const rotX = -pctY * maxTilt;
-      setWheelLensTilt(rotX, rotY);
-      if(wheel){
-        wheel.style.transition = "none";
-        wheel.style.transform = "perspective(900px) rotateX(" + rotX.toFixed(3) + "deg) rotateY(" + rotY.toFixed(3) + "deg)";
-      }
-      renderWheelLiquidGlass();
+      setWheelTiltTarget(rotX, rotY, clampNumber(uiSettings.wheelTiltRampDuration, DEFAULT_UI_SETTINGS.wheelTiltRampDuration, 0, 1000));
     }catch(e){}
   }
 
@@ -657,44 +773,22 @@
 
   function resetWheelGlassTilt(){
     try{
-      if(!liquidWheelLenses.length) return;
       if(wheelGlassTiltFrame){
         cancelAnimationFrame(wheelGlassTiltFrame);
         wheelGlassTiltFrame = 0;
       }
       wheelGlassTiltPoint = null;
       wheelGlassTiltRect = null;
-      const startX = wheelGlassTiltX;
-      const startY = wheelGlassTiltY;
-      const started = performance.now();
-      const duration = 360;
       if(wheelGlassResetFrame){
         cancelAnimationFrame(wheelGlassResetFrame);
         wheelGlassResetFrame = 0;
       }
-      if(wheel){
-        wheel.style.transition = "transform 360ms cubic-bezier(0.33,1,0.68,1)";
-        wheel.style.transform = "perspective(900px) rotateX(0deg) rotateY(0deg)";
-      }
-      const tick = (now)=>{
-        const t = Math.max(0, Math.min(1, (Number(now || performance.now()) - started) / duration));
-        const eased = 1 - Math.pow(1 - t, 3);
-        setWheelLensTilt(startX * (1 - eased), startY * (1 - eased));
-        renderWheelLiquidGlass();
-        if(t < 1){
-          wheelGlassResetFrame = requestAnimationFrame(tick);
-        }else{
-          wheelGlassResetFrame = 0;
-          setWheelLensTilt(0, 0);
-          renderWheelLiquidGlass();
-        }
-      };
-      wheelGlassResetFrame = requestAnimationFrame(tick);
+      setWheelTiltTarget(0, 0, clampNumber(uiSettings.wheelTiltReleaseDuration, DEFAULT_UI_SETTINGS.wheelTiltReleaseDuration, 0, 1200));
       if(wheelGlassResetTimer) clearTimeout(wheelGlassResetTimer);
       wheelGlassResetTimer = setTimeout(()=>{
         wheelGlassResetTimer = null;
         try{ if(wheel) wheel.style.transform = ""; }catch(e){}
-      }, 380);
+      }, clampNumber(uiSettings.wheelTiltReleaseDuration, DEFAULT_UI_SETTINGS.wheelTiltReleaseDuration, 0, 1200) + 40);
     }catch(e){}
   }
   function humanBytes(bytes){
@@ -747,7 +841,8 @@ const libHeader = document.getElementById("libHeader");
     try{
       if(!libHeader) return;
       libHeader.classList.remove("pathPillHidden");
-      scheduleLiquidGlassSnapshot("path pill shown", false);
+      setTimeout(()=> startHScrollTextAuto(document.getElementById("libHeaderText")), 260);
+      animatePathPillGlassTransition("path pill shown", 240);
     }catch(e){}
     if(effectivePinned){
       try{ if(pathPillHideTimer) clearTimeout(pathPillHideTimer); }catch(e){}
@@ -766,7 +861,8 @@ const libHeader = document.getElementById("libHeader");
           const ae = document.activeElement;
           if(ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.tagName === "SELECT" || ae.isContentEditable)) return;
           libHeader.classList.add("pathPillHidden");
-          scheduleLiquidGlassSnapshot("path pill hidden", false);
+          animatePathPillGlassTransition("path pill hidden", 220);
+          setTimeout(()=> hidePathPillGlassNow("path pill hidden final"), 260);
         }catch(e){}
       }, (ms || 2500));
     }catch(e){}
@@ -803,6 +899,108 @@ const libHeader = document.getElementById("libHeader");
   }, {passive:true});
 
   const libList = document.getElementById("libList");
+  function hScrollTextIsScrollable(el){
+    try{ return !!(el && el.scrollWidth > el.clientWidth + 1); }catch(e){ return false; }
+  }
+  function stopHScrollTextAuto(el){
+    try{
+      if(!el) return;
+      if(el._dpHScrollAutoFrame) cancelAnimationFrame(el._dpHScrollAutoFrame);
+      if(el._dpHScrollAutoTimer) clearTimeout(el._dpHScrollAutoTimer);
+      el._dpHScrollAutoFrame = 0;
+      el._dpHScrollAutoTimer = 0;
+      el._dpHScrollAutoRunning = false;
+    }catch(e){}
+  }
+  function startHScrollTextAuto(el){
+    try{
+      if(!el || !hScrollTextIsScrollable(el)) return;
+      stopHScrollTextAuto(el);
+      try{ el.style.textOverflow = "clip"; }catch(e){}
+      el.scrollLeft = 0;
+      const maxScroll = Math.max(0, el.scrollWidth - el.clientWidth);
+      if(maxScroll <= 1) return;
+      el._dpHScrollAutoTimer = setTimeout(()=>{
+        const start = performance.now();
+        const pxPerSecond = 34;
+        const travelMs = Math.max(900, (maxScroll / pxPerSecond) * 1000);
+        el._dpHScrollAutoRunning = true;
+        const tick = (now)=>{
+          try{
+            if(!el._dpHScrollAutoRunning || !document.body.contains(el)) return;
+            const t = (Number(now || performance.now()) - start) % ((travelMs * 2) + 900);
+            if(t <= travelMs){
+              el.scrollLeft = Math.min(maxScroll, (t / travelMs) * maxScroll);
+            }else if(t <= travelMs + 900){
+              el.scrollLeft = maxScroll;
+            }else{
+              const backT = (t - travelMs - 900) / travelMs;
+              el.scrollLeft = Math.max(0, maxScroll * (1 - backT));
+            }
+            el._dpHScrollAutoFrame = requestAnimationFrame(tick);
+          }catch(e){}
+        };
+        el._dpHScrollAutoFrame = requestAnimationFrame(tick);
+      }, 650);
+    }catch(e){}
+  }
+  function refreshSelectedHScrollText(){
+    try{
+      if(!libList) return;
+      libList.querySelectorAll(".hScrollText").forEach((el)=>{
+        if(el.closest && el.closest(".ipodItem.sel")) startHScrollTextAuto(el);
+        else{
+          stopHScrollTextAuto(el);
+          try{ el.scrollLeft = 0; }catch(e){}
+        }
+      });
+      if(libHeader && isPathPillVisible()){
+        const text = document.getElementById("libHeaderText");
+        if(text) startHScrollTextAuto(text);
+      }
+    }catch(e){}
+  }
+  function bindHScrollTextDrag(el){
+    try{
+      if(!el || el._dpHScrollBound) return;
+      el._dpHScrollBound = true;
+      return;
+      let down = false;
+      let startX = 0;
+      let startLeft = 0;
+      let moved = false;
+      el.addEventListener("pointerdown", (ev)=>{
+        if(!hScrollTextIsScrollable(el)) return;
+        stopHScrollTextAuto(el);
+        down = true;
+        moved = false;
+        startX = ev.clientX;
+        startLeft = el.scrollLeft;
+      }, {passive:true});
+      el.addEventListener("pointermove", (ev)=>{
+        if(!down || !hScrollTextIsScrollable(el)) return;
+        const dx = ev.clientX - startX;
+        if(Math.abs(dx) < 4) return;
+        moved = true;
+        el.scrollLeft = startLeft - dx;
+        try{ ev.preventDefault(); ev.stopPropagation(); }catch(e){}
+      }, {passive:false});
+      const end = (ev)=>{
+        if(moved){
+          try{ ev.preventDefault(); ev.stopPropagation(); }catch(e){}
+        }
+        down = false;
+        moved = false;
+        if(el.closest && el.closest(".ipodItem.sel")) startHScrollTextAuto(el);
+      };
+      el.addEventListener("pointerup", end, {passive:false});
+      el.addEventListener("pointercancel", end, {passive:false});
+      el.addEventListener("wheel", (ev)=>{
+        if(!hScrollTextIsScrollable(el) || Math.abs(ev.deltaX) <= Math.abs(ev.deltaY)) return;
+        try{ ev.stopPropagation(); }catch(e){}
+      }, {passive:true});
+    }catch(e){}
+  }
   const ipodScreen = document.getElementById("ipodScreen");
   const visualizerBg = document.getElementById("visualizerBg");
   let npPageFadeTimer = null;
@@ -829,6 +1027,93 @@ const libHeader = document.getElementById("libHeader");
         attributes: true,
         attributeFilter: ["class"]
       });
+    }catch(e){}
+  }
+
+  function isPathPillVisible(){
+    try{
+      return !!(libHeader && !libHeader.classList.contains("pathPillHidden"));
+    }catch(e){
+      return false;
+    }
+  }
+
+  function updatePathPillMaxWidth(){
+    try{
+      const content = document.querySelector(".ipodScreenContent");
+      const rect = content ? content.getBoundingClientRect() : null;
+      if(rect && rect.width) document.documentElement.style.setProperty("--pathPillMaxWidth", Math.max(1, Math.floor(rect.width)) + "px");
+    }catch(e){}
+  }
+
+  function forcePathPillGlassRender(reason, refreshSource){
+    try{
+      updatePathPillMaxWidth();
+      const renderer = liquidGlassRendererByKey("default");
+      if(!renderer) return;
+      if(renderer.setVisible) renderer.setVisible(true);
+      renderer._metricsDirty = true;
+      let touched = false;
+      if(renderer.lenses && renderer.lenses.length){
+        renderer.lenses.forEach((lens)=>{
+          try{
+            if(!lens || !lens.el || !lens.el.classList || !lens.el.classList.contains("pathPillGlass")) return;
+            touched = true;
+            lens.rectPx = null;
+            if(lens.updateMetrics) lens.updateMetrics();
+            lens.revealTypeIndex = 1;
+            lens._revealProgress = isPathPillVisible() ? pathPillRenderOpacity() : 0;
+          }catch(e){}
+        });
+      }
+      if(refreshSource !== false) refreshLiquidGlassVisualizerSources(reason || "path pill");
+      if(touched && renderer.render) renderer.render(currentVisualizerFrameState());
+    }catch(e){}
+  }
+
+  function hidePathPillGlassNow(reason){
+    try{
+      const renderer = liquidGlassRendererByKey("default");
+      if(!renderer || !renderer.lenses) return;
+      renderer.lenses.forEach((lens)=>{
+        try{
+          if(!lens || !lens.el || !lens.el.classList || !lens.el.classList.contains("pathPillGlass")) return;
+          lens.revealTypeIndex = 1;
+          lens._revealProgress = 0;
+          lens.rectPx = null;
+        }catch(e){}
+      });
+      if(renderer.render) renderer.render(currentVisualizerFrameState());
+    }catch(e){}
+  }
+
+  function pathPillRenderOpacity(){
+    try{
+      const value = parseFloat(window.getComputedStyle(libHeader).opacity || "1");
+      return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 1;
+    }catch(e){
+      return 1;
+    }
+  }
+
+  function animatePathPillGlassTransition(reason, durationMs){
+    try{
+      const dur = Math.max(80, Number(durationMs || 240));
+      const token = ((animatePathPillGlassTransition._token || 0) + 1);
+      animatePathPillGlassTransition._token = token;
+      const started = performance.now();
+      let didRefresh = false;
+      const tick = ()=>{
+        try{
+          if(animatePathPillGlassTransition._token !== token) return;
+          const elapsed = performance.now() - started;
+          forcePathPillGlassRender(reason || "path pill transition", !didRefresh);
+          didRefresh = true;
+          if(elapsed < dur) requestAnimationFrame(tick);
+          else forcePathPillGlassRender((reason || "path pill transition") + " end", false);
+        }catch(e){}
+      };
+      requestAnimationFrame(tick);
     }catch(e){}
   }
   window.addEventListener("resize", ()=>{
@@ -994,7 +1279,7 @@ function warnMedia(kind, message, el){
     const last = uiLogThrottle.get(key) || 0;
     if(now - last < 8000) return;
     uiLogThrottle.set(key, now);
-    console.warn("[Debripod media] " + kind + " " + message, {src: src, error: err, readyState: el ? el.readyState : null, networkState: el ? el.networkState : null});
+    console.warn("[DebriPod media] " + kind + " " + message, {src: src, error: err, readyState: el ? el.readyState : null, networkState: el ? el.networkState : null});
   }catch(e){}
 }
 
@@ -1374,38 +1659,9 @@ function drawLinearGlow(ctx, w, h, x0, y0, x1, y1, rgb, alpha, bright){
 }
 
 function visualizerAnchorForCanvas(w, h, ts){
-  try{
-    const nowTs = Number(ts || performance.now() || 0);
-    if(nowTs - visualizerArtBoundsLastTs > 650){
-      visualizerArtBoundsLastTs = nowTs;
-      let rect = null;
-      try{
-        if(npArt && npArt.getBoundingClientRect && nowPlaying && nowPlaying.style.display === "block"){
-          const r = npArt.getBoundingClientRect();
-          if(r && r.width > 12 && r.height > 12){
-            rect = {left:r.left, top:r.top, width:r.width, height:r.height};
-          }
-        }
-      }catch(e){}
-      visualizerArtBounds = rect;
-    }
-    if(visualizerArtBounds){
-      const sx = w / Math.max(1, window.innerWidth || w);
-      const sy = h / Math.max(1, window.innerHeight || h);
-      const r = visualizerArtBounds;
-      const artW = r.width * sx;
-      const artH = r.height * sy;
-      return {
-        cx: (r.left + r.width * 0.5) * sx,
-        cy: (r.top + r.height * 0.5) * sy,
-        rx: artW * 0.54 + Math.min(w, h) * 0.08,
-        ry: artH * 0.54 + Math.min(w, h) * 0.08,
-        art: Math.max(artW, artH)
-      };
-    }
-  }catch(e){}
   const minDim = Math.min(w, h);
-  return {cx: w * 0.5, cy: h * 0.50, rx: minDim * 0.22, ry: minDim * 0.22, art: minDim * 0.32};
+  const maxDim = Math.max(w, h);
+  return {cx: w * 0.5, cy: h * 0.50, rx: maxDim * 0.36, ry: maxDim * 0.36, art: minDim * 0.52};
 }
 
 function resizeVisualizerCanvas(cfg){
@@ -1458,11 +1714,12 @@ function renderVisualizerCanvas(ts){
     const preset = currentVisualizerPreset();
     const style = String(preset.style || "orbit");
     const t = visualizerMotionTime(ts) * cfg.speed;
-    const e = visualizerActive ? clamp01(visualizerEnergy) : 0;
-    const b = visualizerActive ? clamp01(visualizerBass) : 0;
-    const m = visualizerActive ? clamp01(visualizerMid) : 0;
-    const tr = visualizerActive ? clamp01(visualizerTreble) : 0;
-    const beat = visualizerActive ? clamp01(visualizerBeatPulse) : 0;
+    const drawActive = visualizerActive || visualizerResidualVisible(ts);
+    const e = drawActive ? clamp01(visualizerEnergy) : 0;
+    const b = drawActive ? clamp01(visualizerBass) : 0;
+    const m = drawActive ? clamp01(visualizerMid) : 0;
+    const tr = drawActive ? clamp01(visualizerTreble) : 0;
+    const beat = drawActive ? clamp01(visualizerBeatPulse) : 0;
     blendVisualizerPalette();
     const anchor = visualizerAnchorForCanvas(w, h, ts);
 
@@ -1643,7 +1900,11 @@ function visualizerFrame(ts){
   try{
     const nowTs = Number(ts || performance.now() || 0);
     const cfg = currentVisualizerStrengthConfig(ts);
-    const interval = visualizerActive ? cfg.interval : 180;
+    const residual = visualizerResidualVisible(nowTs);
+    const pathNeedsFrame = visualizerEnabled && (visualizerActive || residual) && isPathPillVisible();
+    const hasResidualEnergy = visualizerEnabled && (visualizerEnergy > 0.003 || visualizerBass > 0.003 || visualizerMid > 0.003 || visualizerTreble > 0.003);
+    const glassNeedsFrame = visualizerEnabled || visualizerActive || residual || hasResidualEnergy || pathNeedsFrame;
+    const interval = glassNeedsFrame ? cfg.interval : 180;
     if(visualizerLastFrameTs && (nowTs - visualizerLastFrameTs) < interval){
       scheduleVisualizerFrame(interval - (nowTs - visualizerLastFrameTs));
       return;
@@ -1699,7 +1960,7 @@ function visualizerFrame(ts){
           return Math.min(1, raw * 0.58 + Math.max(0, raw - floor) * lift);
         });
       }
-    }else if(visualizerEnabled && visualizerActive && !document.hidden){
+    }else if(visualizerEnabled && !document.hidden){
       const idle = nowTs * 0.001;
       nextBass = 0.10 + Math.sin(idle * 0.71) * 0.035;
       nextMid = 0.08 + Math.sin(idle * 0.53 + 1.6) * 0.025;
@@ -1722,7 +1983,17 @@ function visualizerFrame(ts){
     refreshLiquidGlassVisualizerSources("visualizer frame");
     renderLiquidGlassVisualizerSourceNow(currentVisualizerFrameState(nowTs));
   }catch(e){}
-  scheduleVisualizerFrame(visualizerActive ? 0 : 160);
+  try{
+    const residualNow = visualizerResidualVisible(performance.now());
+    const hasEnergyNow = visualizerEnabled && (visualizerEnergy > 0.003 || visualizerBass > 0.003 || visualizerMid > 0.003 || visualizerTreble > 0.003);
+    if(!visualizerActive && !residualNow && !hasEnergyNow && visualizerBg){
+      visualizerBg.classList.remove("active");
+      visualizerBg.classList.add("off");
+    }
+    scheduleVisualizerFrame((visualizerEnabled || visualizerActive || residualNow || hasEnergyNow || (visualizerEnabled && residualNow && isPathPillVisible())) ? 0 : 160);
+  }catch(e){
+    scheduleVisualizerFrame(160);
+  }
 }
 
 function ensureVisualizerFrameLoop(){
@@ -1893,8 +2164,19 @@ function visualizerShouldShow(){
   }
 }
 
+let visualizerResidualUntil = 0;
+function visualizerResidualVisible(ts){
+  try{
+    return !!(visualizerEnabled && Number(ts || performance.now()) < visualizerResidualUntil);
+  }catch(e){
+    return false;
+  }
+}
+
 function setVisualizerActive(on){
+  const wasActive = !!visualizerActive;
   visualizerActive = !!on;
+  if(wasActive && !visualizerActive) visualizerResidualUntil = performance.now() + 2200;
   try{
     if(!visualizerBg) return;
     visualizerBg.classList.toggle("active", !!on);
@@ -2200,6 +2482,7 @@ function setNowPlayingOverlayText(meta, fallbackLabel){
   try{ npTitle.textContent = m.title || fallbackLabel || "Track"; }catch(e){}
   try{ npSub.innerHTML = artistAlbumHtml(m.artist || "", m.album || ""); }catch(e){}
   try{ if(npTech) npTech.textContent = m.tech || ""; }catch(e){}
+  try{ if(nowPlaying && nowPlaying.style.display === "block") setHeader(); }catch(e){}
   scheduleLiquidGlassRender();
 }
 
@@ -3236,6 +3519,7 @@ function fmtTime(sec){
       try{ libList.classList.add("npUnderlay"); }catch(e){}
       layoutNowPlayingToLibList();
       nowPlaying.style.display = "block";
+      try{ setHeader(); }catch(e){}
       try{ nowPlaying.classList.remove("npPageActive"); }catch(e){}
       updateVisualizerState();
       scheduleLiquidGlassSnapshot("now playing entering", true);
@@ -3266,6 +3550,7 @@ function fmtTime(sec){
           if(fadeToken !== npPageFadeToken) return;
           nowPlaying.style.display = "none";
           resetNowPlayingLayout();
+          try{ setHeader(); }catch(e){}
           scheduleLiquidGlassSnapshot("now playing hidden", true);
         }catch(e){}
         npPageFadeTimer = null;
@@ -3384,6 +3669,19 @@ function fmtTime(sec){
   }
 
   function headerText(){
+    try{
+      if(nowPlaying && nowPlaying.style.display === "block"){
+        const m = state.nowMeta || {};
+        const sn = state.serverNow || {};
+        const now = state.now || {};
+        const rel = String(now.rel || sn.rel || "").replace(/\\/g, "/");
+        const fallback = rel ? (rel.split("/").pop() || "") : "";
+        const title = String(m.title || m.label || sn.title || sn.label || (npTitle && npTitle.textContent) || fallback || "").trim();
+        const artist = String(m.artist || sn.artist || "").trim();
+        const item = (artist && title) ? (artist + " - " + title) : (title || fallback);
+        return item ? ("Now Playing > " + item) : "Now Playing";
+      }
+    }catch(e){}
     const parts = [];
     if(state.root && state.root.name) parts.push(state.root.name);
     for(const v of state.history){
@@ -3398,6 +3696,7 @@ function fmtTime(sec){
     const headerTextEl = document.getElementById("libHeaderText");
     if(headerTextEl) headerTextEl.textContent = text;
     else libHeader.textContent = text;
+    try{ if(headerTextEl) headerTextEl.scrollLeft = 0; }catch(e){}
     try{ pathPillActivity(false); }catch(e){}
     try{
       const k = state.current ? state.current.kind : "";
@@ -3945,10 +4244,17 @@ function fmtTime(sec){
     for(let i=0;i<state.items.length;i++){
       const it = state.items[i];
       const li = document.createElement("li");
+      li.dataset.index = String(i);
 
       const isSel = (i === state.sel);
-      const twoLine = (it.kind === "libsearch_result" || it.kind === "libsearch_file" || it.kind === "libtask_file");
-      li.className = "ipodItem" + (isSel ? " sel" : "") + (it.kind === "info" ? " info" : "") + (it.kind === "random" ? " random" : "") + (twoLine ? " twoLine" : "");
+      const settingsTall = (
+        it.kind === "setting_value" ||
+        it.kind === "settings_library_folder" ||
+        it.kind === "settings_library_mode_choice" ||
+        it.kind === "settings_library_remove"
+      );
+      const twoLine = (settingsTall || it.kind === "libsearch_result" || it.kind === "libsearch_file" || it.kind === "libtask_file");
+      li.className = "ipodItem" + (isSel ? " sel" : "") + (it.kind === "info" ? " info" : "") + (it.kind === "random" ? " random" : "") + (twoLine ? " twoLine" : "") + (settingsTall ? " settingRow" : "");
 
       if(it.kind === "smart_playlist_rules_text"){
         li.className += " editing";
@@ -4130,7 +4436,7 @@ function fmtTime(sec){
           editInputToFocus = inp;
         }else{
           const labelSpan = document.createElement("span");
-          labelSpan.className = "ipodLabel";
+          labelSpan.className = "ipodLabel hScrollText";
           const v = isPlaylistCreate
             ? ((state.playlistCreate && typeof state.playlistCreate.editValue === "string") ? state.playlistCreate.editValue : "")
             : (isSmartPlaylistCreate
@@ -4190,7 +4496,7 @@ function fmtTime(sec){
       const labelWrap = document.createElement("span");
       labelWrap.className = "ipodLabelWrap";
       const labelSpan = document.createElement("span");
-      labelSpan.className = "ipodLabel";
+      labelSpan.className = "ipodLabel hScrollText";
       if(it && it.label_html){
         labelSpan.innerHTML = String(it.label_html || "");
       }else if(it && it.kind === "album") {
@@ -4211,7 +4517,7 @@ function fmtTime(sec){
       labelWrap.appendChild(labelSpan);
       if(it && it.sub_label){
         const sub = document.createElement("span");
-        sub.className = "ipodSubLabel";
+        sub.className = "ipodSubLabel hScrollText";
         sub.textContent = String(it.sub_label || "");
         labelWrap.appendChild(sub);
       }
@@ -4300,8 +4606,7 @@ function fmtTime(sec){
       }
 
       li.addEventListener("click", ()=>{
-        state.sel = i;
-        renderList();
+        setSelectionFast(i);
         try{
           const p = selectItem(it);
           if(p && typeof p.catch === "function"){ p.catch(()=>{}); }
@@ -4332,6 +4637,9 @@ function fmtTime(sec){
         editInputToFocus.setSelectionRange(n, n);
       }catch(e){}
     }
+    try{
+      refreshSelectedHScrollText();
+    }catch(e){}
   }
 
 function vibeTick(){
@@ -4389,7 +4697,7 @@ function vibeTick(){
 
     let proceed = true;
     try{
-      proceed = confirm("A Last.fm approval page was opened. After you approve Debripod, click OK to finish login.");
+      proceed = confirm("A Last.fm approval page was opened. After you approve DebriPod, click OK to finish login.");
     }catch(e){}
 
     if(!proceed){
@@ -4439,11 +4747,13 @@ function vibeTick(){
 ;
 
 
-  function scrollSel(delta){
+  function setSelectionFast(nextIndex){
     if(!state.items.length) return;
     const n = state.items.length;
     const prev = state.sel;
-    state.sel = Math.max(0, Math.min(n - 1, state.sel + delta));
+    const next = Math.max(0, Math.min(n - 1, Number(nextIndex || 0)));
+    if(next === prev) return;
+    state.sel = next;
     if(state.sel !== prev){
       try{
         if(state.playlistCreate) state.playlistCreate.editing = false;
@@ -4453,7 +4763,28 @@ function vibeTick(){
       }catch(e){}
       vibeTick();
     }
-    renderList();
+    try{
+      if(!libList) return;
+      const oldEl = libList.querySelector('.ipodItem[data-index="' + prev + '"]') || libList.children[prev];
+      const newEl = libList.querySelector('.ipodItem[data-index="' + state.sel + '"]') || libList.children[state.sel];
+      if(oldEl) oldEl.classList.remove("sel");
+      if(newEl){
+        newEl.classList.add("sel");
+        const top = newEl.offsetTop;
+        const bottom = top + newEl.offsetHeight;
+        const viewTop = libList.scrollTop;
+        const viewBottom = viewTop + libList.clientHeight;
+        if(top < viewTop) libList.scrollTop = top;
+        else if(bottom > viewBottom) libList.scrollTop = Math.max(0, bottom - libList.clientHeight);
+      }
+      refreshSelectedHScrollText();
+    }catch(e){
+      renderList();
+    }
+  }
+
+  function scrollSel(delta){
+    setSelectionFast(state.sel + delta);
   }
 
   function _randomEligibleItem(it){
@@ -4570,6 +4901,7 @@ function vibeTick(){
       state.current = view;
       setHeader();
       await view.load();
+      setHeader();
     });
   }
 
@@ -4612,6 +4944,351 @@ function vibeTick(){
     }
     items.push({kind:"libinfo_entry", label:"Info"});
     resetList(items);
+  }
+
+  async function settingsLoad(){
+    const js = await apiGet("/api/settings");
+    state.settingsData = js || {};
+    state.appSettings = Object.assign({}, (js && js.settings) || {});
+    state.startupSettings = Object.assign({}, (js && js.startup) || {});
+    state.toolStatus = Object.assign({}, (js && js.tools) || {});
+    state.connectionStatus = Object.assign({}, (js && js.connections) || {});
+    return js;
+  }
+
+  async function authStatusLoad(){
+    try{
+      return await apiGet("/api/auth/status");
+    }catch(e){
+      return {ok:false, logged_in:false, username:"", users:[]};
+    }
+  }
+
+  function settingsRestartPill(){
+    return {text:"Restart after save", tone:"warn"};
+  }
+
+  async function settingsSave(updates, startupUpdates){
+    const res = await apiPost("/api/settings/save", {settings: updates || {}, startup: startupUpdates || {}});
+    const js = (res && res.json) ? res.json : {};
+    if(!res || !res.ok || !js.ok){
+      throw new Error((js && js.error) ? js.error : "Failed to save settings");
+    }
+    await settingsLoad();
+    return js;
+  }
+
+  function settingValueLabel(value){
+    if(Array.isArray(value)) return value.length ? (String(value.length) + " hosts") : "Unset";
+    if(value === true) return "On";
+    if(value === false) return "Off";
+    if(value == null || value === "") return "Unset";
+    if(value === "***") return "Saved";
+    return String(value);
+  }
+
+  function settingPathBase(value){
+    const s = String(value || "");
+    if(!s) return "Unset";
+    const parts = s.replace(/\\/g, "/").split("/").filter(Boolean);
+    return parts.length ? parts[parts.length - 1] : s;
+  }
+
+  function settingConnectionPills(row){
+    const key = String((row && row.key) || "");
+    const type = String((row && row.type) || "");
+    const connections = state.connectionStatus || {};
+    if(type === "secret"){
+      const status = connections[key] || {};
+      const isSet = !!status.set || row.value === "***" || (row.value != null && row.value !== "");
+      const pills = [{text: isSet ? "Set for current user" : "Not set for current user", tone: isSet ? "ok" : "warn"}];
+      if(key === "SOULSEEK_USERNAME" || key === "SOULSEEK_PASSWORD"){
+        const slsk = connections.SOULSEEK || {};
+        if(slsk.set) pills.push({text: slsk.connected ? "Connected" : "Not connected", tone: slsk.connected ? "ok" : "warn"});
+      }
+      if(key === "LASTFM_API_KEY" || key === "LASTFM_API_SECRET" || key === "LASTFM_SESSION_KEY"){
+        const lf = connections.LASTFM_SESSION || {};
+        if(lf.set) pills.push({text: lf.username ? ("Session: " + String(lf.username)) : "Session set", tone:"ok"});
+      }
+      return pills;
+    }
+    if(type === "mcp_token"){
+      const isSet = row.value === "Saved" || row.value === "***";
+      return [{text: isSet ? "Set locally" : "Not set", tone: isSet ? "ok" : "warn"}];
+    }
+    return null;
+  }
+
+  function libraryFolders(){
+    const s = state.appSettings || {};
+    return Array.isArray(s.LIBRARY_FOLDERS) ? s.LIBRARY_FOLDERS.slice() : [];
+  }
+
+  function settingRowsForCategory(cat){
+    const s = state.appSettings || {};
+    const startup = state.startupSettings || {};
+    const connections = state.connectionStatus || {};
+    const slsk = connections.SOULSEEK || {};
+    const lf = connections.LASTFM_SESSION || {};
+    const tools = state.toolStatus || {};
+    const ffmpeg = tools.ffmpeg || {};
+    const ffprobe = tools.ffprobe || {};
+    const groups = {
+      ui: [
+        {key:"TASKS_POLL_MS", label:"Task refresh", type:"number", value:s.TASKS_POLL_MS, advanced:true}
+      ],
+      downloads: [
+        {key:"DOWNLOAD_DIR", label:"Real Debrid folder", type:"directory", value:s.DOWNLOAD_DIR},
+        {key:"SOULSEEK_DOWNLOAD_DIR", label:"Soulseek folder", type:"directory", value:s.SOULSEEK_DOWNLOAD_DIR},
+        {key:"YOUTUBE_DOWNLOAD_DIR", label:"YouTube folder", type:"directory", value:s.YOUTUBE_DOWNLOAD_DIR},
+        {key:"REPLACE_ORIGINAL", label:"Replace original", type:"bool", value:s.REPLACE_ORIGINAL, advanced:true}
+      ],
+      services: [
+        {key:"REAL_DEBRID_API_KEY", label:"Real Debrid token", type:"secret", value:s.REAL_DEBRID_API_KEY},
+        {key:"KNABEN_API_KEY", label:"Knaben API key", type:"secret", value:s.KNABEN_API_KEY, advanced:true},
+        {key:"SOULSEEK_USERNAME", label:"Soulseek username", type:"secret", value:s.SOULSEEK_USERNAME},
+        {key:"SOULSEEK_PASSWORD", label:"Soulseek password", type:"secret", value:s.SOULSEEK_PASSWORD, sub_label: slsk.set ? (slsk.connected ? "Soulseek is connected for this account." : (slsk.error ? ("Soulseek is not connected: " + slsk.error) : "Soulseek is not connected for this account.")) : "Set username and password to connect Soulseek for this account."},
+        {key:"LASTFM_API_KEY", label:"Last.fm API key", type:"secret", value:s.LASTFM_API_KEY},
+        {key:"LASTFM_API_SECRET", label:"Last.fm secret", type:"secret", value:s.LASTFM_API_SECRET},
+        {key:"LASTFM_SESSION_KEY", label:"Last.fm session key", type:"secret", value:s.LASTFM_SESSION_KEY, sub_label: lf.set ? ("Last.fm session is set for this account" + (lf.username ? (": " + lf.username) : ".")) : "Use Last.fm login or paste a session key for this account.", advanced:true},
+        {key:"YTDLP_CMD", label:"yt-dlp command", type:"text", value:s.YTDLP_CMD, advanced:true}
+      ],
+      playback: [
+        {key:"PLAYBACK_STREAMING_MODE", label:"Streaming mode", type:"choice", choices:["http","hls"], value:s.PLAYBACK_STREAMING_MODE},
+        {key:"PRELOAD_NEXT_FOR_GAPLESS", label:"Preload next", type:"bool", value:s.PRELOAD_NEXT_FOR_GAPLESS},
+        {key:"FFMPEG_PATH", label:"ffmpeg", type:"tool_path", value:s.FFMPEG_PATH, tool:"ffmpeg", toolStatus:ffmpeg, sub_label: ffmpeg.ok ? ("Detected: " + (ffmpeg.found || "ffmpeg")) : (ffmpeg.install_hint || "Install ffmpeg or set a path."), advanced:true},
+        {key:"FFPROBE_PATH", label:"ffprobe", type:"tool_path", value:s.FFPROBE_PATH, tool:"ffprobe", toolStatus:ffprobe, sub_label: ffprobe.ok ? ("Detected: " + (ffprobe.found || "ffprobe")) : (ffprobe.install_hint || "Install ffprobe or set a path."), advanced:true}
+      ],
+      advanced: [
+      {key:"PORT", label:"Port", type:"startup_number", value:startup.PORT},
+      {key:"WHEEL_ROTATION_MAX_DEGREES", label:"Max wheel tilt", type:"number", value:(s.WHEEL_ROTATION_MAX_DEGREES == null ? 10 : s.WHEEL_ROTATION_MAX_DEGREES)},
+      {key:"ENABLE_MCP", label:"MCP enabled", type:"startup_bool", value:startup.ENABLE_MCP},
+      {key:"MCP_TOKEN", label:"Reset MCP token", type:"mcp_token", value:startup.MCP_TOKEN_SET ? "Saved" : "Unset"},
+      {key:"CACHE_DIR_NAME", label:"Cache folder name", type:"text", value:s.CACHE_DIR_NAME},
+      {key:"STREAM_PROXY_ALLOWED_HOST_SUFFIXES", label:"Stream proxy hosts", type:"csv_list", value:s.STREAM_PROXY_ALLOWED_HOST_SUFFIXES},
+      {key:"AUDIO_TRANSCODE", label:"Audio transcode rules", type:"text", value:s.AUDIO_TRANSCODE},
+      {key:"VIDEO_BROWSER_TARGET_EXT", label:"Video target", type:"text", value:s.VIDEO_BROWSER_TARGET_EXT},
+      {key:"REQUEST_TIMEOUT_SECONDS", label:"Request timeout", type:"number", value:s.REQUEST_TIMEOUT_SECONDS}
+      ]
+    };
+    if(cat === "advanced"){
+      return groups.advanced.concat(groups.ui, groups.downloads, groups.services, groups.playback).filter(r => r && (r.advanced || groups.advanced.indexOf(r) >= 0));
+    }
+    return (groups[cat] || []).filter(r => r && !r.advanced);
+  }
+
+  async function viewSettings(push){
+    const view = {
+      kind:"settings",
+      label:"Settings",
+      load: async function(){
+        await settingsLoad();
+        resetList([
+          {kind:"settings_category", category:"ui", label:"Interface"},
+          {kind:"settings_library", label:"Library"},
+          {kind:"settings_category", category:"downloads", label:"Downloads"},
+          {kind:"settings_category", category:"services", label:"Services"},
+          {kind:"settings_category", category:"playback", label:"Playback"},
+          {kind:"settings_category", category:"advanced", label:"Advanced"}
+        ]);
+      }
+    };
+    await setView(view, !!push);
+  }
+
+  async function viewAccountSettings(push){
+    showNowPlaying(false);
+    await setView({
+      kind:"account_settings",
+      label:"Account",
+      load: async function(){
+        libControlsHide();
+        const js = await authStatusLoad();
+        const items = [];
+        const username = String((js && js.username) || "");
+        items.push({kind:"info", label:"Signed in", pills:[username || "Unknown"]});
+        items.push({kind:"account_action", label:"Create user", action:"create_user"});
+        items.push({kind:"account_action", label:"Log out", action:"logout"});
+        const users = Array.isArray(js.users) ? js.users : [];
+        if(users.length){
+          items.push({kind:"info", label:"Users"});
+          users.forEach((u)=>{
+            const name = String((u && u.username) || "");
+            if(name) items.push({kind:"info", label:name, pills:[name === username ? "current" : "user"]});
+          });
+        }
+        resetList(items);
+      }
+    }, !!push);
+  }
+
+  async function createUserFromInfo(){
+    window.location.href = "/account/create";
+  }
+
+  async function viewSettingsCategory(category, push){
+    const labels = {ui:"Interface", downloads:"Downloads", services:"Services", playback:"Playback", advanced:"Advanced"};
+    const view = {
+      kind:"settings_category",
+      category:category,
+      label:labels[category] || "Settings",
+      load: async function(){
+        await settingsLoad();
+        const rows = settingRowsForCategory(category).map(r=>({
+          kind:"setting_value",
+          label:r.label,
+          sub_label: r.sub_label || (r.advanced ? "Advanced" : ""),
+          key:r.key,
+          settingType:r.type,
+          choices:r.choices || [],
+          value:r.value,
+          tool:r.tool || "",
+          toolStatus:r.toolStatus || null,
+          pills:(settingConnectionPills(r) || [{text:settingValueLabel(r.value)}]).concat([settingsRestartPill()])
+        }));
+        resetList(rows);
+      }
+    };
+    await setView(view, !!push);
+  }
+
+  async function viewSettingsLibrary(push){
+    const view = {
+      kind:"settings_library",
+      label:"Library",
+      load: async function(){
+        await settingsLoad();
+        const folders = libraryFolders();
+        const items = [{kind:"settings_add_library_folder", label:"Add folder"}];
+        folders.forEach((f, idx)=>{
+          const mode = String((f && f.mode) || "list").toLowerCase();
+          items.push({
+            kind:"settings_library_folder",
+            label:settingPathBase(f && f.path),
+            sub_label:String((f && f.path) || ""),
+            folderIndex:idx,
+            pills:[{text: mode === "meta" ? "Metadata" : "List"}]
+          });
+        });
+        if(!folders.length) items.push({kind:"info", label:"No library folders"});
+        resetList(items);
+      }
+    };
+    await setView(view, !!push);
+  }
+
+  async function viewSettingsLibraryMode(folderPath, folderIndex, push){
+    const isExisting = typeof folderIndex === "number" && folderIndex >= 0;
+    const view = {
+      kind:"settings_library_mode",
+      label:"Folder Type",
+      folderPath:String(folderPath || ""),
+      folderIndex:isExisting ? folderIndex : -1,
+      load: async function(){
+        resetList([
+          {
+            kind:"settings_library_mode_choice",
+            mode:"meta",
+            label:"Metadata folder",
+            sub_label:"Indexes tags for Artists, Albums, Songs, Genres, liked songs, and richer browsing."
+          },
+          {
+            kind:"settings_library_mode_choice",
+            mode:"list",
+            label:"List folder",
+            sub_label:"Uses simple folder-by-folder browsing without tag indexing."
+          },
+          ...(isExisting ? [{kind:"settings_library_remove", label:"Remove folder", sub_label:String(folderPath || ""), pills:[{text:"Delete", tone:"warn"}]}] : [])
+        ]);
+      }
+    };
+    await setView(view, !!push);
+  }
+
+  async function settingsPickPath(kind){
+    const res = await apiPost("/api/settings/pick_path", {kind:kind || "directory"});
+    const js = (res && res.json) ? res.json : {};
+    if(res && res.ok && js && js.ok && js.path) return String(js.path || "");
+    const fallback = prompt("Enter path", "");
+    return fallback ? String(fallback).trim() : "";
+  }
+
+  async function editSettingRow(row){
+    const key = String(row.key || "");
+    const type = String(row.settingType || "text");
+    if(!key) return;
+    const refreshAfterSettingEdit = async ()=>{
+      if(state.current && state.current.kind === "libadvancedsettings") await viewLibAdvancedSettings(false);
+      else await viewSettingsCategory((state.current && state.current.category) || "advanced", false);
+    };
+    if(type === "mcp_token"){
+      const ok = confirm("Reset the MCP token? The new token will be shown once.");
+      if(!ok) return;
+      const res = await apiPost("/api/settings/mcp_reset_token", {});
+      const js = (res && res.json) ? res.json : {};
+      if(!res || !res.ok || !js.ok) throw new Error((js && js.error) ? js.error : "Failed to reset token");
+      alert("New MCP token:\n\n" + String(js.token || ""));
+      await refreshAfterSettingEdit();
+      return;
+    }
+    if(type === "bool" || type === "startup_bool"){
+      const next = !(row.value === true || String(row.value).toLowerCase() === "true");
+      if(type === "startup_bool") await settingsSave({}, {[key]: next});
+      else await settingsSave({[key]: next}, {});
+      await refreshAfterSettingEdit();
+      return;
+    }
+    if(type === "choice"){
+      const choices = Array.isArray(row.choices) ? row.choices : [];
+      const current = String(row.value || "");
+      const idx = choices.indexOf(current);
+      const next = choices[(idx + 1 + choices.length) % choices.length] || current;
+      await settingsSave({[key]: next}, {});
+      await refreshAfterSettingEdit();
+      return;
+    }
+    if(type === "tool_path"){
+      const status = row.toolStatus || {};
+      const platform = String(status.platform || "");
+      let picked = "";
+      if(platform.indexOf("win") === 0){
+        picked = await settingsPickPath("file");
+      }else{
+        const hint = status.install_hint || "Install this tool with your package manager and keep the command on PATH.";
+        const current = (row.value === "***") ? "" : String(row.value == null ? "" : row.value);
+        picked = prompt(hint + "\n\nCommand or path:", current || String(row.tool || row.key || ""));
+      }
+      if(!picked) return;
+      await settingsSave({[key]: String(picked).trim()}, {});
+      await refreshAfterSettingEdit();
+      return;
+    }
+    if(type === "directory" || type === "file"){
+      const picked = await settingsPickPath(type === "file" ? "file" : "directory");
+      if(!picked) return;
+      await settingsSave({[key]: picked}, {});
+      await refreshAfterSettingEdit();
+      return;
+    }
+    if(type === "csv_list"){
+      const current = Array.isArray(row.value) ? row.value.join(", ") : String(row.value == null ? "" : row.value);
+      const raw = prompt(row.label || key, current);
+      if(raw == null) return;
+      const values = String(raw || "").split(",").map(x=>x.trim()).filter(Boolean);
+      await settingsSave({[key]: values}, {});
+      await refreshAfterSettingEdit();
+      return;
+    }
+    const raw = prompt(row.label || key, (row.value === "***") ? "" : String(row.value == null ? "" : row.value));
+    if(raw == null) return;
+    let value = raw;
+    if(type === "number" || type === "startup_number"){
+      value = Number(raw);
+      if(!Number.isFinite(value)) return;
+    }
+    if(type === "startup_number") await settingsSave({}, {[key]: value});
+    else await settingsSave({[key]: value}, {});
+    await refreshAfterSettingEdit();
   }
 
 
@@ -5184,7 +5861,7 @@ async function libDoSearch(engine, q){
         const v = (APP_INFO && APP_INFO.version) ? String(APP_INFO.version) : "";
         const vPills = [];
         if(v) vPills.push("v" + v);
-        items.push({kind:"info", label:"Debripod", pills: vPills});
+        items.push({kind:"info", label:"DebriPod", pills: vPills});
 
         const host = (APP_INFO && APP_INFO.host) ? String(APP_INFO.host) : (location.hostname || "");
         const port = (APP_INFO && (APP_INFO.port !== undefined && APP_INFO.port !== null)) ? String(APP_INFO.port) : (location.port || "");
@@ -5219,7 +5896,13 @@ async function libDoSearch(engine, q){
         if(lfUser) lp.push("logged in as " + lfUser);
         items.push({kind:"libinfo_action", label:"Login to Last.fm", action:"lastfm_login", pills: lp});
 
-        items.push({kind:"libinfo_action", label:"UI Settings", action:"ui_settings_menu"});
+        items.push({kind:"libinfo_action", label:"Account", action:"account_settings"});
+        items.push({kind:"libinfo_action", label:"Interface", action:"ui_settings_menu"});
+        items.push({kind:"libinfo_action", label:"Library", action:"settings_library"});
+        items.push({kind:"libinfo_action", label:"Downloads", action:"settings_downloads"});
+        items.push({kind:"libinfo_action", label:"Services", action:"settings_services"});
+        items.push({kind:"libinfo_action", label:"Playback", action:"settings_playback"});
+        items.push({kind:"libinfo_action", label:"Advanced", action:"settings_advanced"});
         items.push({kind:"libinfo_action", label:"Full Screen", action:"force_fullscreen"});
         items.push({kind:"libinfo_action", label:"Binds", action:"binds_menu"});
 
@@ -5251,7 +5934,7 @@ async function libDoSearch(engine, q){
     const restoreScroll = (!push && state.current && state.current.kind === "libuisettings" && libList) ? libList.scrollTop : null;
     await setView({
       kind:"libuisettings",
-      label:"UI Settings",
+      label:"Interface",
       savedSel: restoreSel,
       savedScroll: restoreScroll,
       load: async function(){
@@ -5263,6 +5946,50 @@ async function libDoSearch(engine, q){
         items.push({kind:"info", label:"Estimated Tempo", pills:[String(Math.round(visualizerBpm || 120)) + " BPM"]});
         items.push({kind:"libui_action", label:"Liquid Glass Preset", action:"cycle_liquid_preset", pills:[titleCaseSetting(liquidGlassPresetName)]});
         items.push({kind:"libui_action", label:"Liquid Glass Mode", action:"cycle_liquid_mode", pills:[titleCaseSetting(liquidGlassModeName)]});
+        resetList(items);
+      }
+    }, push);
+  }
+
+  function uiTuningRows(){
+    return [
+      {action:"set_center_bounce_amount", label:"Center bounce amount", value:uiSettings.centerBounceAmount},
+      {action:"set_center_bounce_duration", label:"Center bounce duration", value:uiSettings.centerBounceDuration},
+      {action:"set_center_bounce_overshoot", label:"Center bounce overshoot", value:uiSettings.centerBounceOvershoot},
+      {action:"set_wheel_click_tilt_amount", label:"Wheel click tilt amount", value:uiSettings.wheelClickTiltAmount},
+      {action:"set_wheel_tilt_ramp_duration", label:"Wheel tilt ramp duration", value:uiSettings.wheelTiltRampDuration},
+      {action:"set_wheel_tilt_release_duration", label:"Wheel tilt release duration", value:uiSettings.wheelTiltReleaseDuration},
+      {action:"set_info_pill_dark_multiplier", label:"Info pill dark multiplier", value:uiSettings.infoPillDarkMultiplier},
+      {action:"set_info_pill_light_multiplier", label:"Info pill light multiplier", value:uiSettings.infoPillLightMultiplier}
+    ];
+  }
+
+  async function viewLibAdvancedSettings(push){
+    showNowPlaying(false);
+    await setView({
+      kind:"libadvancedsettings",
+      label:"Advanced",
+      load: async function(){
+        libControlsHide();
+        await settingsLoad();
+        const items = [];
+        uiTuningRows().forEach((row)=>{
+          items.push({kind:"libui_action", label:row.label, action:row.action, pills:[String(row.value)]});
+        });
+        settingRowsForCategory("advanced").forEach((r)=>{
+          items.push({
+            kind:"setting_value",
+            label:r.label,
+            sub_label:r.sub_label || "",
+            key:r.key,
+            settingType:r.type,
+            choices:r.choices || [],
+            value:r.value,
+            tool:r.tool || "",
+            toolStatus:r.toolStatus || null,
+            pills:(settingConnectionPills(r) || [{text:settingValueLabel(r.value)}]).concat([settingsRestartPill()])
+          });
+        });
         resetList(items);
       }
     }, push);
@@ -5312,6 +6039,24 @@ async function libDoSearch(engine, q){
       case "ui_settings_menu":
         await viewLibUiSettings(true);
         return true;
+      case "account_settings":
+        await viewAccountSettings(true);
+        return true;
+      case "settings_library":
+        await viewSettingsLibrary(true);
+        return true;
+      case "settings_downloads":
+        await viewSettingsCategory("downloads", true);
+        return true;
+      case "settings_services":
+        await viewSettingsCategory("services", true);
+        return true;
+      case "settings_playback":
+        await viewSettingsCategory("playback", true);
+        return true;
+      case "settings_advanced":
+        await viewLibAdvancedSettings(true);
+        return true;
       case "binds_menu":
         await viewLibBinds(true);
         return true;
@@ -5321,6 +6066,18 @@ async function libDoSearch(engine, q){
   }
 
   async function handleLibUiAction(action){
+    const setNumber = async (key, label, min, max)=>{
+      const current = uiSettings[key];
+      const raw = prompt(label, String(current));
+      if(raw == null) return true;
+      uiSettings[key] = clampNumber(Number(raw), current, min, max);
+      saveUiSettings();
+      applyUiTuningCss();
+      forceNpOverlayGlassRender("ui tuning", true);
+      if(state.current && state.current.kind === "libadvancedsettings") await viewLibAdvancedSettings(false);
+      else await viewLibUiSettings(false);
+      return true;
+    };
     switch(action){
       case "toggle_visualizer":
         setVisualizerEnabled(!visualizerEnabled);
@@ -5342,6 +6099,22 @@ async function libDoSearch(engine, q){
         setLiquidGlassSettings(liquidGlassPresetName, nextLiquidGlassMode(), true);
         await viewLibUiSettings(false);
         return true;
+      case "set_center_bounce_amount":
+        return await setNumber("centerBounceAmount", "Center bounce amount", 0, 0.3);
+      case "set_center_bounce_duration":
+        return await setNumber("centerBounceDuration", "Center bounce duration (ms)", 0, 1000);
+      case "set_center_bounce_overshoot":
+        return await setNumber("centerBounceOvershoot", "Center bounce overshoot", 0, 1.4);
+      case "set_wheel_click_tilt_amount":
+        return await setNumber("wheelClickTiltAmount", "Wheel click tilt amount", 0, 1);
+      case "set_wheel_tilt_ramp_duration":
+        return await setNumber("wheelTiltRampDuration", "Wheel tilt ramp duration (ms)", 0, 1000);
+      case "set_wheel_tilt_release_duration":
+        return await setNumber("wheelTiltReleaseDuration", "Wheel tilt release duration (ms)", 0, 1200);
+      case "set_info_pill_dark_multiplier":
+        return await setNumber("infoPillDarkMultiplier", "Info pill dark multiplier", 0, 4);
+      case "set_info_pill_light_multiplier":
+        return await setNumber("infoPillLightMultiplier", "Info pill light multiplier", 0, 4);
       default:
         return false;
     }
@@ -7220,6 +7993,78 @@ if(it.kind === "libtasks_entry"){
       if(await handleLibInfoAction(it.action)) return;
     }
 
+    if(it.kind === "account_action"){
+      if(it.action === "create_user"){
+        await createUserFromInfo();
+        return;
+      }
+      if(it.action === "logout"){
+        window.location.href = "/logout";
+        return;
+      }
+    }
+
+    if(it.kind === "setting_value"){
+      try{
+        await editSettingRow(it);
+      }catch(e){
+        alert(String(e && e.message ? e.message : e));
+      }
+      return;
+    }
+
+    if(it.kind === "settings_add_library_folder"){
+      const picked = await settingsPickPath("directory");
+      if(!picked) return;
+      await viewSettingsLibraryMode(picked, -1, true);
+      return;
+    }
+
+    if(it.kind === "settings_library_folder"){
+      const folders = libraryFolders();
+      const f = folders[Number(it.folderIndex || 0)] || {};
+      await viewSettingsLibraryMode(String(f.path || ""), Number(it.folderIndex || 0), true);
+      return;
+    }
+
+    if(it.kind === "settings_library_mode_choice"){
+      const cur = state.current || {};
+      const folders = libraryFolders();
+      const idx = Number(cur.folderIndex);
+      const entry = {path:String(cur.folderPath || ""), mode:String(it.mode || "list")};
+      if(!entry.path) return;
+      if(Number.isFinite(idx) && idx >= 0 && idx < folders.length){
+        folders[idx] = entry;
+      }else{
+        folders.push(entry);
+      }
+      try{
+        await settingsSave({LIBRARY_FOLDERS: folders}, {});
+        await goBack();
+        await viewSettingsLibrary(false);
+      }catch(e){
+        alert(String(e && e.message ? e.message : e));
+      }
+      return;
+    }
+
+    if(it.kind === "settings_library_remove"){
+      const cur = state.current || {};
+      const idx = Number(cur.folderIndex);
+      const folders = libraryFolders();
+      if(Number.isFinite(idx) && idx >= 0 && idx < folders.length){
+        folders.splice(idx, 1);
+        try{
+          await settingsSave({LIBRARY_FOLDERS: folders}, {});
+          await goBack();
+          await viewSettingsLibrary(false);
+        }catch(e){
+          alert(String(e && e.message ? e.message : e));
+        }
+      }
+      return;
+    }
+
     if(it.kind === "libui_action"){
       if(await handleLibUiAction(it.action)) return;
     }
@@ -7882,6 +8727,7 @@ if(it.kind === "root"){
     });
   }
 btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
+    triggerWheelClickTilt("top");
     vibeTick();
     if(state.current && state.current.kind === "np_playlist_add") return;
     if(nowPlaying.style.display === "block") hideNpPillImmediate("menu button");
@@ -7940,9 +8786,32 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
     }catch(e){}
   }
 
-  btnPlay.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return; vibeTick(); if(nowPlaying.style.display === "block") npPillActivity(false); playButtonPress(); });
-  btnRev.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return; vibeTick(); if(nowPlaying.style.display === "block") npPillActivity(false); revButtonPress(); });
-  btnFwd.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return; vibeTick(); if(nowPlaying.style.display === "block") npPillActivity(false); fwdButtonPress(); });
+  function triggerWheelClickTilt(zone){
+    try{
+      cacheWheelGlassTiltRect();
+      const maxTilt = normalizeWheelRotationMaxDegrees(wheelRotationMaxDegrees) * clampNumber(uiSettings.wheelClickTiltAmount, DEFAULT_UI_SETTINGS.wheelClickTiltAmount, 0, 1);
+      let rotX = 0;
+      let rotY = 0;
+      const z = String(zone || "");
+      if(z === "top") rotX = maxTilt;
+      else if(z === "bottom") rotX = -maxTilt;
+      else if(z === "left") rotY = -maxTilt;
+      else if(z === "right") rotY = maxTilt;
+      else rotX = -maxTilt * 0.35;
+      setWheelTiltTarget(rotX, rotY, Math.max(20, clampNumber(uiSettings.wheelTiltRampDuration, DEFAULT_UI_SETTINGS.wheelTiltRampDuration, 0, 1000) * 0.65));
+      setTimeout(()=>{
+        try{ setWheelTiltTarget(0, 0, clampNumber(uiSettings.wheelTiltReleaseDuration, DEFAULT_UI_SETTINGS.wheelTiltReleaseDuration, 0, 1200)); }catch(e){}
+      }, Math.max(45, clampNumber(uiSettings.wheelTiltRampDuration, DEFAULT_UI_SETTINGS.wheelTiltRampDuration, 0, 1000)));
+    }catch(e){}
+  }
+
+  btnPlay.addEventListener("pointerdown", ()=> triggerWheelClickTilt("bottom"), {passive:true});
+  btnRev.addEventListener("pointerdown", ()=> triggerWheelClickTilt("left"), {passive:true});
+  btnFwd.addEventListener("pointerdown", ()=> triggerWheelClickTilt("right"), {passive:true});
+  btnMenu.addEventListener("pointerdown", ()=> triggerWheelClickTilt("top"), {passive:true});
+  btnPlay.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return; triggerWheelClickTilt("bottom"); vibeTick(); if(nowPlaying.style.display === "block") npPillActivity(false); playButtonPress(); });
+  btnRev.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return; triggerWheelClickTilt("left"); vibeTick(); if(nowPlaying.style.display === "block") npPillActivity(false); revButtonPress(); });
+  btnFwd.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return; triggerWheelClickTilt("right"); vibeTick(); if(nowPlaying.style.display === "block") npPillActivity(false); fwdButtonPress(); });
 
   function centerPress(){
     if(nowPlaying.style.display === "block"){
@@ -7964,8 +8833,8 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
   btnCenter.addEventListener("animationend", (ev)=>{
     try{ if(ev.animationName === "wheelCenterPulse") btnCenter.classList.remove("centerPulse"); }catch(e){}
   });
-  btnCenter.addEventListener("pointerdown", pulseWheelCenter, {passive:true});
-  btnCenter.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return; pulseWheelCenter(); vibeTick(); if(nowPlaying.style.display === "block") npPillActivity(false); centerPress(); });
+  btnCenter.addEventListener("pointerdown", ()=>{ pulseWheelCenter(); triggerWheelClickTilt("center"); }, {passive:true});
+  btnCenter.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return; pulseWheelCenter(); triggerWheelClickTilt("center"); vibeTick(); if(nowPlaying.style.display === "block") npPillActivity(false); centerPress(); });
 
   updateWheelLabels();
 
@@ -8030,10 +8899,13 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
 
   wheel.addEventListener("pointermove", (ev)=>{
     if(!wheelPointerDown) return;
+    const events = (typeof ev.getCoalescedEvents === "function") ? ev.getCoalescedEvents() : null;
+    const moveEvents = (events && events.length) ? events : [ev];
+    const latestEv = moveEvents[moveEvents.length - 1] || ev;
 
     if(!dragging){
-      const dx = (ev.clientX - wheelStartX);
-      const dy = (ev.clientY - wheelStartY);
+      const dx = (latestEv.clientX - wheelStartX);
+      const dy = (latestEv.clientY - wheelStartY);
       const dist = Math.hypot(dx, dy);
       if(dist < dragPx) return;
 
@@ -8047,12 +8919,14 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
     }
 
     if(!dragging) return;
-    applyWheelGlassTilt(ev);
+    applyWheelGlassTilt(latestEv);
 
-    const ang = angleFromEvent(ev);
-    const d = normDelta(ang, lastAngle);
-    lastAngle = ang;
-    accum += d;
+    for(const mev of moveEvents){
+      const ang = angleFromEvent(mev);
+      const d = normDelta(ang, lastAngle);
+      lastAngle = ang;
+      accum += d;
+    }
 
     if(nowPlaying.style.display === "block"){
       if(seekMode){
@@ -8072,8 +8946,9 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
     }
 
     if(Math.abs(accum) >= step){
-      scrollSel(accum > 0 ? 1 : -1);
-      accum = 0;
+      const steps = Math.trunc(accum / step);
+      scrollSel(steps);
+      accum -= steps * step;
     }
   }, {passive:false});
 

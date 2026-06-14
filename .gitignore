@@ -29,6 +29,7 @@ dist/
 *.egg
 
 # Debripod runtime output created while starting or using the app
+data/
 _debripod_cache/
 init.mp4
 cache/
@@ -40,6 +41,8 @@ search_cache/
 tasks.json
 lastfm_session.json
 lastfm_loved.json
+*.tmp
+*.log
 
 # Debripod local media and download folders if they are created inside the repo
 debrid/

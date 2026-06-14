@@ -189,13 +189,15 @@ _m = re.search(r"debripod(\d+)", _fn, re.IGNORECASE)
 VERSION = _m.group(1) if _m else "dev"
 del _fn, _m
 
+HOST = "127.0.0.1"
+
 # Defaults live in debripod.config and are overlaid by config JSON files.
 try:
     from .config import CONFIG_KEYS, apply_config_to_module
     globals().update({key: None for key in CONFIG_KEYS})
     apply_config_to_module(globals())
 except Exception as _config_error:
-    print(f"Debripod config warning: {_config_error}")
+    print(f"DebriPod config warning: {_config_error}")
 configure_library_roots(lambda: LIBRARY_FOLDERS)
 configure_playlists(
     file_meta_provider=lambda abs_path: file_meta_cached(abs_path),

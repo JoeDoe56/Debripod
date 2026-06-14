@@ -1,8 +1,8 @@
-﻿<!doctype html>
+<!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>Debripod</title>
+  <title>DebriPod</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <link rel="icon" href="/favicon.ico?v={{ icon_v }}">
   <link rel="apple-touch-icon" href="/apple-touch-icon.png?v={{ icon_v }}">
@@ -10,7 +10,7 @@
   <link rel="manifest" href="/site.webmanifest?v={{ icon_v }}">
   <meta name="theme-color" content="#000000">
   <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-title" content="Debripod">
+  <meta name="apple-mobile-web-app-title" content="DebriPod">
   <link rel="preconnect" href="https://fonts.googleapis.com">
   <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
   <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&display=swap" rel="stylesheet">
@@ -29,7 +29,7 @@
           <div class="topPills">
             <div class="pathPill" id="libHeader">
               <div class="pathPillGlass liquidGlass" aria-hidden="true"></div>
-              <span class="pathPillText" id="libHeaderText" data-liquid-ignore>Library</span>
+              <span class="pathPillText hScrollText" id="libHeaderText" data-liquid-ignore>Library</span>
             </div>
           </div>
 
@@ -107,10 +107,12 @@
   
 
 <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+<script src="https://cdn.jsdelivr.net/npm/@zumer/snapdom/dist/snapdom.js"></script>
 <script src="{{ url_for('static', filename='liquidGL.js') }}?v={{ icon_v }}"></script>
 <script>
   window.DEBRIPOD_APP_INFO = {{ info_json|safe }};
   window.DEBRIPOD_TASKS_POLL_MS = {{ tasks_poll_ms }};
+  window.DEBRIPOD_CSRF_TOKEN = {{ csrf_token|tojson }};
 </script>
 <script src="{{ url_for('static', filename='debripod.js') }}?v={{ icon_v }}"></script>
 </body>

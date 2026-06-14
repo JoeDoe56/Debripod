@@ -3,6 +3,9 @@ from __future__ import annotations
 from .runtime_state import *
 from .runtime_video_post import *
 
+YTDLP_PROCESS_SEMAPHORE = threading.BoundedSemaphore(2)
+YTDLP_DOWNLOAD_TIMEOUT_SECONDS = 6 * 3600
+
 def _youtube_ytdlp_parse_int(raw: Any) -> int:
     try:
         s = str(raw or '').strip()
@@ -110,11 +113,21 @@ def _youtube_run_download(task_id: str, entry: Dict[str, Any], seq: int, total_c
     set_task(task_id, current_file=os.path.basename(preferred_out), current_done=0, current_total=(initial_total or None), state='downloading', message=f'Downloading {seq} of {total_count}')
     _rd_recompute_overall_from_files(task_id)
 
-    proc = subprocess.Popen([YTDLP_CMD] + args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace', bufsize=1)
+    YTDLP_PROCESS_SEMAPHORE.acquire()
+    try:
+        proc = subprocess.Popen([YTDLP_CMD] + args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL, text=True, encoding='utf-8', errors='replace', bufsize=1)
+    except Exception:
+        try:
+            YTDLP_PROCESS_SEMAPHORE.release()
+        except Exception:
+            pass
+        raise
     actual_path = ''
     last_error = ''
     pause_requested = False
     cancel_requested = False
+    started_at = time.time()
+    timed_out = False
     try:
         while True:
             task = get_task(task_id)
@@ -128,9 +141,16 @@ def _youtube_run_download(task_id: str, entry: Dict[str, Any], seq: int, total_c
                 cancel_requested = True
             elif task.pause_event.is_set() or ctl.get('paused'):
                 pause_requested = True
+            elif (time.time() - started_at) > YTDLP_DOWNLOAD_TIMEOUT_SECONDS:
+                timed_out = True
             if pause_requested or cancel_requested:
                 try:
                     proc.terminate()
+                except Exception:
+                    pass
+            if timed_out:
+                try:
+                    proc.kill()
                 except Exception:
                     pass
             line = proc.stdout.readline() if proc.stdout else ''
@@ -160,6 +180,10 @@ def _youtube_run_download(task_id: str, entry: Dict[str, Any], seq: int, total_c
                 proc.stdout.close()
         except Exception:
             pass
+        try:
+            YTDLP_PROCESS_SEMAPHORE.release()
+        except Exception:
+            pass
 
     if cancel_requested:
         _update_task_file_entry(task_id, 'rd_files', file_id, state='canceled', canceled=True, error='')
@@ -170,6 +194,8 @@ def _youtube_run_download(task_id: str, entry: Dict[str, Any], seq: int, total_c
         _rd_recompute_overall_from_files(task_id)
         return None
     if rc != 0:
+        if timed_out:
+            raise RuntimeError('yt-dlp timed out')
         raise RuntimeError(last_error or 'yt-dlp failed')
 
     actual = str(actual_path or '').strip()
@@ -257,8 +283,8 @@ def _youtube_download_from_queue(task_id: str) -> List[str]:
                 completed_paths.append(out_path)
         except Cancelled:
             raise
-        except Exception as e:
-            _update_task_file_entry(task_id, 'rd_files', fid, state='failed', error=str(e), paused=False)
+        except Exception:
+            _update_task_file_entry(task_id, 'rd_files', fid, state='failed', error='YouTube download failed', paused=False)
             _rd_recompute_overall_from_files(task_id)
     _youtube_finalize_task_state(task_id)
     return completed_paths
@@ -275,8 +301,8 @@ def youtube_download_remaining_worker(task_id: str) -> None:
         _youtube_download_from_queue(task_id)
     except Cancelled:
         set_task(task_id, state='canceled', message='Canceled', current_file='', current_done=0, current_total=None)
-    except Exception as e:
-        set_task(task_id, state='error', message=str(e), current_file='', current_done=0, current_total=None)
+    except Exception:
+        set_task(task_id, state='error', message='YouTube download failed', current_file='', current_done=0, current_total=None)
 
 
 def youtube_worker(task_id: str) -> None:
@@ -291,8 +317,8 @@ def youtube_worker(task_id: str) -> None:
         _youtube_download_from_queue(task_id)
     except Cancelled:
         set_task(task_id, state='canceled', message='Canceled', current_file='', current_done=0, current_total=None)
-    except Exception as e:
-        set_task(task_id, state='error', message=str(e), current_file='', current_done=0, current_total=None)
+    except Exception:
+        set_task(task_id, state='error', message='YouTube download failed', current_file='', current_done=0, current_total=None)
 
 
 

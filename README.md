@@ -1,224 +1,532 @@
 # DebriPod
 
-DebriPod is a local Flask media app for browsing, streaming, downloading, organizing, and playing media from a personal library and several external sources. It is built around a single web UI that acts like a desktop media center in the browser. The app can scan local folders, browse music by metadata, play audio and video, manage playlists, search YouTube, Soulseek, and Knaben, download through Real Debrid, track long running tasks, and connect to Last.fm for scrobbling and liked tracks.
+DebriPod is a local Flask media app for browsing, streaming, downloading, organizing, and playing media from a personal library and external sources. It runs on your own computer and opens in a browser at a local address, usually `http://127.0.0.1:8083`.
 
-DebriPod is meant to run locally on your own computer. It stores runtime files in local data and cache folders, keeps private credentials out of Git when configured correctly, and exposes a browser interface at the configured host and port.
+DebriPod can scan local media folders, browse music by metadata, play audio and video, manage playlists, search YouTube, search Soulseek, search Knaben, download through Real Debrid, track long running jobs, and connect to Last.fm for scrobbling and loved tracks.
 
-## Main features
+## What it does
 
 ### Local media library
 
-DebriPod can browse local folders as normal directories or as metadata indexed music libraries. Folder mode shows the actual folder tree and playable files. Metadata mode builds artist, album, genre, song, liked song, and video views from media tags.
+DebriPod supports folder browsing and metadata browsing. Folder browsing shows your real directory tree. Metadata browsing builds music views from tags such as artist, album, album artist, genre, track number, duration, codec, bitrate, bit depth, and sample rate.
 
-Supported audio formats include MP3, M4A, AAC, WAV, FLAC, OGG, OPUS, WMA, AIFF, and ALAC. Supported video formats include MP4, MKV, WEBM, MOV, M4V, AVI, TS, and M2TS. Playlist support includes M3U, M3U8, and PLS.
+Supported audio formats include MP3, M4A, AAC, WAV, FLAC, OGG, OPUS, WMA, AIFF, and ALAC.
 
-Library roots are configured in `config/debripod.json` or `config/debripod.local.json`. Each root can use `list` mode for folder browsing or `meta` mode for metadata browsing.
+Supported video formats include MP4, MKV, WEBM, MOV, M4V, AVI, TS, and M2TS.
+
+Supported playlist formats include M3U, M3U8, and PLS.
 
 ### Browser playback
 
-DebriPod streams media through Flask using range requests, so audio and video can seek in the browser. The player keeps server side playback state in the cache folder, including the current item, resume position, and recent playback history.
+DebriPod streams media through Flask with range request support, so the browser can seek through audio and video. It saves playback state locally, including the current item, resume position, and recent playback history.
 
-The app supports direct HTTP streaming and HLS style playback for compatible video paths. Audio files can be streamed as originals or transcoded during playback if configured. Video files can be checked with ffprobe and passed through ffmpeg when they need browser compatible output.
+The app can stream originals, use direct HTTP playback, and use ffmpeg or ffprobe for metadata, artwork extraction, muxing, transcoding, and browser compatible video output.
 
-### Playlists and smart playlists
+### Search and downloads
 
-DebriPod creates normal playlists inside a `Debripod-Playlists` folder under a library root. These playlists are stored as M3U8 files and can be renamed, deleted, and updated from the UI.
+DebriPod combines YouTube, Soulseek, and Knaben results into one normalized search flow. The UI can stream or download YouTube results, group Soulseek results by user and folder, and send Knaben magnet results to Real Debrid.
 
-Smart playlists live in `Debripod-SmartPlaylists`. Each smart playlist has a `rules.txt` file and a generated `playlist.m3u8` file. Rules can filter by liked status, artist, album artist, album, genre, and folder. Smart playlist rule groups can use any or all matching behavior.
+Long running work appears in the task panel. Real Debrid downloads, Soulseek downloads, YouTube downloads, and video processing jobs can show queued, active, paused, failed, canceled, and completed states.
 
-### Search across online sources
+### Playlists
 
-The combined search API pulls together YouTube, Soulseek, and Knaben results into one normalized result list. Results are sorted and exposed to the UI with shared fields like title, source, size, quality, file count, stream availability, and browse availability.
+Normal playlists are stored in a `DebriPod-Playlists` folder under a library root. Smart playlists are stored in `DebriPod-SmartPlaylists` and use rules to filter by liked status, artist, album artist, album, genre, and folder.
 
-Search history and search result cache are stored on disk. The UI can load previous searches and clear the search cache.
+### Last.fm
 
-### YouTube support
+Last.fm support can send now playing updates, scrobble tracks, read loved track status, and love or unlove tracks from the UI. Last.fm credentials are optional.
 
-DebriPod can search YouTube, browse channel uploads when a channel is available, list yt-dlp formats for a selected video, stream a selected format, and download selected formats into the configured YouTube download folder.
+### MCP
 
-YouTube download and stream operations use yt-dlp. ffmpeg can be passed to yt-dlp through the configured ffmpeg path, which helps with muxing video and audio formats.
-
-### Soulseek support
-
-DebriPod can connect to Soulseek through aioslsk when a username and password are configured. It can search Soulseek, group results by user and directory, display file level metadata when available, browse a user’s shared files, and enqueue selected files for download.
-
-Soulseek downloads use a task entry with per file state. The task view can show queued, downloading, paused, failed, incomplete, canceled, and complete states. Individual files can be paused, resumed, canceled, or retried.
-
-### Real Debrid and Knaben support
-
-DebriPod can search Knaben, load torrent file lists, send magnets to Real Debrid, select specific files from a torrent, wait for Real Debrid caching, and download the selected files locally.
-
-Real Debrid tasks track each selected file separately. The app records file progress, speed, output path, and error state. Failed files can be retried without restarting the entire task.
-
-### Task manager
-
-Downloads and post processing jobs run as tracked tasks. The task manager exposes active and completed tasks through the UI and API. Tasks can be paused, resumed, canceled, cleared one at a time, or cleared all at once.
-
-The task model supports Real Debrid, Soulseek, and YouTube tasks. It also tracks video post processing, including browser compatibility checks, transmuxing, transcoding, current file progress, and final completion state.
-
-### Last.fm integration
-
-DebriPod can connect to Last.fm for now playing updates, scrobbling, loved track status, and love or unlove actions. Last.fm credentials are optional. When enabled, the UI can show liked tracks and smart playlists can filter by liked status.
-
-After authentication, the Last.fm session can be cached locally so the user does not have to paste a session key every time.
-
-### Artwork and metadata
-
-DebriPod reads media metadata with ffprobe. For audio, it can extract title, artist, album artist, album, genre, track number, duration, codec, bitrate, bit depth, and sample rate.
-
-Artwork is selected from folder image files when available. Preferred filenames include cover, folder, front, and album. If no folder artwork exists, DebriPod can extract embedded artwork from audio files and cache it.
-
-### Browser compatible video processing
-
-DebriPod can check downloaded video files for browser compatibility. If a file is already compatible, it is left alone. If the container or codecs need adjustment, DebriPod can transmux or transcode to a browser friendly MP4 output.
-
-When `AUTO_TRANSCODE_FOR_BROWSER_COMPATIBILITY` is enabled, video post processing runs after downloads. When `REPLACE_ORIGINAL` is enabled, successful browser compatible output can replace the original file.
-
-### MCP support
-
-DebriPod includes MCP session handling and tool style operations for searching and starting downloads. This allows the app logic to be exposed through a structured tool interface in addition to the browser UI.
-
-## UI overview
-
-DebriPod’s UI is a browser based media console designed around a persistent player and a library centered workflow.
-
-The main library area lets you move through configured roots, switch between folder browsing and metadata browsing, and open music or video collections. In folder mode, the UI feels like a file browser with directories and playable media files. In metadata mode, it behaves more like a music app, with artist, album, song, genre, liked song, and video views.
-
-The player area is built to stay useful while you browse. It can show the current track or video, playback state, artwork when available, metadata, technical quality details, and navigation context. Playback state is saved server side, so the app can restore the current item and recent history after a restart.
-
-The search interface combines external sources into one view. YouTube results can be streamed or downloaded. Soulseek results appear grouped by user and shared directory, with file details like size, format, bitrate, bit depth, and sample rate when available. Knaben results can lead into Real Debrid file selection and downloading.
-
-The task panel shows long running work without hiding the rest of the app. It is used for Real Debrid downloads, Soulseek downloads, YouTube downloads, and video processing. Tasks show overall status plus file level status, so you can see what is queued, active, paused, failed, completed, or canceled.
-
-The visual design is meant to feel like a modern iPod style web app. The current configuration includes Liquid GL settings for the glass effect, a clear mode option, and a playback streaming mode option. The app also ships an embedded icon route so the UI can use a bundled app icon without depending on external assets.
+DebriPod includes optional MCP support. When enabled, it exposes selected app operations through a structured tool interface in addition to the browser UI.
 
 ## Repository layout
 
 ```text
 debripod/
-  __main__.py             Package runner for python -m debripod
+  __main__.py             package runner for python -m debripod
   app.py                  Flask app entry point
-  config.py               JSON config loader and safe secret redaction helpers
-  media_types.py          Media extensions, playlist folder names, and smart playlist template
-  paths.py                Cache, art, and transcode path helpers
-  runtime.py              App factory, startup, and backward-compatible runtime facade
-  runtime_*.py            Split runtime state, routes, and download workers
-  Library/                Library root and search cache helpers
-  MCP/                    MCP HTTP/SSE route helpers
-  Routes/                 Modular Flask route groups
-  Services/               Real Debrid, Knaben, and Last.fm service helpers
-  Tasks/                  Task model and task manager helpers
-  playback/               Streaming, range response, ffprobe, and command helpers
+  config.py               startup config loader and secret redaction helpers
+  media_types.py          media extensions and playlist constants
+  paths.py                cache, art, and transcode path helpers
+  runtime.py              app startup and runtime facade
+  runtime_*.py            split runtime state, routes, and workers
+  Library/                library root and search cache helpers
+  MCP/                    MCP HTTP and SSE route helpers
+  Routes/                 modular Flask route groups
+  Services/               Real Debrid, Knaben, and Last.fm helpers
+  Tasks/                  task model and task manager helpers
+  playback/               streaming, range responses, ffprobe, and command helpers
 config/
-  debripod.example.json   Full example config
-  debripod.json           Safe default config when present
-scripts/
-  run.ps1                 Windows helper script
-requirements.txt          Python dependencies
-README.md                 Project documentation
+  debripod.example.json   safe startup config example
+  debripod.local.json     local startup config, ignored by Git
+data/
+  settings.json           app settings created at runtime
+requirements.txt          pinned Python dependencies
+README.md                 project documentation
 ```
 
-## Requirements
+## Installation
 
-DebriPod requires Python 3, Flask, requests, Pillow, aioslsk, and yt-dlp. ffmpeg and ffprobe are also required for metadata reading, artwork extraction, transcoding, muxing, and browser compatible video processing.
+These instructions assume you are starting from a fresh terminal and do not already have Python, Git, or ffmpeg installed.
 
-Install ffmpeg and make sure ffmpeg, ffprobe, and yt-dlp are available on PATH, or set their full paths in the config file.
+### Windows
 
-## Setup on Windows
+Open PowerShell.
 
-Create and activate a virtual environment:
+Install Python, Git, and ffmpeg with winget.
+
+```powershell
+winget install Python.Python.3.14
+```
+
+```powershell
+winget install Git.Git
+```
+
+```powershell
+winget install Gyan.FFmpeg
+```
+
+Close PowerShell, then open PowerShell again so the new commands are available.
+
+Choose a folder for the repo.
+
+```powershell
+cd $HOME
+```
+
+Clone the repo.
+
+```powershell
+git clone https://github.com/JoeDoe56/Debripod.git
+```
+
+Enter the repo.
+
+```powershell
+cd Debripod
+```
+
+Switch to the current working branch.
+
+```powershell
+git switch codex/testing1
+```
+
+Create the Python virtual environment.
 
 ```powershell
 py -m venv .venv
+```
+
+Activate the virtual environment.
+
+```powershell
 .\.venv\Scripts\Activate.ps1
+```
+
+Upgrade pip.
+
+```powershell
 python -m pip install --upgrade pip
+```
+
+Install DebriPod dependencies.
+
+```powershell
 pip install -r requirements.txt
 ```
 
-Copy the example config if you want a fresh local config:
+Create a local startup config.
 
 ```powershell
 Copy-Item config\debripod.example.json config\debripod.local.json
 ```
 
-Edit `config/debripod.local.json` with your local folders, download paths, ffmpeg paths, and optional service credentials.
-
-Run the app:
+Run DebriPod.
 
 ```powershell
 python -m debripod
 ```
 
-Then open the local address shown in the terminal. By default, the app uses:
+Open this address in your browser.
 
 ```text
 http://127.0.0.1:8083
 ```
 
-## Configuration
+If PowerShell blocks activation, run this command once, then activate the virtual environment again.
 
-DebriPod loads config from the first available source in this order:
+```powershell
+Set-ExecutionPolicy -Scope CurrentUser RemoteSigned
+```
 
-1. The path set in `DEBRIPOD_CONFIG`
+### macOS
+
+Open Terminal.
+
+Install the Xcode command line tools.
+
+```zsh
+xcode-select --install
+```
+
+Install Homebrew.
+
+```zsh
+/bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
+```
+
+Follow any Homebrew instructions printed at the end of the install. Then close Terminal and open it again.
+
+Install Python, Git, and ffmpeg.
+
+```zsh
+brew install python
+```
+
+```zsh
+brew install git
+```
+
+```zsh
+brew install ffmpeg
+```
+
+Choose a folder for the repo.
+
+```zsh
+cd ~
+```
+
+Clone the repo.
+
+```zsh
+git clone https://github.com/JoeDoe56/Debripod.git
+```
+
+Enter the repo.
+
+```zsh
+cd Debripod
+```
+
+Switch to the current working branch.
+
+```zsh
+git switch codex/testing1
+```
+
+Create the Python virtual environment.
+
+```zsh
+python3 -m venv .venv
+```
+
+Activate the virtual environment.
+
+```zsh
+source .venv/bin/activate
+```
+
+Upgrade pip.
+
+```zsh
+python -m pip install --upgrade pip
+```
+
+Install DebriPod dependencies.
+
+```zsh
+pip install -r requirements.txt
+```
+
+Create a local startup config.
+
+```zsh
+cp config/debripod.example.json config/debripod.local.json
+```
+
+Run DebriPod.
+
+```zsh
+python -m debripod
+```
+
+Open this address in your browser.
+
+```text
+http://127.0.0.1:8083
+```
+
+### Linux
+
+Open Terminal.
+
+These commands are for Ubuntu, Debian, and Linux Mint. For Fedora, use `sudo dnf install python3 python3-pip git ffmpeg` instead of the apt install command.
+
+Update the package list.
+
+```bash
+sudo apt update
+```
+
+Install Python, virtual environment support, Git, and ffmpeg.
+
+```bash
+sudo apt install python3 python3-venv python3-pip git ffmpeg
+```
+
+Choose a folder for the repo.
+
+```bash
+cd ~
+```
+
+Clone the repo.
+
+```bash
+git clone https://github.com/JoeDoe56/Debripod.git
+```
+
+Enter the repo.
+
+```bash
+cd Debripod
+```
+
+Switch to the current working branch.
+
+```bash
+git switch codex/testing1
+```
+
+Create the Python virtual environment.
+
+```bash
+python3 -m venv .venv
+```
+
+Activate the virtual environment.
+
+```bash
+source .venv/bin/activate
+```
+
+Upgrade pip.
+
+```bash
+python -m pip install --upgrade pip
+```
+
+Install DebriPod dependencies.
+
+```bash
+pip install -r requirements.txt
+```
+
+Create a local startup config.
+
+```bash
+cp config/debripod.example.json config/debripod.local.json
+```
+
+Run DebriPod.
+
+```bash
+python -m debripod
+```
+
+Open this address in your browser.
+
+```text
+http://127.0.0.1:8083
+```
+
+## Updating later
+
+Open a terminal in the repo folder.
+
+Activate the virtual environment.
+
+Windows:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+macOS or Linux:
+
+```bash
+source .venv/bin/activate
+```
+
+Pull the latest branch changes.
+
+```bash
+git pull
+```
+
+Update dependencies.
+
+```bash
+pip install -r requirements.txt
+```
+
+Run the app again.
+
+```bash
+python -m debripod
+```
+
+## Startup config
+
+DebriPod loads startup config from the first file it finds in this order.
+
+1. The path in the `DEBRIPOD_CONFIG` environment variable.
 2. `./config/debripod.local.json`
 3. `./config/debripod.json`
 4. `~/.config/debripod/config.json`
 
-The config file is JSON. See `config/debripod.example.json` for the full set of common settings.
-
-Common settings include:
+The example startup config is intentionally small.
 
 ```json
 {
-  "HOST": "127.0.0.1",
+  "_HOST_NOTE": "DebriPod always binds to 127.0.0.1; only PORT is configurable.",
   "PORT": 8083,
-  "APP_NAME": "DebriPod",
-  "LIQUID_GL_PRESET": "default",
-  "LIQUID_GL_MODE": "clear",
-  "PLAYBACK_STREAMING_MODE": "http",
-  "DOWNLOAD_DIR": "./data/debrid",
-  "SOULSEEK_DOWNLOAD_DIR": "./data/soulseek",
-  "YOUTUBE_DOWNLOAD_DIR": "./data/youtube",
-  "CACHE_DIR_NAME": "_debripod_cache",
-  "FFMPEG_PATH": "ffmpeg",
-  "FFPROBE_PATH": "ffprobe",
-  "YTDLP_CMD": "yt-dlp",
-  "REAL_DEBRID_API_KEY": "",
-  "SOULSEEK_USERNAME": "",
-  "SOULSEEK_PASSWORD": "",
-  "LASTFM_API_KEY": "",
-  "LASTFM_API_SECRET": "",
-  "KNABEN_API_KEY": "",
-  "LIBRARY_FOLDERS": [
-    { "path": "./data/debrid", "mode": "list" },
-    { "path": "./data/soulseek", "mode": "meta" },
-    { "path": "./data/music", "mode": "meta" }
-  ]
+  "USERS": [],
+  "APP_SECRET_KEY": "",
+  "ENABLE_MCP": false,
+  "MCP_TOKEN": "",
+  "SETUP_COMPLETE": false
 }
 ```
 
-Keep real credentials in `config/debripod.local.json` or another ignored local config file. Do not commit personal tokens, account credentials, or private paths.
+On first run, DebriPod creates a secret key when needed and shows the local setup screen for the first admin user. Normal app settings and service credentials are managed after login from the Info panel and stored under `data/`.
 
-## Library folders
+DebriPod always binds to `127.0.0.1`. That keeps the app local to your computer unless you deliberately add a separate tunnel, proxy, or remote access layer.
 
-`LIBRARY_FOLDERS` controls what DebriPod shows in the library.
+## Feature setup guide
 
-Use `list` mode when you want the UI to behave like a folder browser. This is useful for downloads, mixed media folders, and folders where the structure matters.
+Start DebriPod, open `http://127.0.0.1:8083`, finish the first admin setup, then open the Info panel. Most features are configured from there.
 
-Use `meta` mode when you want DebriPod to build music views from metadata tags. This is useful for organized music folders where artist, album, genre, track number, and liked status should drive browsing.
+### Local library
 
-## Playlists
+Open Info, then Library.
 
-Normal playlists are stored under `Debripod-Playlists` in a library root. Smart playlists are stored under `Debripod-SmartPlaylists`.
+Add each folder that contains music, videos, downloads, or playlists.
 
-A smart playlist contains:
+Use `list` mode for folders where the real folder structure matters. This is the best choice for mixed downloads, video folders, unsorted files, and folders where you want DebriPod to behave like a file browser.
+
+Use `meta` mode for organized music folders where artist, album, genre, track number, and liked status should drive browsing.
+
+Save the library settings, then refresh or rescan from the UI if the library view does not update immediately.
+
+### Playback tools
+
+Open Info, then Playback.
+
+For Windows, set `FFMPEG_PATH` and `FFPROBE_PATH` to the full paths for `ffmpeg.exe` and `ffprobe.exe` if DebriPod does not find them automatically. If winget installed ffmpeg correctly, the command names `ffmpeg` and `ffprobe` should usually work.
+
+For macOS and Linux, leave the values as `ffmpeg` and `ffprobe` when those commands are installed on PATH.
+
+Keep `AUTO_TRANSCODE_FOR_BROWSER_COMPATIBILITY` enabled if you want downloaded videos converted or remuxed when needed for browser playback.
+
+Keep `REPLACE_ORIGINAL` enabled only if you want successful browser compatible output to replace the original download.
+
+### YouTube
+
+YouTube support uses yt-dlp, which is installed from `requirements.txt`.
+
+Open Info, then Services or Playback.
+
+Leave `YTDLP_CMD` as `yt-dlp` when the virtual environment is active and yt-dlp is installed normally.
+
+Set `YOUTUBE_DOWNLOAD_DIR` to the folder where YouTube downloads should be saved.
+
+Use the search UI to search YouTube, browse a channel when available, choose a format, stream the result, or start a download.
+
+### Soulseek
+
+Soulseek support uses `aioslsk`.
+
+Open Info, then Services.
+
+Set `SOULSEEK_USERNAME`.
+
+Set `SOULSEEK_PASSWORD`.
+
+Set `SOULSEEK_DOWNLOAD_DIR` to the folder where Soulseek downloads should be saved.
+
+Keep `SOULSEEK_LISTENING_PORT` at the default unless you know you need a different port.
+
+Restart DebriPod after adding or changing Soulseek credentials so the Soulseek client starts with the new settings.
+
+After restart, use the search UI and choose Soulseek results. Downloads appear in the task panel.
+
+### Real Debrid
+
+Open your Real Debrid account page and create or copy an API token.
+
+Open Info, then Services.
+
+Set `REAL_DEBRID_API_KEY`.
+
+Set `DOWNLOAD_DIR` to the folder where Real Debrid downloads should be saved.
+
+Use Knaben search in DebriPod, open a torrent result, choose the files you want, and start the Real Debrid download. Real Debrid tasks track file progress, speed, output path, and failure state.
+
+### Knaben
+
+Knaben search can work without an API key when the public free tier is available.
+
+Open Info, then Services.
+
+Leave `KNABEN_API_KEY` blank unless you have a Knaben key.
+
+Leave `KNABEN_API_BASE` as `https://api.knaben.org/v1` unless the API changes.
+
+Use the search UI and choose Knaben as a source. Knaben results are mainly useful with Real Debrid enabled because torrent magnets can be sent to Real Debrid for caching and downloading.
+
+### Last.fm
+
+Create a Last.fm API account and get an API key plus API secret.
+
+Open Info, then Services.
+
+Set `LASTFM_API_KEY`.
+
+Set `LASTFM_API_SECRET`.
+
+Leave `LASTFM_SESSION_KEY` blank the first time unless you already have a valid session key.
+
+Use the Last.fm connect flow in the UI. After authentication, DebriPod can cache the session locally.
+
+When enabled, DebriPod can update now playing, scrobble tracks, check loved track status, and love or unlove tracks. Liked song views and liked smart playlist rules depend on this integration.
+
+### MCP
+
+Open `config/debripod.local.json`.
+
+Set `ENABLE_MCP` to `true`.
+
+If `MCP_TOKEN` is blank, DebriPod can generate one during startup.
+
+Restart DebriPod.
+
+Use MCP only on a local trusted machine unless you fully understand how the client will connect. The browser app still binds to `127.0.0.1`.
+
+## Smart playlist rules
+
+A smart playlist contains this structure.
 
 ```text
 rules.txt
 playlist.m3u8
 ```
 
-The default smart playlist rule format looks like this:
+The rule format looks like this.
 
 ```text
 [name]
@@ -232,52 +540,131 @@ The default smart playlist rule format looks like this:
 }
 ```
 
-Remove the comment marker from rules you want to activate, then save the smart playlist rules from the UI.
+Remove the `#` marker from rules you want to activate, then save the smart playlist from the UI.
 
-## External services
+## Runtime data
 
-### Real Debrid
+DebriPod writes runtime data to configured download folders and to local data and cache folders. Runtime files can include artwork cache, transcoded files, HLS output, ffmpeg logs, playback state, search history, search cache, Last.fm session data, task state, user settings, and downloaded media.
 
-Set `REAL_DEBRID_API_KEY` to enable Real Debrid downloading. DebriPod uses Real Debrid for magnet based downloads from Knaben results. The app can preview torrent files, select files, enqueue downloads, and save them into `DOWNLOAD_DIR`.
+These files should stay out of Git. Local configs, virtual environments, cache folders, media folders, logs, and runtime output should not be committed.
 
-### Soulseek
+## Troubleshooting
 
-Set `SOULSEEK_USERNAME` and `SOULSEEK_PASSWORD` to enable Soulseek. DebriPod starts the Soulseek client at app startup and keeps it connected. Search and download behavior can be tuned with the Soulseek timeout, max results, idle stop, hard max, and listening port settings.
+### The app starts but the browser cannot open it
 
-### YouTube
+Make sure the terminal still says DebriPod is running. Then open this exact address.
 
-YouTube support uses yt-dlp. DebriPod can search YouTube, browse channel videos, list formats, stream selected formats, and download selected formats. Set `YTDLP_CMD` if yt-dlp is not on PATH.
+```text
+http://127.0.0.1:8083
+```
 
-### Last.fm
+If you changed the port in `config/debripod.local.json`, use that port instead.
 
-Set `LASTFM_API_KEY` and `LASTFM_API_SECRET` to enable Last.fm authentication. After connecting, DebriPod can send now playing updates, scrobble tracks, and love or unlove tracks. Liked song views and liked smart playlist rules depend on this integration.
+### ffmpeg or ffprobe is missing
 
-### Knaben
+Check that the commands work in a fresh terminal.
 
-Knaben search works with the configured Knaben API settings. `KNABEN_API_KEY` is optional and can be left blank for free tier use when supported.
+```bash
+ffmpeg -version
+```
 
-## Runtime data and cache
+```bash
+ffprobe -version
+```
 
-DebriPod writes runtime data to the configured download folders and cache folder. The cache can include artwork, transcoded files, HLS output, ffmpeg logs, playback state, search cache, Last.fm session data, and task state.
+If they do not work, install ffmpeg again or set the full executable paths in Info, then Playback.
 
-These files should usually stay out of Git. The repository `.gitignore` is set up to ignore virtual environments, cache folders, local media folders, local config variants, logs, and runtime output.
+### Python cannot import Flask or another dependency
+
+Activate the virtual environment again and reinstall requirements.
+
+Windows:
+
+```powershell
+.\.venv\Scripts\Activate.ps1
+```
+
+macOS or Linux:
+
+```bash
+source .venv/bin/activate
+```
+
+Then run:
+
+```bash
+pip install -r requirements.txt
+```
+
+### Soulseek does not connect
+
+Confirm the username and password are correct. Restart DebriPod after changing Soulseek settings. If your network blocks incoming connections, search may still work differently from downloads or browsing. Try a different listening port only if you know the current port is blocked or already in use.
+
+### Real Debrid downloads do not start
+
+Confirm `REAL_DEBRID_API_KEY` is set. Confirm your Real Debrid account is active. Try a different Knaben result because not every torrent will be cached or available.
+
+### YouTube streaming or downloading fails
+
+Update yt-dlp inside the virtual environment.
+
+```bash
+pip install --upgrade yt-dlp
+```
+
+Then restart DebriPod.
+
+## Security notes
+
+DebriPod is designed as a local app and binds to `127.0.0.1`. Do not expose it directly to the public internet.
+
+Keep `config/debripod.local.json`, `data/`, downloaded media folders, and logs out of Git because they may contain usernames, API keys, session data, paths, or personal media information.
+
+Use a strong admin password. Keep API tokens private. Rotate tokens if they are ever pasted into an issue, screenshot, commit, or chat.
+
+## Dependencies
+
+The pinned Python dependencies are listed in `requirements.txt`.
+
+```text
+Flask==3.1.3
+requests==2.34.2
+Pillow==12.2.0
+aioslsk==1.6.3
+yt-dlp==2026.6.9
+```
+
+DebriPod also expects `ffmpeg` and `ffprobe` to be installed for the complete media experience.
+
+## Licensing and attributions
+
+This project should be treated as GPL compatible when distributed with the current Soulseek integration because `aioslsk` is licensed under GNU General Public License v3 or later.
+
+Recommended project license for the current full build: `GPL-3.0-or-later`.
+
+Do not add a noncommercial restriction to the normal GPL build. GPL licensed distributions must allow commercial use under the GPL terms. A separate private personal use policy can exist for your own unpublished copy, but public redistribution with `aioslsk` should follow GPL v3 or later.
+
+Attributions for direct runtime dependencies:
+
+| Component | Purpose in DebriPod | License |
+| --- | --- | --- |
+| Flask | Local web app framework | BSD 3 Clause |
+| requests | HTTP requests for service APIs | Apache 2.0 |
+| Pillow | Image and artwork handling | MIT CMU |
+| aioslsk | Soulseek client integration | GPL 3.0 or later |
+| yt-dlp | YouTube searching, streaming support, and downloads | Unlicense |
+| ffmpeg and ffprobe | Metadata, muxing, transcoding, and compatibility checks | License depends on the installed build |
+
+DebriPod interacts with external services including YouTube, Soulseek, Real Debrid, Knaben, and Last.fm. Users are responsible for following the terms of the services they enable and for only downloading or streaming media they are allowed to access.
 
 ## Development notes
 
-The app runtime is split across focused package modules. `debripod/app.py` exposes the Flask-style factory entry point, while `debripod/runtime.py` keeps startup behavior and a small backward-compatible facade for older scripts.
+The app runs through this package entry point.
 
-The current package entry point is:
-
-```powershell
+```bash
 python -m debripod
 ```
 
-`debripod/app.py` exposes `create_app()` for Flask style app loading, and `debripod/__main__.py` calls the same main function used by the direct package runner.
+The package runner calls `debripod.app`, which imports the runtime app factory and main startup function. The runtime starts Flask on `127.0.0.1` with the configured port.
 
-## Safety notes
-
-DebriPod is intended to run as a local app. Keep `HOST` set to `127.0.0.1` unless you understand the security implications of exposing it to other devices.
-
-Never commit real API keys, Real Debrid tokens, Soulseek credentials, Last.fm secrets, private paths, downloaded media, cache files, or local runtime files.
-
-Use `config/debripod.local.json` for private settings and keep it ignored by Git.
+Keep startup settings in the startup config. Keep normal app settings in the UI after login. This separation keeps secrets and user specific runtime state away from the committed example config.

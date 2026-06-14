@@ -10,8 +10,8 @@ PLAYLIST_EXTS = {
     ".m3u", ".m3u8", ".pls",
 }
 
-PLAYLISTS_FOLDER_NAME = "Debripod-Playlists"
-SMART_PLAYLISTS_FOLDER_NAME = "Debripod-SmartPlaylists"
+PLAYLISTS_FOLDER_NAME = "DebriPod-Playlists"
+SMART_PLAYLISTS_FOLDER_NAME = "DebriPod-SmartPlaylists"
 SMART_PLAYLIST_RULES_FILENAME = "rules.txt"
 SMART_PLAYLIST_MEDIA_FILENAME = "playlist.m3u8"
 

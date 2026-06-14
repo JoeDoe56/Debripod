@@ -46,31 +46,10 @@ def main() -> None:
         state.configure_aioslsk_logging()
     except Exception:
         pass
-    if not state.REAL_DEBRID_API_KEY:
-        raise RuntimeError("Set REAL_DEBRID_API_KEY at the top of this file before running")
-
-    if (state.SOULSEEK_USERNAME or "").strip() and (state.SOULSEEK_PASSWORD or "").strip():
-        try:
-            state.SOULSEEK_SERVICE = state.SoulseekService(
-                username=state.SOULSEEK_USERNAME,
-                password=state.SOULSEEK_PASSWORD,
-                download_dir=state.SOULSEEK_DOWNLOAD_DIR,
-                listening_port=state.SOULSEEK_LISTENING_PORT,
-                obfuscated_port=state.SOULSEEK_OBFUSCATED_PORT,
-                search_timeout_sec=state.SOULSEEK_SEARCH_TIMEOUT_SEC,
-                search_max_results=state.SOULSEEK_SEARCH_MAX_RESULTS,
-            )
-            if not state.SOULSEEK_SERVICE.is_ready():
-                err = state.SOULSEEK_SERVICE.start_error() or "Unknown start error"
-                print("Soulseek failed to start:", err)
-        except Exception as e:
-            state.SOULSEEK_SERVICE = None
-            print("Soulseek failed to start:", str(e))
-    else:
-        state.SOULSEEK_SERVICE = None
+    state.SOULSEEK_SERVICE = None
 
     _sync_shared_state()
-    create_app().run(host=state.HOST, port=state.PORT, debug=False, threaded=True)
+    create_app().run(host="127.0.0.1", port=state.PORT, debug=False, threaded=True)
 
 
 def __getattr__(name: str) -> Any:
