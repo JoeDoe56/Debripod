@@ -156,7 +156,7 @@
   let uiSettings = loadUiSettings();
   let liquidGlassPresetName = uiSettings.liquidGlassPreset;
   let liquidGlassModeName = uiSettings.liquidGlassMode;
-  let wheelRotationMaxDegrees = 0.95;
+  let wheelRotationMaxDegrees = 10;
   let liquidGlassReady = false;
   let liquidWheelLenses = [];
   let wheelGlassResetTimer = null;
@@ -185,7 +185,7 @@
 
   function normalizeWheelRotationMaxDegrees(value){
     const n = Number(value);
-    if(!Number.isFinite(n)) return 0.95;
+    if(!Number.isFinite(n)) return 10;
     return Math.max(0, Math.min(12, n));
   }
 
@@ -856,6 +856,7 @@ const libHeader = document.getElementById("libHeader");
           if(ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.tagName === "SELECT" || ae.isContentEditable)) return;
           libHeader.classList.add("pathPillHidden");
           animatePathPillGlassTransition("path pill hidden", 220);
+          setTimeout(()=> hidePathPillGlassNow("path pill hidden final"), 260);
         }catch(e){}
       }, (ms || 2500));
     }catch(e){}
@@ -1046,10 +1047,12 @@ const libHeader = document.getElementById("libHeader");
       if(!renderer) return;
       if(renderer.setVisible) renderer.setVisible(true);
       renderer._metricsDirty = true;
+      let touched = false;
       if(renderer.lenses && renderer.lenses.length){
         renderer.lenses.forEach((lens)=>{
           try{
             if(!lens || !lens.el || !lens.el.classList || !lens.el.classList.contains("pathPillGlass")) return;
+            touched = true;
             lens.rectPx = null;
             if(lens.updateMetrics) lens.updateMetrics();
             lens.revealTypeIndex = 1;
@@ -1058,6 +1061,22 @@ const libHeader = document.getElementById("libHeader");
         });
       }
       if(refreshSource !== false) refreshLiquidGlassVisualizerSources(reason || "path pill");
+      if(touched && renderer.render) renderer.render(currentVisualizerFrameState());
+    }catch(e){}
+  }
+
+  function hidePathPillGlassNow(reason){
+    try{
+      const renderer = liquidGlassRendererByKey("default");
+      if(!renderer || !renderer.lenses) return;
+      renderer.lenses.forEach((lens)=>{
+        try{
+          if(!lens || !lens.el || !lens.el.classList || !lens.el.classList.contains("pathPillGlass")) return;
+          lens.revealTypeIndex = 1;
+          lens._revealProgress = 0;
+          lens.rectPx = null;
+        }catch(e){}
+      });
       if(renderer.render) renderer.render(currentVisualizerFrameState());
     }catch(e){}
   }
@@ -2183,8 +2202,8 @@ function setVisualizerActive(on){
   if(wasActive && !visualizerActive) visualizerResidualUntil = performance.now() + 2200;
   try{
     if(!visualizerBg) return;
-    visualizerBg.classList.toggle("active", !!(on || visualizerResidualVisible(performance.now())));
-    visualizerBg.classList.toggle("off", !(on || visualizerResidualVisible(performance.now())));
+    visualizerBg.classList.toggle("active", !!on);
+    visualizerBg.classList.toggle("off", !on);
     renderVisualizerCanvas(performance.now());
     if(on && visualizerFrameTimer){
       clearTimeout(visualizerFrameTimer);
@@ -4889,6 +4908,7 @@ function vibeTick(){
       state.current = view;
       setHeader();
       await view.load();
+      setHeader();
     });
   }
 
@@ -5048,7 +5068,7 @@ function vibeTick(){
       ],
       advanced: [
       {key:"PORT", label:"Port", type:"startup_number", value:startup.PORT},
-      {key:"WHEEL_ROTATION_MAX_DEGREES", label:"Max wheel tilt", type:"number", value:s.WHEEL_ROTATION_MAX_DEGREES},
+      {key:"WHEEL_ROTATION_MAX_DEGREES", label:"Max wheel tilt", type:"number", value:(s.WHEEL_ROTATION_MAX_DEGREES == null ? 10 : s.WHEEL_ROTATION_MAX_DEGREES)},
       {key:"ENABLE_MCP", label:"MCP enabled", type:"startup_bool", value:startup.ENABLE_MCP},
       {key:"MCP_TOKEN", label:"Reset MCP token", type:"mcp_token", value:startup.MCP_TOKEN_SET ? "Saved" : "Unset"},
       {key:"CACHE_DIR_NAME", label:"Cache folder name", type:"text", value:s.CACHE_DIR_NAME},
