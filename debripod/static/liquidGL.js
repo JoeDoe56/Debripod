@@ -295,6 +295,8 @@
         uniform float u_hollowInset;
         uniform bool  u_hollowMaskContent;
         uniform int   u_glassMode;
+        uniform float u_glassDarkAmount;
+        uniform float u_glassLightAmount;
 
         float udRoundBox( vec2 p, vec2 b, float r ) {
           return length(max(abs(p)-b+r,0.0))-r;
@@ -414,9 +416,9 @@
           }
 
           if (u_glassMode == 1) {
-            final.rgb = mix(final.rgb, vec3(0.0), 0.18);
+            final.rgb = mix(final.rgb, vec3(0.0), clamp(u_glassDarkAmount, 0.0, 0.80));
           } else if (u_glassMode == 2) {
-            final.rgb = mix(final.rgb, vec3(1.0), 0.18);
+            final.rgb = mix(final.rgb, vec3(1.0), clamp(u_glassLightAmount, 0.0, 0.80));
           }
 
           if (u_revealType == 1) {
@@ -469,6 +471,8 @@
         hollowInset: gl.getUniformLocation(this.program, "u_hollowInset"),
         hollowMaskContent: gl.getUniformLocation(this.program, "u_hollowMaskContent"),
         glassMode: gl.getUniformLocation(this.program, "u_glassMode"),
+        glassDarkAmount: gl.getUniformLocation(this.program, "u_glassDarkAmount"),
+        glassLightAmount: gl.getUniformLocation(this.program, "u_glassLightAmount"),
       };
     }
 
@@ -899,6 +903,8 @@
       gl.uniform1f(this.u.hollowInset, lens.hollowInsetGl || 0);
       gl.uniform1i(this.u.hollowMaskContent, lens.hollowMaskContent ? 1 : 0);
       gl.uniform1i(this.u.glassMode, lens.glassModeIndex || 0);
+      gl.uniform1f(this.u.glassDarkAmount, Number.isFinite(Number(lens.options.glassDarkAmount)) ? Number(lens.options.glassDarkAmount) : 0.18);
+      gl.uniform1f(this.u.glassLightAmount, Number.isFinite(Number(lens.options.glassLightAmount)) ? Number(lens.options.glassLightAmount) : 0.18);
 
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
@@ -1728,10 +1734,9 @@
           style.display === "none" ||
           style.visibility === "hidden" ||
           parseFloat(style.opacity || "1") <= 0.01 ||
-          (node.classList &&
+            (node.classList &&
             (node.classList.contains("npPillHidden") ||
-              node.classList.contains("npPillSwapHidden") ||
-              node.classList.contains("pathPillHidden")))
+              node.classList.contains("npPillSwapHidden")))
         ) {
           return true;
         }

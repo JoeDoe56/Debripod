@@ -26,7 +26,7 @@ def configure_real_debrid(
 def rd_headers() -> Dict[str, str]:
     return {
         "Authorization": f"Bearer {_api_key_provider()}",
-        "User-Agent": "Debripod/1.0",
+        "User-Agent": "DebriPod/1.0",
     }
 
 

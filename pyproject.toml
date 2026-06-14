@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "debripod"
 version = "0.1.0"
-description = "Local Flask media app for Debripod"
+description = "Local Flask media app for DebriPod"
 readme = "README.md"
 requires-python = ">=3.10"
 dependencies = [

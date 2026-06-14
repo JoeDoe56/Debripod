@@ -1,5 +1,5 @@
 {
-  "_HOST_NOTE": "Debripod always binds to 127.0.0.1; only PORT is configurable.",
+  "_HOST_NOTE": "DebriPod always binds to 127.0.0.1; only PORT is configurable.",
   "PORT": 8083,
   "USERS": [],
   "APP_SECRET_KEY": "",

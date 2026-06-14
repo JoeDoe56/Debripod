@@ -15,7 +15,7 @@ LOGIN_TEMPLATE = """<!doctype html>
 <html>
 <head>
   <meta charset="utf-8">
-  <title>{{ title }} - Debripod</title>
+  <title>{{ title }} - DebriPod</title>
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <style>
     :root{color-scheme:dark}
@@ -269,7 +269,7 @@ def register_auth(app: Any) -> None:
                 return redirect("/")
         return render_template_string(
             LOGIN_TEMPLATE,
-            title="Set Up Debripod",
+            title="Set Up DebriPod",
             subtitle="Create the first local admin account.",
             action=url_for("setup"),
             button="Create Account",
@@ -303,7 +303,7 @@ def register_auth(app: Any) -> None:
         return render_template_string(
             LOGIN_TEMPLATE,
             title="Log In",
-            subtitle="Use your local Debripod account.",
+            subtitle="Use your local DebriPod account.",
             action=url_for("login", next=request.args.get("next") or ""),
             button="Log In",
             error=error,
@@ -337,7 +337,7 @@ def register_auth(app: Any) -> None:
         return render_template_string(
             LOGIN_TEMPLATE,
             title="Create Account",
-            subtitle="Create another local Debripod user.",
+            subtitle="Create another local DebriPod user.",
             action=url_for("account_create"),
             button="Create Account",
             error=error,
