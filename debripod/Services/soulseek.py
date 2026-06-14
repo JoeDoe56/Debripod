@@ -1399,6 +1399,22 @@ class SoulseekService:
         self._stop = threading.Event()
         self._client = None
         self._start_error = None
+        self._start_warning = ""
+        self._startup_status = {
+            "username_set": bool(self.username),
+            "download_dir": self.download_dir,
+            "listening_port": self.listening_port,
+            "obfuscated_port": self.obfuscated_port,
+            "upnp_enabled": False,
+            "peer_obfuscate": False,
+            "client_start_attempted": False,
+            "client_start_ok": False,
+            "login_attempted": False,
+            "login_ok": False,
+            "ready": False,
+            "error": "",
+            "warning": "",
+        }
 
         os.makedirs(self.download_dir, exist_ok=True)
         self.incoming_dir = os.path.join(self.download_dir, "_incoming")
@@ -1415,6 +1431,13 @@ class SoulseekService:
 
     def start_error(self) -> Optional[str]:
         return self._start_error
+
+    def startup_status(self) -> Dict[str, Any]:
+        status = dict(self._startup_status)
+        status["ready"] = self.is_ready()
+        status["error"] = str(self._start_error or "")
+        status["warning"] = str(self._start_warning or status.get("warning") or "")
+        return status
 
     def shutdown(self) -> None:
         self._stop.set()
@@ -1460,22 +1483,54 @@ class SoulseekService:
             loop.run_forever()
         except Exception as e:
             self._start_error = str(e)
+            try:
+                self._startup_status["error"] = self._start_error
+                self._startup_status["ready"] = False
+            except Exception:
+                pass
         finally:
             self._ready.set()
 
-    async def _async_start(self):
-        try:
-            from aioslsk.client import SoulSeekClient
-            from aioslsk.settings import Settings, CredentialsSettings
+    def _is_non_obfuscated_listen_error(self, exc: Exception) -> bool:
+        text = str(exc or "").lower().replace("_", "-")
+        return "non-obfuscated" in text and "listening port" in text
 
-            settings = Settings(credentials=CredentialsSettings(username=self.username, password=self.password))
-# Reliability relevant options
+    async def _stop_client_obj(self, client: Any) -> None:
+        if not client:
+            return
+        for name in ("stop", "close", "disconnect"):
+            fn = getattr(client, name, None)
+            if not fn:
+                continue
             try:
-                settings.network.listening.port = int(self.listening_port)
+                result = fn()
+                if hasattr(result, "__await__"):
+                    await result
+                break
+            except Exception:
+                continue
+
+    async def _async_start(self):
+        from aioslsk.client import SoulSeekClient
+        from aioslsk.network.network import ListeningConnectionErrorMode
+        from aioslsk.settings import Settings, CredentialsSettings
+
+        def _build_settings(listening_port: int, obfuscated_port: int, fallback: bool = False):
+            settings = Settings(credentials=CredentialsSettings(username=self.username, password=self.password))
+            # Reliability relevant options
+            try:
+                settings.network.listening.port = int(listening_port)
             except Exception:
                 pass
             try:
-                settings.network.listening.obfuscated_port = int(self.obfuscated_port)
+                settings.network.listening.obfuscated_port = int(obfuscated_port)
+            except Exception:
+                pass
+            try:
+                if fallback or int(listening_port or 0) <= 0:
+                    settings.network.listening.error_mode = ListeningConnectionErrorMode.ANY
+                else:
+                    settings.network.listening.error_mode = ListeningConnectionErrorMode.CLEAR
             except Exception:
                 pass
             try:
@@ -1494,19 +1549,67 @@ class SoulseekService:
                 settings.server.reconnect.auto = True
             except Exception:
                 pass
+            return settings
+
+        async def _attempt_start(settings, warning: str = ""):
+            self._startup_status.update({
+                "listening_port": int(getattr(settings.network.listening, "port", 0) or 0),
+                "obfuscated_port": int(getattr(settings.network.listening, "obfuscated_port", 0) or 0),
+                "upnp_enabled": bool(getattr(settings.network.upnp, "enabled", False)),
+                "peer_obfuscate": bool(getattr(settings.network.peer, "obfuscate", False)),
+                "client_start_attempted": True,
+                "client_start_ok": False,
+                "login_attempted": False,
+                "login_ok": False,
+                "ready": False,
+                "warning": warning,
+            })
 
             client = SoulSeekClient(settings)
             self._client = client
 
             await client.start()
+            self._startup_status["client_start_ok"] = True
+            self._startup_status["login_attempted"] = True
             await client.login()
+            self._startup_status["login_ok"] = True
+
+            try:
+                ports = client.network.get_listening_ports()
+                self._startup_status["listening_port"] = int(ports[0] or 0)
+                self._startup_status["obfuscated_port"] = int(ports[1] or 0)
+            except Exception:
+                pass
 
             # Background poller to integrate transfer progress into DebriPod tasks
             asyncio.create_task(self._poll_transfers_loop())
 
+            self._start_error = None
+            self._start_warning = warning
+            self._startup_status["ready"] = True
             self._ready.set()
+
+        try:
+            try:
+                await _attempt_start(_build_settings(self.listening_port, self.obfuscated_port))
+                return
+            except Exception as first_exc:
+                await self._stop_client_obj(self._client)
+                self._client = None
+                if not self._is_non_obfuscated_listen_error(first_exc):
+                    raise
+                warning = f"Configured listening port failed; Soulseek started with fallback listener settings. Original error: {first_exc}"
+                try:
+                    await _attempt_start(_build_settings(0, self.obfuscated_port, fallback=True), warning=warning)
+                    return
+                except Exception:
+                    await self._stop_client_obj(self._client)
+                    self._client = None
+                await _attempt_start(_build_settings(0, 0, fallback=True), warning=warning)
         except Exception as e:
             self._start_error = str(e)
+            self._startup_status["error"] = self._start_error
+            self._startup_status["ready"] = False
             self._ready.set()
 
     def submit(self, coro, timeout: int = 30):

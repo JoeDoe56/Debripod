@@ -152,6 +152,26 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
 
 def _coerce_setting(key: str, value: Any) -> Any:
     default = DEFAULT_APP_SETTINGS.get(key)
+    if key in {"SOULSEEK_LISTENING_PORT", "SOULSEEK_OBFUSCATED_PORT"}:
+        try:
+            return max(0, min(65535, int(value)))
+        except Exception:
+            return int(default or 0)
+    if key in {"SOULSEEK_SEARCH_TIMEOUT_SEC", "SOULSEEK_SEARCH_HARD_MAX_SEC"}:
+        try:
+            return max(1, int(float(value)))
+        except Exception:
+            return int(default or 1)
+    if key == "SOULSEEK_SEARCH_MAX_RESULTS":
+        try:
+            return max(1, int(value))
+        except Exception:
+            return int(default or 1)
+    if key == "SOULSEEK_SEARCH_IDLE_STOP_SEC":
+        try:
+            return max(0.1, float(value))
+        except Exception:
+            return float(default or 0.1)
     if key == "LIBRARY_FOLDERS":
         out = []
         if isinstance(value, list):
