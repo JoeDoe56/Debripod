@@ -4445,7 +4445,19 @@ function fmtTime(sec){
                 ? ((state.playlistEdit && typeof state.playlistEdit.editNameValue === "string") ? state.playlistEdit.editNameValue : ((state.playlistEdit && state.playlistEdit.label) ? state.playlistEdit.label : ""))
                 : ((state.libSearch && typeof state.libSearch[field] === "string") ? state.libSearch[field] : "")));
           labelSpan.textContent = (v && v.trim()) ? v : placeholder;
-          li.appendChild(labelSpan);
+          if(!isPlaylistCreate && !isSmartPlaylistCreate && !isPlaylistRename && field === "q" && v && String(v).trim() && state.libSearch && state.libSearch.searching){
+            const searchTextWrap = document.createElement("span");
+            searchTextWrap.className = "libSearchQueryText";
+            searchTextWrap.appendChild(labelSpan);
+            const loader = document.createElement("span");
+            loader.className = "libSearchInlineLoader";
+            loader.setAttribute("aria-label", "Searching");
+            loader.setAttribute("title", "Searching");
+            searchTextWrap.appendChild(loader);
+            li.appendChild(searchTextWrap);
+          }else{
+            li.appendChild(labelSpan);
+          }
 
           const wrap = document.createElement("span");
           wrap.className = "ipodPills";
@@ -4968,6 +4980,13 @@ function vibeTick(){
     return {text:"Restart after save", tone:"warn"};
   }
 
+  function settingSavePill(row){
+    const key = String((row && row.key) || "");
+    if(key.indexOf("SOULSEEK_") === 0) return {text:"Applied after save"};
+    if((row && row.type) === "startup_number" || (row && row.type) === "startup_bool") return settingsRestartPill();
+    return {text:"Saved after edit"};
+  }
+
   async function settingsSave(updates, startupUpdates){
     const res = await apiPost("/api/settings/save", {settings: updates || {}, startup: startupUpdates || {}});
     const js = (res && res.json) ? res.json : {};
@@ -5029,6 +5048,7 @@ function vibeTick(){
     const startup = state.startupSettings || {};
     const connections = state.connectionStatus || {};
     const slsk = connections.SOULSEEK || {};
+    const slskStatus = slsk.startup_status || {};
     const lf = connections.LASTFM_SESSION || {};
     const tools = state.toolStatus || {};
     const ffmpeg = tools.ffmpeg || {};
@@ -5062,6 +5082,12 @@ function vibeTick(){
       advanced: [
       {key:"PORT", label:"Port", type:"startup_number", value:startup.PORT},
       {key:"WHEEL_ROTATION_MAX_DEGREES", label:"Max wheel tilt", type:"number", value:(s.WHEEL_ROTATION_MAX_DEGREES == null ? 10 : s.WHEEL_ROTATION_MAX_DEGREES)},
+      {key:"SOULSEEK_LISTENING_PORT", label:"Soulseek listen port", type:"number", value:s.SOULSEEK_LISTENING_PORT, sub_label:"Effective: " + String(slskStatus.listening_port == null ? s.SOULSEEK_LISTENING_PORT : slskStatus.listening_port)},
+      {key:"SOULSEEK_OBFUSCATED_PORT", label:"Soulseek obfuscated port", type:"number", value:s.SOULSEEK_OBFUSCATED_PORT, sub_label:"Effective: " + String(slskStatus.obfuscated_port == null ? s.SOULSEEK_OBFUSCATED_PORT : slskStatus.obfuscated_port)},
+      {key:"SOULSEEK_SEARCH_TIMEOUT_SEC", label:"Soulseek search timeout", type:"number", value:s.SOULSEEK_SEARCH_TIMEOUT_SEC},
+      {key:"SOULSEEK_SEARCH_MAX_RESULTS", label:"Soulseek search max results", type:"number", value:s.SOULSEEK_SEARCH_MAX_RESULTS},
+      {key:"SOULSEEK_SEARCH_IDLE_STOP_SEC", label:"Soulseek idle stop", type:"number", value:s.SOULSEEK_SEARCH_IDLE_STOP_SEC},
+      {key:"SOULSEEK_SEARCH_HARD_MAX_SEC", label:"Soulseek hard max", type:"number", value:s.SOULSEEK_SEARCH_HARD_MAX_SEC},
       {key:"ENABLE_MCP", label:"MCP enabled", type:"startup_bool", value:startup.ENABLE_MCP},
       {key:"MCP_TOKEN", label:"Reset MCP token", type:"mcp_token", value:startup.MCP_TOKEN_SET ? "Saved" : "Unset"},
       {key:"CACHE_DIR_NAME", label:"Cache folder name", type:"text", value:s.CACHE_DIR_NAME},
@@ -5144,7 +5170,7 @@ function vibeTick(){
           value:r.value,
           tool:r.tool || "",
           toolStatus:r.toolStatus || null,
-          pills:(settingConnectionPills(r) || [{text:settingValueLabel(r.value)}]).concat([settingsRestartPill()])
+          pills:(settingConnectionPills(r) || [{text:settingValueLabel(r.value)}]).concat([settingSavePill(r)])
         }));
         resetList(rows);
       }
@@ -5285,6 +5311,13 @@ function vibeTick(){
     if(type === "number" || type === "startup_number"){
       value = Number(raw);
       if(!Number.isFinite(value)) return;
+      if(key === "SOULSEEK_LISTENING_PORT" || key === "SOULSEEK_OBFUSCATED_PORT"){
+        value = Math.max(0, Math.min(65535, Math.trunc(value)));
+      }else if(key === "SOULSEEK_SEARCH_TIMEOUT_SEC" || key === "SOULSEEK_SEARCH_MAX_RESULTS" || key === "SOULSEEK_SEARCH_HARD_MAX_SEC"){
+        value = Math.max(1, Math.trunc(value));
+      }else if(key === "SOULSEEK_SEARCH_IDLE_STOP_SEC"){
+        value = Math.max(0.1, value);
+      }
     }
     if(type === "startup_number") await settingsSave({}, {[key]: value});
     else await settingsSave({[key]: value}, {});
@@ -5795,7 +5828,9 @@ async function libDoSearch(engine, q){
     const useEngine = String(engine || "combined").toLowerCase() || "combined";
     state.libSearch.q = qq;
     state.libSearch.engine = useEngine;
+    state.libSearch.searching = true;
     libSetStatus("Searching", "");
+    libRefreshList(true);
     try{
       const endpoint = (useEngine === "youtube") ? "/api/libsearch/youtube?q=" : "/api/libsearch/combined?q=";
       const js = await apiGet(endpoint + encodeURIComponent(qq));
@@ -5808,10 +5843,13 @@ async function libDoSearch(engine, q){
       state.libSearch.knaben_results = js.knaben_results || [];
       state.libSearch.slsk_users = js.slsk_users || [];
       state.libSearch.last_count = Number(js.result_count || state.libSearch.results.length || 0);
+      state.libSearch.searching = false;
       libSetStatus(String(state.libSearch.last_count) + " results", "ok");
       libRefreshList(true);
     }catch(e){
+      state.libSearch.searching = false;
       libSetStatus("Error", "warn");
+      libRefreshList(true);
       alert(String(e && e.message ? e.message : e));
     }
   }
@@ -5879,6 +5917,22 @@ async function libDoSearch(engine, q){
         const sP = [];
         if(sdir) sP.push(sdir);
         items.push({kind:"info", label:"Soulseek download dir", pills: sP});
+
+        try{
+          await settingsLoad();
+          const slsk = (state.connectionStatus && state.connectionStatus.SOULSEEK) ? state.connectionStatus.SOULSEEK : {};
+          const slskStatus = slsk.startup_status || {};
+          const statusPills = [];
+          if(slsk.set) statusPills.push({text: slsk.connected ? "Connected" : "Not connected", tone: slsk.connected ? "ok" : "warn"});
+          else statusPills.push({text:"Not configured", tone:"warn"});
+          if(slskStatus.listening_port != null) statusPills.push("Port " + String(slskStatus.listening_port));
+          if(slskStatus.obfuscated_port != null) statusPills.push("Obf " + String(slskStatus.obfuscated_port));
+          items.push({kind:"info", label:"Soulseek", pills:statusPills});
+          const slskMessage = String(slsk.error || slsk.warning || "");
+          if(slskMessage){
+            items.push({kind:"info", label: slsk.error ? "Soulseek error" : "Soulseek warning", sub_label:slskMessage, pills:[{text: slsk.error ? "Error" : "Warning", tone:"warn"}]});
+          }
+        }catch(e){}
 
         let anyBuilding = false;
         try{
@@ -5987,7 +6041,7 @@ async function libDoSearch(engine, q){
             value:r.value,
             tool:r.tool || "",
             toolStatus:r.toolStatus || null,
-            pills:(settingConnectionPills(r) || [{text:settingValueLabel(r.value)}]).concat([settingsRestartPill()])
+            pills:(settingConnectionPills(r) || [{text:settingValueLabel(r.value)}]).concat([settingSavePill(r)])
           });
         });
         resetList(items);
@@ -7974,6 +8028,7 @@ if(it.kind === "libtasks_entry"){
         state.libSearch.knaben_results = [];
         state.libSearch.slsk_users = [];
         state.libSearch.last_count = 0;
+        state.libSearch.searching = false;
         libSetStatus("", "");
         await viewLibSearch(false);
         return;

@@ -73,6 +73,10 @@ def _start_soulseek_service_for_active_settings() -> None:
         and getattr(current, "username", "") == username
         and getattr(current, "password", "") == password
         and getattr(current, "download_dir", "") == os.path.abspath(SOULSEEK_DOWNLOAD_DIR)
+        and int(getattr(current, "listening_port", 0) or 0) == int(SOULSEEK_LISTENING_PORT or 0)
+        and int(getattr(current, "obfuscated_port", 0) or 0) == int(SOULSEEK_OBFUSCATED_PORT or 0)
+        and int(getattr(current, "search_timeout_sec", 0) or 0) == int(SOULSEEK_SEARCH_TIMEOUT_SEC or 0)
+        and int(getattr(current, "search_max_results", 0) or 0) == int(SOULSEEK_SEARCH_MAX_RESULTS or 0)
     ):
         return
     _shutdown_soulseek_service()
@@ -257,7 +261,9 @@ def _search_soulseek_cached(q: str) -> Tuple[List[Dict[str, Any]], int, int, str
     else:
         svc = SOULSEEK_SERVICE
         if not svc or not svc.is_ready():
-            return [], 0, 0, cache_key, "Soulseek service is not ready"
+            start_error = str(svc.start_error() or "") if svc else ""
+            suffix = f": {start_error}" if start_error else ""
+            return [], 0, 0, cache_key, "Soulseek service is not ready" + suffix
         try:
             items = svc.search(q)
         except Exception:
@@ -1108,6 +1114,7 @@ def api_settings_get():
     username = _current_settings_username()
     settings = _apply_runtime_settings_for_user(username) if username else ensure_app_settings()
     soulseek_service = getattr(state_module, "SOULSEEK_SERVICE", None)
+    soulseek_status = soulseek_service.startup_status() if soulseek_service and hasattr(soulseek_service, "startup_status") else {}
     connections = {
         "current_user": username,
         "REAL_DEBRID_API_KEY": {"set": bool(str(settings.get("REAL_DEBRID_API_KEY") or "").strip())},
@@ -1118,6 +1125,8 @@ def api_settings_get():
             "set": bool(str(settings.get("SOULSEEK_USERNAME") or "").strip() and str(settings.get("SOULSEEK_PASSWORD") or "").strip()),
             "connected": bool(soulseek_service and soulseek_service.is_ready()),
             "error": str(soulseek_service.start_error() or "") if soulseek_service else "",
+            "warning": str(soulseek_status.get("warning") or ""),
+            "startup_status": soulseek_status,
         },
         "LASTFM_API_KEY": {"set": bool(str(settings.get("LASTFM_API_KEY") or "").strip())},
         "LASTFM_API_SECRET": {"set": bool(str(settings.get("LASTFM_API_SECRET") or "").strip())},

@@ -665,6 +665,30 @@
     .ipodItem.editing .libInlineInput{
       align-self: center;
     }
+    .libSearchQueryText{
+      display:flex;
+      align-items:center;
+      flex:1;
+      min-width:0;
+      gap:.35em;
+      line-height:1.2;
+    }
+    .libSearchQueryText .ipodLabel{
+      flex:0 1 auto;
+      width:auto;
+      max-width:100%;
+      padding-right:0;
+    }
+    .libSearchInlineLoader{
+      flex:0 0 auto;
+      width:1em;
+      height:1em;
+      box-sizing:border-box;
+      border-radius:999px;
+      border:0.16em solid rgba(255,255,255,0.26);
+      border-top-color:rgba(255,255,255,0.92);
+      animation:dpSpin .75s linear infinite;
+    }
 .ipodPill{
       display:inline-flex;
       align-items:center;
