@@ -68,7 +68,7 @@ README.md                 project documentation
 
 ## Installation
 
-These instructions assume you are starting from a fresh terminal and do not already have Python, Git, or ffmpeg installed.
+These instructions assume you are starting from a fresh terminal and do not already have Python, Git, or ffmpeg installed. Every command is separate on purpose.
 
 ### Windows
 
@@ -106,12 +106,6 @@ Enter the repo.
 
 ```powershell
 cd Debripod
-```
-
-Switch to the current working branch.
-
-```powershell
-git switch codex/testing1
 ```
 
 Create the Python virtual environment.
@@ -212,12 +206,6 @@ Enter the repo.
 cd Debripod
 ```
 
-Switch to the current working branch.
-
-```zsh
-git switch codex/testing1
-```
-
 Create the Python virtual environment.
 
 ```zsh
@@ -296,12 +284,6 @@ Enter the repo.
 cd Debripod
 ```
 
-Switch to the current working branch.
-
-```bash
-git switch codex/testing1
-```
-
 Create the Python virtual environment.
 
 ```bash
@@ -362,7 +344,7 @@ macOS or Linux:
 source .venv/bin/activate
 ```
 
-Pull the latest branch changes.
+Pull the latest changes from main.
 
 ```bash
 git pull
