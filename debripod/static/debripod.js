@@ -1,4 +1,10 @@
 (function(){
+  try{
+    const ua = String(navigator.userAgent || "");
+    const platform = String(navigator.platform || "");
+    const isiPhone = /iPhone|iPod/i.test(ua) || (platform === "MacIntel" && navigator.maxTouchPoints > 1 && Math.min(screen.width || 0, screen.height || 0) < 820);
+    document.documentElement.classList.toggle("isIphone", !!isiPhone);
+  }catch(e){}
   const APP_INFO = window.DEBRIPOD_APP_INFO || {};
   const CSRF_TOKEN = String(window.DEBRIPOD_CSRF_TOKEN || "");
   const nativeFetch = window.fetch ? window.fetch.bind(window) : null;
@@ -1653,38 +1659,9 @@ function drawLinearGlow(ctx, w, h, x0, y0, x1, y1, rgb, alpha, bright){
 }
 
 function visualizerAnchorForCanvas(w, h, ts){
-  try{
-    const nowTs = Number(ts || performance.now() || 0);
-    if(nowTs - visualizerArtBoundsLastTs > 650){
-      visualizerArtBoundsLastTs = nowTs;
-      let rect = null;
-      try{
-        if(npArt && npArt.getBoundingClientRect && nowPlaying && nowPlaying.style.display === "block"){
-          const r = npArt.getBoundingClientRect();
-          if(r && r.width > 12 && r.height > 12){
-            rect = {left:r.left, top:r.top, width:r.width, height:r.height};
-          }
-        }
-      }catch(e){}
-      visualizerArtBounds = rect;
-    }
-    if(visualizerArtBounds){
-      const sx = w / Math.max(1, window.innerWidth || w);
-      const sy = h / Math.max(1, window.innerHeight || h);
-      const r = visualizerArtBounds;
-      const artW = r.width * sx;
-      const artH = r.height * sy;
-      return {
-        cx: (r.left + r.width * 0.5) * sx,
-        cy: (r.top + r.height * 0.5) * sy,
-        rx: artW * 0.54 + Math.min(w, h) * 0.08,
-        ry: artH * 0.54 + Math.min(w, h) * 0.08,
-        art: Math.max(artW, artH)
-      };
-    }
-  }catch(e){}
   const minDim = Math.min(w, h);
-  return {cx: w * 0.5, cy: h * 0.50, rx: minDim * 0.22, ry: minDim * 0.22, art: minDim * 0.32};
+  const maxDim = Math.max(w, h);
+  return {cx: w * 0.5, cy: h * 0.50, rx: maxDim * 0.36, ry: maxDim * 0.36, art: minDim * 0.52};
 }
 
 function resizeVisualizerCanvas(cfg){
@@ -2505,6 +2482,7 @@ function setNowPlayingOverlayText(meta, fallbackLabel){
   try{ npTitle.textContent = m.title || fallbackLabel || "Track"; }catch(e){}
   try{ npSub.innerHTML = artistAlbumHtml(m.artist || "", m.album || ""); }catch(e){}
   try{ if(npTech) npTech.textContent = m.tech || ""; }catch(e){}
+  try{ if(nowPlaying && nowPlaying.style.display === "block") setHeader(); }catch(e){}
   scheduleLiquidGlassRender();
 }
 
@@ -3541,6 +3519,7 @@ function fmtTime(sec){
       try{ libList.classList.add("npUnderlay"); }catch(e){}
       layoutNowPlayingToLibList();
       nowPlaying.style.display = "block";
+      try{ setHeader(); }catch(e){}
       try{ nowPlaying.classList.remove("npPageActive"); }catch(e){}
       updateVisualizerState();
       scheduleLiquidGlassSnapshot("now playing entering", true);
@@ -3571,6 +3550,7 @@ function fmtTime(sec){
           if(fadeToken !== npPageFadeToken) return;
           nowPlaying.style.display = "none";
           resetNowPlayingLayout();
+          try{ setHeader(); }catch(e){}
           scheduleLiquidGlassSnapshot("now playing hidden", true);
         }catch(e){}
         npPageFadeTimer = null;
@@ -3689,6 +3669,19 @@ function fmtTime(sec){
   }
 
   function headerText(){
+    try{
+      if(nowPlaying && nowPlaying.style.display === "block"){
+        const m = state.nowMeta || {};
+        const sn = state.serverNow || {};
+        const now = state.now || {};
+        const rel = String(now.rel || sn.rel || "").replace(/\\/g, "/");
+        const fallback = rel ? (rel.split("/").pop() || "") : "";
+        const title = String(m.title || m.label || sn.title || sn.label || (npTitle && npTitle.textContent) || fallback || "").trim();
+        const artist = String(m.artist || sn.artist || "").trim();
+        const item = (artist && title) ? (artist + " - " + title) : (title || fallback);
+        return item ? ("Now Playing > " + item) : "Now Playing";
+      }
+    }catch(e){}
     const parts = [];
     if(state.root && state.root.name) parts.push(state.root.name);
     for(const v of state.history){
