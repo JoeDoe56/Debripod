@@ -9,13 +9,15 @@ from flask import session
 from . import runtime_downloads as downloads_module
 from . import runtime_route_state as route_state_module
 from . import runtime_state as state_module
+from .Services import lastfm as lastfm_module
+from .Services import soulseek as soulseek_module
 from .factory import DeferredApp
 from .auth import register_auth
 from .config import _coerce_config_value, ensure_startup_security_config, save_config
 from .Tasks.manager import task_belongs_to_owner
 from .runtime_state import *
 from .runtime_downloads import *
-from .settings import executable_status, ensure_app_settings, masked_settings, pick_system_path, save_app_settings
+from .settings import default_app_settings, executable_status, ensure_app_settings, masked_settings, pick_system_path, save_app_settings
 
 # =========================
 # Flask app and templates
@@ -45,6 +47,87 @@ def _current_settings_username() -> str:
         return ""
 
 
+def _shutdown_soulseek_service() -> None:
+    service = getattr(state_module, "SOULSEEK_SERVICE", None)
+    if service:
+        try:
+            service.shutdown()
+        except Exception:
+            pass
+    state_module.SOULSEEK_SERVICE = None
+    globals()["SOULSEEK_SERVICE"] = None
+    for module in (downloads_module, route_state_module, mcp_routes):
+        if hasattr(module, "SOULSEEK_SERVICE"):
+            setattr(module, "SOULSEEK_SERVICE", None)
+
+
+def _start_soulseek_service_for_active_settings() -> None:
+    username = str(SOULSEEK_USERNAME or "").strip()
+    password = str(SOULSEEK_PASSWORD or "").strip()
+    if not username or not password:
+        _shutdown_soulseek_service()
+        return
+    current = getattr(state_module, "SOULSEEK_SERVICE", None)
+    if (
+        current
+        and getattr(current, "username", "") == username
+        and getattr(current, "password", "") == password
+        and getattr(current, "download_dir", "") == os.path.abspath(SOULSEEK_DOWNLOAD_DIR)
+    ):
+        return
+    _shutdown_soulseek_service()
+    try:
+        service = SoulseekService(
+            username=username,
+            password=password,
+            download_dir=SOULSEEK_DOWNLOAD_DIR,
+            listening_port=SOULSEEK_LISTENING_PORT,
+            obfuscated_port=SOULSEEK_OBFUSCATED_PORT,
+            search_timeout_sec=SOULSEEK_SEARCH_TIMEOUT_SEC,
+            search_max_results=SOULSEEK_SEARCH_MAX_RESULTS,
+        )
+    except Exception:
+        service = None
+    state_module.SOULSEEK_SERVICE = service
+    globals()["SOULSEEK_SERVICE"] = service
+    for module in (downloads_module, route_state_module, mcp_routes):
+        if hasattr(module, "SOULSEEK_SERVICE"):
+            setattr(module, "SOULSEEK_SERVICE", service)
+
+
+def _clear_active_user_runtime_settings() -> None:
+    global _ACTIVE_SETTINGS_USERNAME
+    if not _ACTIVE_SETTINGS_USERNAME:
+        return
+    settings = default_app_settings()
+    modules = (state_module, downloads_module, route_state_module, mcp_routes)
+    for key, raw_value in settings.items():
+        key_upper = str(key).upper()
+        if key_upper not in CONFIG_KEYS:
+            continue
+        value = _coerce_config_value(key_upper, raw_value)
+        globals()[key_upper] = value
+        for module in modules:
+            if hasattr(module, key_upper):
+                setattr(module, key_upper, value)
+    _shutdown_soulseek_service()
+    try:
+        lastfm_module.reset_lastfm_runtime_state()
+    except Exception:
+        pass
+    try:
+        with route_state_module.SEARCH_STREAMS_LOCK:
+            route_state_module.SEARCH_STREAMS.clear()
+    except Exception:
+        pass
+    try:
+        with soulseek_module._SLSK_SESS_LOCK:
+            soulseek_module._SLSK_SESSIONS.clear()
+    except Exception:
+        pass
+    _ACTIVE_SETTINGS_USERNAME = ""
+
+
 def _apply_runtime_settings_for_user(username: str) -> dict[str, Any]:
     global _ACTIVE_SETTINGS_USERNAME
     if not username:
@@ -60,11 +143,35 @@ def _apply_runtime_settings_for_user(username: str) -> dict[str, Any]:
         for module in modules:
             if hasattr(module, key_upper):
                 setattr(module, key_upper, value)
+    try:
+        state_module.ensure_dirs()
+    except Exception:
+        pass
+    try:
+        soulseek_module.configure_soulseek_module(
+            download_dir=SOULSEEK_DOWNLOAD_DIR,
+            search_idle_stop_sec=SOULSEEK_SEARCH_IDLE_STOP_SEC,
+            search_hard_max_sec=SOULSEEK_SEARCH_HARD_MAX_SEC,
+            tasks=TASKS,
+            tasks_lock=TASKS_LOCK,
+            get_task_func=get_task,
+            set_task_func=set_task,
+            set_file_control_func=_set_file_control,
+            get_file_control_func=_get_file_control,
+        )
+    except Exception:
+        pass
+    _start_soulseek_service_for_active_settings()
     if _ACTIVE_SETTINGS_USERNAME != username:
         load_playback_state()
         try:
             with route_state_module.SEARCH_STREAMS_LOCK:
                 route_state_module.SEARCH_STREAMS.clear()
+        except Exception:
+            pass
+        try:
+            with soulseek_module._SLSK_SESS_LOCK:
+                soulseek_module._SLSK_SESSIONS.clear()
         except Exception:
             pass
         _ACTIVE_SETTINGS_USERNAME = username
@@ -76,6 +183,8 @@ def apply_user_settings_before_request():
     username = _current_settings_username()
     if username:
         _apply_runtime_settings_for_user(username)
+    else:
+        _clear_active_user_runtime_settings()
 
 
 @app.context_processor
@@ -998,6 +1107,22 @@ def api_settings_get():
     cfg = ensure_startup_security_config()
     username = _current_settings_username()
     settings = _apply_runtime_settings_for_user(username) if username else ensure_app_settings()
+    soulseek_service = getattr(state_module, "SOULSEEK_SERVICE", None)
+    connections = {
+        "current_user": username,
+        "REAL_DEBRID_API_KEY": {"set": bool(str(settings.get("REAL_DEBRID_API_KEY") or "").strip())},
+        "KNABEN_API_KEY": {"set": bool(str(settings.get("KNABEN_API_KEY") or "").strip())},
+        "SOULSEEK_USERNAME": {"set": bool(str(settings.get("SOULSEEK_USERNAME") or "").strip())},
+        "SOULSEEK_PASSWORD": {"set": bool(str(settings.get("SOULSEEK_PASSWORD") or "").strip())},
+        "SOULSEEK": {
+            "set": bool(str(settings.get("SOULSEEK_USERNAME") or "").strip() and str(settings.get("SOULSEEK_PASSWORD") or "").strip()),
+            "connected": bool(soulseek_service and soulseek_service.is_ready()),
+            "error": str(soulseek_service.start_error() or "") if soulseek_service else "",
+        },
+        "LASTFM_API_KEY": {"set": bool(str(settings.get("LASTFM_API_KEY") or "").strip())},
+        "LASTFM_API_SECRET": {"set": bool(str(settings.get("LASTFM_API_SECRET") or "").strip())},
+        "LASTFM_SESSION": {"set": bool(lastfm_session_key()), "username": lastfm_username()},
+    }
     return jsonify({
         "ok": True,
         "startup": {
@@ -1010,6 +1135,7 @@ def api_settings_get():
             "ffmpeg": executable_status(str(settings.get("FFMPEG_PATH") or "ffmpeg")),
             "ffprobe": executable_status(str(settings.get("FFPROBE_PATH") or "ffprobe")),
         },
+        "connections": connections,
         "picker_available": True,
     })
 

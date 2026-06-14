@@ -21,6 +21,8 @@ SOULSEEK_SEARCH_HARD_MAX_SEC = 0.0
 TASKS: Dict[str, Any] = {}
 TASKS_LOCK = threading.Lock()
 SOULSEEK_ENQUEUE_SEMAPHORE = asyncio.Semaphore(3)
+_SLSK_SESS_LOCK = threading.Lock()
+_SLSK_SESSIONS: Dict[str, Dict[str, Any]] = {}
 
 
 def _missing_task(_task_id: str) -> Any:
@@ -1413,6 +1415,41 @@ class SoulseekService:
 
     def start_error(self) -> Optional[str]:
         return self._start_error
+
+    def shutdown(self) -> None:
+        self._stop.set()
+        loop = self._loop
+        client = self._client
+
+        async def _stop_client():
+            for name in ("stop", "close", "disconnect"):
+                fn = getattr(client, name, None)
+                if not fn:
+                    continue
+                try:
+                    result = fn()
+                    if hasattr(result, "__await__"):
+                        await result
+                    break
+                except Exception:
+                    continue
+
+        if loop:
+            try:
+                if client:
+                    fut = asyncio.run_coroutine_threadsafe(_stop_client(), loop)
+                    try:
+                        fut.result(timeout=5)
+                    except Exception:
+                        pass
+                loop.call_soon_threadsafe(loop.stop)
+            except Exception:
+                pass
+        try:
+            if self._thread and self._thread.is_alive():
+                self._thread.join(timeout=5)
+        except Exception:
+            pass
 
     def _thread_main(self):
         try:
