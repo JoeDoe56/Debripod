@@ -512,6 +512,15 @@
     .visualizerBg.active{ opacity:1; }
     .visualizerBg.off{ opacity:0; }
 
+    html.isIphone .visualizerBg,
+    html.isIphone .liquidGlassCanvasDefault,
+    html.isIphone .liquidGlassCanvasScreenFrame,
+    html.isIphone .liquidGlassCanvasNpOverlay{
+      border-top-left-radius: var(--screenRadius);
+      border-top-right-radius: var(--screenRadius);
+      overflow:hidden;
+    }
+
     .ipodHeader{
       position:relative;
       z-index:2;
