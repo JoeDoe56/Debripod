@@ -1501,7 +1501,7 @@ class SoulseekService:
             await client.start()
             await client.login()
 
-            # Background poller to integrate transfer progress into Debripod tasks
+            # Background poller to integrate transfer progress into DebriPod tasks
             asyncio.create_task(self._poll_transfers_loop())
 
             self._ready.set()

@@ -22,9 +22,9 @@ The app supports direct HTTP streaming and HLS style playback for compatible vid
 
 ### Playlists and smart playlists
 
-DebriPod creates normal playlists inside a `Debripod-Playlists` folder under a library root. These playlists are stored as M3U8 files and can be renamed, deleted, and updated from the UI.
+DebriPod creates normal playlists inside a `DebriPod-Playlists` folder under a library root. These playlists are stored as M3U8 files and can be renamed, deleted, and updated from the UI.
 
-Smart playlists live in `Debripod-SmartPlaylists`. Each smart playlist has a `rules.txt` file and a generated `playlist.m3u8` file. Rules can filter by liked status, artist, album artist, album, genre, and folder. Smart playlist rule groups can use any or all matching behavior.
+Smart playlists live in `DebriPod-SmartPlaylists`. Each smart playlist has a `rules.txt` file and a generated `playlist.m3u8` file. Rules can filter by liked status, artist, album artist, album, genre, and folder. Smart playlist rule groups can use any or all matching behavior.
 
 ### Search across online sources
 
@@ -170,7 +170,7 @@ Startup settings include:
 
 ```json
 {
-  "_HOST_NOTE": "Debripod always binds to 127.0.0.1; only PORT is configurable.",
+  "_HOST_NOTE": "DebriPod always binds to 127.0.0.1; only PORT is configurable.",
   "PORT": 8083,
   "USERS": [],
   "APP_SECRET_KEY": "",
@@ -206,7 +206,7 @@ On Windows, you can either put ffmpeg on `PATH` or pick `ffmpeg.exe` and `ffprob
 
 ## Playlists
 
-Normal playlists are stored under `Debripod-Playlists` in a library root. Smart playlists are stored under `Debripod-SmartPlaylists`.
+Normal playlists are stored under `DebriPod-Playlists` in a library root. Smart playlists are stored under `DebriPod-SmartPlaylists`.
 
 A smart playlist contains:
 

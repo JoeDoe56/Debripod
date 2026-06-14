@@ -549,8 +549,8 @@ def _mcp_tools_list() -> List[dict]:
     return [
         {
             'name': 'debripod_knaben_search',
-            'title': 'Debripod Knaben Search',
-            'description': 'Search Knaben torrent results. Returns Debripod download identifiers.',
+            'title': 'DebriPod Knaben Search',
+            'description': 'Search Knaben torrent results. Returns DebriPod download identifiers.',
             'inputSchema': {
                 'type': 'object',
                 'properties': {
@@ -562,8 +562,8 @@ def _mcp_tools_list() -> List[dict]:
         },
         {
             'name': 'debripod_soulseek_search',
-            'title': 'Debripod Soulseek Search',
-            'description': 'Search Soulseek directory results. Returns Debripod download identifiers.',
+            'title': 'DebriPod Soulseek Search',
+            'description': 'Search Soulseek directory results. Returns DebriPod download identifiers.',
             'inputSchema': {
                 'type': 'object',
                 'properties': {
@@ -575,8 +575,8 @@ def _mcp_tools_list() -> List[dict]:
         },
         {
             'name': 'debripod_download',
-            'title': 'Debripod Download',
-            'description': 'Start a Debripod download from a search result identifier. Soulseek downloads use whole directories. Knaben downloads queue the whole torrent selection.',
+            'title': 'DebriPod Download',
+            'description': 'Start a DebriPod download from a search result identifier. Soulseek downloads use whole directories. Knaben downloads queue the whole torrent selection.',
             'inputSchema': {
                 'type': 'object',
                 'properties': {'identifier': {'type': 'string'}},
@@ -585,19 +585,19 @@ def _mcp_tools_list() -> List[dict]:
         },
         {
             'name': 'debripod_get_tasks',
-            'title': 'Debripod Get Tasks',
-            'description': 'List current Debripod tasks and their status.',
+            'title': 'DebriPod Get Tasks',
+            'description': 'List current DebriPod tasks and their status.',
             'inputSchema': {'type': 'object', 'properties': {}},
         },
         {
             'name': 'debripod_get_library',
-            'title': 'Debripod Get Library',
+            'title': 'DebriPod Get Library',
             'description': 'Return a folder tree for every configured library root. Files are omitted.',
             'inputSchema': {'type': 'object', 'properties': {}},
         },
         {
             'name': 'debripod_get_recents',
-            'title': 'Debripod Get Recents',
+            'title': 'DebriPod Get Recents',
             'description': 'Return recently watched and recently listened items.',
             'inputSchema': {
                 'type': 'object',
