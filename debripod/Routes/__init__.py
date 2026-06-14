@@ -1,1 +1,1 @@
-"""Route registration helpers used by the Debripod app factory."""
+"""Route registration helpers used by the DebriPod app factory."""

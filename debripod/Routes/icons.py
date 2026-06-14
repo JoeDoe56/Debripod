@@ -1,4 +1,4 @@
-﻿from __future__ import annotations
+from __future__ import annotations
 
 import json
 from typing import Dict, Optional
@@ -94,8 +94,8 @@ def register_icon_routes(app) -> None:
     @app.route("/site.webmanifest")
     def site_webmanifest():
         manifest = {
-            "name": "Debripod",
-            "short_name": "Debripod",
+            "name": "DebriPod",
+            "short_name": "DebriPod",
             "start_url": "/",
             "display": "standalone",
             "background_color": "#0b0b0c",

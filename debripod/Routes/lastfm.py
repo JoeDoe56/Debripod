@@ -85,8 +85,8 @@ def register_lastfm_routes(
         try:
             out = lastfm_auth_start()
             return jsonify({"ok": True, "auth_url": out.get("auth_url"), "token": out.get("token")})
-        except Exception as e:
-            return jsonify({"ok": False, "error": str(e)}), 400
+        except Exception:
+            return jsonify({"ok": False, "error": "Last.fm auth failed"}), 400
 
     @app.route("/api/lastfm/auth/finish", methods=["POST"])
     def api_lastfm_auth_finish():
@@ -99,8 +99,8 @@ def register_lastfm_routes(
         try:
             out = lastfm_auth_finish(token)
             return jsonify({"ok": True, "username": out.get("username")})
-        except Exception as e:
-            return jsonify({"ok": False, "error": str(e)}), 400
+        except Exception:
+            return jsonify({"ok": False, "error": "Last.fm auth failed"}), 400
 
     @app.route("/api/lastfm/loved", methods=["GET"])
     def api_lastfm_loved():
@@ -143,12 +143,12 @@ def register_lastfm_routes(
                     lastfm_love_track(artist, title)
                 else:
                     lastfm_unlove_track(artist, title)
-            except Exception as e:
+            except Exception:
                 try:
                     app.logger.exception("Last.fm love/unlove failed")
                 except Exception:
                     pass
                 lastfm_set_loved_local(artist, title, album, cur)
-                return jsonify({"ok": False, "error": str(e) or "Last.fm update failed", "loved": bool(cur)}), 500
+                return jsonify({"ok": False, "error": "Last.fm update failed", "loved": bool(cur)}), 500
 
         return jsonify({"ok": True, "loved": bool(loved)})

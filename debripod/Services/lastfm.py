@@ -49,6 +49,17 @@ def initialize_lastfm_cache() -> None:
     _lastfm_loved_load()
 
 
+def reset_lastfm_runtime_state() -> None:
+    with _LASTFM_SESSION_LOCK:
+        _LASTFM_SESSION["sk"] = ""
+        _LASTFM_SESSION["username"] = ""
+        _LASTFM_SESSION["ts"] = 0
+    with _LASTFM_LOVED_LOCK:
+        _LASTFM_LOVED["version"] = 1
+        _LASTFM_LOVED["updated"] = 0
+        _LASTFM_LOVED["tracks"] = {}
+
+
 def lastfm_loved_updated() -> int:
     with _LASTFM_LOVED_LOCK:
         return int(_LASTFM_LOVED.get("updated") or 0)
@@ -177,6 +188,10 @@ def _lastfm_api_get(method: str, params: Optional[Dict[str, Any]] = None, requir
 
 def _lastfm_load_session_cache() -> None:
     global _LASTFM_SESSION_CACHE_PATH
+    with _LASTFM_SESSION_LOCK:
+        _LASTFM_SESSION["sk"] = ""
+        _LASTFM_SESSION["username"] = ""
+        _LASTFM_SESSION["ts"] = 0
     if not _LASTFM_SESSION_CACHE_PATH:
         return
     try:
@@ -320,6 +335,10 @@ def _lastfm_track_key(artist: str, title: str, album: str = "") -> str:
 
 def _lastfm_loved_load() -> None:
     global _LASTFM_LOVED_DB_PATH
+    with _LASTFM_LOVED_LOCK:
+        _LASTFM_LOVED["version"] = 1
+        _LASTFM_LOVED["updated"] = 0
+        _LASTFM_LOVED["tracks"] = {}
     if not _LASTFM_LOVED_DB_PATH:
         return
     try:

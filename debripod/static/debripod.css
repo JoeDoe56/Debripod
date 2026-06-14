@@ -387,7 +387,7 @@
       position:relative;
       z-index:30;
       align-items:center;
-      max-width: calc(100vw - 24px);
+      max-width: min(calc(100vw - 24px), var(--pathPillMaxWidth, calc(100vw - 24px)));
       padding: 8px 12px;
       border-radius: 999px;
       border: 0;
@@ -396,7 +396,6 @@
       font-size: 12px;
       line-height: 1.1;
       overflow:hidden;
-      text-overflow: ellipsis;
       white-space: nowrap;
       user-select:none;
       opacity: 1;
@@ -421,8 +420,7 @@
       z-index:30;
       display:block;
       min-width:0;
-      overflow:hidden;
-      text-overflow:ellipsis;
+      max-width:100%;
       white-space:nowrap;
       text-shadow: 0 1px 1px rgba(0,0,0,.72);
     }
@@ -430,9 +428,6 @@
       opacity: 0;
       transform: translateY(10px);
       pointer-events: none;
-    }
-    .pathPill.pathPillHidden .pathPillGlass{
-      display:none;
     }
     .wheelZone{
       width: 100%;
@@ -517,6 +512,15 @@
     .visualizerBg.active{ opacity:1; }
     .visualizerBg.off{ opacity:0; }
 
+    html.isIphone .visualizerBg,
+    html.isIphone .liquidGlassCanvasDefault,
+    html.isIphone .liquidGlassCanvasScreenFrame,
+    html.isIphone .liquidGlassCanvasNpOverlay{
+      border-top-left-radius: var(--screenRadius);
+      border-top-right-radius: var(--screenRadius);
+      overflow:hidden;
+    }
+
     .ipodHeader{
       position:relative;
       z-index:2;
@@ -560,6 +564,22 @@
       white-space:nowrap;
       padding-right: 8px;
     }
+    .hScrollText{
+      overflow-x:auto;
+      overflow-y:hidden;
+      white-space:nowrap;
+      text-overflow:clip;
+      width:100%;
+      max-width:100%;
+      scrollbar-width:none;
+      -ms-overflow-style:none;
+      overscroll-behavior-x:contain;
+    }
+    .hScrollText::-webkit-scrollbar{
+      display:none;
+      width:0;
+      height:0;
+    }
     .ipodPills{
       display:flex;
       gap:6px;
@@ -576,12 +596,16 @@
     .ipodItem.twoLine .ipodLabel{
       margin-bottom: 6px;
       margin-right: 0;
-      white-space: normal;
+      white-space: nowrap;
       line-height: 1.25;
     }
     .ipodItem.twoLine .ipodPills{
       margin-left: 0;
       justify-content:flex-start;
+    }
+    .ipodItem.settingRow{
+      min-height: 88px;
+      justify-content: center;
     }
     .ipodLabelWrap{
       display:block;
@@ -598,7 +622,7 @@
       white-space:nowrap;
     }
     .ipodItem.twoLine .ipodSubLabel{
-      white-space: normal;
+      white-space: nowrap;
       line-height: 1.2;
     }
     .libInlineInput{
@@ -809,11 +833,11 @@
       will-change: transform;
     }
     .wheelCenter.centerPulse{
-      animation: wheelCenterPulse .24s cubic-bezier(0.2, 0.9, 0.2, 1);
+      animation: wheelCenterPulse var(--centerBounceDuration, .24s) cubic-bezier(0.2, var(--centerBounceOvershoot, .9), 0.2, 1);
     }
     @keyframes wheelCenterPulse{
       0%{ transform: translate(-50%,-50%) scale(1); }
-      42%{ transform: translate(-50%,-50%) scale(1.075); }
+      42%{ transform: translate(-50%,-50%) scale(var(--centerBounceScale, 1.075)); }
       72%{ transform: translate(-50%,-50%) scale(0.985); }
       100%{ transform: translate(-50%,-50%) scale(1); }
     }
@@ -1284,4 +1308,31 @@
         z-index: auto;
       }
     }
-
+    @media (min-aspect-ratio: 1/1){
+      .wheelZone,
+      .ipodWheelWrap,
+      .liquidGlassCanvasWheel{
+        display: none !important;
+      }
+      .wheelZone{
+        height: 0 !important;
+        min-height: 0 !important;
+        flex: 0 0 0 !important;
+        padding: 0 !important;
+      }
+      .ipodScreen{
+        position: fixed;
+        inset: 0;
+        width: 100vw;
+        max-width: 100vw;
+        height: 100vh;
+        height: 100dvh;
+        margin: 0;
+        aspect-ratio: auto;
+      }
+      .npArt,
+      .npArtSwapLayer{
+        object-fit: contain;
+        background: #000;
+      }
+    }

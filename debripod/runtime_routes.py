@@ -1,13 +1,29 @@
 from __future__ import annotations
 
+import ipaddress
+import secrets
+import socket
+
+from flask import session
+
+from . import runtime_downloads as downloads_module
+from . import runtime_route_state as route_state_module
+from . import runtime_state as state_module
+from .Services import lastfm as lastfm_module
+from .Services import soulseek as soulseek_module
 from .factory import DeferredApp
+from .auth import register_auth
+from .config import _coerce_config_value, ensure_startup_security_config, save_config
+from .Tasks.manager import task_belongs_to_owner
 from .runtime_state import *
 from .runtime_downloads import *
+from .settings import default_app_settings, executable_status, ensure_app_settings, masked_settings, pick_system_path, save_app_settings
 
 # =========================
 # Flask app and templates
 # =========================
 app = DeferredApp()
+_ACTIVE_SETTINGS_USERNAME = ""
 
 
 from .runtime_route_state import *
@@ -24,6 +40,153 @@ register_lastfm_routes(
 register_task_routes(app)
 
 
+def _current_settings_username() -> str:
+    try:
+        return str(session.get("username") or "").strip()
+    except Exception:
+        return ""
+
+
+def _shutdown_soulseek_service() -> None:
+    service = getattr(state_module, "SOULSEEK_SERVICE", None)
+    if service:
+        try:
+            service.shutdown()
+        except Exception:
+            pass
+    state_module.SOULSEEK_SERVICE = None
+    globals()["SOULSEEK_SERVICE"] = None
+    for module in (downloads_module, route_state_module, mcp_routes):
+        if hasattr(module, "SOULSEEK_SERVICE"):
+            setattr(module, "SOULSEEK_SERVICE", None)
+
+
+def _start_soulseek_service_for_active_settings() -> None:
+    username = str(SOULSEEK_USERNAME or "").strip()
+    password = str(SOULSEEK_PASSWORD or "").strip()
+    if not username or not password:
+        _shutdown_soulseek_service()
+        return
+    current = getattr(state_module, "SOULSEEK_SERVICE", None)
+    if (
+        current
+        and getattr(current, "username", "") == username
+        and getattr(current, "password", "") == password
+        and getattr(current, "download_dir", "") == os.path.abspath(SOULSEEK_DOWNLOAD_DIR)
+    ):
+        return
+    _shutdown_soulseek_service()
+    try:
+        service = SoulseekService(
+            username=username,
+            password=password,
+            download_dir=SOULSEEK_DOWNLOAD_DIR,
+            listening_port=SOULSEEK_LISTENING_PORT,
+            obfuscated_port=SOULSEEK_OBFUSCATED_PORT,
+            search_timeout_sec=SOULSEEK_SEARCH_TIMEOUT_SEC,
+            search_max_results=SOULSEEK_SEARCH_MAX_RESULTS,
+        )
+    except Exception:
+        service = None
+    state_module.SOULSEEK_SERVICE = service
+    globals()["SOULSEEK_SERVICE"] = service
+    for module in (downloads_module, route_state_module, mcp_routes):
+        if hasattr(module, "SOULSEEK_SERVICE"):
+            setattr(module, "SOULSEEK_SERVICE", service)
+
+
+def _clear_active_user_runtime_settings() -> None:
+    global _ACTIVE_SETTINGS_USERNAME
+    if not _ACTIVE_SETTINGS_USERNAME:
+        return
+    settings = default_app_settings()
+    modules = (state_module, downloads_module, route_state_module, mcp_routes)
+    for key, raw_value in settings.items():
+        key_upper = str(key).upper()
+        if key_upper not in CONFIG_KEYS:
+            continue
+        value = _coerce_config_value(key_upper, raw_value)
+        globals()[key_upper] = value
+        for module in modules:
+            if hasattr(module, key_upper):
+                setattr(module, key_upper, value)
+    _shutdown_soulseek_service()
+    try:
+        lastfm_module.reset_lastfm_runtime_state()
+    except Exception:
+        pass
+    try:
+        with route_state_module.SEARCH_STREAMS_LOCK:
+            route_state_module.SEARCH_STREAMS.clear()
+    except Exception:
+        pass
+    try:
+        with soulseek_module._SLSK_SESS_LOCK:
+            soulseek_module._SLSK_SESSIONS.clear()
+    except Exception:
+        pass
+    _ACTIVE_SETTINGS_USERNAME = ""
+
+
+def _apply_runtime_settings_for_user(username: str) -> dict[str, Any]:
+    global _ACTIVE_SETTINGS_USERNAME
+    if not username:
+        return {}
+    settings = ensure_app_settings(username=username)
+    modules = (state_module, downloads_module, route_state_module, mcp_routes)
+    for key, raw_value in settings.items():
+        key_upper = str(key).upper()
+        if key_upper not in CONFIG_KEYS:
+            continue
+        value = _coerce_config_value(key_upper, raw_value)
+        globals()[key_upper] = value
+        for module in modules:
+            if hasattr(module, key_upper):
+                setattr(module, key_upper, value)
+    try:
+        state_module.ensure_dirs()
+    except Exception:
+        pass
+    try:
+        soulseek_module.configure_soulseek_module(
+            download_dir=SOULSEEK_DOWNLOAD_DIR,
+            search_idle_stop_sec=SOULSEEK_SEARCH_IDLE_STOP_SEC,
+            search_hard_max_sec=SOULSEEK_SEARCH_HARD_MAX_SEC,
+            tasks=TASKS,
+            tasks_lock=TASKS_LOCK,
+            get_task_func=get_task,
+            set_task_func=set_task,
+            set_file_control_func=_set_file_control,
+            get_file_control_func=_get_file_control,
+        )
+    except Exception:
+        pass
+    _start_soulseek_service_for_active_settings()
+    if _ACTIVE_SETTINGS_USERNAME != username:
+        load_playback_state()
+        try:
+            with route_state_module.SEARCH_STREAMS_LOCK:
+                route_state_module.SEARCH_STREAMS.clear()
+        except Exception:
+            pass
+        try:
+            with soulseek_module._SLSK_SESS_LOCK:
+                soulseek_module._SLSK_SESSIONS.clear()
+        except Exception:
+            pass
+        _ACTIVE_SETTINGS_USERNAME = username
+    return settings
+
+
+@app.before_request
+def apply_user_settings_before_request():
+    username = _current_settings_username()
+    if username:
+        _apply_runtime_settings_for_user(username)
+    else:
+        _clear_active_user_runtime_settings()
+
+
 @app.context_processor
 def inject_helpers():
     return {"human_bytes": human_bytes, "human_rate": human_rate}
@@ -34,7 +197,7 @@ def render_shell(autorefresh: int = 0, **ctx) -> str:
         hostport = request.host
     except Exception:
         hostport = f"localhost:{PORT}"
-    info_json = json.dumps({"version": VERSION, "host": HOST, "port": PORT, "ddir": DOWNLOAD_DIR, "sdir": SOULSEEK_DOWNLOAD_DIR})
+    info_json = json.dumps({"version": VERSION, "host": HOST, "port": PORT})
     return render_template(
         "shell.html",
         hostport=hostport,
@@ -97,8 +260,8 @@ def _search_soulseek_cached(q: str) -> Tuple[List[Dict[str, Any]], int, int, str
             return [], 0, 0, cache_key, "Soulseek service is not ready"
         try:
             items = svc.search(q)
-        except Exception as e:
-            return [], 0, 0, cache_key, "Soulseek search failed: " + str(e)
+        except Exception:
+            return [], 0, 0, cache_key, "Soulseek search failed"
         users: Dict[str, Dict[str, Any]] = {}
         for it in items:
             user = (it.get("user") or "").strip()
@@ -370,9 +533,9 @@ def api_libsearch_soulseek_start():
 
     try:
         svc.start_search_session(sid, q)
-    except Exception as e:
-        _slsk_session_mark_done(sid, error=str(e))
-        return jsonify(ok=False, error="Soulseek search failed: " + str(e), sid=sid, done=True, slsk_users=[], file_count=0, dir_count=0, cache_key=cache_key)
+    except Exception:
+        _slsk_session_mark_done(sid, error="Soulseek search failed")
+        return jsonify(ok=False, error="Soulseek search failed", sid=sid, done=True, slsk_users=[], file_count=0, dir_count=0, cache_key=cache_key)
 
     return jsonify(ok=True, q=q, cache_key=cache_key, sid=sid, rev=0, done=False, slsk_users=[], file_count=0, dir_count=0, error="", changed=True)
 
@@ -465,8 +628,8 @@ def api_libsearch_soulseek():
 
         try:
             items = svc.search(q)
-        except Exception as e:
-            return jsonify(ok=False, error="Soulseek search failed: " + str(e), slsk_users=[], result_count=0, cache_key=cache_key)
+        except Exception:
+            return jsonify(ok=False, error="Soulseek search failed", slsk_users=[], result_count=0, cache_key=cache_key)
 
         users: Dict[str, Dict[str, Any]] = {}
         for it in items:
@@ -550,8 +713,8 @@ def api_soulseek_browse_user():
 
     try:
         items = svc.browse_user(user)
-    except Exception as e:
-        return jsonify(ok=False, error="Soulseek browse failed: " + str(e), user=user, dirs=[], selected_dir=selected_dir)
+    except Exception:
+        return jsonify(ok=False, error="Soulseek browse failed", user=user, dirs=[], selected_dir=selected_dir)
 
     dirs = _slsk_group_items_to_dirs(user, items)
     dir_paths = {str(d.get("directory") or "") for d in dirs}
@@ -572,7 +735,7 @@ def enqueue():
     task_dir = build_task_dir(task_id, title)
     os.makedirs(task_dir, exist_ok=True)
 
-    t = Task(id=task_id, title=title, magnet=magnet, task_dir=task_dir, state="queued", message="Queued")
+    t = Task(id=task_id, title=title, magnet=magnet, task_dir=task_dir, owner=_current_settings_username(), state="queued", message="Queued")
     with TASKS_LOCK:
         TASKS[task_id] = t
 
@@ -606,8 +769,8 @@ def api_youtube_files():
         files = ytdlp_list_formats(url)
         total_size = sum(int(f.get('size') or 0) for f in files)
         return jsonify(ok=True, files=files, file_count=len(files), size=total_size)
-    except Exception as e:
-        return jsonify(ok=False, error=str(e), files=[], file_count=0, size=0), 500
+    except Exception:
+        return jsonify(ok=False, error="Failed to list formats", files=[], file_count=0, size=0), 500
 
 
 @app.route("/api/youtube/channel", methods=["GET"])
@@ -618,8 +781,8 @@ def api_youtube_channel():
     try:
         results = youtube_channel_browse(channel_id)
         return jsonify(ok=True, results=results, result_count=len(results))
-    except Exception as e:
-        return jsonify(ok=False, error=str(e), results=[], result_count=0), 500
+    except Exception:
+        return jsonify(ok=False, error="Failed to browse channel", results=[], result_count=0), 500
 
 
 @app.route("/api/youtube/enqueue", methods=["POST"])
@@ -668,7 +831,7 @@ def api_youtube_enqueue():
     folder = sanitize_folder_name(f"{stamp}_{base}_{task_id[:6]}")
     task_dir = os.path.join(youtube_root, folder)
     os.makedirs(task_dir, exist_ok=True)
-    t = Task(id=task_id, title=title, magnet=url, task_dir=task_dir, source='youtube', state='queued', message='Queued', rd_files=entries)
+    t = Task(id=task_id, title=title, magnet=url, task_dir=task_dir, owner=_current_settings_username(), source='youtube', state='queued', message='Queued', rd_files=entries)
     with TASKS_LOCK:
         TASKS[task_id] = t
     th = threading.Thread(target=worker, args=(task_id,), daemon=True)
@@ -684,8 +847,8 @@ def api_search_history():
         # hide internal keys from the UI
         out = [{"q": it.get("q") or "", "engine": it.get("engine") or ""} for it in items]
         return jsonify({"ok": True, "items": out})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e), "items": []})
+    except Exception:
+        return jsonify({"ok": False, "error": "Failed to browse channel", "items": []})
 
 
 @app.route("/api/search_history/clear", methods=["POST"])
@@ -693,8 +856,8 @@ def api_search_history_clear():
     try:
         clear_search_history_and_cache()
         return jsonify({"ok": True})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)})
+    except Exception:
+        return jsonify({"ok": False, "error": "Failed to clear search history"})
 
 
 @app.route("/api/libsearch/stream_selected", methods=["POST"])
@@ -706,8 +869,8 @@ def api_libsearch_stream_selected():
     try:
         out = _engine_prepare_stream_session(data)
         return jsonify({"ok": True, **out})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 400
+    except Exception:
+        return jsonify({"ok": False, "error": "Failed to prepare stream"}), 400
 
 
 @app.route("/api/rd/preview_files", methods=["POST"])
@@ -740,8 +903,8 @@ def api_rd_preview_files():
                 except Exception:
                     continue
         return jsonify({"ok": True, "torrent_id": str(torrent_id), "files": out})
-    except Exception as e:
-        return jsonify({"ok": False, "error": str(e)}), 500
+    except Exception:
+        return jsonify({"ok": False, "error": "Failed to preview files"}), 500
 
 
 
@@ -785,6 +948,7 @@ def api_rd_enqueue_selected():
         title=title,
         magnet=magnet,
         task_dir=task_dir,
+        owner=_current_settings_username(),
         state="queued",
         message="Queued",
         torrent_id=torrent_id,
@@ -875,6 +1039,7 @@ def api_soulseek_enqueue():
         title=title,
         magnet="",
         task_dir=task_download_dir,
+        owner=_current_settings_username(),
         source="soulseek",
         state="queued",
         message="Queued",
@@ -888,9 +1053,9 @@ def api_soulseek_enqueue():
 
     try:
         svc.enqueue_downloads(task_id, user, remote_paths)
-    except Exception as e:
-        set_task(task_id, state="error", message="Failed to queue Soulseek download: " + str(e))
-        return jsonify({"ok": False, "error": str(e)}), 500
+    except Exception:
+        set_task(task_id, state="error", message="Failed to queue Soulseek download")
+        return jsonify({"ok": False, "error": "Failed to queue Soulseek download"}), 500
 
     return jsonify({"ok": True, "task_id": task_id})
 
@@ -902,6 +1067,8 @@ def cancel():
     task_id = (request.form.get("task_id") or "").strip()
     if not task_id:
         abort(400)
+    if not task_belongs_to_owner(task_id, _current_settings_username()):
+        abort(404)
     cancel_task(task_id)
     return redirect(url_for("tasks"))
 
@@ -933,6 +1100,101 @@ def api_library_config():
 def api_library_reindex():
     clear_index_cache()
     return jsonify({"ok": True})
+
+
+@app.route("/api/settings", methods=["GET"])
+def api_settings_get():
+    cfg = ensure_startup_security_config()
+    username = _current_settings_username()
+    settings = _apply_runtime_settings_for_user(username) if username else ensure_app_settings()
+    soulseek_service = getattr(state_module, "SOULSEEK_SERVICE", None)
+    connections = {
+        "current_user": username,
+        "REAL_DEBRID_API_KEY": {"set": bool(str(settings.get("REAL_DEBRID_API_KEY") or "").strip())},
+        "KNABEN_API_KEY": {"set": bool(str(settings.get("KNABEN_API_KEY") or "").strip())},
+        "SOULSEEK_USERNAME": {"set": bool(str(settings.get("SOULSEEK_USERNAME") or "").strip())},
+        "SOULSEEK_PASSWORD": {"set": bool(str(settings.get("SOULSEEK_PASSWORD") or "").strip())},
+        "SOULSEEK": {
+            "set": bool(str(settings.get("SOULSEEK_USERNAME") or "").strip() and str(settings.get("SOULSEEK_PASSWORD") or "").strip()),
+            "connected": bool(soulseek_service and soulseek_service.is_ready()),
+            "error": str(soulseek_service.start_error() or "") if soulseek_service else "",
+        },
+        "LASTFM_API_KEY": {"set": bool(str(settings.get("LASTFM_API_KEY") or "").strip())},
+        "LASTFM_API_SECRET": {"set": bool(str(settings.get("LASTFM_API_SECRET") or "").strip())},
+        "LASTFM_SESSION": {"set": bool(lastfm_session_key()), "username": lastfm_username()},
+    }
+    return jsonify({
+        "ok": True,
+        "startup": {
+            "PORT": int(PORT),
+            "ENABLE_MCP": bool(cfg.get("ENABLE_MCP")),
+            "MCP_TOKEN_SET": bool(str(cfg.get("MCP_TOKEN") or "").strip()),
+        },
+        "settings": masked_settings(settings),
+        "tools": {
+            "ffmpeg": executable_status(str(settings.get("FFMPEG_PATH") or "ffmpeg")),
+            "ffprobe": executable_status(str(settings.get("FFPROBE_PATH") or "ffprobe")),
+        },
+        "connections": connections,
+        "picker_available": True,
+    })
+
+
+@app.route("/api/settings/save", methods=["POST"])
+def api_settings_save():
+    data = request.get_json(silent=True) or {}
+    settings_updates = data.get("settings") if isinstance(data.get("settings"), dict) else {}
+    startup_updates = data.get("startup") if isinstance(data.get("startup"), dict) else {}
+
+    clean_settings = {}
+    for key, value in settings_updates.items():
+        key_upper = str(key).upper()
+        if value == "***":
+            continue
+        clean_settings[key_upper] = value
+    username = _current_settings_username()
+    saved = save_app_settings(clean_settings, username=username)
+
+    cfg = ensure_startup_security_config()
+    if "PORT" in startup_updates:
+        try:
+            cfg["PORT"] = max(1, min(65535, int(startup_updates.get("PORT"))))
+        except Exception:
+            pass
+    if "ENABLE_MCP" in startup_updates:
+        cfg["ENABLE_MCP"] = bool(startup_updates.get("ENABLE_MCP"))
+        if cfg["ENABLE_MCP"] and not str(cfg.get("MCP_TOKEN") or "").strip():
+            cfg["MCP_TOKEN"] = secrets.token_urlsafe(48)
+    save_config(cfg)
+
+    for key, value in saved.items():
+        if key in CONFIG_KEYS:
+            globals()[key] = _coerce_config_value(key, value)
+    if username:
+        _apply_runtime_settings_for_user(username)
+    return jsonify({"ok": True, "settings": masked_settings(saved), "restart_required": True})
+
+
+@app.route("/api/settings/mcp_reset_token", methods=["POST"])
+def api_settings_mcp_reset_token():
+    cfg = ensure_startup_security_config()
+    cfg["MCP_TOKEN"] = secrets.token_urlsafe(48)
+    cfg["ENABLE_MCP"] = True
+    save_config(cfg)
+    return jsonify({"ok": True, "token": cfg["MCP_TOKEN"]})
+
+
+@app.route("/api/settings/pick_path", methods=["POST"])
+def api_settings_pick_path():
+    data = request.get_json(silent=True) or {}
+    kind = str(data.get("kind") or "directory")
+    try:
+        path = pick_system_path(kind)
+    except Exception:
+        return jsonify({"ok": False, "error": "System picker is unavailable", "manual": True}), 400
+    if not path:
+        return jsonify({"ok": False, "error": "No path selected", "canceled": True})
+    return jsonify({"ok": True, "path": path})
 
 
 @app.route("/api/library/building", methods=["GET"])
@@ -1527,8 +1789,8 @@ def _resolve_stream_source_for_hls(root_id: str, relpath: str) -> str:
         if str(it.get("source") or "").strip().lower() == 'youtube':
             try:
                 return _prepare_youtube_stream_file(str(it.get('youtube_url') or it.get('url') or ''), it)
-            except Exception as e:
-                raise RuntimeError(str(e))
+            except Exception:
+                raise RuntimeError("Unable to fetch stream")
         abort(400)
     r = root_by_id(root_id)
     if not r:
@@ -1585,8 +1847,8 @@ def hls_manifest():
         with open(manifest_path, "r", encoding="utf-8", errors="replace") as f:
             raw = f.read()
         return Response(_rewrite_hls_manifest_text(raw, key), mimetype="application/vnd.apple.mpegurl")
-    except RuntimeError as e:
-        return Response(str(e), status=500, mimetype="text/plain")
+    except RuntimeError:
+        return Response("Unable to prepare stream", status=500, mimetype="text/plain")
 
 
 @app.route("/hls/file/<key>/<path:name>", methods=["GET", "HEAD"])
@@ -1607,6 +1869,46 @@ def hls_file(key: str, name: str):
     return range_response(path)
 
 
+def _proxy_url_allowed(raw_url: str) -> bool:
+    try:
+        parsed = urlparse(str(raw_url or "").strip())
+    except Exception:
+        return False
+    if parsed.scheme not in {"http", "https"}:
+        return False
+    host = (parsed.hostname or "").strip().lower()
+    if not host or host in {"localhost", "local"} or host.endswith(".localhost") or host.endswith(".local"):
+        return False
+    allowed_suffixes = []
+    for raw_suffix in (STREAM_PROXY_ALLOWED_HOST_SUFFIXES or []):
+        suffix = str(raw_suffix or "").strip().lower().lstrip(".")
+        if suffix:
+            allowed_suffixes.append(suffix)
+    if allowed_suffixes and not any(host == suffix or host.endswith("." + suffix) for suffix in allowed_suffixes):
+        return False
+    try:
+        addresses = {ipaddress.ip_address(host)}
+    except ValueError:
+        try:
+            infos = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
+            addresses = {ipaddress.ip_address(info[4][0]) for info in infos}
+        except Exception:
+            return False
+    for addr in addresses:
+        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_multicast or addr.is_reserved or addr.is_unspecified:
+            return False
+    return True
+
+
+def _safe_proxy_headers(upstream_headers: Any) -> List[Tuple[str, str]]:
+    allowed = {"accept-ranges", "content-length", "content-range", "content-type", "etag", "last-modified"}
+    out_headers: List[Tuple[str, str]] = []
+    for k2, v2 in upstream_headers.items():
+        if str(k2).lower() in allowed:
+            out_headers.append((str(k2), str(v2)))
+    return out_headers
+
+
 @app.route("/stream/<root_id>/<path:relpath>", methods=["GET", "HEAD"])
 def stream(root_id: str, relpath: str):
     if root_id == SEARCH_STREAM_ROOT_ID:
@@ -1616,24 +1918,25 @@ def stream(root_id: str, relpath: str):
         if str(it.get("source") or "").strip().lower() == 'youtube':
             try:
                 local_path = _prepare_youtube_stream_file(str(it.get('youtube_url') or it.get('url') or ''), it)
-            except Exception as e:
-                return Response(str(e), status=502, mimetype="text/plain")
+            except Exception:
+                return Response("Unable to fetch stream", status=502, mimetype="text/plain")
             return range_response(local_path)
+        upstream_url = str(it.get("url") or "")
+        if not _proxy_url_allowed(upstream_url):
+            abort(400)
         headers = {}
         rng = request.headers.get("Range")
         if rng:
             headers["Range"] = rng
         method = "HEAD" if request.method == "HEAD" else "GET"
         try:
-            upstream = requests.request(method, str(it.get("url") or ""), headers=headers, stream=True, timeout=REQUEST_TIMEOUT_SECONDS, allow_redirects=True)
-        except Exception as e:
-            return Response(str(e), status=502, mimetype="text/plain")
-        excluded = {"content-encoding", "transfer-encoding", "connection"}
-        out_headers = []
-        for k2, v2 in upstream.headers.items():
-            if str(k2).lower() in excluded:
-                continue
-            out_headers.append((k2, v2))
+            upstream = requests.request(method, upstream_url, headers=headers, stream=True, timeout=REQUEST_TIMEOUT_SECONDS, allow_redirects=True)
+            if not _proxy_url_allowed(str(upstream.url or "")):
+                upstream.close()
+                abort(400)
+        except Exception:
+            return Response("Unable to fetch stream", status=502, mimetype="text/plain")
+        out_headers = _safe_proxy_headers(upstream.headers)
         if request.method == "HEAD":
             return Response(status=upstream.status_code, headers=out_headers)
         def gen():
@@ -1674,7 +1977,7 @@ def stream(root_id: str, relpath: str):
             print("STREAM ERROR:", msg)
         except Exception:
             pass
-        return Response(msg, status=500, mimetype="text/plain")
+        return Response("Unable to prepare stream", status=500, mimetype="text/plain")
 
     return range_response(playable)
 
@@ -1698,4 +2001,6 @@ configure_playback_state(
 def create_app() -> Flask:
     real_app = Flask(__name__)
     mcp_routes.app.apply_to(real_app)
-    return app.apply_to(real_app)
+    app.apply_to(real_app)
+    register_auth(real_app)
+    return real_app

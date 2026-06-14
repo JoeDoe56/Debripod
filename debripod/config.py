@@ -2,8 +2,11 @@ from __future__ import annotations
 
 import json
 import os
+import secrets
 from pathlib import Path
 from typing import Any, MutableMapping
+
+from .settings import APP_SETTING_KEYS, DEFAULT_APP_SETTINGS, STARTUP_CONFIG_KEYS, ensure_app_settings
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 DEFAULT_CONFIG_PATHS = [
@@ -13,101 +16,22 @@ DEFAULT_CONFIG_PATHS = [
 ]
 
 DEFAULT_CONFIG: dict[str, Any] = {
-    "HOST": "127.0.0.1",
     "PORT": 8083,
-    "APP_NAME": "Debripod",
-    "WHEEL_ROTATION_MAX_DEGREES": 0.95,
-    "PLAYBACK_STREAMING_MODE": "http",
-    "RESULTS_PER_PAGE": 50,
-    "MAX_FILES_PER_TORRENT": 50,
-    "MAX_TORRENT_WAIT_SECONDS": 1800,
-    "POLL_INTERVAL_SECONDS": 4,
-    "REQUEST_TIMEOUT_SECONDS": 25,
-    "SEARCH_STREAM_ROOT_ID": "__search_stream__",
-    "SEARCH_STREAM_SESSION_TTL_SECONDS": 21600,
-    "SEARCH_HISTORY_MAX_ITEMS": 50,
-    "SEARCH_DISK_CACHE_TTL_SECONDS": 604800,
-    "TASKS_POLL_MS": 1200,
-    "MCP_PROTOCOL_VERSION": "2025-03-26",
-    "MCP_SEARCH_RESULT_LIMIT": 20,
-    "MCP_SSE_KEEPALIVE_SECONDS": 15,
-    "MCP_SESSION_TTL_SECONDS": 43200,
-    "KNABEN_API_KEY": "",
-    "KNABEN_MIN_SECONDS_BETWEEN_REQUESTS": 0.6,
-    "KNABEN_CACHE_TTL_SECONDS": 120.0,
-    "KNABEN_MAX_RETRIES": 5,
-    "KNABEN_API_BASE": "https://api.knaben.org/v1",
-    "KNABEN_WEB_BASE": "https://knaben.org",
-    "YTDLP_CMD": "yt-dlp",
-    "YOUTUBE_DOWNLOAD_DIR": "./data/youtube",
-    "YOUTUBE_STREAM_CACHE_SUBDIR": "youtube_streams",
-    "YOUTUBE_WEB_BASE": "https://www.youtube.com",
-    "YOUTUBE_SEARCH_LIMIT": 24,
-    "YOUTUBE_CHANNEL_BROWSE_LIMIT": 0,
-    "YOUTUBE_REQUEST_HEADERS": {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
-    },
-    "FFMPEG_PATH": "ffmpeg",
-    "FFPROBE_PATH": "ffprobe",
-    "AUDIO_TRANSCODE": "",
-    "AUTO_TRANSCODE_FOR_BROWSER_COMPATIBILITY": True,
-    "REPLACE_ORIGINAL": True,
-    "PRELOAD_NEXT_FOR_GAPLESS": True,
-    "PRELOAD_NEXT_CHUNK_BYTES": 2097152,
-    "CACHE_DIR_NAME": "_debripod_cache",
-    "VIDEO_BROWSER_TARGET_EXT": "mp4",
-    "REAL_DEBRID_API_KEY": "",
-    "RD_BASE": "https://api.real-debrid.com/rest/1.0",
-    "DOWNLOAD_DIR": "./data/debrid",
-    "SOULSEEK_USERNAME": "",
-    "SOULSEEK_PASSWORD": "",
-    "SOULSEEK_DOWNLOAD_DIR": "./data/soulseek",
-    "SOULSEEK_LISTENING_PORT": 61000,
-    "SOULSEEK_OBFUSCATED_PORT": 0,
-    "SOULSEEK_SEARCH_TIMEOUT_SEC": 8,
-    "SOULSEEK_SEARCH_MAX_RESULTS": 5000,
-    "SOULSEEK_SEARCH_IDLE_STOP_SEC": 2.5,
-    "SOULSEEK_SEARCH_HARD_MAX_SEC": 60,
-    "LASTFM_API_KEY": "",
-    "LASTFM_API_SECRET": "",
-    "LASTFM_SESSION_KEY": "",
-    "LASTFM_CALLBACK_URL": "",
-    "LASTFM_API_ROOT": "https://ws.audioscrobbler.com/2.0/",
-    "LASTFM_REQUEST_TIMEOUT_SECONDS": 12,
-    "LIBRARY_FOLDERS": [
-        {"path": "./data/debrid", "mode": "list"},
-        {"path": "./data/soulseek", "mode": "meta"},
-        {"path": "./data/music", "mode": "meta"},
-    ],
+    "USERS": [],
+    "APP_SECRET_KEY": "",
+    "ENABLE_MCP": False,
+    "MCP_TOKEN": "",
+    "SETUP_COMPLETE": False,
+    **DEFAULT_APP_SETTINGS,
 }
 
 CONFIG_KEYS = {
-    "HOST", "PORT", "APP_NAME", "RESULTS_PER_PAGE", "MAX_FILES_PER_TORRENT",
-    "MAX_TORRENT_WAIT_SECONDS", "POLL_INTERVAL_SECONDS", "REQUEST_TIMEOUT_SECONDS",
-    "TASKS_POLL_MS", "WHEEL_ROTATION_MAX_DEGREES", "PLAYBACK_STREAMING_MODE",
-    "SEARCH_STREAM_ROOT_ID", "SEARCH_STREAM_SESSION_TTL_SECONDS",
-    "SEARCH_HISTORY_MAX_ITEMS", "SEARCH_DISK_CACHE_TTL_SECONDS",
-    "MCP_PROTOCOL_VERSION", "MCP_SEARCH_RESULT_LIMIT", "MCP_SSE_KEEPALIVE_SECONDS", "MCP_SESSION_TTL_SECONDS",
-    "KNABEN_API_KEY", "KNABEN_MIN_SECONDS_BETWEEN_REQUESTS", "KNABEN_CACHE_TTL_SECONDS",
-    "KNABEN_MAX_RETRIES", "KNABEN_API_BASE", "KNABEN_WEB_BASE",
-    "YTDLP_CMD", "YOUTUBE_DOWNLOAD_DIR", "YOUTUBE_STREAM_CACHE_SUBDIR",
-    "YOUTUBE_WEB_BASE", "YOUTUBE_SEARCH_LIMIT", "YOUTUBE_CHANNEL_BROWSE_LIMIT", "YOUTUBE_REQUEST_HEADERS",
-    "FFMPEG_PATH", "FFPROBE_PATH", "AUDIO_TRANSCODE",
-    "AUTO_TRANSCODE_FOR_BROWSER_COMPATIBILITY", "REPLACE_ORIGINAL",
-    "PRELOAD_NEXT_FOR_GAPLESS", "PRELOAD_NEXT_CHUNK_BYTES", "CACHE_DIR_NAME", "VIDEO_BROWSER_TARGET_EXT",
-    "REAL_DEBRID_API_KEY", "RD_BASE", "DOWNLOAD_DIR",
-    "SOULSEEK_USERNAME", "SOULSEEK_PASSWORD", "SOULSEEK_DOWNLOAD_DIR",
-    "SOULSEEK_LISTENING_PORT", "SOULSEEK_OBFUSCATED_PORT", "SOULSEEK_SEARCH_TIMEOUT_SEC",
-    "SOULSEEK_SEARCH_MAX_RESULTS", "SOULSEEK_SEARCH_IDLE_STOP_SEC", "SOULSEEK_SEARCH_HARD_MAX_SEC",
-    "LASTFM_API_KEY", "LASTFM_API_SECRET", "LASTFM_SESSION_KEY", "LASTFM_CALLBACK_URL",
-    "LASTFM_API_ROOT", "LASTFM_REQUEST_TIMEOUT_SECONDS",
-    "LIBRARY_FOLDERS",
-}
+    "PORT", "USERS", "APP_SECRET_KEY", "ENABLE_MCP", "MCP_TOKEN", "SETUP_COMPLETE",
+} | APP_SETTING_KEYS
 
 SECRET_KEYS = {
     "KNABEN_API_KEY", "REAL_DEBRID_API_KEY", "SOULSEEK_USERNAME", "SOULSEEK_PASSWORD",
-    "LASTFM_API_KEY", "LASTFM_API_SECRET", "LASTFM_SESSION_KEY",
+    "LASTFM_API_KEY", "LASTFM_API_SECRET", "LASTFM_SESSION_KEY", "APP_SECRET_KEY", "MCP_TOKEN",
 }
 
 
@@ -157,6 +81,62 @@ def load_config(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
     return {}
 
 
+def _config_write_path(path: str | os.PathLike[str] | None = None) -> Path:
+    if path:
+        return Path(os.path.expandvars(os.path.expanduser(str(path))))
+    env_path = os.environ.get("DEBRIPOD_CONFIG")
+    if env_path:
+        return Path(os.path.expandvars(os.path.expanduser(env_path)))
+    for candidate in DEFAULT_CONFIG_PATHS:
+        if candidate.is_file():
+            return candidate
+    return DEFAULT_CONFIG_PATHS[0]
+
+
+def save_config(data: dict[str, Any], path: str | os.PathLike[str] | None = None) -> Path:
+    target = _config_write_path(path)
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + ".tmp")
+    with tmp.open("w", encoding="utf-8") as handle:
+        json.dump(data, handle, indent=2)
+        handle.write("\n")
+    tmp.replace(target)
+    return target
+
+
+def ensure_startup_security_config(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
+    data = load_config(path)
+    ensure_app_settings(data)
+    changed = False
+    for key in list(data.keys()):
+        key_upper = str(key).upper()
+        if key_upper not in STARTUP_CONFIG_KEYS and not str(key).startswith("_"):
+            data.pop(key, None)
+            changed = True
+    if not str(data.get("APP_SECRET_KEY") or "").strip():
+        data["APP_SECRET_KEY"] = secrets.token_urlsafe(48)
+        changed = True
+    if "USERS" not in data or not isinstance(data.get("USERS"), list):
+        data["USERS"] = []
+        changed = True
+    if "ENABLE_MCP" not in data:
+        data["ENABLE_MCP"] = False
+        changed = True
+    if bool(data.get("ENABLE_MCP")) and not str(data.get("MCP_TOKEN") or "").strip():
+        data["MCP_TOKEN"] = secrets.token_urlsafe(48)
+        changed = True
+    elif "MCP_TOKEN" not in data:
+        data["MCP_TOKEN"] = ""
+        changed = True
+    setup_complete = bool(data.get("SETUP_COMPLETE")) and bool(data.get("USERS"))
+    if data.get("SETUP_COMPLETE") != setup_complete:
+        data["SETUP_COMPLETE"] = setup_complete
+        changed = True
+    if changed:
+        save_config(data, path)
+    return data
+
+
 def _coerce_config_value(key_upper: str, value: Any) -> Any:
     if key_upper == "LIBRARY_FOLDERS":
         return _coerce_library_folders(value)
@@ -166,8 +146,13 @@ def _coerce_config_value(key_upper: str, value: Any) -> Any:
 
 
 def apply_config_to_module(module_globals: MutableMapping[str, Any], path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
+    startup_config = load_config(path)
+    app_settings = ensure_app_settings(startup_config)
     config = dict(DEFAULT_CONFIG)
-    config.update(load_config(path))
+    config.update(app_settings)
+    for key in ("PORT", "USERS", "APP_SECRET_KEY", "ENABLE_MCP", "MCP_TOKEN", "SETUP_COMPLETE"):
+        if key in startup_config:
+            config[key] = startup_config[key]
     applied: dict[str, Any] = {}
 
     for key, value in config.items():

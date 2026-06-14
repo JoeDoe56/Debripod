@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import threading
 import time
+import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
@@ -12,6 +13,7 @@ class Task:
     title: str
     magnet: str
     task_dir: str
+    owner: str = ""
     source: str = "rd"  # "rd", "soulseek", or "youtube"
 
     # Pause control (set pause_event to pause; clear to resume)
@@ -92,6 +94,23 @@ def get_task(task_id: str) -> Optional[Task]:
 def list_tasks() -> List[Task]:
     with TASKS_LOCK:
         return sorted(TASKS.values(), key=lambda x: x.created, reverse=True)
+
+
+def list_tasks_for_owner(owner: str) -> List[Task]:
+    clean_owner = str(owner or "").strip()
+    with TASKS_LOCK:
+        return sorted(
+            [t for t in TASKS.values() if str(getattr(t, "owner", "") or "").strip() == clean_owner],
+            key=lambda x: x.created,
+            reverse=True,
+        )
+
+
+def task_belongs_to_owner(task_id: str, owner: str) -> bool:
+    clean_owner = str(owner or "").strip()
+    with TASKS_LOCK:
+        t = TASKS.get(task_id)
+        return bool(t and str(getattr(t, "owner", "") or "").strip() == clean_owner)
 
 
 def cancel_task(task_id: str) -> bool:
@@ -299,11 +318,38 @@ def _json_safe(v: Any, depth: int = 0) -> Any:
         return "<?>"
 
 
+_PATH_FIELD_NAMES = {"task_dir", "local_path", "incoming_path", "out_path", "path", "abs_path"}
+
+
+def _display_path(value: Any) -> str:
+    s = str(value or "")
+    if not s:
+        return ""
+    return os.path.basename(s.rstrip("\\/")) or s
+
+
+def _redact_paths(v: Any, depth: int = 0) -> Any:
+    if depth > 6:
+        return _json_safe(v, depth)
+    if isinstance(v, list):
+        return [_redact_paths(x, depth + 1) for x in v]
+    if isinstance(v, dict):
+        out: Dict[str, Any] = {}
+        for k, val in v.items():
+            key = str(k)
+            if key in _PATH_FIELD_NAMES:
+                out[key] = _display_path(val)
+            else:
+                out[key] = _redact_paths(val, depth + 1)
+        return out
+    return _json_safe(v, depth)
+
+
 def task_public_dict(t: Task) -> dict:
     return {
         "id": t.id,
         "title": t.title,
-        "task_dir": t.task_dir,
+        "task_dir": _display_path(t.task_dir),
         "created": t.created,
         "paused": bool(getattr(t, "paused", False)),
         "state": t.state,
@@ -314,17 +360,17 @@ def task_public_dict(t: Task) -> dict:
         "overall_total": (int(t.overall_total) if t.overall_total is not None else None),
         "slsk_user": t.slsk_user,
         "slsk_directory": t.slsk_directory,
-        "slsk_files": _json_safe(list(t.slsk_files or [])),
-        "rd_files": _json_safe(list(getattr(t, "rd_files", []) or [])),
-        "downloaded_files": _json_safe(list(t.downloaded_files or [])),
-        "current_file": t.current_file,
+        "slsk_files": _redact_paths(list(t.slsk_files or [])),
+        "rd_files": _redact_paths(list(getattr(t, "rd_files", []) or [])),
+        "downloaded_files": [_display_path(p) for p in list(t.downloaded_files or [])],
+        "current_file": _display_path(t.current_file),
         "current_done": int(t.current_done or 0),
         "current_total": (int(t.current_total) if t.current_total is not None else None),
         "video_post_total": int(t.video_post_total or 0),
         "video_post_done": int(t.video_post_done or 0),
         "video_post_state": t.video_post_state,
         "video_post_message": t.video_post_message,
-        "video_post_current_file": t.video_post_current_file,
+        "video_post_current_file": _display_path(t.video_post_current_file),
         "video_post_current_done": int(t.video_post_current_done or 0),
         "video_post_current_total": (int(t.video_post_current_total) if t.video_post_current_total is not None else None),
         "downloads_complete": bool(t.downloads_complete),
@@ -360,10 +406,13 @@ def clear_task(task_id: str) -> bool:
     return True
 
 
-def clear_all_tasks() -> None:
+def clear_all_tasks(owner: str | None = None) -> None:
     slsk_ids: List[str] = []
+    clean_owner = str(owner or "").strip()
     with TASKS_LOCK:
         for t in list(TASKS.values()):
+            if owner is not None and str(getattr(t, "owner", "") or "").strip() != clean_owner:
+                continue
             if t.state not in ("done", "error", "canceled"):
                 try:
                     t.cancel_event.set()
@@ -371,7 +420,7 @@ def clear_all_tasks() -> None:
                     pass
             if (t.source or "").lower() == "soulseek":
                 slsk_ids.append(t.id)
-        TASKS.clear()
+            TASKS.pop(t.id, None)
 
     if slsk_ids:
         svc = _soulseek_service_provider()
