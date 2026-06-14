@@ -4647,6 +4647,7 @@ function vibeTick(){
     state.appSettings = Object.assign({}, (js && js.settings) || {});
     state.startupSettings = Object.assign({}, (js && js.startup) || {});
     state.toolStatus = Object.assign({}, (js && js.tools) || {});
+    state.connectionStatus = Object.assign({}, (js && js.connections) || {});
     return js;
   }
 
@@ -4688,6 +4689,31 @@ function vibeTick(){
     return parts.length ? parts[parts.length - 1] : s;
   }
 
+  function settingConnectionPills(row){
+    const key = String((row && row.key) || "");
+    const type = String((row && row.type) || "");
+    const connections = state.connectionStatus || {};
+    if(type === "secret"){
+      const status = connections[key] || {};
+      const isSet = !!status.set || row.value === "***" || (row.value != null && row.value !== "");
+      const pills = [{text: isSet ? "Set for current user" : "Not set for current user", tone: isSet ? "ok" : "warn"}];
+      if(key === "SOULSEEK_USERNAME" || key === "SOULSEEK_PASSWORD"){
+        const slsk = connections.SOULSEEK || {};
+        if(slsk.set) pills.push({text: slsk.connected ? "Connected" : "Not connected", tone: slsk.connected ? "ok" : "warn"});
+      }
+      if(key === "LASTFM_API_KEY" || key === "LASTFM_API_SECRET" || key === "LASTFM_SESSION_KEY"){
+        const lf = connections.LASTFM_SESSION || {};
+        if(lf.set) pills.push({text: lf.username ? ("Session: " + String(lf.username)) : "Session set", tone:"ok"});
+      }
+      return pills;
+    }
+    if(type === "mcp_token"){
+      const isSet = row.value === "Saved" || row.value === "***";
+      return [{text: isSet ? "Set locally" : "Not set", tone: isSet ? "ok" : "warn"}];
+    }
+    return null;
+  }
+
   function libraryFolders(){
     const s = state.appSettings || {};
     return Array.isArray(s.LIBRARY_FOLDERS) ? s.LIBRARY_FOLDERS.slice() : [];
@@ -4711,12 +4737,17 @@ function vibeTick(){
       ];
     }
     if(cat === "services"){
+      const connections = state.connectionStatus || {};
+      const slsk = connections.SOULSEEK || {};
+      const lf = connections.LASTFM_SESSION || {};
       return [
         {key:"REAL_DEBRID_API_KEY", label:"Real Debrid token", type:"secret", value:s.REAL_DEBRID_API_KEY},
+        {key:"KNABEN_API_KEY", label:"Knaben API key", type:"secret", value:s.KNABEN_API_KEY, advanced:true},
         {key:"SOULSEEK_USERNAME", label:"Soulseek username", type:"secret", value:s.SOULSEEK_USERNAME},
-        {key:"SOULSEEK_PASSWORD", label:"Soulseek password", type:"secret", value:s.SOULSEEK_PASSWORD},
+        {key:"SOULSEEK_PASSWORD", label:"Soulseek password", type:"secret", value:s.SOULSEEK_PASSWORD, sub_label: slsk.set ? (slsk.connected ? "Soulseek is connected for this account." : (slsk.error ? ("Soulseek is not connected: " + slsk.error) : "Soulseek is not connected for this account.")) : "Set username and password to connect Soulseek for this account."},
         {key:"LASTFM_API_KEY", label:"Last.fm API key", type:"secret", value:s.LASTFM_API_KEY},
         {key:"LASTFM_API_SECRET", label:"Last.fm secret", type:"secret", value:s.LASTFM_API_SECRET},
+        {key:"LASTFM_SESSION_KEY", label:"Last.fm session key", type:"secret", value:s.LASTFM_SESSION_KEY, sub_label: lf.set ? ("Last.fm session is set for this account" + (lf.username ? (": " + lf.username) : ".")) : "Use Last.fm login or paste a session key for this account.", advanced:true},
         {key:"YTDLP_CMD", label:"yt-dlp command", type:"text", value:s.YTDLP_CMD, advanced:true}
       ];
     }
@@ -4810,7 +4841,7 @@ function vibeTick(){
           value:r.value,
           tool:r.tool || "",
           toolStatus:r.toolStatus || null,
-          pills:[{text:settingValueLabel(r.value)}, settingsRestartPill()]
+          pills:(settingConnectionPills(r) || [{text:settingValueLabel(r.value)}]).concat([settingsRestartPill()])
         }));
         resetList(rows);
       }
