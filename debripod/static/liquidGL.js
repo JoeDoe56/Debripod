@@ -480,6 +480,7 @@
         uniform vec2  u_textureResolution;
         uniform vec4  u_bounds;
         uniform float u_refraction;
+        uniform float u_refractionFill;
         uniform float u_bevelDepth;
         uniform float u_bevelWidth;
         uniform float u_frost;
@@ -530,9 +531,14 @@
 
           float edge = edgeFactor(v_uv, u_radius);
           float min_dimension = min(u_resolution.x, u_resolution.y);
-          float offsetAmt = (edge * u_refraction + pow(edge, 10.0) * u_bevelDepth);
-          float centreBlend = smoothstep(0.15, 0.45, length(p));
-          vec2 offset = normalize(p) * offsetAmt * centreBlend;
+          float centreDistance = length(p);
+          float fill = clamp(u_refractionFill, 0.0, 1.0);
+          float refractionField = mix(edge, max(edge, 0.34), fill);
+          float offsetAmt = (refractionField * u_refraction + pow(edge, 10.0) * u_bevelDepth);
+          float edgeCentreBlend = smoothstep(0.15, 0.45, centreDistance);
+          float centreBlend = mix(edgeCentreBlend, 1.0, fill);
+          vec2 refractDirection = centreDistance > 0.0001 ? p / centreDistance : vec2(0.0);
+          vec2 offset = refractDirection * offsetAmt * centreBlend;
 
           float tiltRefractionScale = 0.05;
           vec2 tiltOffset = vec2(tan(radians(u_tiltY)), -tan(radians(u_tiltX))) * tiltRefractionScale;
@@ -656,6 +662,7 @@
         ),
         bounds: gl.getUniformLocation(this.program, "u_bounds"),
         refraction: gl.getUniformLocation(this.program, "u_refraction"),
+        refractionFill: gl.getUniformLocation(this.program, "u_refractionFill"),
         bevelDepth: gl.getUniformLocation(this.program, "u_bevelDepth"),
         bevelWidth: gl.getUniformLocation(this.program, "u_bevelWidth"),
         frost: gl.getUniformLocation(this.program, "u_frost"),
@@ -1142,6 +1149,7 @@
         this.textureHeight
       );
       gl.uniform1f(this.u.refraction, lens.options.refraction);
+      gl.uniform1f(this.u.refractionFill, Number.isFinite(Number(lens.options.refractionFill)) ? Number(lens.options.refractionFill) : 0);
       gl.uniform1f(this.u.bevelDepth, lens.options.bevelDepth);
       gl.uniform1f(this.u.bevelWidth, lens.options.bevelWidth);
       gl.uniform1f(this.u.frost, lens.options.frost);
@@ -2546,6 +2554,7 @@
       snapshot: "body",
       resolution: 2.0,
       refraction: 0.01,
+      refractionFill: 0,
       bevelDepth: 0.08,
       bevelWidth: 0.15,
       frost: 0,
