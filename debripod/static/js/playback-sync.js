@@ -114,21 +114,22 @@
 
   function layoutNowPlayingToLibList(){
     try{
-      const screen = document.querySelector(".ipodScreenContent") || document.querySelector(".ipodScreen");
-      if(!screen || !nowPlaying) return;
-      nowPlaying.style.left = "0";
-      nowPlaying.style.top = "0";
-      nowPlaying.style.width = "100%";
-      nowPlaying.style.height = "100%";
-      nowPlaying.style.right = "auto";
-      nowPlaying.style.bottom = "auto";
-      nowPlaying.style.borderRadius = "inherit";
+      if(!nowPlaying) return;
+      nowPlaying.style.inset = "var(--screenFrame)";
+      nowPlaying.style.left = "";
+      nowPlaying.style.top = "";
+      nowPlaying.style.width = "";
+      nowPlaying.style.height = "";
+      nowPlaying.style.right = "";
+      nowPlaying.style.bottom = "";
+      nowPlaying.style.borderRadius = "var(--screenInnerRadius)";
     }catch(e){}
   }
 
   function resetNowPlayingLayout(){
     try{
       if(!nowPlaying) return;
+      nowPlaying.style.inset = "";
       nowPlaying.style.left = "";
       nowPlaying.style.top = "";
       nowPlaying.style.width = "";
