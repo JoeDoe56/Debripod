@@ -17,13 +17,15 @@ from .config import _coerce_config_value, ensure_startup_security_config, save_c
 from .Tasks.manager import task_belongs_to_owner
 from .runtime_state import *
 from .runtime_downloads import *
-from .settings import default_app_settings, executable_status, ensure_app_settings, masked_settings, pick_system_path, save_app_settings
+from .settings import default_app_settings, executable_status, ensure_app_settings, masked_settings, pick_system_path, save_app_settings, settings_fingerprint
 
 # =========================
 # Flask app and templates
 # =========================
 app = DeferredApp()
 _ACTIVE_SETTINGS_USERNAME = ""
+_ACTIVE_SETTINGS_SIGNATURE: tuple[int, int] = (0, 0)
+_ACTIVE_SETTINGS_DATA: dict[str, Any] = {}
 
 
 from .runtime_route_state import *
@@ -100,7 +102,7 @@ def _start_soulseek_service_for_active_settings() -> None:
 
 
 def _clear_active_user_runtime_settings() -> None:
-    global _ACTIVE_SETTINGS_USERNAME
+    global _ACTIVE_SETTINGS_DATA, _ACTIVE_SETTINGS_SIGNATURE, _ACTIVE_SETTINGS_USERNAME
     if not _ACTIVE_SETTINGS_USERNAME:
         return
     settings = default_app_settings()
@@ -130,13 +132,24 @@ def _clear_active_user_runtime_settings() -> None:
     except Exception:
         pass
     _ACTIVE_SETTINGS_USERNAME = ""
+    _ACTIVE_SETTINGS_SIGNATURE = (0, 0)
+    _ACTIVE_SETTINGS_DATA = {}
 
 
-def _apply_runtime_settings_for_user(username: str) -> dict[str, Any]:
-    global _ACTIVE_SETTINGS_USERNAME
+def _apply_runtime_settings_for_user(username: str, force: bool = False) -> dict[str, Any]:
+    global _ACTIVE_SETTINGS_DATA, _ACTIVE_SETTINGS_SIGNATURE, _ACTIVE_SETTINGS_USERNAME
     if not username:
         return {}
+    signature = settings_fingerprint(username)
+    if (
+        not force
+        and _ACTIVE_SETTINGS_USERNAME == username
+        and _ACTIVE_SETTINGS_SIGNATURE == signature
+        and _ACTIVE_SETTINGS_DATA
+    ):
+        return dict(_ACTIVE_SETTINGS_DATA)
     settings = ensure_app_settings(username=username)
+    signature = settings_fingerprint(username)
     modules = (state_module, downloads_module, route_state_module, mcp_routes)
     for key, raw_value in settings.items():
         key_upper = str(key).upper()
@@ -179,6 +192,8 @@ def _apply_runtime_settings_for_user(username: str) -> dict[str, Any]:
         except Exception:
             pass
         _ACTIVE_SETTINGS_USERNAME = username
+    _ACTIVE_SETTINGS_SIGNATURE = signature
+    _ACTIVE_SETTINGS_DATA = dict(settings)
     return settings
 
 
@@ -186,7 +201,7 @@ def _apply_runtime_settings_for_user(username: str) -> dict[str, Any]:
 def apply_user_settings_before_request():
     username = _current_settings_username()
     if username:
-        _apply_runtime_settings_for_user(username)
+        _apply_runtime_settings_for_user(username, force=True)
     else:
         _clear_active_user_runtime_settings()
 
@@ -201,7 +216,9 @@ def render_shell(autorefresh: int = 0, **ctx) -> str:
         hostport = request.host
     except Exception:
         hostport = f"localhost:{PORT}"
-    info_json = json.dumps({"version": VERSION, "host": HOST, "port": PORT})
+    version_info = dict(VERSION_INFO)
+    version_info.update({"version": VERSION, "host": HOST, "port": PORT})
+    info_json = json.dumps(version_info)
     return render_template(
         "shell.html",
         hostport=hostport,
@@ -210,6 +227,7 @@ def render_shell(autorefresh: int = 0, **ctx) -> str:
         autorefresh=autorefresh,
         tasks_poll_ms=TASKS_POLL_MS,
         icon_v=ICON_VERSION,
+        asset_v=ASSET_VERSION,
         info_json=info_json,
         **ctx,
     )
