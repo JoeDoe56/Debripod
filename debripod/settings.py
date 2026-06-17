@@ -131,6 +131,15 @@ def _settings_path(username: str | None = None) -> Path:
     return SETTINGS_PATH
 
 
+def settings_fingerprint(username: str | None = None) -> tuple[int, int]:
+    path = _settings_path(username)
+    try:
+        st = path.stat()
+        return (int(st.st_mtime_ns), int(st.st_size))
+    except OSError:
+        return (0, 0)
+
+
 def _read_json(path: Path) -> dict[str, Any]:
     if not path.is_file():
         return {}

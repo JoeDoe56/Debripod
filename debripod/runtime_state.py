@@ -1,6 +1,5 @@
 
 import os
-import re
 import time
 import uuid
 import json
@@ -72,10 +71,11 @@ from .media_types import (
     VIDEO_EXTS,
 )
 from .paths import art_cache_dir, cache_dir, configure_paths, transcode_cache_dir
-from .Routes.icons import ICON_VERSION, register_icon_routes
+from .Routes.icons import ASSET_VERSION, ICON_VERSION, register_icon_routes
 from .Routes.lastfm import register_lastfm_routes
 from .Routes.shell import register_shell_routes
 from .Routes.tasks import register_task_routes
+from .version import app_version, app_version_info
 from .Services.knaben import configure_knaben, knaben_search, make_magnet
 from .Services.lastfm import (
     configure_lastfm,
@@ -183,11 +183,8 @@ from .playback.probe import configure_probe, ffprobe_json, run_cmd
 # =========================
 # Runtime config
 # =========================
-# Auto infer version from filename like debripod112.py.
-_fn = os.path.basename(__file__)
-_m = re.search(r"debripod(\d+)", _fn, re.IGNORECASE)
-VERSION = _m.group(1) if _m else "dev"
-del _fn, _m
+VERSION_INFO = app_version_info()
+VERSION = app_version()
 
 HOST = "127.0.0.1"
 

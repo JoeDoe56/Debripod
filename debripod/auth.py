@@ -215,6 +215,13 @@ def _auth_required_response() -> Response:
     return redirect(url_for("login", next=request.full_path if request.query_string else request.path))
 
 
+def _safe_next_url(default: str = "/") -> str:
+    next_url = (request.args.get("next") or default).strip() or default
+    if not next_url.startswith("/") or next_url.startswith("//"):
+        return default
+    return next_url
+
+
 def register_auth(app: Any) -> None:
     cfg = _security_config()
     app.secret_key = str(cfg.get("APP_SECRET_KEY") or "")
@@ -225,6 +232,9 @@ def register_auth(app: Any) -> None:
 
     @app.before_request
     def require_auth_and_csrf() -> Any:
+        if request.method.upper() == "POST" and request.path in {"/login", "/setup"} and _is_logged_in():
+            return redirect(_safe_next_url("/"))
+
         if request.path == "/mcp":
             if not _mcp_enabled():
                 abort(404)
@@ -294,10 +304,7 @@ def register_auth(app: Any) -> None:
                 session.clear()
                 session["username"] = str(user.get("username") or username)
                 _csrf_token()
-                next_url = (request.args.get("next") or "/").strip() or "/"
-                if not next_url.startswith("/") or next_url.startswith("//"):
-                    next_url = "/"
-                return redirect(next_url)
+                return redirect(_safe_next_url("/"))
             _login_failed(username)
             error = "Invalid username or password."
         return render_template_string(

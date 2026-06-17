@@ -11,13 +11,10 @@
   <meta name="theme-color" content="#000000">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="DebriPod">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&display=swap" rel="stylesheet">
   {% if autorefresh %}
   <meta http-equiv="refresh" content="{{ autorefresh }}">
   {% endif %}
-    <link rel="stylesheet" href="{{ url_for('static', filename='debripod.css') }}?v={{ icon_v }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='debripod.css') }}?v={{ asset_v }}">
 
 </head>
 <body>
@@ -108,13 +105,31 @@
 
 <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
 <script src="https://cdn.jsdelivr.net/npm/@zumer/snapdom/dist/snapdom.js"></script>
-<script src="{{ url_for('static', filename='liquidGL.js') }}?v={{ icon_v }}"></script>
+<script src="{{ url_for('static', filename='liquidGL.js') }}?v={{ asset_v }}"></script>
 <script>
   window.DEBRIPOD_APP_INFO = {{ info_json|safe }};
   window.DEBRIPOD_TASKS_POLL_MS = {{ tasks_poll_ms }};
   window.DEBRIPOD_CSRF_TOKEN = {{ csrf_token|tojson }};
 </script>
-<script src="{{ url_for('static', filename='debripod.js') }}?v={{ icon_v }}"></script>
+<script src="{{ url_for('static', filename='js/platform.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/api-client.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/ui-settings.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/frame-scheduler.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/app-state.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/liquid-glue.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/format-utils.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/path-pill.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/playback-loader.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/visualizer-engine.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/now-playing-ui.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/media-session.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/playback-sync.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/list-view.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/settings-ui.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/search-tasks-ui.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/library-browser.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/wheel-controls.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='debripod.js') }}?v={{ asset_v }}"></script>
 </body>
 </html>
 
