@@ -89,8 +89,7 @@
    *  DebriPod keeps direct visualizer/album texture sources, but DOM snapshot
    *  renderers can opt into this engine without reintroducing eager html2canvas.
    * ------------------------------------------------*/
-  const HTML2CANVAS_CDN =
-    "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
+  const HTML2CANVAS_CDN = "/static/html2canvas.min.js";
   let _h2cLoadPromise = null;
 
   function ensureHtml2canvas() {
@@ -98,8 +97,7 @@
     if (_h2cLoadPromise) return _h2cLoadPromise;
     _h2cLoadPromise = new Promise((resolve, reject) => {
       const s = document.createElement("script");
-      s.src = window.LIQUIDGL_HTML2CANVAS_URL || HTML2CANVAS_CDN;
-      s.crossOrigin = "anonymous";
+      s.src = HTML2CANVAS_CDN;
       s.onload = () => {
         if (typeof window.html2canvas === "function") resolve(window.html2canvas);
         else {

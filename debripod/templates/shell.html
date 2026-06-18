@@ -114,11 +114,14 @@
 
   
 
-<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-<script src="https://cdn.jsdelivr.net/npm/@zumer/snapdom/dist/snapdom.js"></script>
+<script src="{{ url_for('static', filename='vendor/hls-local.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='html2canvas.min.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='vendor/snapdom-local.js') }}?v={{ asset_v }}"></script>
 <script src="{{ url_for('static', filename='liquidGL.js') }}?v={{ asset_v }}"></script>
 <script>
   window.DEBRIPOD_APP_INFO = {{ info_json|safe }};
+  window.DEBRIPOD_ASSET_VERSION = {{ asset_v|tojson }};
+  window.DEBRIPOD_ICON_VERSION = {{ icon_v|tojson }};
   window.DEBRIPOD_TASKS_POLL_MS = {{ tasks_poll_ms }};
   window.DEBRIPOD_CSRF_TOKEN = {{ csrf_token|tojson }};
 </script>
