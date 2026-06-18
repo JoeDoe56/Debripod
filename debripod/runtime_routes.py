@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import base64
 import secrets
 import socket
 from pathlib import Path
@@ -16,7 +17,7 @@ from .Services import soulseek as soulseek_module
 from .factory import DeferredApp
 from .auth import register_auth
 from .config import _coerce_config_value, ensure_startup_security_config, save_config
-from .Library.library_db import load_folder_entries, load_palette, save_folder_entries, save_palette
+from .Library.library_db import load_folder_entries, load_palette, load_visualizer_analysis_for_media, save_folder_entries, save_palette
 from .Tasks.manager import task_belongs_to_owner
 from .runtime_state import *
 from .runtime_downloads import *
@@ -1116,6 +1117,10 @@ def api_library_config():
                 ensure_index_async(rid, os.path.abspath(ap), mode=mode)
             except Exception:
                 pass
+        try:
+            library_watch_root(rid, os.path.abspath(ap), mode=mode)
+        except Exception:
+            pass
         rts.append({"id": rid, "name": name, "mode": mode, "version": int(versions.get(rid) or 0)})
     return jsonify(
         {
@@ -1186,6 +1191,34 @@ def _setup_skipped_services(settings: dict[str, Any]) -> dict[str, str]:
             if k in {"library", "real_debrid", "soulseek", "lastfm", "youtube", "ffmpeg", "ffprobe", "downloads", "knaben"}:
                 out[k] = "skipped" if str(value or "").strip().lower() == "skipped" else str(value or "").strip().lower()
     return out
+
+
+def _kick_library_indexes_from_settings(settings: dict[str, Any]) -> None:
+    folders = settings.get("LIBRARY_FOLDERS") if isinstance(settings.get("LIBRARY_FOLDERS"), list) else []
+    for folder in folders:
+        try:
+            if isinstance(folder, dict):
+                path = str(folder.get("path") or "")
+                mode = str(folder.get("mode") or "folders")
+            else:
+                raw = str(folder or "")
+                path = raw
+                mode = "folders"
+                if ":" in raw:
+                    maybe_path, suffix = raw.rsplit(":", 1)
+                    if suffix.strip().lower() in {"meta", "metadata", "m"}:
+                        path = maybe_path
+                        mode = "metadata"
+                    elif suffix.strip().lower() in {"list", "folders", "folder", "l"}:
+                        path = maybe_path
+                        mode = "folders"
+            path = path.strip().strip('"').strip("'")
+            if path and os.path.isabs(path):
+                rid = sha1_text(os.path.abspath(path))
+                ensure_index_async(rid, os.path.abspath(path), mode=mode)
+                library_watch_root(rid, os.path.abspath(path), mode=mode)
+        except Exception:
+            pass
 
 
 def _service_status_payload(settings: dict[str, Any]) -> dict[str, Any]:
@@ -1279,20 +1312,7 @@ def api_setup_finish():
     if not status.get("required_complete"):
         return jsonify({"ok": False, "error": "Add a library folder or explicitly skip local library setup first."}), 400
     saved = save_app_settings({"SETUP_WIZARD_COMPLETE": True}, username=username)
-    folders = saved.get("LIBRARY_FOLDERS") if isinstance(saved.get("LIBRARY_FOLDERS"), list) else []
-    for folder in folders:
-        try:
-            if isinstance(folder, dict):
-                path = str(folder.get("path") or "")
-                mode = str(folder.get("mode") or "list")
-            else:
-                path = str(folder or "")
-                mode = "list"
-            if path and mode in {"meta", "metadata"}:
-                rid = sha1_text(os.path.abspath(path))
-                ensure_index_async(rid, os.path.abspath(path), mode=mode)
-        except Exception:
-            pass
+    _kick_library_indexes_from_settings(saved)
     return jsonify(_setup_status_for_user(username, saved))
 
 
@@ -1338,6 +1358,8 @@ def api_settings_import():
     saved = save_app_settings(clean, username=username)
     if username:
         _apply_runtime_settings_for_user(username, force=True)
+    if "LIBRARY_FOLDERS" in clean:
+        _kick_library_indexes_from_settings(saved)
     return jsonify({"ok": True, "settings": masked_settings(saved), "imported_keys": sorted(clean.keys())})
 
 
@@ -1373,6 +1395,8 @@ def api_settings_save():
             globals()[key] = _coerce_config_value(key, value)
     if username:
         _apply_runtime_settings_for_user(username)
+    if "LIBRARY_FOLDERS" in clean_settings:
+        _kick_library_indexes_from_settings(saved)
     return jsonify({"ok": True, "settings": masked_settings(saved), "restart_required": True})
 
 
@@ -1469,6 +1493,12 @@ def api_library_building():
 
 @app.route("/api/client-state", methods=["GET"])
 def api_client_state():
+    for rid, _, root_abs, mode in roots():
+        try:
+            ensure_index_async(rid, root_abs, mode=mode)
+            library_watch_root(rid, root_abs, mode=mode)
+        except Exception:
+            pass
     any_building, roots_status = index_building_status()
     return jsonify({
         "ok": True,
@@ -1518,8 +1548,27 @@ def api_library_palette():
         palette,
         source_kind=str(data.get("source_kind") or ""),
         source_identity=str(data.get("source_identity") or ""),
+        root_id=str(data.get("root_id") or ""),
+        rel=str(data.get("rel") or ""),
     )
     return jsonify({"ok": True})
+
+
+@app.route("/api/library/analysis", methods=["GET"])
+def api_library_analysis():
+    root_id = (request.args.get("root_id") or "").strip()
+    rel = (request.args.get("rel") or "").strip()
+    if not root_id or not rel:
+        return jsonify({"ok": False, "error": "Missing root_id or rel"}), 400
+    r = root_by_id(root_id)
+    if not r:
+        abort(404)
+    analysis = load_visualizer_analysis_for_media(root_id, rel)
+    if not analysis:
+        return jsonify({"ok": True, "analysis": None, "stale": True})
+    blob = analysis.pop("feature_blob", b"")
+    analysis["feature_blob_b64"] = base64.b64encode(blob).decode("ascii")
+    return jsonify({"ok": True, "analysis": analysis, "stale": False})
 
 
 
@@ -1662,6 +1711,18 @@ def api_library_metadata():
 
     tracks = data.get("tracks") or []
     vids = data.get("videos") or []
+    version_value = int(data.get("version") or library_root_version(root_id))
+    facets = library_metadata_facets(root_id) or {}
+    response_meta = {"building": building, "version": version_value, "stale": building}
+
+    def facet_items(name: str, empty_label: str) -> list[dict]:
+        payload = facets.get(name)
+        if isinstance(payload, list):
+            return payload or [{"kind": "info", "label": empty_label}]
+        return []
+
+    def track_facet_key(*, artist: str = "", album: str = "", genre: str = "") -> str:
+        return json.dumps({"artist": artist, "album": album, "genre": genre}, ensure_ascii=False, sort_keys=True)
 
     if level == "top":
         cats = [
@@ -1674,15 +1735,26 @@ def api_library_metadata():
             {"key": "videos", "label": "Videos"},
             {"key": "folders", "label": "Folders"},
         ]
-        return jsonify({"categories": cats, "building": building, "version": int(data.get("version") or library_root_version(root_id)), "stale": building})
+        return jsonify({"categories": cats, **response_meta})
 
     if level == "artists":
+        items = facet_items("artists", "No artist tags found")
+        if items:
+            return jsonify({"items": items, **response_meta})
         s = sorted({(t.get("artist") or "").strip() for t in tracks if (t.get("artist") or "").strip()}, key=lambda x: x.lower())
         items = [{"kind": "artist", "label": a, "value": a} for a in s] or [{"kind": "info", "label": "No artist tags found"}]
-        return jsonify({"items": items, "building": building, "version": int(data.get("version") or library_root_version(root_id)), "stale": building})
+        return jsonify({"items": items, **response_meta})
 
     if level == "albums":
         artist_filter = value
+        if artist_filter and isinstance(facets.get("albums_by_artist"), dict):
+            payload = facets.get("albums_by_artist", {}).get(artist_filter)
+            if isinstance(payload, list):
+                return jsonify({"items": payload or [{"kind": "info", "label": "No albums found"}], **response_meta})
+        if not artist_filter:
+            payload = facet_items("albums", "No albums found")
+            if payload:
+                return jsonify({"items": payload, **response_meta})
         albums = []
         seen = set()
         for t in tracks:
@@ -1707,7 +1779,7 @@ def api_library_metadata():
 
         if not albums:
             albums = [{"kind": "info", "label": "No albums found"}]
-        return jsonify({"items": albums, "building": building, "version": int(data.get("version") or library_root_version(root_id)), "stale": building})
+        return jsonify({"items": albums, **response_meta})
 
     if level == "tracks":
         try:
@@ -1719,7 +1791,11 @@ def api_library_metadata():
         genre = (sel.get("genre") or "").strip()
         liked_only = bool(sel.get("liked") or sel.get("loved") or sel.get("liked_only"))
         if liked_only and not lastfm_enabled():
-            return jsonify({"items": [{"kind": "info", "label": "Last.fm not configured"}], "building": building, "version": int(data.get("version") or library_root_version(root_id)), "stale": building})
+            return jsonify({"items": [{"kind": "info", "label": "Last.fm not configured"}], **response_meta})
+        if not liked_only and isinstance(facets.get("tracks_by_key"), dict):
+            payload = facets.get("tracks_by_key", {}).get(track_facet_key(artist=artist, album=album, genre=genre))
+            if isinstance(payload, list):
+                return jsonify({"items": payload or [{"kind": "info", "label": "No tracks found"}], **response_meta})
         tr = []
         for t in tracks:
             if artist and (t.get("artist") or "").strip() != artist:
@@ -1739,12 +1815,12 @@ def api_library_metadata():
         tr.sort(key=lambda x: track_sort_key(x.get("badge") or "") + (x.get("label") or "",))
         if not tr:
             tr = [{"kind": "info", "label": "No tracks found"}]
-        return jsonify({"items": tr, "building": building, "version": int(data.get("version") or library_root_version(root_id)), "stale": building})
+        return jsonify({"items": tr, **response_meta})
 
 
     if level == "liked_songs":
         if not lastfm_enabled():
-            return jsonify({"items": [{"kind": "info", "label": "Last.fm not configured"}], "building": building, "version": int(data.get("version") or library_root_version(root_id)), "stale": building})
+            return jsonify({"items": [{"kind": "info", "label": "Last.fm not configured"}], **response_meta})
         items = []
         for t in tracks:
             a = (t.get("artist") or "").strip()
@@ -1758,23 +1834,33 @@ def api_library_metadata():
         items.sort(key=lambda x: (x.get("label") or "").lower())
         if not items:
             items = [{"kind": "info", "label": "No liked songs found"}]
-        return jsonify({"items": items[:3000], "building": building, "version": int(data.get("version") or library_root_version(root_id)), "stale": building})
+        return jsonify({"items": items[:3000], **response_meta})
 
     if level == "songs":
+        items = facet_items("songs", "No songs found")
+        if items:
+            return jsonify({"items": items, **response_meta})
         s = sorted(tracks, key=lambda x: (x.get("title") or x.get("name") or "").lower())
         items = [{"kind": "track", "label": (t.get("title") or t.get("name") or "Track"), "rel": t.get("rel")} for t in s[:3000]]
         if not items:
             items = [{"kind": "info", "label": "No songs found"}]
-        return jsonify({"items": items, "building": building, "version": int(data.get("version") or library_root_version(root_id)), "stale": building})
+        return jsonify({"items": items, **response_meta})
 
     if level == "genres":
+        items = facet_items("genres", "No genre tags found")
+        if items:
+            return jsonify({"items": items, **response_meta})
         s = sorted({(t.get("genre") or "").strip() for t in tracks if (t.get("genre") or "").strip()}, key=lambda x: x.lower())
         items = [{"kind": "genre", "label": g, "value": g} for g in s] or [{"kind": "info", "label": "No genre tags found"}]
 
-        return jsonify({"items": items, "building": building, "version": int(data.get("version") or library_root_version(root_id)), "stale": building})
+        return jsonify({"items": items, **response_meta})
 
     if level == "genre_albums":
         genre = value
+        if isinstance(facets.get("genre_albums"), dict):
+            payload = facets.get("genre_albums", {}).get(genre)
+            if isinstance(payload, list):
+                return jsonify({"items": payload or [{"kind": "info", "label": "No tracks found"}], **response_meta})
         albums = []
         seen = set()
         any_match = False
@@ -1804,10 +1890,14 @@ def api_library_metadata():
 
         if not albums:
             albums = [{"kind": "info", "label": "No tracks found"}]
-        return jsonify({"items": albums, "building": building, "version": int(data.get("version") or library_root_version(root_id)), "stale": building})
+        return jsonify({"items": albums, **response_meta})
 
     if level == "genre_tracks":
         genre = value
+        if isinstance(facets.get("tracks_by_key"), dict):
+            payload = facets.get("tracks_by_key", {}).get(track_facet_key(genre=genre))
+            if isinstance(payload, list):
+                return jsonify({"items": payload or [{"kind": "info", "label": "No tracks found"}], **response_meta})
         items = []
         for t in tracks:
             if (t.get("genre") or "").strip() != genre:
@@ -1817,17 +1907,20 @@ def api_library_metadata():
         items.sort(key=lambda x: (x.get("label") or "").lower())
         if not items:
             items = [{"kind": "info", "label": "No tracks found"}]
-        return jsonify({"items": items, "building": building, "version": int(data.get("version") or library_root_version(root_id)), "stale": building})
+        return jsonify({"items": items, **response_meta})
 
     if level == "videos":
+        items = facet_items("videos", "No videos found")
+        if items:
+            return jsonify({"items": items, **response_meta})
         items = []
         for v in sorted(vids, key=lambda x: (x.get("title") or x.get("name") or "").lower())[:3000]:
             items.append({"kind": "file", "label": v.get("name") or v.get("title") or "Video", "rel": v.get("rel"), "media": "video", "badge": "video"})
         if not items:
             items = [{"kind": "info", "label": "No videos found"}]
-        return jsonify({"items": items, "building": building, "version": int(data.get("version") or library_root_version(root_id)), "stale": building})
+        return jsonify({"items": items, **response_meta})
 
-    return jsonify({"items": [{"kind": "info", "label": "Unsupported view"}], "building": building, "version": int(data.get("version") or library_root_version(root_id)), "stale": building})
+    return jsonify({"items": [{"kind": "info", "label": "Unsupported view"}], **response_meta})
 
 
 @app.route("/api/library/playlist_create", methods=["POST"])

@@ -61,8 +61,10 @@ from .Library.index import (
     get_index,
     index_building_status,
     library_manifest,
+    library_metadata_facets,
     library_root_version,
     library_root_versions,
+    library_watch_root,
     set_index_cache,
     track_sort_key,
 )
