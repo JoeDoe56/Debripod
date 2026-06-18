@@ -591,16 +591,6 @@ function vibeTick(){
 // ===== library actions (reindex, last.fm auth, forced fullscreen) =====
   var forceFullscreen = false;
 
-  async function doLibraryReindex(){
-    try{
-      await fetch("/api/library/reindex", {method: "POST"});
-      return true;
-    }catch(e){
-      alert("Reindex failed: " + (e && e.message ? e.message : String(e)));
-      return false;
-    }
-  }
-
   async function getAnyIndexBuilding(){
     try{
       const js = await apiGet("/api/library/building");

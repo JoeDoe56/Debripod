@@ -22,12 +22,10 @@ from flask import Flask, request, redirect, url_for, render_template, abort, Res
 
 from .Library.search_cache import (
     _SEARCH_DISK_LOCK,
-    _atomic_write_json,
     _disk_cache_get,
     _disk_cache_set,
     _load_search_history,
     _make_search_cache_key,
-    _read_json_file,
     clear_search_history_and_cache,
     configure_search_cache,
     record_search_history,
@@ -62,6 +60,9 @@ from .Library.index import (
     ensure_index_async,
     get_index,
     index_building_status,
+    library_manifest,
+    library_root_version,
+    library_root_versions,
     set_index_cache,
     track_sort_key,
 )
