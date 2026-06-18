@@ -5,6 +5,7 @@ import json
 import base64
 import secrets
 import socket
+import time
 from pathlib import Path
 
 from flask import session
@@ -236,6 +237,44 @@ def render_shell(autorefresh: int = 0, **ctx) -> str:
         **ctx,
     )
 register_shell_routes(app, render_shell)
+
+
+def _pwa_shell_assets() -> list[str]:
+    base = [
+        "/",
+        f"/site.webmanifest?v={ICON_VERSION}",
+        f"/favicon.ico?v={ICON_VERSION}",
+        f"/apple-touch-icon.png?v={ICON_VERSION}",
+        f"/apple-touch-icon-precomposed.png?v={ICON_VERSION}",
+        f"/static/debripod.css?v={ASSET_VERSION}",
+        f"/static/debripod.js?v={ASSET_VERSION}",
+        f"/static/liquidGL.js?v={ASSET_VERSION}",
+        f"/static/html2canvas.min.js?v={ASSET_VERSION}",
+        f"/static/vendor/hls-local.js?v={ASSET_VERSION}",
+        f"/static/vendor/snapdom-local.js?v={ASSET_VERSION}",
+        f"/static/fonts/inter-4.1/InterVariable.woff2?v=inter-4.1",
+        f"/static/fonts/inter-4.1/InterVariable-Italic.woff2?v=inter-4.1",
+    ]
+    js_dir = Path(__file__).resolve().parent / "static" / "js"
+    try:
+        for path in sorted(js_dir.glob("*.js")):
+            base.append(f"/static/js/{path.name}?v={ASSET_VERSION}")
+    except Exception:
+        pass
+    return base
+
+
+@app.route("/debripod-sw.js", methods=["GET"])
+def debripod_service_worker():
+    path = Path(__file__).resolve().parent / "static" / "debripod-sw.js"
+    text = path.read_text(encoding="utf-8")
+    text = text.replace("__DEBRIPOD_ASSET_VERSION__", str(ASSET_VERSION))
+    text = text.replace("__DEBRIPOD_ICON_VERSION__", str(ICON_VERSION))
+    text = text.replace("__DEBRIPOD_SHELL_ASSETS__", json.dumps(_pwa_shell_assets(), ensure_ascii=False))
+    resp = Response(text, mimetype="application/javascript")
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp.headers["Service-Worker-Allowed"] = "/"
+    return resp
 
 
 def _search_knaben_cached(q: str, page: int = 1) -> Tuple[List[dict], str, str, str, str]:
@@ -1500,12 +1539,77 @@ def api_client_state():
         except Exception:
             pass
     any_building, roots_status = index_building_status()
+    username = _current_settings_username()
+    settings = ensure_app_settings(username=username)
+    search_history_items = _load_search_history()
+    with PLAYBACK_STATE_LOCK:
+        playback_recent = PLAYBACK_STATE.get("recent") or []
+        playback_version = int(PLAYBACK_STATE.get("version") or len(playback_recent) or 0)
+    services = _service_status_payload(settings)
     return jsonify({
         "ok": True,
+        "user": username,
+        "app_version": str(VERSION_INFO.get("display_version") or VERSION),
+        "short_commit": str(VERSION_INFO.get("short_commit") or ""),
+        "asset_version": str(ASSET_VERSION),
+        "settings_version": abs(hash(json.dumps(masked_settings(settings), sort_keys=True, default=str))) % 1000000007,
         "library_versions": library_root_versions(),
+        "search_history_version": int(max([float(x.get("ts") or 0) for x in search_history_items] + [0])),
+        "playback_version": playback_version,
+        "service_status_version": abs(hash(json.dumps(services, sort_keys=True, default=str))) % 1000000007,
+        "setup_complete": bool(settings.get("SETUP_WIZARD_COMPLETE")),
         "library_building": any_building,
         "library_building_roots": roots_status,
     })
+
+
+@app.route("/api/sync", methods=["GET"])
+def api_sync():
+    username = _current_settings_username()
+    settings = ensure_app_settings(username=username)
+    try:
+        since = json.loads(request.args.get("since") or "{}")
+    except Exception:
+        since = {}
+    if not isinstance(since, dict):
+        since = {}
+    since_roots = since.get("library_versions") if isinstance(since.get("library_versions"), dict) else {}
+    root_payload = [{"id": rid, "name": name, "mode": mode, "version": int(library_root_versions().get(rid) or 0)} for rid, name, _, mode in roots()]
+    library_changes = []
+    deleted = []
+    for rid, _, root_abs, mode in roots():
+        try:
+            ensure_index_async(rid, root_abs, mode=mode)
+        except Exception:
+            pass
+        old_v = int(since_roots.get(rid) or 0)
+        manifest = library_manifest(rid, since_version=old_v)
+        if manifest:
+            items = manifest.get("items") or []
+            library_changes.extend([dict(item, root_id=rid) for item in items if not item.get("deleted")])
+            deleted.extend([dict(item, root_id=rid) for item in items if item.get("deleted")])
+    with PLAYBACK_STATE_LOCK:
+        recent = PLAYBACK_STATE.get("recent") or []
+        playback = {"recent": [dict(x) for x in recent if isinstance(x, dict)][:100], "version": int(PLAYBACK_STATE.get("version") or len(recent) or 0)}
+    for item in playback.get("recent") or []:
+        for key in ["_key", "_sess", "_stream_item"]:
+            item.pop(key, None)
+    state_payload = {
+        "ok": True,
+        "server_version": int(time.time()),
+        "user": username,
+        "asset_version": str(ASSET_VERSION),
+        "roots": root_payload,
+        "library_versions": library_root_versions(),
+        "library_changes": library_changes,
+        "deleted": deleted,
+        "settings": masked_settings(settings),
+        "search_history": _load_search_history(),
+        "playback": playback,
+        "services": _service_status_payload(settings),
+        "setup_complete": bool(settings.get("SETUP_WIZARD_COMPLETE")),
+    }
+    return jsonify(state_payload)
 
 
 @app.route("/api/library/manifest", methods=["GET"])

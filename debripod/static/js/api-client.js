@@ -26,9 +26,27 @@
 
   async function apiGet(url, options){
     const opts = Object.assign({cache:"no-store"}, options || {});
-    const r = await fetch(url, opts);
-    if(!r.ok) throw new Error("HTTP " + r.status);
-    return await r.json();
+    const skipMirror = !!opts.skipMirror;
+    delete opts.skipMirror;
+    try{
+      const r = await fetch(url, opts);
+      if(!r.ok) throw new Error("HTTP " + r.status);
+      const js = await r.json();
+      try{
+        if(!skipMirror && root.clientSync && root.clientSync.maybeStoreApiGet){
+          root.clientSync.maybeStoreApiGet(url, js);
+        }
+      }catch(e){}
+      return js;
+    }catch(err){
+      try{
+        if(!skipMirror && root.clientSync && root.clientSync.cachedApiGet){
+          const cached = await root.clientSync.cachedApiGet(url);
+          if(cached) return Object.assign({stale:true, offline:true}, cached);
+        }
+      }catch(e){}
+      throw err;
+    }
   }
 
   async function apiPost(url, payload, options){

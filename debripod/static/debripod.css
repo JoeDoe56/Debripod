@@ -72,6 +72,9 @@
       overscroll-behavior-y: contain;
       }
     body, button, input, select, textarea{font-family: var(--uiFont);}
+    html.serverUnavailable #libList .ipodItem.info .glassText{
+      color: rgba(255,255,255,.86);
+    }
     .passkeyGate{
       position:fixed;
       inset:0;
