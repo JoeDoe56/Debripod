@@ -138,12 +138,25 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         CREATE INDEX IF NOT EXISTS idx_media_files_root_type ON media_files(root_id, media_type);
         CREATE INDEX IF NOT EXISTS idx_media_files_abs_identity ON media_files(abs_path, size, mtime_ns);
 
-        CREATE TABLE IF NOT EXISTS library_index_snapshots (
-          root_id TEXT PRIMARY KEY,
-          root_abs TEXT NOT NULL,
-          root_mtime_ns INTEGER NOT NULL DEFAULT 0,
+        CREATE TABLE IF NOT EXISTS media_metadata (
+          root_id TEXT NOT NULL,
+          rel TEXT NOT NULL,
+          title TEXT NOT NULL DEFAULT '',
+          artist TEXT NOT NULL DEFAULT '',
+          album_artist TEXT NOT NULL DEFAULT '',
+          album TEXT NOT NULL DEFAULT '',
+          genre TEXT NOT NULL DEFAULT '',
+          track TEXT NOT NULL DEFAULT '',
+          duration REAL,
+          tech TEXT NOT NULL DEFAULT '',
+          codec TEXT NOT NULL DEFAULT '',
+          bit_depth INTEGER,
+          sample_rate INTEGER,
+          bitrate INTEGER,
+          size INTEGER NOT NULL DEFAULT 0,
+          mtime_ns INTEGER NOT NULL DEFAULT 0,
           saved_at REAL NOT NULL,
-          data_json TEXT NOT NULL
+          PRIMARY KEY(root_id, rel)
         );
 
         CREATE TABLE IF NOT EXISTS metadata_cache (
@@ -154,8 +167,10 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
           meta_json TEXT NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS palette_cache (
+        CREATE TABLE IF NOT EXISTS art_palette_cache (
           cache_key TEXT PRIMARY KEY,
+          root_id TEXT NOT NULL DEFAULT '',
+          rel TEXT NOT NULL DEFAULT '',
           source_kind TEXT NOT NULL DEFAULT '',
           source_identity TEXT NOT NULL DEFAULT '',
           size INTEGER NOT NULL DEFAULT 0,
@@ -165,14 +180,19 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
           palette_json TEXT NOT NULL
         );
 
-        CREATE TABLE IF NOT EXISTS audio_feature_blobs (
+        CREATE TABLE IF NOT EXISTS visualizer_analysis (
           analysis_key TEXT PRIMARY KEY,
           media_id TEXT NOT NULL DEFAULT '',
+          root_id TEXT NOT NULL DEFAULT '',
+          rel TEXT NOT NULL DEFAULT '',
           abs_path TEXT NOT NULL,
           size INTEGER NOT NULL DEFAULT 0,
           mtime_ns INTEGER NOT NULL DEFAULT 0,
           duration REAL,
-          sample_rate_hz INTEGER NOT NULL DEFAULT 30,
+          analysis_rate_hz INTEGER NOT NULL DEFAULT 30,
+          band_count INTEGER NOT NULL DEFAULT 7,
+          compression TEXT NOT NULL DEFAULT 'none',
+          decoder_settings_hash TEXT NOT NULL DEFAULT '',
           algorithm_version INTEGER NOT NULL DEFAULT 1,
           saved_at REAL NOT NULL,
           frame_count INTEGER NOT NULL DEFAULT 0,
@@ -237,6 +257,14 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         """
     )
     _ensure_column(conn, "search_cache", "extra_json", "TEXT NOT NULL DEFAULT '{}'")
+    _ensure_column(conn, "art_palette_cache", "root_id", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "art_palette_cache", "rel", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "visualizer_analysis", "root_id", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "visualizer_analysis", "rel", "TEXT NOT NULL DEFAULT ''")
+    _ensure_column(conn, "visualizer_analysis", "analysis_rate_hz", "INTEGER NOT NULL DEFAULT 30")
+    _ensure_column(conn, "visualizer_analysis", "band_count", "INTEGER NOT NULL DEFAULT 7")
+    _ensure_column(conn, "visualizer_analysis", "compression", "TEXT NOT NULL DEFAULT 'none'")
+    _ensure_column(conn, "visualizer_analysis", "decoder_settings_hash", "TEXT NOT NULL DEFAULT ''")
 
 
 def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
@@ -352,26 +380,170 @@ def root_versions() -> dict[str, int]:
     return {str(row["root_id"]): int(row["version"] or 0) for row in rows}
 
 
+def _track_sort_tuple(track_s: str) -> tuple[int, str]:
+    s = (track_s or "").strip()
+    if not s:
+        return (10**9, "")
+    digits = []
+    for ch in s:
+        if ch.isdigit():
+            digits.append(ch)
+        else:
+            break
+    if not digits:
+        return (10**9, s)
+    try:
+        return (int("".join(digits)), s)
+    except Exception:
+        return (10**9, s)
+
+
+def _track_item(track: dict[str, Any]) -> dict[str, Any]:
+    return {
+        "kind": "track",
+        "label": str(track.get("title") or track.get("name") or "Track"),
+        "rel": track.get("rel"),
+        "badge": str(track.get("track") or ""),
+    }
+
+
+def _album_value(*, artist: str = "", album: str = "", genre: str = "", liked: bool = False) -> str:
+    payload: dict[str, Any] = {}
+    if artist:
+        payload["artist"] = artist
+    if album:
+        payload["album"] = album
+    if genre:
+        payload["genre"] = genre
+    if liked:
+        payload["liked"] = True
+    return json.dumps(payload, ensure_ascii=False, sort_keys=True)
+
+
+def _track_key(*, artist: str = "", album: str = "", genre: str = "") -> str:
+    return json.dumps({"artist": artist, "album": album, "genre": genre}, ensure_ascii=False, sort_keys=True)
+
+
+def _build_metadata_facets(data: dict) -> dict[str, Any]:
+    tracks = [t for t in (data.get("tracks") or []) if isinstance(t, dict)]
+    videos = [v for v in (data.get("videos") or []) if isinstance(v, dict)]
+
+    artists = sorted({str(t.get("artist") or "").strip() for t in tracks if str(t.get("artist") or "").strip()}, key=str.lower)
+    genres = sorted({str(t.get("genre") or "").strip() for t in tracks if str(t.get("genre") or "").strip()}, key=str.lower)
+
+    albums_all: list[dict[str, Any]] = []
+    albums_by_artist: dict[str, list[dict[str, Any]]] = {}
+    genre_albums: dict[str, list[dict[str, Any]]] = {}
+    seen_all: set[tuple[str, str]] = set()
+    seen_artist: set[tuple[str, str]] = set()
+    seen_genre: set[tuple[str, str, str]] = set()
+    any_genre: set[str] = set()
+
+    tracks_by_key: dict[str, list[dict[str, Any]]] = {}
+    songs = sorted(tracks, key=lambda t: str(t.get("title") or t.get("name") or "").lower())
+    for t in tracks:
+        artist = str(t.get("artist") or "").strip()
+        album = str(t.get("album") or "").strip()
+        genre = str(t.get("genre") or "").strip()
+        item = _track_item(t)
+        for key in (
+            _track_key(artist=artist, album=album),
+            _track_key(artist=artist),
+            _track_key(genre=genre),
+            _track_key(genre=genre, artist=artist, album=album),
+        ):
+            tracks_by_key.setdefault(key, []).append(item)
+        if artist:
+            albums_by_artist.setdefault(artist, [])
+        if genre:
+            any_genre.add(genre)
+            genre_albums.setdefault(genre, [])
+        if album:
+            if (artist, album) not in seen_all:
+                seen_all.add((artist, album))
+                label = album + (f"   {artist}" if artist else "")
+                albums_all.append({"kind": "album", "label": label, "value": _album_value(artist=artist, album=album)})
+            if artist and (artist, album) not in seen_artist:
+                seen_artist.add((artist, album))
+                albums_by_artist.setdefault(artist, []).append({"kind": "album", "label": album, "value": _album_value(artist=artist, album=album)})
+            if genre and (genre, artist, album) not in seen_genre:
+                seen_genre.add((genre, artist, album))
+                label = album + (f"   {artist}" if artist else "")
+                genre_albums.setdefault(genre, []).append({"kind": "album", "label": label, "value": _album_value(genre=genre, artist=artist, album=album)})
+
+    albums_all.sort(key=lambda x: str(x.get("label") or "").lower())
+    for artist, items in list(albums_by_artist.items()):
+        items.sort(key=lambda x: str(x.get("label") or "").lower())
+        albums_by_artist[artist] = [
+            {"kind": "album", "label": "Liked Songs", "value": _album_value(artist=artist, liked=True)},
+            {"kind": "album", "label": "All Songs", "value": _album_value(artist=artist)},
+        ] + items
+    for genre, items in list(genre_albums.items()):
+        items.sort(key=lambda x: str(x.get("label") or "").lower())
+        if genre in any_genre:
+            genre_albums[genre] = [
+                {"kind": "album", "label": "Liked Songs", "value": _album_value(genre=genre, liked=True)},
+                {"kind": "album", "label": "All Songs", "value": _album_value(genre=genre)},
+            ] + items
+
+    for key, items in tracks_by_key.items():
+        items.sort(key=lambda x: _track_sort_tuple(str(x.get("badge") or "")) + (str(x.get("label") or ""),))
+
+    return {
+        "artists": [{"kind": "artist", "label": a, "value": a} for a in artists],
+        "albums": albums_all,
+        "albums_by_artist": albums_by_artist,
+        "songs": [{"kind": "track", "label": str(t.get("title") or t.get("name") or "Track"), "rel": t.get("rel")} for t in songs[:3000]],
+        "genres": [{"kind": "genre", "label": g, "value": g} for g in genres],
+        "genre_albums": genre_albums,
+        "tracks_by_key": tracks_by_key,
+        "videos": [
+            {"kind": "file", "label": v.get("name") or v.get("title") or "Video", "rel": v.get("rel"), "media": "video", "badge": "video"}
+            for v in sorted(videos, key=lambda x: str(x.get("title") or x.get("name") or "").lower())[:3000]
+        ],
+    }
+
+
 def load_index_snapshot(root_id: str, root_abs: str) -> Optional[dict]:
     with library_db() as conn:
         row = conn.execute(
-            "SELECT root_abs, data_json FROM library_index_snapshots WHERE root_id = ?",
+            "SELECT root_abs, version FROM library_roots WHERE root_id = ?",
             (str(root_id or ""),),
         ).fetchone()
-    if not row:
+        if not row:
+            return None
+        if os.path.abspath(str(row["root_abs"] or "")) != os.path.abspath(root_abs):
+            return None
+        version = int(row["version"] or 0)
+        rows = conn.execute(
+            """
+            SELECT mf.media_type, mf.metadata_json
+            FROM media_files mf
+            JOIN library_items li ON li.root_id = mf.root_id AND li.rel = mf.rel_path
+            WHERE mf.root_id = ? AND li.deleted = 0
+            ORDER BY mf.rel_path COLLATE NOCASE
+            """,
+            (str(root_id or ""),),
+        ).fetchall()
+    tracks = []
+    videos = []
+    for item in rows:
+        try:
+            payload = json.loads(str(item["metadata_json"] or "{}"))
+        except Exception:
+            payload = {}
+        if not isinstance(payload, dict):
+            payload = {}
+        if str(item["media_type"] or "") == "video":
+            videos.append(payload)
+        else:
+            tracks.append(payload)
+    if not tracks and not videos:
         return None
-    if os.path.abspath(str(row["root_abs"] or "")) != os.path.abspath(root_abs):
-        return None
-    try:
-        data = json.loads(str(row["data_json"] or "{}"))
-        if isinstance(data, dict) and isinstance(data.get("tracks"), list) and isinstance(data.get("videos"), list):
-            out = {"tracks": data.get("tracks") or [], "videos": data.get("videos") or []}
-            version = root_version(root_id)
-            if version:
-                out["version"] = version
-            return out
-    except Exception:
-        return None
+    out = {"tracks": tracks, "videos": videos}
+    if version:
+        out["version"] = version
+    return out
     return None
 
 
@@ -379,7 +551,6 @@ def save_index_snapshot(root_id: str, root_abs: str, data: dict, *, mode: str = 
     root_id = str(root_id or "")
     root_abs_norm = os.path.abspath(root_abs)
     payload_data = data if isinstance(data, dict) else {"tracks": [], "videos": []}
-    payload = json.dumps(payload_data, ensure_ascii=False, sort_keys=True)
     now = time.time()
     with library_db() as conn:
         existing = conn.execute(
@@ -454,18 +625,6 @@ def save_index_snapshot(root_id: str, root_abs: str, data: dict, *, mode: str = 
                 """,
                 (root_id, rel, abs_path, media_type, ext, size, mtime_ns, changed_at),
             )
-        conn.execute(
-            """
-            INSERT INTO library_index_snapshots(root_id, root_abs, root_mtime_ns, saved_at, data_json)
-            VALUES(?, ?, ?, ?, ?)
-            ON CONFLICT(root_id) DO UPDATE SET
-              root_abs=excluded.root_abs,
-              root_mtime_ns=excluded.root_mtime_ns,
-              saved_at=excluded.saved_at,
-              data_json=excluded.data_json
-            """,
-            (root_id, root_abs_norm, _root_mtime_ns(root_abs_norm), now, payload),
-        )
         for media_type, items in (("audio", payload_data.get("tracks") or []), ("video", payload_data.get("videos") or [])):
             for item in items:
                 if not isinstance(item, dict):
@@ -521,8 +680,103 @@ def save_index_snapshot(root_id: str, root_abs: str, data: dict, *, mode: str = 
                         json.dumps(item, ensure_ascii=False, sort_keys=True),
                     ),
                 )
+                conn.execute(
+                    """
+                    INSERT INTO media_metadata(
+                      root_id, rel, title, artist, album_artist, album, genre, track, duration,
+                      tech, codec, bit_depth, sample_rate, bitrate, size, mtime_ns, saved_at
+                    ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(root_id, rel) DO UPDATE SET
+                      title=excluded.title,
+                      artist=excluded.artist,
+                      album_artist=excluded.album_artist,
+                      album=excluded.album,
+                      genre=excluded.genre,
+                      track=excluded.track,
+                      duration=excluded.duration,
+                      tech=excluded.tech,
+                      codec=excluded.codec,
+                      bit_depth=excluded.bit_depth,
+                      sample_rate=excluded.sample_rate,
+                      bitrate=excluded.bitrate,
+                      size=excluded.size,
+                      mtime_ns=excluded.mtime_ns,
+                      saved_at=excluded.saved_at
+                    """,
+                    (
+                        root_id,
+                        rel,
+                        str(item.get("title") or ""),
+                        str(item.get("artist") or ""),
+                        str(item.get("album_artist") or ""),
+                        str(item.get("album") or ""),
+                        str(item.get("genre") or ""),
+                        str(item.get("track") or ""),
+                        item.get("duration"),
+                        str(item.get("tech") or ""),
+                        str(item.get("codec") or ""),
+                        item.get("bit_depth"),
+                        item.get("sample_rate"),
+                        item.get("bitrate"),
+                        size,
+                        mtime_ns,
+                        now,
+                    ),
+                )
+        facets = _build_metadata_facets(payload_data)
+        conn.execute(
+            """
+            INSERT INTO library_facets(root_id, facet, root_version, saved_at, data_json)
+            VALUES(?, 'metadata', ?, ?, ?)
+            ON CONFLICT(root_id, facet) DO UPDATE SET
+              root_version=excluded.root_version,
+              saved_at=excluded.saved_at,
+              data_json=excluded.data_json
+            """,
+            (root_id, version, now, json.dumps(facets, ensure_ascii=False, sort_keys=True)),
+        )
+        for folder in payload_data.get("folder_entries") or []:
+            if not isinstance(folder, dict):
+                continue
+            rel = str(folder.get("rel") or "").replace("\\", "/").strip("/")
+            abs_dir = str(folder.get("abs_path") or "")
+            entries = folder.get("entries") if isinstance(folder.get("entries"), list) else []
+            conn.execute(
+                """
+                INSERT INTO folder_entries(root_id, rel, root_version, dir_mtime_ns, saved_at, entries_json)
+                VALUES(?, ?, ?, ?, ?, ?)
+                ON CONFLICT(root_id, rel) DO UPDATE SET
+                  root_version=excluded.root_version,
+                  dir_mtime_ns=excluded.dir_mtime_ns,
+                  saved_at=excluded.saved_at,
+                  entries_json=excluded.entries_json
+                """,
+                (root_id, rel, version, _path_mtime_ns(abs_dir), now, json.dumps(entries, ensure_ascii=False, sort_keys=True)),
+            )
         conn.execute("DELETE FROM folder_entries WHERE root_id = ? AND root_version < ?", (root_id, version))
     return version
+
+
+def load_library_facets(root_id: str, facet: str = "metadata") -> Optional[dict[str, Any]]:
+    version = root_version(root_id)
+    if not version:
+        return None
+    with library_db() as conn:
+        row = conn.execute(
+            """
+            SELECT root_version, data_json
+            FROM library_facets
+            WHERE root_id = ? AND facet = ?
+            """,
+            (str(root_id or ""), str(facet or "metadata")),
+        ).fetchone()
+    if not row or int(row["root_version"] or 0) != version:
+        return None
+    try:
+        data = json.loads(str(row["data_json"] or "{}"))
+    except Exception:
+        return None
+    return data if isinstance(data, dict) else None
 
 
 def load_folder_entries(root_id: str, rel: str, dir_abs: str) -> Optional[dict]:
@@ -722,18 +976,21 @@ def clear_search_cache() -> None:
 
 def clear_library_cache() -> None:
     with library_db() as conn:
-        conn.execute("DELETE FROM library_index_snapshots")
         conn.execute("DELETE FROM media_files")
+        conn.execute("DELETE FROM media_metadata")
         conn.execute("DELETE FROM metadata_cache")
         conn.execute("DELETE FROM folder_entries")
+        conn.execute("DELETE FROM library_facets")
         conn.execute("DELETE FROM library_items")
         conn.execute("DELETE FROM library_roots")
+        conn.execute("DELETE FROM art_palette_cache")
+        conn.execute("DELETE FROM visualizer_analysis")
 
 
 def load_palette(cache_key: str) -> Optional[dict]:
     with library_db() as conn:
         row = conn.execute(
-            "SELECT palette_json FROM palette_cache WHERE cache_key = ?",
+            "SELECT palette_json FROM art_palette_cache WHERE cache_key = ?",
             (str(cache_key or ""),),
         ).fetchone()
     if not row:
@@ -745,50 +1002,118 @@ def load_palette(cache_key: str) -> Optional[dict]:
         return None
 
 
-def save_palette(cache_key: str, palette: dict, *, source_kind: str = "", source_identity: str = "") -> None:
+def save_palette(cache_key: str, palette: dict, *, source_kind: str = "", source_identity: str = "", root_id: str = "", rel: str = "") -> None:
     payload = json.dumps(palette if isinstance(palette, dict) else {}, ensure_ascii=False, sort_keys=True)
     with library_db() as conn:
         conn.execute(
             """
-            INSERT INTO palette_cache(cache_key, source_kind, source_identity, version, saved_at, palette_json)
-            VALUES(?, ?, ?, ?, ?, ?)
+            INSERT INTO art_palette_cache(cache_key, root_id, rel, source_kind, source_identity, version, saved_at, palette_json)
+            VALUES(?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(cache_key) DO UPDATE SET
+              root_id=excluded.root_id,
+              rel=excluded.rel,
               source_kind=excluded.source_kind,
               source_identity=excluded.source_identity,
               version=excluded.version,
               saved_at=excluded.saved_at,
               palette_json=excluded.palette_json
             """,
-            (str(cache_key or ""), str(source_kind or ""), str(source_identity or ""), SCHEMA_VERSION, time.time(), payload),
+            (str(cache_key or ""), str(root_id or ""), str(rel or ""), str(source_kind or ""), str(source_identity or ""), SCHEMA_VERSION, time.time(), payload),
         )
 
 
-def save_audio_feature_blob(
+def load_visualizer_analysis(analysis_key: str) -> Optional[dict[str, Any]]:
+    with library_db() as conn:
+        row = conn.execute(
+            """
+            SELECT media_id, root_id, rel, abs_path, size, mtime_ns, duration, analysis_rate_hz,
+                   band_count, compression, decoder_settings_hash, algorithm_version,
+                   frame_count, feature_blob, metadata_json
+            FROM visualizer_analysis
+            WHERE analysis_key = ?
+            """,
+            (str(analysis_key or ""),),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        metadata = json.loads(str(row["metadata_json"] or "{}"))
+    except Exception:
+        metadata = {}
+    return {
+        "analysis_key": str(analysis_key or ""),
+        "media_id": str(row["media_id"] or ""),
+        "root_id": str(row["root_id"] or ""),
+        "rel": str(row["rel"] or ""),
+        "abs_path": str(row["abs_path"] or ""),
+        "size": int(row["size"] or 0),
+        "mtime_ns": int(row["mtime_ns"] or 0),
+        "duration": row["duration"],
+        "analysis_rate_hz": int(row["analysis_rate_hz"] or 30),
+        "band_count": int(row["band_count"] or 7),
+        "compression": str(row["compression"] or "none"),
+        "decoder_settings_hash": str(row["decoder_settings_hash"] or ""),
+        "algorithm_version": int(row["algorithm_version"] or ANALYSIS_ALGORITHM_VERSION),
+        "frame_count": int(row["frame_count"] or 0),
+        "feature_blob": bytes(row["feature_blob"] or b""),
+        "metadata": metadata if isinstance(metadata, dict) else {},
+    }
+
+
+def load_visualizer_analysis_for_media(root_id: str, rel: str) -> Optional[dict[str, Any]]:
+    with library_db() as conn:
+        row = conn.execute(
+            """
+            SELECT analysis_key
+            FROM visualizer_analysis
+            WHERE root_id = ? AND rel = ?
+            ORDER BY saved_at DESC
+            LIMIT 1
+            """,
+            (str(root_id or ""), str(rel or "")),
+        ).fetchone()
+    if not row:
+        return None
+    return load_visualizer_analysis(str(row["analysis_key"] or ""))
+
+
+def save_visualizer_analysis(
     analysis_key: str,
     *,
     media_id: str,
+    root_id: str = "",
+    rel: str = "",
     abs_path: str,
     duration: Optional[float],
-    sample_rate_hz: int,
+    analysis_rate_hz: int,
+    band_count: int,
     frame_count: int,
     feature_blob: bytes,
+    compression: str = "none",
+    decoder_settings_hash: str = "",
     metadata: Optional[dict] = None,
 ) -> None:
     size, mtime_ns = file_identity(abs_path)
     with library_db() as conn:
         conn.execute(
             """
-            INSERT INTO audio_feature_blobs(
-              analysis_key, media_id, abs_path, size, mtime_ns, duration, sample_rate_hz,
+            INSERT INTO visualizer_analysis(
+              analysis_key, media_id, root_id, rel, abs_path, size, mtime_ns, duration,
+              analysis_rate_hz, band_count, compression, decoder_settings_hash,
               algorithm_version, saved_at, frame_count, feature_blob, metadata_json
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(analysis_key) DO UPDATE SET
               media_id=excluded.media_id,
+              root_id=excluded.root_id,
+              rel=excluded.rel,
               abs_path=excluded.abs_path,
               size=excluded.size,
               mtime_ns=excluded.mtime_ns,
               duration=excluded.duration,
-              sample_rate_hz=excluded.sample_rate_hz,
+              analysis_rate_hz=excluded.analysis_rate_hz,
+              band_count=excluded.band_count,
+              compression=excluded.compression,
+              decoder_settings_hash=excluded.decoder_settings_hash,
               algorithm_version=excluded.algorithm_version,
               saved_at=excluded.saved_at,
               frame_count=excluded.frame_count,
@@ -798,11 +1123,16 @@ def save_audio_feature_blob(
             (
                 str(analysis_key or ""),
                 str(media_id or ""),
+                str(root_id or ""),
+                str(rel or ""),
                 os.path.abspath(abs_path),
                 size,
                 mtime_ns,
                 duration,
-                int(sample_rate_hz or 30),
+                int(analysis_rate_hz or 30),
+                int(band_count or 7),
+                str(compression or "none"),
+                str(decoder_settings_hash or ""),
                 ANALYSIS_ALGORITHM_VERSION,
                 time.time(),
                 int(frame_count or 0),

@@ -1,13 +1,15 @@
 from __future__ import annotations
 
 import os
+import math
+import struct
 import threading
 from typing import Dict, List, Optional, Tuple
 
 from ..paths import art_cache_dir
 from ..playback.probe import ffprobe_json, run_cmd
 from ..utils import is_audio, sha1_text
-from .library_db import load_metadata, save_metadata
+from .library_db import load_metadata, load_palette, load_visualizer_analysis, save_metadata, save_palette, save_visualizer_analysis, file_identity
 
 _ffmpeg_path = "ffmpeg"
 
@@ -24,6 +26,12 @@ def _ffmpeg_path_value() -> str:
 # =========================
 META_CACHE: Dict[str, Tuple[float, dict]] = {}
 META_LOCK = threading.Lock()
+ANALYSIS_LOCK = threading.BoundedSemaphore(1)
+PALETTE_ALGORITHM_VERSION = 1
+ANALYSIS_RATE_HZ = 30
+ANALYSIS_SAMPLE_RATE_HZ = 8820
+ANALYSIS_BANDS = [60, 120, 250, 500, 1000, 2000, 3600]
+DECODER_SETTINGS_HASH = sha1_text(f"pcm_s16le_mono_{ANALYSIS_SAMPLE_RATE_HZ}_goertzel_v1")
 
 
 
@@ -153,6 +161,10 @@ def file_meta_cached(abs_path: str) -> dict:
             "track": track,
             "duration": duration,
             "tech": tech,
+            "codec": codec,
+            "bit_depth": bits,
+            "sample_rate": sample_rate,
+            "bitrate": bit_rate,
         }
     except Exception:
         meta = {
@@ -164,6 +176,10 @@ def file_meta_cached(abs_path: str) -> dict:
             "track": "",
             "duration": None,
             "tech": "",
+            "codec": "",
+            "bit_depth": None,
+            "sample_rate": None,
+            "bitrate": None,
         }
 
     with META_LOCK:
@@ -319,3 +335,229 @@ def extract_art(abs_path: str) -> Optional[str]:
 
 
 # =========================
+
+
+def _hex(rgb: tuple[int, int, int]) -> str:
+    return "#" + "".join(f"{max(0, min(255, int(v))):02x}" for v in rgb)
+
+
+def _linear_channel(v: int) -> float:
+    x = max(0.0, min(1.0, float(v) / 255.0))
+    return x / 12.92 if x <= 0.04045 else ((x + 0.055) / 1.055) ** 2.4
+
+
+def _luminance(rgb: tuple[int, int, int]) -> float:
+    return _linear_channel(rgb[0]) * 0.2126 + _linear_channel(rgb[1]) * 0.7152 + _linear_channel(rgb[2]) * 0.0722
+
+
+def _contrast(a: tuple[int, int, int], b: tuple[int, int, int]) -> float:
+    la = _luminance(a)
+    lb = _luminance(b)
+    hi = max(la, lb)
+    lo = min(la, lb)
+    return (hi + 0.05) / (lo + 0.05)
+
+
+def _mix(rgb: tuple[int, int, int], target: tuple[int, int, int], amount: float) -> tuple[int, int, int]:
+    p = max(0.0, min(1.0, float(amount)))
+    return tuple(int(round(rgb[i] + (target[i] - rgb[i]) * p)) for i in range(3))
+
+
+def _best_contrast(bg: tuple[int, int, int], palette: list[tuple[int, int, int]]) -> tuple[tuple[int, int, int], float]:
+    candidates: list[tuple[int, int, int]] = []
+    for color in palette:
+        candidates.extend([color, _mix(color, (255, 255, 255), 0.42), _mix(color, (255, 255, 255), 0.72), _mix(color, (0, 0, 0), 0.44), _mix(color, (0, 0, 0), 0.72)])
+    candidates.extend([(255, 255, 255), (0, 0, 0)])
+    best = candidates[0]
+    best_score = -1.0
+    for color in candidates:
+        score = _contrast(bg, color)
+        if score > best_score:
+            best = color
+            best_score = score
+    return best, best_score
+
+
+def _palette_object(colors: list[tuple[int, int, int]]) -> dict:
+    palette = colors[:8] or [(10, 132, 255), (94, 92, 230), (255, 69, 58), (48, 209, 88)]
+    role_names = ["low", "lowHigh", "lowMid", "mid", "upperMid", "highLow", "high"]
+    roles = {}
+    for idx, name in enumerate(role_names):
+        bg = palette[idx % len(palette)]
+        contrast_rgb, ratio = _best_contrast(bg, palette)
+        roles[name] = {"color": _hex(bg), "contrast": _hex(contrast_rgb), "contrastRatio": ratio}
+    dark_text, _ = _best_contrast((18, 18, 22), palette)
+    light_text, _ = _best_contrast((236, 238, 242), palette)
+    selected, _ = _best_contrast(palette[0], palette)
+    return {
+        "version": PALETTE_ALGORITHM_VERSION,
+        "colors": [_hex(c) for c in palette],
+        "roles": roles,
+        "ui": {
+            "darkText": _hex(dark_text),
+            "lightText": _hex(light_text),
+            "clearEngraveA": roles["low"]["contrast"],
+            "clearEngraveB": roles["high"]["contrast"],
+            "selectedFallbackText": _hex(selected),
+            "selectedFallbackPillText": _hex(selected),
+            "selectedPillEdge": roles["mid"]["contrast"],
+            "wheelText": _hex(selected),
+        },
+    }
+
+
+def _extract_palette_from_image(path: str) -> Optional[dict]:
+    try:
+        from PIL import Image
+    except Exception:
+        return None
+    try:
+        with Image.open(path) as img:
+            img = img.convert("RGB")
+            img.thumbnail((96, 96))
+            buckets: dict[tuple[int, int, int], tuple[float, tuple[int, int, int]]] = {}
+            for r, g, b in img.getdata():
+                mx = max(r, g, b)
+                mn = min(r, g, b)
+                sat = ((mx - mn) / mx) if mx else 0.0
+                lum = (r * 0.299 + g * 0.587 + b * 0.114) / 255.0
+                colorful = sat >= 0.18 and 0.08 <= lum <= 0.92
+                score = (2.2 if colorful else 0.25) * (sat + 0.15) * (1 - abs(lum - 0.5) * 0.78)
+                key = (r >> 3, g >> 3, b >> 3)
+                old = buckets.get(key)
+                if old is None or score > old[0]:
+                    buckets[key] = (score, (r, g, b))
+            candidates = [item[1] for item in sorted(buckets.values(), key=lambda x: x[0], reverse=True)]
+            selected: list[tuple[int, int, int]] = []
+            for color in candidates:
+                if all(sum((color[i] - prev[i]) ** 2 for i in range(3)) ** 0.5 >= 58 for prev in selected):
+                    selected.append(color)
+                    if len(selected) >= 8:
+                        break
+            return _palette_object(selected)
+    except Exception:
+        return None
+
+
+def warm_art_palette(abs_path: str, *, root_id: str = "", rel: str = "") -> Optional[dict]:
+    art = art_for_media_path(abs_path)
+    if not art:
+        return None
+    size, mtime_ns = file_identity(art)
+    key = sha1_text(f"art:{os.path.abspath(art)}:{size}:{mtime_ns}:v{PALETTE_ALGORITHM_VERSION}")
+    cached = load_palette(key)
+    if cached:
+        return cached
+    palette = _extract_palette_from_image(art)
+    if palette:
+        save_palette(key, palette, source_kind="art", source_identity=os.path.abspath(art), root_id=root_id, rel=rel)
+    return palette
+
+
+def _analysis_key(abs_path: str) -> str:
+    size, mtime_ns = file_identity(abs_path)
+    return sha1_text(f"analysis:{os.path.abspath(abs_path)}:{size}:{mtime_ns}:{ANALYSIS_RATE_HZ}:{DECODER_SETTINGS_HASH}:v1")
+
+
+def warm_audio_analysis(abs_path: str, *, root_id: str = "", rel: str = "", media_id: str = "", duration: Optional[float] = None) -> Optional[dict]:
+    if not is_audio(abs_path):
+        return None
+    key = _analysis_key(abs_path)
+    cached = load_visualizer_analysis(key)
+    if cached:
+        return cached
+    if not ANALYSIS_LOCK.acquire(blocking=False):
+        return None
+    try:
+        return _compute_audio_analysis(abs_path, key, root_id=root_id, rel=rel, media_id=media_id, duration=duration)
+    finally:
+        try:
+            ANALYSIS_LOCK.release()
+        except Exception:
+            pass
+
+
+def _compute_audio_analysis(abs_path: str, key: str, *, root_id: str, rel: str, media_id: str, duration: Optional[float]) -> Optional[dict]:
+    import subprocess
+
+    frame_samples = max(1, int(ANALYSIS_SAMPLE_RATE_HZ / ANALYSIS_RATE_HZ))
+    frame_bytes = frame_samples * 2
+    args = [
+        _ffmpeg_path_value(),
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        abs_path,
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        str(ANALYSIS_SAMPLE_RATE_HZ),
+        "-f",
+        "s16le",
+        "pipe:1",
+    ]
+    blob = bytearray()
+    energy_avg = 0.0
+    frame_count = 0
+    try:
+        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except Exception:
+        return None
+    try:
+        assert proc.stdout is not None
+        while True:
+            chunk = proc.stdout.read(frame_bytes)
+            if not chunk:
+                break
+            if len(chunk) < frame_bytes:
+                break
+            samples = struct.unpack("<" + "h" * frame_samples, chunk)
+            floats = [s / 32768.0 for s in samples]
+            rms = math.sqrt(sum(s * s for s in floats) / len(floats))
+            energy = max(0.0, min(1.0, rms * 3.2))
+            energy_avg = energy if not energy_avg else (energy_avg * 0.965 + energy * 0.035)
+            beat = max(0.0, min(1.0, (energy - max(0.06, energy_avg * 1.28)) * 3.0))
+            frame_values = []
+            for freq in ANALYSIS_BANDS:
+                coeff = 2.0 * math.cos(2.0 * math.pi * freq / ANALYSIS_SAMPLE_RATE_HZ)
+                q0 = q1 = q2 = 0.0
+                for sample in floats:
+                    q0 = coeff * q1 - q2 + sample
+                    q2 = q1
+                    q1 = q0
+                power = q1 * q1 + q2 * q2 - coeff * q1 * q2
+                value = max(0.0, min(1.0, math.sqrt(max(0.0, power)) / len(floats) * 10.0))
+                frame_values.append(int(round(value * 255)))
+            blob.extend(max(0, min(255, v)) for v in frame_values)
+            blob.append(int(round(energy * 255)))
+            blob.append(int(round(beat * 255)))
+            frame_count += 1
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    finally:
+        try:
+            proc.stdout.close() if proc.stdout else None
+        except Exception:
+            pass
+    if frame_count <= 0:
+        return None
+    save_visualizer_analysis(
+        key,
+        media_id=media_id,
+        root_id=root_id,
+        rel=rel,
+        abs_path=abs_path,
+        duration=duration,
+        analysis_rate_hz=ANALYSIS_RATE_HZ,
+        band_count=len(ANALYSIS_BANDS),
+        frame_count=frame_count,
+        feature_blob=bytes(blob),
+        compression="none",
+        decoder_settings_hash=DECODER_SETTINGS_HASH,
+        metadata={"frame_stride": len(ANALYSIS_BANDS) + 2, "fields": ["band0", "band1", "band2", "band3", "band4", "band5", "band6", "energy", "beat"]},
+    )
+    return load_visualizer_analysis(key)
