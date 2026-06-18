@@ -11,7 +11,7 @@ from typing import Any, Iterator, Optional
 
 from ..paths import cache_dir
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 ANALYSIS_ALGORITHM_VERSION = 1
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 
@@ -74,9 +74,44 @@ def auth_db() -> Iterator[sqlite3.Connection]:
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
-    conn.execute("PRAGMA user_version = 1")
+    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.executescript(
         """
+        CREATE TABLE IF NOT EXISTS library_roots (
+          root_id TEXT PRIMARY KEY,
+          root_abs TEXT NOT NULL,
+          mode TEXT NOT NULL DEFAULT '',
+          version INTEGER NOT NULL DEFAULT 0,
+          last_scan_started_at REAL,
+          last_scan_finished_at REAL
+        );
+
+        CREATE TABLE IF NOT EXISTS library_items (
+          root_id TEXT NOT NULL,
+          rel TEXT NOT NULL,
+          abs_path TEXT NOT NULL,
+          kind TEXT NOT NULL DEFAULT '',
+          ext TEXT NOT NULL DEFAULT '',
+          size INTEGER NOT NULL DEFAULT 0,
+          mtime_ns INTEGER NOT NULL DEFAULT 0,
+          deleted INTEGER NOT NULL DEFAULT 0,
+          changed_at_version INTEGER NOT NULL DEFAULT 0,
+          PRIMARY KEY(root_id, rel)
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_library_items_root_deleted ON library_items(root_id, deleted, kind);
+        CREATE INDEX IF NOT EXISTS idx_library_items_abs_identity ON library_items(abs_path, size, mtime_ns);
+
+        CREATE TABLE IF NOT EXISTS folder_entries (
+          root_id TEXT NOT NULL,
+          rel TEXT NOT NULL DEFAULT '',
+          root_version INTEGER NOT NULL DEFAULT 0,
+          dir_mtime_ns INTEGER NOT NULL DEFAULT 0,
+          saved_at REAL NOT NULL,
+          entries_json TEXT NOT NULL,
+          PRIMARY KEY(root_id, rel)
+        );
+
         CREATE TABLE IF NOT EXISTS media_files (
           media_id TEXT PRIMARY KEY,
           root_id TEXT NOT NULL DEFAULT '',
@@ -145,6 +180,35 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
           metadata_json TEXT NOT NULL DEFAULT '{}'
         );
 
+        CREATE TABLE IF NOT EXISTS library_facets (
+          root_id TEXT NOT NULL,
+          facet TEXT NOT NULL,
+          root_version INTEGER NOT NULL DEFAULT 0,
+          saved_at REAL NOT NULL,
+          data_json TEXT NOT NULL,
+          PRIMARY KEY(root_id, facet)
+        );
+
+        CREATE TABLE IF NOT EXISTS search_cache (
+          cache_key TEXT PRIMARY KEY,
+          source TEXT NOT NULL DEFAULT '',
+          query TEXT NOT NULL DEFAULT '',
+          extra_json TEXT NOT NULL DEFAULT '{}',
+          saved_at REAL NOT NULL,
+          expires_at REAL,
+          payload_json TEXT NOT NULL
+        );
+
+        CREATE TABLE IF NOT EXISTS search_history (
+          id INTEGER PRIMARY KEY AUTOINCREMENT,
+          query TEXT NOT NULL DEFAULT '',
+          engine TEXT NOT NULL DEFAULT '',
+          cache_key TEXT NOT NULL DEFAULT '',
+          ts REAL NOT NULL
+        );
+
+        CREATE INDEX IF NOT EXISTS idx_search_history_recent ON search_history(ts DESC);
+
         CREATE TABLE IF NOT EXISTS user_passkeys (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           username TEXT NOT NULL,
@@ -172,6 +236,16 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
         );
         """
     )
+    _ensure_column(conn, "search_cache", "extra_json", "TEXT NOT NULL DEFAULT '{}'")
+
+
+def _ensure_column(conn: sqlite3.Connection, table: str, column: str, ddl: str) -> None:
+    try:
+        cols = {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+        if column not in cols:
+            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {ddl}")
+    except sqlite3.Error:
+        pass
 
 
 def ensure_passkey_schema(conn: sqlite3.Connection) -> None:
@@ -259,6 +333,25 @@ def _root_mtime_ns(root_abs: str) -> int:
         return 0
 
 
+def _path_mtime_ns(abs_path: str) -> int:
+    try:
+        return int(os.stat(abs_path).st_mtime_ns)
+    except OSError:
+        return 0
+
+
+def root_version(root_id: str) -> int:
+    with library_db() as conn:
+        row = conn.execute("SELECT version FROM library_roots WHERE root_id = ?", (str(root_id or ""),)).fetchone()
+    return int(row["version"] or 0) if row else 0
+
+
+def root_versions() -> dict[str, int]:
+    with library_db() as conn:
+        rows = conn.execute("SELECT root_id, version FROM library_roots").fetchall()
+    return {str(row["root_id"]): int(row["version"] or 0) for row in rows}
+
+
 def load_index_snapshot(root_id: str, root_abs: str) -> Optional[dict]:
     with library_db() as conn:
         row = conn.execute(
@@ -272,19 +365,95 @@ def load_index_snapshot(root_id: str, root_abs: str) -> Optional[dict]:
     try:
         data = json.loads(str(row["data_json"] or "{}"))
         if isinstance(data, dict) and isinstance(data.get("tracks"), list) and isinstance(data.get("videos"), list):
-            return {"tracks": data.get("tracks") or [], "videos": data.get("videos") or []}
+            out = {"tracks": data.get("tracks") or [], "videos": data.get("videos") or []}
+            version = root_version(root_id)
+            if version:
+                out["version"] = version
+            return out
     except Exception:
         return None
     return None
 
 
-def save_index_snapshot(root_id: str, root_abs: str, data: dict) -> None:
+def save_index_snapshot(root_id: str, root_abs: str, data: dict, *, mode: str = "") -> int:
     root_id = str(root_id or "")
     root_abs_norm = os.path.abspath(root_abs)
     payload_data = data if isinstance(data, dict) else {"tracks": [], "videos": []}
     payload = json.dumps(payload_data, ensure_ascii=False, sort_keys=True)
     now = time.time()
     with library_db() as conn:
+        existing = conn.execute(
+            "SELECT rel, size, mtime_ns, deleted FROM library_items WHERE root_id = ?",
+            (root_id,),
+        ).fetchall()
+        old = {str(row["rel"]): (int(row["size"] or 0), int(row["mtime_ns"] or 0), int(row["deleted"] or 0)) for row in existing}
+        next_items: dict[str, tuple[str, str, int, int]] = {}
+        for media_type, items in (("audio", payload_data.get("tracks") or []), ("video", payload_data.get("videos") or [])):
+            for item in items:
+                if not isinstance(item, dict):
+                    continue
+                rel = str(item.get("rel") or "")
+                if not rel:
+                    continue
+                abs_path = os.path.abspath(os.path.join(root_abs_norm, rel.replace("/", os.sep)))
+                size, mtime_ns = file_identity(abs_path)
+                next_items[rel] = (abs_path, media_type, size, mtime_ns)
+        changed = False
+        for rel, (_, _, size, mtime_ns) in next_items.items():
+            prev = old.get(rel)
+            if prev is None or prev[0] != size or prev[1] != mtime_ns or prev[2]:
+                changed = True
+                break
+        if not changed:
+            for rel, prev in old.items():
+                if not prev[2] and rel not in next_items:
+                    changed = True
+                    break
+
+        row = conn.execute("SELECT version FROM library_roots WHERE root_id = ?", (root_id,)).fetchone()
+        old_version = int(row["version"] or 0) if row else 0
+        version = old_version + 1 if changed else old_version
+        conn.execute(
+            """
+            INSERT INTO library_roots(root_id, root_abs, mode, version, last_scan_started_at, last_scan_finished_at)
+            VALUES(?, ?, ?, ?, ?, ?)
+            ON CONFLICT(root_id) DO UPDATE SET
+              root_abs=excluded.root_abs,
+              mode=excluded.mode,
+              version=excluded.version,
+              last_scan_started_at=excluded.last_scan_started_at,
+              last_scan_finished_at=excluded.last_scan_finished_at
+            """,
+            (root_id, root_abs_norm, str(mode or ""), version, now, now),
+        )
+        for rel, prev in old.items():
+            if not prev[2] and rel not in next_items:
+                conn.execute(
+                    "UPDATE library_items SET deleted = 1, changed_at_version = ? WHERE root_id = ? AND rel = ?",
+                    (version, root_id, rel),
+                )
+        for rel, (abs_path, media_type, size, mtime_ns) in next_items.items():
+            ext = os.path.splitext(rel)[1].lower()
+            changed_at = version if changed else old_version
+            conn.execute(
+                """
+                INSERT INTO library_items(root_id, rel, abs_path, kind, ext, size, mtime_ns, deleted, changed_at_version)
+                VALUES(?, ?, ?, ?, ?, ?, ?, 0, ?)
+                ON CONFLICT(root_id, rel) DO UPDATE SET
+                  abs_path=excluded.abs_path,
+                  kind=excluded.kind,
+                  ext=excluded.ext,
+                  size=excluded.size,
+                  mtime_ns=excluded.mtime_ns,
+                  deleted=0,
+                  changed_at_version=CASE
+                    WHEN library_items.size != excluded.size OR library_items.mtime_ns != excluded.mtime_ns OR library_items.deleted != 0
+                    THEN excluded.changed_at_version
+                    ELSE library_items.changed_at_version
+                  END
+                """,
+                (root_id, rel, abs_path, media_type, ext, size, mtime_ns, changed_at),
+            )
         conn.execute(
             """
             INSERT INTO library_index_snapshots(root_id, root_abs, root_mtime_ns, saved_at, data_json)
@@ -352,6 +521,203 @@ def save_index_snapshot(root_id: str, root_abs: str, data: dict) -> None:
                         json.dumps(item, ensure_ascii=False, sort_keys=True),
                     ),
                 )
+        conn.execute("DELETE FROM folder_entries WHERE root_id = ? AND root_version < ?", (root_id, version))
+    return version
+
+
+def load_folder_entries(root_id: str, rel: str, dir_abs: str) -> Optional[dict]:
+    rel_norm = str(rel or "").replace("\\", "/").strip("/")
+    dir_mtime_ns = _path_mtime_ns(dir_abs)
+    version = root_version(root_id)
+    with library_db() as conn:
+        row = conn.execute(
+            """
+            SELECT root_version, dir_mtime_ns, entries_json
+            FROM folder_entries
+            WHERE root_id = ? AND rel = ?
+            """,
+            (str(root_id or ""), rel_norm),
+        ).fetchone()
+    if not row:
+        return None
+    if int(row["root_version"] or 0) != version or int(row["dir_mtime_ns"] or 0) != dir_mtime_ns:
+        return None
+    try:
+        entries = json.loads(str(row["entries_json"] or "[]"))
+    except Exception:
+        return None
+    if not isinstance(entries, list):
+        return None
+    return {"entries": entries, "version": version, "stale": False}
+
+
+def save_folder_entries(root_id: str, rel: str, dir_abs: str, entries: list[dict[str, Any]]) -> int:
+    rel_norm = str(rel or "").replace("\\", "/").strip("/")
+    version = root_version(root_id)
+    payload = json.dumps(entries if isinstance(entries, list) else [], ensure_ascii=False, sort_keys=True)
+    with library_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO folder_entries(root_id, rel, root_version, dir_mtime_ns, saved_at, entries_json)
+            VALUES(?, ?, ?, ?, ?, ?)
+            ON CONFLICT(root_id, rel) DO UPDATE SET
+              root_version=excluded.root_version,
+              dir_mtime_ns=excluded.dir_mtime_ns,
+              saved_at=excluded.saved_at,
+              entries_json=excluded.entries_json
+            """,
+            (str(root_id or ""), rel_norm, version, _path_mtime_ns(dir_abs), time.time(), payload),
+        )
+    return version
+
+
+def root_manifest(root_id: str, *, since_version: int = 0) -> Optional[dict[str, Any]]:
+    version = root_version(root_id)
+    if not version:
+        return None
+    params: list[Any] = [str(root_id or "")]
+    where = "root_id = ?"
+    if since_version:
+        where += " AND changed_at_version > ?"
+        params.append(int(since_version))
+    with library_db() as conn:
+        rows = conn.execute(
+            f"""
+            SELECT rel, kind, size, mtime_ns, deleted, changed_at_version
+            FROM library_items
+            WHERE {where}
+            ORDER BY rel COLLATE NOCASE
+            """,
+            params,
+        ).fetchall()
+    return {
+        "root_id": str(root_id or ""),
+        "version": version,
+        "items": [
+            {
+                "id": f"{root_id}:{row['rel']}",
+                "rel": str(row["rel"] or ""),
+                "mtime_ns": int(row["mtime_ns"] or 0),
+                "size": int(row["size"] or 0),
+                "media": str(row["kind"] or ""),
+                "metadata_version": int(row["changed_at_version"] or 0),
+                "deleted": bool(row["deleted"]),
+            }
+            for row in rows
+        ],
+    }
+
+
+def load_search_cache(cache_key: str) -> Optional[dict[str, Any]]:
+    now = time.time()
+    with library_db() as conn:
+        row = conn.execute(
+            """
+            SELECT source, query, extra_json, saved_at, expires_at, payload_json
+            FROM search_cache
+            WHERE cache_key = ?
+            """,
+            (str(cache_key or ""),),
+        ).fetchone()
+    if not row:
+        return None
+    expires_at = row["expires_at"]
+    if expires_at is not None and float(expires_at or 0) > 0 and float(expires_at or 0) < now:
+        return None
+    try:
+        extra = json.loads(str(row["extra_json"] or "{}"))
+    except Exception:
+        extra = {}
+    try:
+        payload = json.loads(str(row["payload_json"] or "{}"))
+    except Exception:
+        payload = {}
+    return {
+        "created": float(row["saved_at"] or 0),
+        "engine": str(row["source"] or ""),
+        "q": str(row["query"] or ""),
+        "extra": extra if isinstance(extra, dict) else {},
+        "payload": payload if isinstance(payload, dict) else {},
+    }
+
+
+def save_search_cache(cache_key: str, engine: str, q: str, extra: Optional[dict], payload: dict, *, ttl_seconds: int = 0) -> None:
+    now = time.time()
+    expires_at = now + int(ttl_seconds or 0) if int(ttl_seconds or 0) > 0 else None
+    with library_db() as conn:
+        conn.execute(
+            """
+            INSERT INTO search_cache(cache_key, source, query, extra_json, saved_at, expires_at, payload_json)
+            VALUES(?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(cache_key) DO UPDATE SET
+              source=excluded.source,
+              query=excluded.query,
+              extra_json=excluded.extra_json,
+              saved_at=excluded.saved_at,
+              expires_at=excluded.expires_at,
+              payload_json=excluded.payload_json
+            """,
+            (
+                str(cache_key or ""),
+                str(engine or "").strip().lower(),
+                str(q or "").strip(),
+                json.dumps(extra if isinstance(extra, dict) else {}, ensure_ascii=False, sort_keys=True),
+                now,
+                expires_at,
+                json.dumps(payload if isinstance(payload, dict) else {}, ensure_ascii=False, sort_keys=True),
+            ),
+        )
+
+
+def load_search_history(max_items: int = 0) -> list[dict[str, Any]]:
+    limit = max(0, int(max_items or 0))
+    sql = "SELECT query, engine, cache_key, ts FROM search_history ORDER BY ts DESC"
+    params: list[Any] = []
+    if limit:
+        sql += " LIMIT ?"
+        params.append(limit)
+    with library_db() as conn:
+        rows = conn.execute(sql, params).fetchall()
+    return [
+        {
+            "q": str(row["query"] or ""),
+            "engine": str(row["engine"] or ""),
+            "cache_key": str(row["cache_key"] or ""),
+            "ts": float(row["ts"] or 0),
+        }
+        for row in rows
+    ]
+
+
+def record_search_history_row(q: str, engine: str, cache_key: str, *, max_items: int = 0) -> None:
+    qq = str(q or "").strip()
+    eng = str(engine or "").strip().lower()
+    key = str(cache_key or "").strip()
+    if not qq or not eng or not key:
+        return
+    with library_db() as conn:
+        conn.execute("DELETE FROM search_history WHERE query = ? AND engine = ?", (qq, eng))
+        conn.execute(
+            "INSERT INTO search_history(query, engine, cache_key, ts) VALUES(?, ?, ?, ?)",
+            (qq, eng, key, time.time()),
+        )
+        limit = max(0, int(max_items or 0))
+        if limit:
+            conn.execute(
+                """
+                DELETE FROM search_history
+                WHERE id NOT IN (
+                  SELECT id FROM search_history ORDER BY ts DESC LIMIT ?
+                )
+                """,
+                (limit,),
+            )
+
+
+def clear_search_cache() -> None:
+    with library_db() as conn:
+        conn.execute("DELETE FROM search_cache")
+        conn.execute("DELETE FROM search_history")
 
 
 def clear_library_cache() -> None:
@@ -359,6 +725,9 @@ def clear_library_cache() -> None:
         conn.execute("DELETE FROM library_index_snapshots")
         conn.execute("DELETE FROM media_files")
         conn.execute("DELETE FROM metadata_cache")
+        conn.execute("DELETE FROM folder_entries")
+        conn.execute("DELETE FROM library_items")
+        conn.execute("DELETE FROM library_roots")
 
 
 def load_palette(cache_key: str) -> Optional[dict]:

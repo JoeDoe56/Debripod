@@ -7,12 +7,9 @@ import time
 from typing import Dict, Optional, Tuple
 
 from .metadata import file_meta_cached
-from .library_db import clear_library_cache, load_index_snapshot, save_index_snapshot
+from .library_db import clear_library_cache, load_index_snapshot, root_manifest, root_version, root_versions, save_index_snapshot
 from .roots import root_by_id
-from .search_cache import _atomic_write_json, _read_json_file
 from ..media_types import AUDIO_EXTS, VIDEO_EXTS
-from ..paths import cache_dir
-from ..utils import sha1_text
 
 _cache_dir_name_provider = lambda: "_debripod_cache"
 
@@ -67,39 +64,13 @@ def build_index_for_root(root_abs: str) -> dict:
     return {"tracks": tracks, "videos": videos}
 
 
-def _index_cache_dir() -> str:
-    p = os.path.join(cache_dir(), "library_index")
+def _save_index_to_disk(root_id: str, root_abs: str, data: dict, *, mode: str = "") -> int:
+    version = 0
     try:
-        os.makedirs(p, exist_ok=True)
-    except OSError:
-        pass
-    return p
-
-
-def _index_cache_path(root_id: str) -> str:
-    rid = re.sub(r"[^a-fA-F0-9]", "", str(root_id or ""))[:64] or sha1_text(str(root_id or ""))
-    return os.path.join(_index_cache_dir(), f"{rid}.json")
-
-
-def _index_cache_payload(root_id: str, root_abs: str, data: dict) -> dict:
-    return {
-        "version": 1,
-        "root_id": str(root_id or ""),
-        "root_abs": os.path.abspath(root_abs),
-        "saved_at": time.time(),
-        "data": data if isinstance(data, dict) else {"tracks": [], "videos": []},
-    }
-
-
-def _save_index_to_disk(root_id: str, root_abs: str, data: dict) -> None:
-    try:
-        save_index_snapshot(root_id, root_abs, data)
+        version = save_index_snapshot(root_id, root_abs, data, mode=mode)
     except Exception:
         pass
-    try:
-        _atomic_write_json(_index_cache_path(root_id), _index_cache_payload(root_id, root_abs, data))
-    except Exception:
-        pass
+    return version
 
 
 def _load_index_from_disk(root_id: str, root_abs: str) -> Optional[dict]:
@@ -109,38 +80,12 @@ def _load_index_from_disk(root_id: str, root_abs: str) -> Optional[dict]:
             return data
     except Exception:
         pass
-    try:
-        js = _read_json_file(_index_cache_path(root_id))
-        if not isinstance(js, dict):
-            return None
-        cached_root = os.path.abspath(str(js.get("root_abs") or ""))
-        if cached_root != os.path.abspath(root_abs):
-            return None
-        data = js.get("data")
-        if not isinstance(data, dict):
-            return None
-        tracks = data.get("tracks")
-        videos = data.get("videos")
-        if not isinstance(tracks, list) or not isinstance(videos, list):
-            return None
-        return {"tracks": tracks, "videos": videos}
-    except Exception:
-        return None
+    return None
 
 
 def _clear_index_disk_cache() -> None:
     try:
         clear_library_cache()
-    except Exception:
-        pass
-    try:
-        root = _index_cache_dir()
-        for fn in os.listdir(root):
-            if fn.endswith('.json'):
-                try:
-                    os.remove(os.path.join(root, fn))
-                except Exception:
-                    pass
     except Exception:
         pass
 
@@ -150,7 +95,7 @@ INDEX_BUILDING: Dict[str, bool] = {}
 INDEX_LOCK = threading.Lock()
 
 
-def ensure_index_async(root_id: str, root_abs: str) -> None:
+def ensure_index_async(root_id: str, root_abs: str, *, mode: str = "") -> None:
     now = time.time()
     with INDEX_LOCK:
         hit = INDEX_CACHE.get(root_id)
@@ -168,7 +113,9 @@ def ensure_index_async(root_id: str, root_abs: str) -> None:
     def build():
         try:
             data = build_index_for_root(root_abs)
-            _save_index_to_disk(root_id, root_abs, data)
+            version = _save_index_to_disk(root_id, root_abs, data, mode=mode)
+            if version:
+                data["version"] = version
             with INDEX_LOCK:
                 INDEX_CACHE[root_id] = (time.time(), data)
         finally:
@@ -227,7 +174,21 @@ def set_index_cache(root_id: str, data: dict) -> None:
     try:
         r = root_by_id(root_id)
         if r:
-            _, _, root_abs, _ = r
-            _save_index_to_disk(root_id, root_abs, data)
+            _, _, root_abs, mode = r
+            version = _save_index_to_disk(root_id, root_abs, data, mode=mode)
+            if version:
+                data["version"] = version
     except Exception:
         pass
+
+
+def library_root_versions() -> dict[str, int]:
+    return root_versions()
+
+
+def library_root_version(root_id: str) -> int:
+    return root_version(root_id)
+
+
+def library_manifest(root_id: str, *, since_version: int = 0) -> Optional[dict]:
+    return root_manifest(root_id, since_version=since_version)

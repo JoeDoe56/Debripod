@@ -16,7 +16,7 @@ from .Services import soulseek as soulseek_module
 from .factory import DeferredApp
 from .auth import register_auth
 from .config import _coerce_config_value, ensure_startup_security_config, save_config
-from .Library.library_db import load_palette, save_palette
+from .Library.library_db import load_folder_entries, load_palette, save_folder_entries, save_palette
 from .Tasks.manager import task_belongs_to_owner
 from .runtime_state import *
 from .runtime_downloads import *
@@ -1109,8 +1109,14 @@ def cancel():
 @app.route("/api/library/config", methods=["GET"])
 def api_library_config():
     rts = []
+    versions = library_root_versions()
     for rid, name, ap, mode in roots():
-        rts.append({"id": rid, "name": name, "mode": mode})
+        if mode in {"meta", "metadata"}:
+            try:
+                ensure_index_async(rid, os.path.abspath(ap), mode=mode)
+            except Exception:
+                pass
+        rts.append({"id": rid, "name": name, "mode": mode, "version": int(versions.get(rid) or 0)})
     return jsonify(
         {
             "roots": rts,
@@ -1119,6 +1125,7 @@ def api_library_config():
             "lastfm_enabled": bool(lastfm_enabled()),
             "wheel_rotation_max_degrees": float(WHEEL_ROTATION_MAX_DEGREES),
             "playback_streaming_mode": str(PLAYBACK_STREAMING_MODE or "http").strip().lower() or "http",
+            "library_versions": versions,
         }
     )
 
@@ -1283,7 +1290,7 @@ def api_setup_finish():
                 mode = "list"
             if path and mode in {"meta", "metadata"}:
                 rid = sha1_text(os.path.abspath(path))
-                ensure_index_async(rid, os.path.abspath(path))
+                ensure_index_async(rid, os.path.abspath(path), mode=mode)
         except Exception:
             pass
     return jsonify(_setup_status_for_user(username, saved))
@@ -1457,7 +1464,39 @@ def api_ui_glass_defaults_commit():
 @app.route("/api/library/building", methods=["GET"])
 def api_library_building():
     any_building, roots_status = index_building_status()
-    return jsonify({"ok": True, "any_building": any_building, "roots": roots_status})
+    return jsonify({"ok": True, "any_building": any_building, "roots": roots_status, "versions": library_root_versions()})
+
+
+@app.route("/api/client-state", methods=["GET"])
+def api_client_state():
+    any_building, roots_status = index_building_status()
+    return jsonify({
+        "ok": True,
+        "library_versions": library_root_versions(),
+        "library_building": any_building,
+        "library_building_roots": roots_status,
+    })
+
+
+@app.route("/api/library/manifest", methods=["GET"])
+def api_library_manifest():
+    root_id = (request.args.get("root_id") or "").strip()
+    try:
+        since_version = int(request.args.get("since_version") or 0)
+    except Exception:
+        since_version = 0
+    r = root_by_id(root_id)
+    if not r:
+        abort(404)
+    _, _, root_abs, mode = r
+    try:
+        ensure_index_async(root_id, root_abs, mode=mode)
+    except Exception:
+        pass
+    manifest = library_manifest(root_id, since_version=max(0, since_version))
+    if manifest is None:
+        return jsonify({"ok": True, "root_id": root_id, "version": 0, "items": [], "building": True, "stale": True})
+    return jsonify({"ok": True, **manifest, "building": bool(index_building_status()[1].get(root_id)), "stale": False})
 
 
 @app.route("/api/library/palette", methods=["GET", "POST"])
@@ -1524,13 +1563,22 @@ def api_library_browse():
     r = root_by_id(root_id)
     if not r:
         abort(404)
-    _, _, root_abs, _ = r
+    _, _, root_abs, mode = r
     try:
         abs_path = safe_path_join(root_abs, rel)
     except ValueError:
         abort(400)
     if not os.path.isdir(abs_path):
         abort(404)
+
+    try:
+        ensure_index_async(root_id, root_abs, mode=mode)
+    except Exception:
+        pass
+
+    cached = load_folder_entries(root_id, rel, abs_path)
+    if cached is not None:
+        return jsonify(cached)
 
     entries = []
     try:
@@ -1563,7 +1611,9 @@ def api_library_browse():
         p = os.path.join(abs_path, f)
         media = "video" if is_video(p) else ("audio" if is_audio(p) else "")
         entries.append({"type": "file", "name": f, "rel": relp, "media": media})
-    return jsonify({"entries": entries})
+    version = save_folder_entries(root_id, rel, abs_path, entries)
+    building = bool(index_building_status()[1].get(root_id))
+    return jsonify({"entries": entries, "version": version, "building": building, "stale": False})
 
 
 @app.route("/api/library/metadata", methods=["GET"])
@@ -1575,13 +1625,13 @@ def api_library_metadata():
     r = root_by_id(root_id)
     if not r:
         abort(404)
-    _, _, root_abs, _ = r
+    _, _, root_abs, mode = r
 
     if level == "playlists":
         items = scan_root_playlists(root_abs)
         if not items:
             items = [{"kind": "info", "label": "No playlists found"}]
-        return jsonify({"items": items})
+        return jsonify({"items": items, "version": library_root_version(root_id), "stale": False})
 
     if level == "playlist_tracks":
         if is_smart_playlist_rel(value):
@@ -1590,10 +1640,11 @@ def api_library_metadata():
             items = playlist_tracks_for_root(root_abs, value)
         if not items:
             items = [{"kind": "info", "label": "No playable tracks found in playlist"}]
-        return jsonify({"items": items})
+        return jsonify({"items": items, "version": library_root_version(root_id), "stale": False})
 
-    ensure_index_async(root_id, root_abs)
+    ensure_index_async(root_id, root_abs, mode=mode)
     data = get_index(root_id)
+    building = bool(index_building_status()[1].get(root_id))
     if data is None:
         if level == "top":
             cats = [
@@ -1606,8 +1657,8 @@ def api_library_metadata():
                 {"key": "videos", "label": "Videos"},
                 {"key": "folders", "label": "Folders"},
             ]
-            return jsonify({"categories": cats, "building": True})
-        return jsonify({"items": [{"kind": "info", "label": "Indexing media files..."}], "building": True})
+            return jsonify({"categories": cats, "building": True, "version": 0, "stale": True})
+        return jsonify({"items": [{"kind": "info", "label": "Indexing media files..."}], "building": True, "version": 0, "stale": True})
 
     tracks = data.get("tracks") or []
     vids = data.get("videos") or []
@@ -1623,12 +1674,12 @@ def api_library_metadata():
             {"key": "videos", "label": "Videos"},
             {"key": "folders", "label": "Folders"},
         ]
-        return jsonify({"categories": cats, "building": False})
+        return jsonify({"categories": cats, "building": building, "version": int(data.get("version") or library_root_version(root_id)), "stale": building})
 
     if level == "artists":
         s = sorted({(t.get("artist") or "").strip() for t in tracks if (t.get("artist") or "").strip()}, key=lambda x: x.lower())
         items = [{"kind": "artist", "label": a, "value": a} for a in s] or [{"kind": "info", "label": "No artist tags found"}]
-        return jsonify({"items": items})
+        return jsonify({"items": items, "building": building, "version": int(data.get("version") or library_root_version(root_id)), "stale": building})
 
     if level == "albums":
         artist_filter = value
@@ -1656,7 +1707,7 @@ def api_library_metadata():
 
         if not albums:
             albums = [{"kind": "info", "label": "No albums found"}]
-        return jsonify({"items": albums})
+        return jsonify({"items": albums, "building": building, "version": int(data.get("version") or library_root_version(root_id)), "stale": building})
 
     if level == "tracks":
         try:
@@ -1668,7 +1719,7 @@ def api_library_metadata():
         genre = (sel.get("genre") or "").strip()
         liked_only = bool(sel.get("liked") or sel.get("loved") or sel.get("liked_only"))
         if liked_only and not lastfm_enabled():
-            return jsonify({"items": [{"kind": "info", "label": "Last.fm not configured"}]})
+            return jsonify({"items": [{"kind": "info", "label": "Last.fm not configured"}], "building": building, "version": int(data.get("version") or library_root_version(root_id)), "stale": building})
         tr = []
         for t in tracks:
             if artist and (t.get("artist") or "").strip() != artist:
@@ -1688,12 +1739,12 @@ def api_library_metadata():
         tr.sort(key=lambda x: track_sort_key(x.get("badge") or "") + (x.get("label") or "",))
         if not tr:
             tr = [{"kind": "info", "label": "No tracks found"}]
-        return jsonify({"items": tr})
+        return jsonify({"items": tr, "building": building, "version": int(data.get("version") or library_root_version(root_id)), "stale": building})
 
 
     if level == "liked_songs":
         if not lastfm_enabled():
-            return jsonify({"items": [{"kind": "info", "label": "Last.fm not configured"}]})
+            return jsonify({"items": [{"kind": "info", "label": "Last.fm not configured"}], "building": building, "version": int(data.get("version") or library_root_version(root_id)), "stale": building})
         items = []
         for t in tracks:
             a = (t.get("artist") or "").strip()
@@ -1707,20 +1758,20 @@ def api_library_metadata():
         items.sort(key=lambda x: (x.get("label") or "").lower())
         if not items:
             items = [{"kind": "info", "label": "No liked songs found"}]
-        return jsonify({"items": items[:3000]})
+        return jsonify({"items": items[:3000], "building": building, "version": int(data.get("version") or library_root_version(root_id)), "stale": building})
 
     if level == "songs":
         s = sorted(tracks, key=lambda x: (x.get("title") or x.get("name") or "").lower())
         items = [{"kind": "track", "label": (t.get("title") or t.get("name") or "Track"), "rel": t.get("rel")} for t in s[:3000]]
         if not items:
             items = [{"kind": "info", "label": "No songs found"}]
-        return jsonify({"items": items})
+        return jsonify({"items": items, "building": building, "version": int(data.get("version") or library_root_version(root_id)), "stale": building})
 
     if level == "genres":
         s = sorted({(t.get("genre") or "").strip() for t in tracks if (t.get("genre") or "").strip()}, key=lambda x: x.lower())
         items = [{"kind": "genre", "label": g, "value": g} for g in s] or [{"kind": "info", "label": "No genre tags found"}]
 
-        return jsonify({"items": items})
+        return jsonify({"items": items, "building": building, "version": int(data.get("version") or library_root_version(root_id)), "stale": building})
 
     if level == "genre_albums":
         genre = value
@@ -1753,7 +1804,7 @@ def api_library_metadata():
 
         if not albums:
             albums = [{"kind": "info", "label": "No tracks found"}]
-        return jsonify({"items": albums})
+        return jsonify({"items": albums, "building": building, "version": int(data.get("version") or library_root_version(root_id)), "stale": building})
 
     if level == "genre_tracks":
         genre = value
@@ -1766,7 +1817,7 @@ def api_library_metadata():
         items.sort(key=lambda x: (x.get("label") or "").lower())
         if not items:
             items = [{"kind": "info", "label": "No tracks found"}]
-        return jsonify({"items": items})
+        return jsonify({"items": items, "building": building, "version": int(data.get("version") or library_root_version(root_id)), "stale": building})
 
     if level == "videos":
         items = []
@@ -1774,9 +1825,9 @@ def api_library_metadata():
             items.append({"kind": "file", "label": v.get("name") or v.get("title") or "Video", "rel": v.get("rel"), "media": "video", "badge": "video"})
         if not items:
             items = [{"kind": "info", "label": "No videos found"}]
-        return jsonify({"items": items})
+        return jsonify({"items": items, "building": building, "version": int(data.get("version") or library_root_version(root_id)), "stale": building})
 
-    return jsonify({"items": [{"kind": "info", "label": "Unsupported view"}]})
+    return jsonify({"items": [{"kind": "info", "label": "Unsupported view"}], "building": building, "version": int(data.get("version") or library_root_version(root_id)), "stale": building})
 
 
 @app.route("/api/library/playlist_create", methods=["POST"])

@@ -1455,10 +1455,6 @@ async function libDoSearch(engine, q){
 
   async function handleLibInfoAction(action){
     switch(action){
-      case "reindex":
-        await doLibraryReindex();
-        await viewLibInfo(false);
-        return true;
       case "lastfm_login":
         await startLastfmLoginFlow();
         await viewLibInfo(false);
