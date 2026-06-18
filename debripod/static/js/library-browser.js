@@ -1253,6 +1253,12 @@ if(it.kind === "libtasks_entry"){
     if(it.kind === "libui_action"){
       if(await handleLibUiAction(it.action)) return;
     }
+    if(it.kind === "range_editor_input"){
+      return;
+    }
+    if(it.kind === "range_editor_slider"){
+      return;
+    }
 
 if(it.kind === "libsearch_history_action"){
       if(it.action === "clear_history"){

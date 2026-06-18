@@ -120,9 +120,11 @@
         "wheel": liquidGlassElementOptions("wheel"),
         "npOverlay": liquidGlassElementOptions("nowPlayingPill"),
         "libList": liquidGlassElementOptions("libraryList"),
+        "libSelection": liquidGlassElementOptions("selectedRow"),
         "libPills": liquidGlassElementOptions("listPills")
       };
       applyElementGlassModeClasses();
+      updateLibSelectionGlass("style options");
       liquidGlassRenderers().forEach((renderer)=>{
         if(!renderer || !renderer.lenses) return;
         const opts = byRenderer[renderer.rendererKey || "default"] || byRenderer.default;
@@ -177,6 +179,7 @@
         renderer.canvas.classList.toggle("liquidGlassCanvasWheel", key === "wheel");
         renderer.canvas.classList.toggle("liquidGlassCanvasNpOverlay", key === "npOverlay");
         renderer.canvas.classList.toggle("liquidGlassCanvasLibList", key === "libList");
+        renderer.canvas.classList.toggle("liquidGlassCanvasLibSelection", key === "libSelection");
         renderer.canvas.classList.toggle("liquidGlassCanvasLibPills", key === "libPills");
         renderer.canvas.setAttribute("data-liquid-renderer", key || "unknown");
         if(key === "wheel"){
@@ -197,6 +200,12 @@
             screenHost.insertBefore(renderer.canvas, screenHost.firstChild);
           }
           positionLibPillsLiquidCanvas();
+        }else if(key === "libSelection"){
+          const screenHost = document.getElementById("ipodScreen");
+          if(screenHost && renderer.canvas.parentNode !== screenHost){
+            screenHost.insertBefore(renderer.canvas, screenHost.firstChild);
+          }
+          positionLibSelectionLiquidCanvas();
         }else if(key === "npOverlay"){
           const pillHost = document.getElementById("npOverlayPill");
           if(pillHost && renderer.canvas.parentNode !== pillHost){
@@ -212,7 +221,7 @@
           }
         }
         renderer.canvas.style.pointerEvents = "none";
-        renderer.canvas.style.setProperty("z-index", key === "libPills" ? "2" : (key === "libList" ? "1" : (key === "npOverlay" ? "1" : (key === "wheel" ? "10" : "65"))), "important");
+        renderer.canvas.style.setProperty("z-index", (key === "libPills" || key === "libSelection") ? "2" : (key === "libList" ? "1" : (key === "npOverlay" ? "1" : (key === "wheel" ? "10" : "65"))), "important");
       });
       debugLiquidGlassRenderers("mount");
     }catch(e){}
@@ -248,7 +257,7 @@
 
   function refreshLiquidGlassVisualizerSources(reason){
     try{
-      ["default", "wheel", "libList", "libPills"].forEach((key)=>{
+      ["default", "wheel", "libList", "libSelection", "libPills"].forEach((key)=>{
         const renderer = liquidGlassRendererByKey(key);
         if(!renderer) return;
         if(visualizerBg && renderer.updateTextureFromCanvas){
@@ -440,6 +449,7 @@
   function renderLiquidGlassNow(frameState){
     try{
       updateGlassTextUnderColors();
+      updateLibSelectionGlass("");
       liquidGlassRenderers().forEach((renderer)=>{
         if(!renderer || !renderer.render) return;
         const key = renderer.rendererKey || "";
@@ -448,6 +458,7 @@
           applyNpOverlayGlassTuning(renderer);
         }
         if(key === "libList") positionLibListLiquidCanvas();
+        if(key === "libSelection") positionLibSelectionLiquidCanvas();
         if(key === "libPills") positionLibPillsLiquidCanvas();
         renderer.render(frameState || currentVisualizerFrameState());
       });
@@ -457,9 +468,10 @@
   function renderLiquidGlassVisualizerSourceNow(frameState){
     try{
       updateGlassTextUnderColors();
-      ["default", "wheel", "libList", "libPills"].forEach((key)=>{
+      ["default", "wheel", "libList", "libSelection", "libPills"].forEach((key)=>{
         const renderer = liquidGlassRendererByKey(key);
         if(key === "libList") positionLibListLiquidCanvas();
+        if(key === "libSelection") positionLibSelectionLiquidCanvas();
         if(key === "libPills") positionLibPillsLiquidCanvas();
         if(renderer && renderer.render) renderer.render(frameState || currentVisualizerFrameState());
       });
@@ -503,6 +515,220 @@
     positionViewportCanvasInsideHost(liquidGlassRendererByKey("libPills"), document.getElementById("ipodScreen"), 2);
   }
 
+  function positionLibSelectionLiquidCanvas(){
+    positionViewportCanvasInsideHost(liquidGlassRendererByKey("libSelection"), document.getElementById("ipodScreen"), 2);
+  }
+
+  function selectedListInnerRect(){
+    try{
+      const list = document.getElementById("libList");
+      if(!list) return null;
+      const rect = list.getBoundingClientRect();
+      const cs = window.getComputedStyle ? window.getComputedStyle(list) : null;
+      const left = cs ? (parseFloat(cs.paddingLeft || "0") || 0) : 0;
+      const right = cs ? (parseFloat(cs.paddingRight || "0") || 0) : left;
+      const top = cs ? (parseFloat(cs.paddingTop || "0") || 0) : left;
+      const bottom = cs ? (parseFloat(cs.paddingBottom || "0") || 0) : top;
+      return {
+        left: rect.left + left,
+        top: rect.top + top,
+        right: rect.right - right,
+        bottom: rect.bottom - bottom
+      };
+    }catch(e){
+      return null;
+    }
+  }
+
+  var listSelectionMotion = {
+    currentX: 0,
+    currentY: 0,
+    currentWidth: 0,
+    currentHeight: 44,
+    currentRadius: 999,
+    currentOpacity: 0,
+    targetX: 0,
+    targetY: 0,
+    targetWidth: 0,
+    targetHeight: 44,
+    targetRadius: 999,
+    targetOpacity: 0,
+    stretch: 0,
+    direction: 0,
+    raf: 0,
+    initialized: false
+  };
+
+  function applyLibSelectionMotion(){
+    try{
+      const el = document.getElementById("libListSelectedGlass");
+      if(!el) return;
+      const stretchPx = Math.abs(listSelectionMotion.stretch || 0) * Math.min(18, Math.max(8, listSelectionMotion.currentHeight * 0.24));
+      const direction = listSelectionMotion.direction || 0;
+      const renderY = listSelectionMotion.currentY + (direction < 0 ? -stretchPx : 0);
+      const renderHeight = Math.max(0, listSelectionMotion.currentHeight + stretchPx);
+      el.style.transform = "translate3d(" + listSelectionMotion.currentX.toFixed(3) + "px," + renderY.toFixed(3) + "px,0)";
+      el.style.width = Math.max(0, listSelectionMotion.currentWidth).toFixed(3) + "px";
+      el.style.height = renderHeight.toFixed(3) + "px";
+      el.style.borderRadius = Math.max(0, listSelectionMotion.currentRadius).toFixed(3) + "px";
+      el.style.opacity = listSelectionMotion.currentOpacity.toFixed(3);
+      el.classList.toggle("isVisible", listSelectionMotion.currentOpacity > 0.01);
+      document.documentElement.style.setProperty("--dp-selected-x", listSelectionMotion.currentX.toFixed(3) + "px");
+      document.documentElement.style.setProperty("--dp-selected-y", listSelectionMotion.currentY.toFixed(3) + "px");
+      document.documentElement.style.setProperty("--dp-selected-w", Math.max(0, listSelectionMotion.currentWidth).toFixed(3) + "px");
+      document.documentElement.style.setProperty("--dp-selected-h", renderHeight.toFixed(3) + "px");
+      document.documentElement.style.setProperty("--dp-selected-radius", Math.max(0, listSelectionMotion.currentRadius).toFixed(3) + "px");
+      document.documentElement.style.setProperty("--dp-selected-stretch", String(listSelectionMotion.stretch || 0));
+      document.documentElement.style.setProperty("--dp-selected-opacity", listSelectionMotion.currentOpacity.toFixed(3));
+      const renderer = liquidGlassRendererByKey("libSelection");
+      if(renderer){
+        renderer._metricsDirty = true;
+        renderer._snapshotRectPx = null;
+        if(renderer.lenses){
+          renderer.lenses.forEach((lens)=>{ try{ lens.rectPx = null; }catch(e){} });
+        }
+        if(renderer.render) renderer.render(currentVisualizerFrameState());
+      }
+    }catch(e){}
+  }
+
+  function stepLibSelectionMotion(){
+    listSelectionMotion.raf = 0;
+    try{
+      const stiffness = 0.34;
+      listSelectionMotion.currentX += (listSelectionMotion.targetX - listSelectionMotion.currentX) * stiffness;
+      listSelectionMotion.currentY += (listSelectionMotion.targetY - listSelectionMotion.currentY) * stiffness;
+      listSelectionMotion.currentWidth += (listSelectionMotion.targetWidth - listSelectionMotion.currentWidth) * stiffness;
+      listSelectionMotion.currentHeight += (listSelectionMotion.targetHeight - listSelectionMotion.currentHeight) * stiffness;
+      listSelectionMotion.currentRadius += (listSelectionMotion.targetRadius - listSelectionMotion.currentRadius) * stiffness;
+      listSelectionMotion.currentOpacity += (listSelectionMotion.targetOpacity - listSelectionMotion.currentOpacity) * 0.42;
+      const done = (
+        Math.abs(listSelectionMotion.targetX - listSelectionMotion.currentX) < 0.08 &&
+        Math.abs(listSelectionMotion.targetY - listSelectionMotion.currentY) < 0.08 &&
+        Math.abs(listSelectionMotion.targetWidth - listSelectionMotion.currentWidth) < 0.08 &&
+        Math.abs(listSelectionMotion.targetHeight - listSelectionMotion.currentHeight) < 0.08 &&
+        Math.abs(listSelectionMotion.targetRadius - listSelectionMotion.currentRadius) < 0.08 &&
+        Math.abs(listSelectionMotion.targetOpacity - listSelectionMotion.currentOpacity) < 0.01
+      );
+      if(done){
+        listSelectionMotion.currentX = listSelectionMotion.targetX;
+        listSelectionMotion.currentY = listSelectionMotion.targetY;
+        listSelectionMotion.currentWidth = listSelectionMotion.targetWidth;
+        listSelectionMotion.currentHeight = listSelectionMotion.targetHeight;
+        listSelectionMotion.currentRadius = listSelectionMotion.targetRadius;
+        listSelectionMotion.currentOpacity = listSelectionMotion.targetOpacity;
+      }
+      applyLibSelectionMotion();
+      if(!done) listSelectionMotion.raf = requestAnimationFrame(stepLibSelectionMotion);
+    }catch(e){}
+  }
+
+  function scheduleLibSelectionMotion(){
+    try{
+      if(!listSelectionMotion.raf) listSelectionMotion.raf = requestAnimationFrame(stepLibSelectionMotion);
+    }catch(e){}
+  }
+
+  function setLibSelectionTarget(x, y, width, height, radius, opacity){
+    try{
+      listSelectionMotion.targetX = x;
+      listSelectionMotion.targetY = y;
+      listSelectionMotion.targetWidth = width;
+      listSelectionMotion.targetHeight = height;
+      listSelectionMotion.targetRadius = radius;
+      listSelectionMotion.targetOpacity = opacity;
+      if(!listSelectionMotion.initialized){
+        listSelectionMotion.currentX = x;
+        listSelectionMotion.currentY = y;
+        listSelectionMotion.currentWidth = width;
+        listSelectionMotion.currentHeight = height;
+        listSelectionMotion.currentRadius = radius;
+        listSelectionMotion.currentOpacity = opacity;
+        listSelectionMotion.initialized = true;
+        applyLibSelectionMotion();
+        return;
+      }
+      scheduleLibSelectionMotion();
+    }catch(e){}
+  }
+
+  function setLibSelectionStretch(progress){
+    try{
+      const n = Number(progress || 0);
+      const clamped = Math.max(-1, Math.min(1, Number.isFinite(n) ? n : 0));
+      listSelectionMotion.stretch = Math.abs(clamped);
+      listSelectionMotion.direction = clamped === 0 ? 0 : (clamped > 0 ? 1 : -1);
+      applyLibSelectionMotion();
+    }catch(e){}
+  }
+
+  function updateLibSelectionGlass(reason){
+    try{
+      const el = document.getElementById("libListSelectedGlass");
+      const list = document.getElementById("libList");
+      if(!el || !list) return;
+      const settings = glassElementSettings("selectedRow");
+      applyGlassModeClass(el, settings.glassTint);
+      const row = list.querySelector(".ipodItem.sel");
+      const inner = selectedListInnerRect();
+      if(!row || !inner){
+        setLibSelectionTarget(listSelectionMotion.targetX, listSelectionMotion.targetY, listSelectionMotion.targetWidth, listSelectionMotion.targetHeight, listSelectionMotion.targetRadius, 0);
+        return;
+      }
+      const rowRect = row.getBoundingClientRect();
+      const left = Math.max(rowRect.left, inner.left);
+      const right = Math.min(rowRect.right, inner.right);
+      const top = Math.max(rowRect.top, inner.top);
+      const bottom = Math.min(rowRect.bottom, inner.bottom);
+      if(right <= left || bottom <= top){
+        setLibSelectionTarget(listSelectionMotion.targetX, listSelectionMotion.targetY, listSelectionMotion.targetWidth, listSelectionMotion.targetHeight, listSelectionMotion.targetRadius, 0);
+        return;
+      }
+      const host = document.getElementById("ipodScreen");
+      const hostRect = host ? host.getBoundingClientRect() : {left:0, top:0};
+      const targetHeight = bottom - top;
+      const radius = targetHeight > 58 ? 16 : 999;
+      setLibSelectionTarget(left - hostRect.left, top - hostRect.top, right - left, targetHeight, radius, 1);
+      const renderer = liquidGlassRendererByKey("libSelection");
+      if(renderer){
+        renderer._metricsDirty = true;
+        if(renderer.lenses){
+          renderer.lenses.forEach((lens)=>{ try{ lens.rectPx = null; }catch(e){} });
+        }
+      }
+      if(reason && renderer && renderer.render) renderer.render(currentVisualizerFrameState());
+    }catch(e){}
+  }
+
+  function invalidateLibPillGlass(reason){
+    try{
+      updateLibSelectionGlass(reason || "");
+      const renderer = liquidGlassRendererByKey("libPills");
+      if(renderer){
+        renderer._metricsDirty = true;
+        renderer._snapshotRectPx = null;
+        if(renderer.lenses){
+          renderer.lenses.forEach((lens)=>{ try{ lens.rectPx = null; }catch(e){} });
+        }
+      }
+      renderLiquidGlassNow();
+      requestAnimationFrame(()=>{
+        try{
+          updateLibSelectionGlass((reason || "lib pills") + " settled");
+          const nextRenderer = liquidGlassRendererByKey("libPills");
+          if(nextRenderer){
+            nextRenderer._metricsDirty = true;
+            nextRenderer._snapshotRectPx = null;
+            if(nextRenderer.lenses){
+              nextRenderer.lenses.forEach((lens)=>{ try{ lens.rectPx = null; }catch(e){} });
+            }
+          }
+          renderLiquidGlassNow();
+        }catch(e){}
+      });
+    }catch(e){}
+  }
+
   function positionNpOverlayLiquidCanvas(){
     positionViewportCanvasInsideHost(liquidGlassRendererByKey("npOverlay"), document.getElementById("npOverlayPill"), 1);
   }
@@ -510,17 +736,19 @@
   function refreshLibPillGlassLenses(reason){
     try{
       if(typeof window.liquidGL !== "function") return;
-      window.liquidGL(Object.assign({}, liquidGlassElementOptions("listPills"), {
+      window.liquidGL(Object.assign({}, liquidGlassElementOptions("selectedRow"), {
         target: ".ipodPill.liquidGlass[data-liquid-row-pill]",
         rendererKey: "libPills",
         sourceType: "visualizerCanvas",
         sourceElement: "#visualizerBg",
+        clipTarget: "#libList",
+        clipToPaddingBox: true,
         syncTargets: true
       }));
       applyElementGlassModeClasses();
       mountLiquidCanvas();
       refreshLiquidGlassVisualizerSources(reason || "lib pills");
-      renderLiquidGlassNow();
+      invalidateLibPillGlass(reason || "lib pills");
     }catch(e){}
   }
 
@@ -604,10 +832,18 @@
         sourceElement: "#visualizerBg"
       }));
       window.liquidGL(Object.assign({}, liquidGlassElementOptions("listPills"), {
+        target: "#libListSelectedGlass.liquidGlass",
+        rendererKey: "libSelection",
+        sourceType: "visualizerCanvas",
+        sourceElement: "#visualizerBg"
+      }));
+      window.liquidGL(Object.assign({}, liquidGlassElementOptions("listPills"), {
         target: ".ipodPill.liquidGlass[data-liquid-row-pill]",
         rendererKey: "libPills",
         sourceType: "visualizerCanvas",
         sourceElement: "#visualizerBg",
+        clipTarget: "#libList",
+        clipToPaddingBox: true,
         syncTargets: true
       }));
       mountLiquidCanvas();

@@ -240,10 +240,22 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
       return;
     }
 
+    if(state.current && state.current.kind === "range_editor"){
+      if(Math.abs(accum) >= step){
+        const steps = Math.trunc(accum / step);
+        try{ adjustRangeEditor(steps); }catch(e){}
+        accum -= steps * step;
+      }
+      return;
+    }
+
     if(Math.abs(accum) >= step){
       const steps = Math.trunc(accum / step);
       scrollSel(steps);
       accum -= steps * step;
+      try{ if(typeof setLibSelectionStretch === "function") setLibSelectionStretch(accum / step); }catch(e){}
+    }else{
+      try{ if(typeof setLibSelectionStretch === "function") setLibSelectionStretch(accum / step); }catch(e){}
     }
   }, {passive:false});
 
@@ -252,6 +264,7 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
     dragging = false;
     wheelDownOnButton = false;
     wheelPointerRect = null;
+    try{ if(typeof setLibSelectionStretch === "function") setLibSelectionStretch(0); }catch(e){}
     resetWheelGlassTilt();
   }
 
@@ -262,6 +275,12 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
   window.addEventListener("wheel", (ev)=>{
     // Let normal browser zoom and text input scrolling work.
     if(ev.ctrlKey) return;
+    if(state.current && state.current.kind === "range_editor"){
+      ev.preventDefault();
+      const dir = ev.deltaY > 0 ? 1 : -1;
+      try{ adjustRangeEditor(dir); }catch(e){}
+      return;
+    }
     const tgt = ev.target;
     if(tgt && (tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA" || tgt.tagName === "SELECT" || tgt.isContentEditable)) return;
 
@@ -279,7 +298,13 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
         adjustVolumeStep(dir);
       }
     }else{
+      if(state.current && state.current.kind === "range_editor"){
+        try{ adjustRangeEditor(dir); }catch(e){}
+        return;
+      }
+      try{ if(typeof setLibSelectionStretch === "function") setLibSelectionStretch(dir * 0.35); }catch(e){}
       scrollSel(dir);
+      setTimeout(()=>{ try{ if(typeof setLibSelectionStretch === "function") setLibSelectionStretch(0); }catch(e){} }, 90);
     }
   }, {passive:false});
 
@@ -287,7 +312,13 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
 
     // Don't hijack typing inside inputs/textareas/selects/contenteditable elements
     const tgt = ev.target;
-    if(tgt && (tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA" || tgt.tagName === "SELECT" || tgt.isContentEditable)) return;
+    if(tgt && (tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA" || tgt.tagName === "SELECT" || tgt.isContentEditable)){
+      if(state.current && state.current.kind === "range_editor" && (ev.key === "ArrowUp" || ev.key === "ArrowDown")){
+        ev.preventDefault();
+        adjustRangeEditor(ev.key === "ArrowUp" ? -1 : 1);
+      }
+      return;
+    }
 
     try{ if(isLibraryTabActive()) pathPillActivity(false); }catch(e){}
 
@@ -327,6 +358,8 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
         }else{
           adjustVolumeStep(1);
         }
+      }else if(state.current && state.current.kind === "range_editor"){
+        adjustRangeEditor(-1);
       }else{
         scrollSel(-1);
       }
@@ -338,6 +371,8 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
         }else{
           adjustVolumeStep(-1);
         }
+      }else if(state.current && state.current.kind === "range_editor"){
+        adjustRangeEditor(1);
       }else{
         scrollSel(1);
       }

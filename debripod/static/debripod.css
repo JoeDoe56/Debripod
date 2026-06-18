@@ -179,6 +179,7 @@
     }
     .liquidGlassCanvasNpOverlay{ position: absolute !important; z-index: 1 !important; }
     .liquidGlassCanvasLibList{ position: absolute !important; z-index: 1 !important; }
+    .liquidGlassCanvasLibSelection{ position: absolute !important; z-index: 2 !important; }
     .liquidGlassCanvasLibPills{ position: absolute !important; z-index: 2 !important; }
 
     
@@ -768,6 +769,7 @@
       margin: 0;
       overflow:auto;
       border-radius: var(--screenRadius);
+      clip-path: inset(var(--screenFrame));
       border: 0;
       background: transparent;
       pointer-events:auto;
@@ -802,6 +804,26 @@
       transform: translateY(10px);
       pointer-events: none;
     }
+    .libListSelectedGlass{
+      position:absolute;
+      left:0;
+      top:0;
+      width:0;
+      height:0;
+      z-index:70;
+      pointer-events:none;
+      border-radius:14px;
+      opacity:0;
+      background:transparent;
+      border:0;
+      box-shadow:none;
+      transform:translate3d(0,0,0);
+      transition:opacity .16s ease;
+      will-change:transform, width, height, border-radius, opacity;
+    }
+    .libListSelectedGlass.isVisible{
+      opacity:1;
+    }
 
     /* Keep lib list border visible under Now Playing */
     #libList.npUnderlay{pointer-events:none; background: transparent; border-color: transparent; -webkit-backdrop-filter: none !important; backdrop-filter: none !important; box-shadow: none !important;}
@@ -823,14 +845,22 @@
     }
     .ipodItem:last-child{border-bottom:none}
     .ipodItem.sel{
-      background: var(--theme-accent-soft);
-      outline: 1px solid var(--theme-accent-outline);
-      box-shadow: inset 0 0 0 1px rgba(255,255,255,.04), 0 0 0 1px rgba(0,0,0,.08), 0 10px 26px rgba(0,0,0,.12);
+      background: transparent;
+      outline: 0;
+      box-shadow: none;
       transition: background .45s ease, outline-color .45s ease, box-shadow .45s ease;
+    }
+    #libList.dpGlassModeLight .ipodItem.sel{
+      background: transparent;
+      outline-color: transparent;
+    }
+    #libList.dpGlassModeClear .ipodItem.sel{
+      background: transparent;
+      outline-color: transparent;
     }
     .ipodItem.info{cursor:default; opacity:.78}
     .ipodItem.random{justify-content:center; letter-spacing:.02em}
-    .ipodItem.random.sel{background: color-mix(in srgb, var(--theme-accent-soft) 86%, rgba(255,255,255,.04)); outline: 1px solid color-mix(in srgb, var(--theme-accent-outline) 92%, rgba(255,255,255,.08))}
+    .ipodItem.random.sel{background: transparent; outline: 0;}
     .ipodBadge{
       margin-left:auto;
       color: var(--dp-glass-list-muted);

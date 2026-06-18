@@ -75,6 +75,18 @@
     return String(value);
   }
 
+  function numberSettingRangeMeta(key, type){
+    const k = String(key || "");
+    if(k === "PORT" || k === "SOULSEEK_LISTENING_PORT" || k === "SOULSEEK_OBFUSCATED_PORT") return {min:0, max:65535, step:1, integer:true};
+    if(k === "SOULSEEK_SEARCH_TIMEOUT_SEC" || k === "SOULSEEK_SEARCH_HARD_MAX_SEC") return {min:1, max:600, step:1, integer:false};
+    if(k === "SOULSEEK_SEARCH_MAX_RESULTS") return {min:1, max:10000, step:1, integer:true};
+    if(k === "SOULSEEK_SEARCH_IDLE_STOP_SEC") return {min:0.1, max:600, step:0.1, integer:false};
+    if(k === "TASKS_POLL_MS") return {min:250, max:60000, step:250, integer:true};
+    if(k === "REQUEST_TIMEOUT_SECONDS") return {min:1, max:600, step:1, integer:false};
+    if(k === "WHEEL_ROTATION_MAX_DEGREES") return {min:0, max:12, step:0.1, integer:false};
+    return {min:0, max:10000, step:(type === "startup_number" ? 1 : 0.1), integer:false};
+  }
+
   function settingPathBase(value){
     const s = String(value || "");
     if(!s) return "Unset";
@@ -179,7 +191,7 @@
       load: async function(){
         await settingsLoad();
         resetList([
-          {kind:"settings_category", category:"ui", label:"Interface"},
+          {kind:"settings_category", category:"ui", label:"Visualizer"},
           {kind:"settings_library", label:"Library"},
           {kind:"settings_category", category:"downloads", label:"Downloads"},
           {kind:"settings_category", category:"services", label:"Services"},
@@ -222,7 +234,7 @@
   }
 
   async function viewSettingsCategory(category, push){
-    const labels = {ui:"Interface", downloads:"Downloads", services:"Services", playback:"Playback", advanced:"Advanced"};
+    const labels = {ui:"Visualizer", downloads:"Downloads", services:"Services", playback:"Playback", advanced:"Advanced"};
     const view = {
       kind:"settings_category",
       category:category,
@@ -312,9 +324,13 @@
     const key = String(row.key || "");
     const type = String(row.settingType || "text");
     if(!key) return;
+    const returnKind = state.current && state.current.kind;
+    const returnAdvancedCategory = state.current && state.current.advancedCategory;
+    const returnSettingsCategory = state.current && state.current.category;
     const refreshAfterSettingEdit = async ()=>{
-      if(state.current && state.current.kind === "libadvancedsettings") await viewLibAdvancedSettings(false);
-      else await viewSettingsCategory((state.current && state.current.category) || "advanced", false);
+      if(returnKind === "libadvancedsettings") await viewLibAdvancedSettings(false);
+      else if(returnKind === "libadvancedcategory") await viewLibAdvancedCategory(returnAdvancedCategory || "system", false);
+      else await viewSettingsCategory(returnSettingsCategory || "advanced", false);
     };
     if(type === "mcp_token"){
       const ok = confirm("Reset the MCP token? The new token will be shown once.");
@@ -374,20 +390,23 @@
       await refreshAfterSettingEdit();
       return;
     }
+    if(type === "number" || type === "startup_number"){
+      await viewRangeEditor({
+        label: row.label || key,
+        current: Number(row.value == null ? 0 : row.value),
+        meta: numberSettingRangeMeta(key, type),
+        onCommit: async function(value){
+          const next = numberSettingRangeMeta(key, type).integer ? Math.trunc(value) : value;
+          if(type === "startup_number") await settingsSave({}, {[key]: next});
+          else await settingsSave({[key]: next}, {});
+        },
+        onReturn: refreshAfterSettingEdit
+      }, true);
+      return;
+    }
     const raw = prompt(row.label || key, (row.value === "***") ? "" : String(row.value == null ? "" : row.value));
     if(raw == null) return;
     let value = raw;
-    if(type === "number" || type === "startup_number"){
-      value = Number(raw);
-      if(!Number.isFinite(value)) return;
-      if(key === "SOULSEEK_LISTENING_PORT" || key === "SOULSEEK_OBFUSCATED_PORT"){
-        value = Math.max(0, Math.min(65535, Math.trunc(value)));
-      }else if(key === "SOULSEEK_SEARCH_TIMEOUT_SEC" || key === "SOULSEEK_SEARCH_MAX_RESULTS" || key === "SOULSEEK_SEARCH_HARD_MAX_SEC"){
-        value = Math.max(1, Math.trunc(value));
-      }else if(key === "SOULSEEK_SEARCH_IDLE_STOP_SEC"){
-        value = Math.max(0.1, value);
-      }
-    }
     if(type === "startup_number") await settingsSave({}, {[key]: value});
     else await settingsSave({[key]: value}, {});
     await refreshAfterSettingEdit();
@@ -1023,7 +1042,7 @@ async function libDoSearch(engine, q){
         items.push({kind:"libinfo_action", label:"Login to Last.fm", action:"lastfm_login", pills: lp});
 
         items.push({kind:"libinfo_action", label:"Account", action:"account_settings"});
-        items.push({kind:"libinfo_action", label:"Interface", action:"ui_settings_menu"});
+        items.push({kind:"libinfo_action", label:"Visualizer", action:"ui_settings_menu"});
         items.push({kind:"libinfo_action", label:"Library", action:"settings_library"});
         items.push({kind:"libinfo_action", label:"Downloads", action:"settings_downloads"});
         items.push({kind:"libinfo_action", label:"Services", action:"settings_services"});
@@ -1070,7 +1089,7 @@ async function libDoSearch(engine, q){
     const restoreScroll = (!push && state.current && state.current.kind === "libuisettings" && libList) ? libList.scrollTop : null;
     await setView({
       kind:"libuisettings",
-      label:"Interface",
+      label:"Visualizer",
       savedSel: restoreSel,
       savedScroll: restoreScroll,
       load: async function(){
@@ -1080,9 +1099,6 @@ async function libDoSearch(engine, q){
         items.push({kind:"libui_action", label:"Visualizer Strength", action:"cycle_visualizer_strength", pills:[titleCaseSetting(visualizerStrength)]});
         items.push({kind:"libui_action", label:"Visualizer Preset", action:"cycle_visualizer_preset", pills:[visualizerPresetLabel(visualizerPresetName)]});
         items.push({kind:"info", label:"Estimated Tempo", pills:[String(Math.round(visualizerBpm || 120)) + " BPM"]});
-        GLASS_ELEMENT_KEYS.forEach((key)=>{
-          items.push({kind:"libui_action", label:glassElementLabel(key), action:"glass_section:" + key, pills:glassElementSummary(key)});
-        });
         resetList(items);
       }
     }, push);
@@ -1092,7 +1108,7 @@ async function libDoSearch(engine, q){
     showNowPlaying(false);
     const settings = cloneGlassElementSettings(uiSettings.liquidGlassElements);
     const item = settings[elementKey];
-    if(!item) return viewLibUiSettings(false);
+    if(!item) return viewLibAdvancedCategory("glass", false);
     await setView({
       kind:"libglasselement",
       label:item.label,
@@ -1129,6 +1145,59 @@ async function libDoSearch(engine, q){
     ];
   }
 
+  function advancedCategoryLabels(){
+    return {
+      glass:"Glass",
+      ui:"Visualizer",
+      downloads:"Downloads",
+      services:"Services",
+      playback:"Playback",
+      system:"System"
+    };
+  }
+
+  function advancedRowsForCategory(category){
+    const cat = String(category || "system");
+    if(cat === "glass"){
+      const items = [];
+      GLASS_ELEMENT_KEYS.forEach((key)=>{
+        items.push({kind:"libui_action", label:glassElementLabel(key), action:"glass_section:" + key, pills:glassElementSummary(key)});
+      });
+      items.push({kind:"libui_action", label:"Commit glass styling defaults", action:"commit_glass_defaults", pills:["Writes code"]});
+      return items;
+    }
+    if(cat === "ui"){
+      return uiTuningRows().map((row)=>({kind:"libui_action", label:row.label, action:row.action, pills:[String(row.value)]}))
+        .concat(settingRowsForCategory("advanced").filter((row)=> row && String(row.key || "").indexOf("TASKS_") === 0).map(settingRowToListItem));
+    }
+    if(cat === "system"){
+      const systemKeys = new Set(["PORT", "ENABLE_MCP", "MCP_TOKEN", "CACHE_DIR_NAME", "STREAM_PROXY_ALLOWED_HOST_SUFFIXES", "AUDIO_TRANSCODE", "VIDEO_BROWSER_TARGET_EXT", "REQUEST_TIMEOUT_SECONDS"]);
+      return settingRowsForCategory("advanced").filter((row)=> row && systemKeys.has(String(row.key || ""))).map(settingRowToListItem);
+    }
+    return settingRowsForCategory("advanced").filter((row)=>{
+      const key = String((row && row.key) || "");
+      if(cat === "downloads") return key === "REPLACE_ORIGINAL";
+      if(cat === "services") return key.indexOf("SOULSEEK_") === 0 || key.indexOf("KNABEN_") === 0 || key.indexOf("LASTFM_") === 0 || key === "YTDLP_CMD";
+      if(cat === "playback") return key === "WHEEL_ROTATION_MAX_DEGREES" || key === "FFMPEG_PATH" || key === "FFPROBE_PATH";
+      return false;
+    }).map(settingRowToListItem);
+  }
+
+  function settingRowToListItem(r){
+    return {
+      kind:"setting_value",
+      label:r.label,
+      sub_label:r.sub_label || "",
+      key:r.key,
+      settingType:r.type,
+      choices:r.choices || [],
+      value:r.value,
+      tool:r.tool || "",
+      toolStatus:r.toolStatus || null,
+      pills:(settingConnectionPills(r) || [{text:settingValueLabel(r.value)}]).concat([settingSavePill(r)])
+    };
+  }
+
   async function viewLibAdvancedSettings(push){
     showNowPlaying(false);
     await setView({
@@ -1137,25 +1206,31 @@ async function libDoSearch(engine, q){
       load: async function(){
         libControlsHide();
         await settingsLoad();
-        const items = [];
-        uiTuningRows().forEach((row)=>{
-          items.push({kind:"libui_action", label:row.label, action:row.action, pills:[String(row.value)]});
-        });
-        items.push({kind:"libui_action", label:"Commit glass styling defaults", action:"commit_glass_defaults", pills:["Writes code"]});
-        settingRowsForCategory("advanced").forEach((r)=>{
-          items.push({
-            kind:"setting_value",
-            label:r.label,
-            sub_label:r.sub_label || "",
-            key:r.key,
-            settingType:r.type,
-            choices:r.choices || [],
-            value:r.value,
-            tool:r.tool || "",
-            toolStatus:r.toolStatus || null,
-            pills:(settingConnectionPills(r) || [{text:settingValueLabel(r.value)}]).concat([settingSavePill(r)])
-          });
-        });
+        const labels = advancedCategoryLabels();
+        const items = ["glass", "ui", "downloads", "services", "playback", "system"].map((key)=>({
+          kind:"libui_action",
+          label:labels[key],
+          action:"advanced_category:" + key,
+          pills:[String(advancedRowsForCategory(key).length)]
+        }));
+        resetList(items);
+      }
+    }, push);
+  }
+
+  async function viewLibAdvancedCategory(category, push){
+    const labels = advancedCategoryLabels();
+    const cat = String(category || "system");
+    showNowPlaying(false);
+    await setView({
+      kind:"libadvancedcategory",
+      label:labels[cat] || "Advanced",
+      advancedCategory:cat,
+      load: async function(){
+        libControlsHide();
+        await settingsLoad();
+        const items = advancedRowsForCategory(cat);
+        if(!items.length) items.push({kind:"info", label:"No advanced settings"});
         resetList(items);
       }
     }, push);
@@ -1249,105 +1324,121 @@ async function libDoSearch(engine, q){
     return {min:min, max:max, step: span >= 100 ? 1 : (span >= 10 ? 0.1 : 0.01)};
   }
 
-  function promptRangeValue(label, current, meta){
-    return new Promise((resolve)=>{
-      const range = meta || settingRangeMeta("", 0, 1);
-      const min = Number(range.min);
-      const max = Number(range.max);
-      const step = Number(range.step || 0.01);
-      const clamp = (value)=> clampNumber(Number(value), Number(current || 0), min, max);
-      const backdrop = document.createElement("div");
-      backdrop.className = "dpSettingModalBackdrop";
-      const modal = document.createElement("div");
-      modal.className = "dpSettingModal";
-      modal.setAttribute("role", "dialog");
-      modal.setAttribute("aria-modal", "true");
-      const title = document.createElement("div");
-      title.className = "dpSettingModalTitle";
-      title.textContent = String(label || "Value");
-      const controls = document.createElement("div");
-      controls.className = "dpSettingModalControls";
-      const slider = document.createElement("input");
-      slider.type = "range";
-      slider.min = String(min);
-      slider.max = String(max);
-      slider.step = String(step);
-      slider.value = String(clamp(current));
-      const number = document.createElement("input");
-      number.type = "number";
-      number.min = String(min);
-      number.max = String(max);
-      number.step = String(step);
-      number.value = slider.value;
-      const actions = document.createElement("div");
-      actions.className = "dpSettingModalActions";
-      const cancel = document.createElement("button");
-      cancel.type = "button";
-      cancel.textContent = "Cancel";
-      const ok = document.createElement("button");
-      ok.type = "button";
-      ok.textContent = "OK";
-      ok.setAttribute("data-primary", "true");
-      const close = (value)=>{
-        try{ backdrop.remove(); }catch(e){}
-        resolve(value);
-      };
-      const syncFromSlider = ()=>{
-        number.value = slider.value;
-      };
-      const syncFromNumber = ()=>{
-        const value = clamp(number.value);
-        slider.value = String(value);
-        number.value = String(value);
-      };
-      slider.addEventListener("input", syncFromSlider);
-      number.addEventListener("input", syncFromNumber);
-      cancel.addEventListener("click", ()=> close(null));
-      ok.addEventListener("click", ()=> close(clamp(number.value)));
-      backdrop.addEventListener("click", (ev)=>{ if(ev.target === backdrop) close(null); });
-      modal.addEventListener("keydown", (ev)=>{
-        if(ev.key === "Escape"){
-          ev.preventDefault();
-          close(null);
-        }else if(ev.key === "Enter"){
-          ev.preventDefault();
-          close(clamp(number.value));
-        }
-      });
-      controls.appendChild(slider);
-      controls.appendChild(number);
-      actions.appendChild(cancel);
-      actions.appendChild(ok);
-      modal.appendChild(title);
-      modal.appendChild(controls);
-      modal.appendChild(actions);
-      backdrop.appendChild(modal);
-      document.body.appendChild(backdrop);
-      try{ number.focus(); number.select(); }catch(e){}
-    });
+  function rangeEditorValueLabel(value, meta){
+    const n = Number(value);
+    const step = Number((meta && meta.step) || 0.01);
+    if(!Number.isFinite(n)) return "0";
+    if(step >= 1) return String(Math.round(n));
+    const decimals = step < 0.01 ? 3 : (step < 0.1 ? 2 : 1);
+    return String(Number(n.toFixed(decimals)));
+  }
+
+  function rangeEditorClamp(value, meta, fallback){
+    const range = meta || settingRangeMeta("", 0, 1);
+    const next = clampNumber(Number(value), fallback == null ? 0 : fallback, Number(range.min), Number(range.max));
+    return range.integer ? Math.trunc(next) : next;
+  }
+
+  async function viewRangeEditor(config, push){
+    const meta = config.meta || settingRangeMeta("", 0, 1);
+    const current = rangeEditorClamp(config.current, meta, Number(meta.min || 0));
+    const view = {
+      kind:"range_editor",
+      label:String(config.label || "Value"),
+      rangeConfig:config,
+      rangeMeta:meta,
+      rangeValue:current,
+      load: async function(){
+        renderRangeEditor();
+      }
+    };
+    await setView(view, !!push);
+  }
+
+  function rangeEditorRows(){
+    const view = state.current || {};
+    const meta = view.rangeMeta || settingRangeMeta("", 0, 1);
+    const value = rangeEditorClamp(view.rangeValue, meta, Number(meta.min || 0));
+    const min = Number(meta.min);
+    const max = Number(meta.max);
+    const pct = max > min ? ((value - min) / (max - min)) : 0;
+    return [
+      {kind:"range_editor_input", label:view.label || "Value", value:rangeEditorValueLabel(value, meta), pills:[rangeEditorValueLabel(value, meta)]},
+      {kind:"range_editor_slider", label:"Slider", value:value, bar:Math.max(0, Math.min(1, pct)), pills:[rangeEditorValueLabel(min, meta), rangeEditorValueLabel(max, meta)]},
+      {kind:"libui_action", label:"Apply", action:"range_editor_apply", pills:[rangeEditorValueLabel(value, meta)]},
+      {kind:"libui_action", label:"Cancel", action:"range_editor_cancel"}
+    ];
+  }
+
+  function renderRangeEditor(){
+    resetList(rangeEditorRows());
+  }
+
+  function adjustRangeEditor(delta){
+    try{
+      const view = state.current || {};
+      if(view.kind !== "range_editor") return false;
+      const meta = view.rangeMeta || settingRangeMeta("", 0, 1);
+      const step = Number(meta.step || 1);
+      const next = rangeEditorClamp(Number(view.rangeValue || 0) + Number(delta || 0) * step, meta, Number(view.rangeValue || 0));
+      view.rangeValue = next;
+      renderRangeEditor();
+      return true;
+    }catch(e){
+      return false;
+    }
+  }
+
+  async function applyRangeEditor(){
+    const view = state.current || {};
+    if(view.kind !== "range_editor") return false;
+    const config = view.rangeConfig || {};
+    const meta = view.rangeMeta || settingRangeMeta("", 0, 1);
+    const value = rangeEditorClamp(view.rangeValue, meta, Number(meta.min || 0));
+    if(typeof config.onCommit === "function") await config.onCommit(value);
+    if(typeof config.onReturn === "function") await config.onReturn();
+    else goBack();
+    return true;
+  }
+
+  async function cancelRangeEditor(){
+    const view = state.current || {};
+    const config = view.rangeConfig || {};
+    if(typeof config.onReturn === "function") await config.onReturn();
+    else goBack();
+    return true;
   }
 
   async function handleLibUiAction(action){
     const setNumber = async (key, label, min, max)=>{
       const current = uiSettings[key];
-      const raw = await promptRangeValue(label, current, settingRangeMeta(key, min, max));
-      if(raw == null) return true;
-      uiSettings[key] = clampNumber(Number(raw), current, min, max);
-      saveUiSettings();
-      applyUiTuningCss();
-      forceNpOverlayGlassRender("ui tuning", true);
-      if(state.current && state.current.kind === "libadvancedsettings") await viewLibAdvancedSettings(false);
-      else await viewLibUiSettings(false);
+      const returnCategory = (state.current && state.current.kind === "libadvancedcategory") ? (state.current.advancedCategory || "ui") : "ui";
+      await viewRangeEditor({
+        label:label,
+        current:current,
+        meta:settingRangeMeta(key, min, max),
+        onCommit: async function(value){
+          uiSettings[key] = clampNumber(Number(value), current, min, max);
+          saveUiSettings();
+          applyUiTuningCss();
+          forceNpOverlayGlassRender("ui tuning", true);
+        },
+        onReturn: async function(){
+          await viewLibAdvancedCategory(returnCategory, false);
+        }
+      }, true);
       return true;
     };
     const setGlassNumber = async (elementKey, field)=>{
       const settings = cloneGlassElementSettings(uiSettings.liquidGlassElements);
       const current = settings[elementKey] ? settings[elementKey][field] : 0;
-      const raw = await promptRangeValue(glassElementLabel(elementKey) + " " + field, current, settingRangeMeta(field, 0, 1));
-      if(raw == null) return true;
-      setLiquidGlassElementSetting(elementKey, field, Number(raw));
-      if(state.current && state.current.kind === "libglasselement") await viewGlassElementSettings(elementKey, false);
-      else await viewLibUiSettings(false);
+      await viewRangeEditor({
+        label:glassElementLabel(elementKey) + " " + field,
+        current:current,
+        meta:settingRangeMeta(field, 0, 1),
+        onCommit: async function(value){ setLiquidGlassElementSetting(elementKey, field, Number(value)); },
+        onReturn: async function(){ await viewGlassElementSettings(elementKey, false); }
+      }, true);
       return true;
     };
     const commitGlassDefaults = async ()=>{
@@ -1365,6 +1456,10 @@ async function libDoSearch(engine, q){
       default:
         if(String(action || "").indexOf("glass_section:") === 0){
           await viewGlassElementSettings(String(action).split(":")[1] || "", true);
+          return true;
+        }
+        if(String(action || "").indexOf("advanced_category:") === 0){
+          await viewLibAdvancedCategory(String(action).split(":")[1] || "system", true);
           return true;
         }
         if(String(action || "").indexOf("toggle_glass_specular:") === 0){
@@ -1386,6 +1481,10 @@ async function libDoSearch(engine, q){
           return await setGlassNumber(parts[1] || "", parts[2] || "");
         }
         return false;
+      case "range_editor_apply":
+        return await applyRangeEditor();
+      case "range_editor_cancel":
+        return await cancelRangeEditor();
       case "toggle_visualizer":
         setVisualizerEnabled(!visualizerEnabled);
         await viewLibUiSettings(false);

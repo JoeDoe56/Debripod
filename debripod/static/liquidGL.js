@@ -620,11 +620,8 @@
             final.rgb += h * vec3(1.0, 0.97, 0.90);
           }
 
-          if (u_glassMode == 1) {
-            final.rgb = mix(final.rgb, vec3(0.0), clamp(u_glassDarkAmount, 0.0, 0.80));
-          } else if (u_glassMode == 2) {
-            final.rgb = mix(final.rgb, vec3(1.0), clamp(u_glassLightAmount, 0.0, 0.80));
-          }
+          final.rgb = mix(final.rgb, vec3(0.0), clamp(u_glassDarkAmount, 0.0, 0.80));
+          final.rgb = mix(final.rgb, vec3(1.0), clamp(u_glassLightAmount, 0.0, 0.80));
 
           if (u_revealType == 1) {
               final.rgb *= u_revealProgress;
@@ -981,7 +978,11 @@
         return keep;
       });
       wanted.forEach((el) => {
-        if (!this.lenses.some((lens) => lens.el === el)) {
+        const existing = this.lenses.find((lens) => lens.el === el);
+        if (existing && options) {
+          existing.options = Object.assign({}, existing.options || {}, options || {});
+        }
+        if (!existing) {
           this.addLens(el, options);
         }
       });
@@ -2049,11 +2050,45 @@
         return;
       }
 
-      this.rectPx = {
+      let visibleRect = {
         left: rect.left,
         top: rect.top,
-        width: rect.width,
-        height: rect.height,
+        right: rect.left + rect.width,
+        bottom: rect.top + rect.height,
+      };
+      if (this.options && this.options.clipTarget) {
+        const clipEl = document.querySelector(this.options.clipTarget);
+        if (clipEl) {
+          const clipRect = clipEl.getBoundingClientRect();
+          let clipLeft = clipRect.left;
+          let clipTop = clipRect.top;
+          let clipRight = clipRect.right;
+          let clipBottom = clipRect.bottom;
+          if (this.options.clipToPaddingBox) {
+            const clipStyle = window.getComputedStyle(clipEl);
+            clipLeft += parseFloat(clipStyle.paddingLeft || "0") || 0;
+            clipTop += parseFloat(clipStyle.paddingTop || "0") || 0;
+            clipRight -= parseFloat(clipStyle.paddingRight || "0") || 0;
+            clipBottom -= parseFloat(clipStyle.paddingBottom || "0") || 0;
+          }
+          visibleRect = {
+            left: Math.max(visibleRect.left, clipLeft),
+            top: Math.max(visibleRect.top, clipTop),
+            right: Math.min(visibleRect.right, clipRight),
+            bottom: Math.min(visibleRect.bottom, clipBottom),
+          };
+          if (visibleRect.right <= visibleRect.left || visibleRect.bottom <= visibleRect.top) {
+            this.rectPx = null;
+            return;
+          }
+        }
+      }
+
+      this.rectPx = {
+        left: visibleRect.left,
+        top: visibleRect.top,
+        width: visibleRect.right - visibleRect.left,
+        height: visibleRect.bottom - visibleRect.top,
       };
 
       const brRaw = style.borderTopLeftRadius.split(" ")[0];
