@@ -72,10 +72,24 @@
       "magnify": 1.0,
       "specular": false,
       "shadow": false
+    },
+    "selectedRow": {
+      "label": "Selected row",
+      "mode": "clear",
+      "glassTint": 1.0,
+      "resolution": 1.0,
+      "refraction": 0.047,
+      "bevelDepth": 0.136,
+      "bevelWidth": 0.076,
+      "frost": 2.0,
+      "refractionFill": 0.0,
+      "magnify": 1.0,
+      "specular": false,
+      "shadow": false
     }
   };
   // GLASS_DEFAULTS_END
-  const GLASS_ELEMENT_KEYS = ["libraryList", "wheel", "pathPill", "nowPlayingPill", "listPills"];
+  const GLASS_ELEMENT_KEYS = ["libraryList", "wheel", "pathPill", "nowPlayingPill", "listPills", "selectedRow"];
   const UI_SETTINGS_KEY = "debripod_ui_settings";
   const VISUALIZER_PRESETS = {
     album: {label: "Orbit", style: "orbit", motion: 1},

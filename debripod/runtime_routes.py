@@ -1227,13 +1227,14 @@ def api_settings_pick_path():
 
 
 def _coerce_glass_defaults(raw: Any) -> dict[str, Any]:
-    keys = ["libraryList", "wheel", "pathPill", "nowPlayingPill", "listPills"]
+    keys = ["libraryList", "wheel", "pathPill", "nowPlayingPill", "listPills", "selectedRow"]
     labels = {
         "libraryList": "Library list",
         "wheel": "Wheel",
         "pathPill": "Path pill",
         "nowPlayingPill": "Now playing pill",
         "listPills": "List pills",
+        "selectedRow": "Selected row",
     }
     numeric_limits = {
         "glassTint": (0.0, 2.0),

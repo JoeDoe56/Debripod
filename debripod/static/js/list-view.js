@@ -41,8 +41,39 @@
       const bottom = top + el.offsetHeight;
       const viewTop = libList.scrollTop + padTop;
       const viewBottom = libList.scrollTop + libList.clientHeight - padBottom;
-      if(top < viewTop) libList.scrollTop = Math.max(0, top - padTop);
-      else if(bottom > viewBottom) libList.scrollTop = Math.max(0, bottom + padBottom - libList.clientHeight);
+      if(top < viewTop) animateLibListScrollTo(Math.max(0, top - padTop));
+      else if(bottom > viewBottom) animateLibListScrollTo(Math.max(0, bottom + padBottom - libList.clientHeight));
+    }catch(e){}
+  }
+
+  function animateLibListScrollTo(targetTop){
+    try{
+      if(!libList) return;
+      const maxTop = Math.max(0, libList.scrollHeight - libList.clientHeight);
+      const target = Math.max(0, Math.min(maxTop, Number(targetTop || 0)));
+      if(Math.abs((libList.scrollTop || 0) - target) < 0.5){
+        libList.scrollTop = target;
+        if(typeof invalidateLibPillGlass === "function") invalidateLibPillGlass("scroll correction");
+        return;
+      }
+      if(libList._dpScrollAnimFrame) cancelAnimationFrame(libList._dpScrollAnimFrame);
+      const start = libList.scrollTop || 0;
+      const delta = target - start;
+      const started = performance.now();
+      const duration = Math.min(180, Math.max(80, Math.abs(delta) * 1.15));
+      const tick = (now)=>{
+        try{
+          const t = Math.max(0, Math.min(1, (Number(now || performance.now()) - started) / duration));
+          const eased = 1 - Math.pow(1 - t, 3);
+          libList.scrollTop = start + delta * eased;
+          if(typeof invalidateLibPillGlass === "function") invalidateLibPillGlass("smooth scroll");
+          if(t < 1) libList._dpScrollAnimFrame = requestAnimationFrame(tick);
+          else libList._dpScrollAnimFrame = 0;
+        }catch(e){
+          libList._dpScrollAnimFrame = 0;
+        }
+      };
+      libList._dpScrollAnimFrame = requestAnimationFrame(tick);
     }catch(e){}
   }
 
@@ -64,6 +95,61 @@
       );
       const twoLine = (settingsTall || it.kind === "libsearch_result" || it.kind === "libsearch_file" || it.kind === "libtask_file");
       li.className = "ipodItem" + (isSel ? " sel" : "") + (it.kind === "info" ? " info" : "") + (it.kind === "random" ? " random" : "") + (twoLine ? " twoLine" : "") + (settingsTall ? " settingRow" : "");
+
+      if(it.kind === "range_editor_input"){
+        li.className += " editing";
+        const inp = document.createElement("input");
+        inp.type = "text";
+        inp.inputMode = "decimal";
+        inp.className = "libInlineInput";
+        inp.value = String(it.value == null ? "" : it.value);
+        inp.addEventListener("input", ()=>{
+          try{
+            if(state.current && state.current.kind === "range_editor"){
+              state.current.rangeValue = Number(inp.value);
+            }
+          }catch(e){}
+        });
+        inp.addEventListener("keydown", (ev)=>{
+          if(ev.key === "Enter"){
+            ev.preventDefault();
+            try{ if(state.current && state.current.kind === "range_editor") state.current.rangeValue = Number(inp.value); }catch(e){}
+            try{ applyRangeEditor(); }catch(e){}
+          }
+        });
+        li.appendChild(inp);
+        editInputToFocus = inp;
+        libList.appendChild(li);
+        continue;
+      }
+
+      if(it.kind === "range_editor_slider"){
+        const labelWrap = document.createElement("span");
+        labelWrap.className = "ipodLabelWrap";
+        const labelSpan = document.createElement("span");
+        labelSpan.className = "ipodLabel hScrollText";
+        setGlassText(labelSpan, it.label || "Slider");
+        labelWrap.appendChild(labelSpan);
+        li.appendChild(labelWrap);
+        const wrap = document.createElement("span");
+        wrap.className = "ipodPills";
+        const sp = document.createElement("span");
+        sp.className = "ipodPill bar";
+        sp.classList.add("liquidGlass");
+        sp.setAttribute("data-liquid-row-pill", "");
+        sp.setAttribute("data-liquid-ignore", "");
+        const fill = document.createElement("span");
+        fill.className = "pillBarFill";
+        fill.style.display = "block";
+        fill.style.width = (Math.max(0, Math.min(1, Number(it.bar || 0))) * 100).toFixed(1) + "%";
+        const txt = makeGlassPillText(String(Math.round(Math.max(0, Math.min(1, Number(it.bar || 0))) * 100)) + "%", "pillBarText");
+        sp.appendChild(fill);
+        sp.appendChild(txt);
+        wrap.appendChild(sp);
+        li.appendChild(wrap);
+        libList.appendChild(li);
+        continue;
+      }
 
       if(it.kind === "smart_playlist_rules_text"){
         li.className += " editing";
@@ -471,6 +557,9 @@
       if(typeof refreshLibPillGlassLenses === "function") refreshLibPillGlassLenses("list render");
     }catch(e){}
     try{
+      if(typeof invalidateLibPillGlass === "function") invalidateLibPillGlass("list render settled");
+    }catch(e){}
+    try{
       if(typeof updateGlassTextUnderColors === "function") updateGlassTextUnderColors();
     }catch(e){}
   }
@@ -482,6 +571,7 @@
         try{
           const renderer = (typeof liquidGlassRendererByKey === "function") ? liquidGlassRendererByKey("libPills") : null;
           if(renderer) renderer._metricsDirty = true;
+          if(typeof invalidateLibPillGlass === "function") invalidateLibPillGlass("list scroll");
           if(typeof scheduleLiquidGlassRender === "function") scheduleLiquidGlassRender();
         }catch(e){}
       }, {passive:true});
@@ -619,6 +709,7 @@ function vibeTick(){
         ensureLibItemVisible(newEl);
       }
       refreshSelectedHScrollText();
+      if(typeof invalidateLibPillGlass === "function") invalidateLibPillGlass("selection");
       if(typeof updateGlassTextUnderColors === "function") updateGlassTextUnderColors();
     }catch(e){
       renderList();
