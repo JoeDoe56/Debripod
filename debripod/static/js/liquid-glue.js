@@ -14,24 +14,60 @@
     return Math.max(0, Math.min(12, n));
   }
 
-  function liquidGlassPresetOptions(){
-    const preset = LIQUID_GL_PRESETS[normalizeLiquidGlassPreset(liquidGlassPresetName)] || LIQUID_GL_PRESETS.default;
-    const options = Object.assign({
-      snapshot: "#divwrap",
-      resolution: 1.0,
-      reveal: "none",
-      tilt: false,
-      magnify: 1,
-      glassMode: normalizeLiquidGlassMode(liquidGlassModeName)
-    }, preset);
-    return options;
+  function glassElementSettings(key){
+    try{
+      liquidGlassElements = cloneGlassElementSettings(uiSettings.liquidGlassElements);
+      return liquidGlassElements[key] || liquidGlassElements.libraryList;
+    }catch(e){
+      return cloneGlassElementSettings(DEFAULT_LIQUID_GLASS_ELEMENT_SETTINGS)[key] || DEFAULT_LIQUID_GLASS_ELEMENT_SETTINGS.libraryList;
+    }
   }
 
-  function liquidGlassStyleOptions(presetName, modeName){
-    const preset = LIQUID_GL_PRESETS[normalizeLiquidGlassPreset(presetName)] || LIQUID_GL_PRESETS.default;
+  function liquidGlassElementOptions(key){
+    const settings = glassElementSettings(key);
+    const tint = normalizeLiquidGlassTint(settings.glassTint, liquidGlassModeToTint(settings.mode));
+    const mode = liquidGlassTintMode(tint);
+    const appleDarkAmount = 0.34;
+    const appleLightAmount = 0.28;
     return Object.assign({
-      glassMode: normalizeLiquidGlassMode(modeName)
-    }, preset);
+      snapshot: "#divwrap",
+      resolution: settings.resolution,
+      reveal: "none",
+      tilt: false,
+      magnify: settings.magnify,
+      shadow: !!settings.shadow,
+      glassMode: mode,
+      glassDarkAmount: mode === "dark" ? (1 - tint) * appleDarkAmount : 0,
+      glassLightAmount: mode === "light" ? (tint - 1) * appleLightAmount : 0
+    }, settings, {
+      glassMode: mode,
+      glassTint: tint,
+      glassDarkAmount: mode === "dark" ? (1 - tint) * appleDarkAmount : 0,
+      glassLightAmount: mode === "light" ? (tint - 1) * appleLightAmount : 0
+    });
+  }
+
+  function applyGlassModeClass(el, modeName){
+    try{
+      if(!el) return;
+      const mode = typeof modeName === "number" ? liquidGlassTintMode(modeName) : normalizeLiquidGlassMode(modeName);
+      el.classList.toggle("dpGlassModeClear", mode === "clear");
+      el.classList.toggle("dpGlassModeLight", mode === "light");
+      el.classList.toggle("dpGlassModeDark", mode === "dark");
+      el.setAttribute("data-liquid-glass-mode", mode);
+    }catch(e){}
+  }
+
+  function applyElementGlassModeClasses(){
+    try{
+      const all = cloneGlassElementSettings(uiSettings.liquidGlassElements);
+      applyLiquidGlassModeClass(all.libraryList.glassTint);
+      applyGlassModeClass(document.getElementById("libList"), all.libraryList.glassTint);
+      applyGlassModeClass(document.getElementById("wheel"), all.wheel.glassTint);
+      applyGlassModeClass(document.getElementById("libHeader"), all.pathPill.glassTint);
+      applyGlassModeClass(document.getElementById("npOverlayPill"), all.nowPlayingPill.glassTint);
+      document.querySelectorAll(".ipodPill[data-liquid-row-pill]").forEach((el)=> applyGlassModeClass(el, all.listPills.glassTint));
+    }catch(e){}
   }
 
   function asLiquidArray(value){
@@ -68,17 +104,36 @@
     return liquidGlassRendererByKey("wheel");
   }
 
-  function applyLiquidGlassStyleOptions(options){
+  function applyLiquidGlassModeClass(modeName){
     try{
-      const opts = options || liquidGlassStyleOptions(liquidGlassPresetName, liquidGlassModeName);
+      const mode = typeof modeName === "number" ? liquidGlassTintMode(modeName) : normalizeLiquidGlassMode(modeName || (glassElementSettings("libraryList").mode));
+      const root = document.documentElement;
+      root.classList.remove("dpGlassModeClear", "dpGlassModeLight", "dpGlassModeDark");
+      root.setAttribute("data-liquid-glass-mode", mode);
+    }catch(e){}
+  }
+
+  function applyLiquidGlassStyleOptions(){
+    try{
+      const byRenderer = {
+        "default": liquidGlassElementOptions("pathPill"),
+        "wheel": liquidGlassElementOptions("wheel"),
+        "npOverlay": liquidGlassElementOptions("nowPlayingPill"),
+        "libList": liquidGlassElementOptions("libraryList"),
+        "libPills": liquidGlassElementOptions("listPills")
+      };
+      applyElementGlassModeClasses();
       liquidGlassRenderers().forEach((renderer)=>{
         if(!renderer || !renderer.lenses) return;
+        const opts = byRenderer[renderer.rendererKey || "default"] || byRenderer.default;
         renderer.lenses.forEach((lens)=>{
           if(!lens || !lens.options) return;
-          ["refraction", "bevelDepth", "bevelWidth", "frost", "specular"].forEach((key)=>{
+          ["refraction", "bevelDepth", "bevelWidth", "frost", "specular", "magnify", "glassDarkAmount", "glassLightAmount"].forEach((key)=>{
             if(opts[key] !== undefined) lens.options[key] = opts[key];
           });
           if(opts.refractionFill !== undefined) lens.options.refractionFill = opts.refractionFill;
+          if(opts.shadow !== undefined && lens.options.shadow !== opts.shadow && typeof lens.setShadow === "function") lens.setShadow(!!opts.shadow);
+          else if(opts.shadow !== undefined) lens.options.shadow = !!opts.shadow;
           lens.options.glassMode = normalizeLiquidGlassMode(opts.glassMode);
           if(lens._glassModeIndex) lens.glassModeIndex = lens._glassModeIndex(lens.options.glassMode);
         });
@@ -87,53 +142,28 @@
     }catch(e){}
   }
 
-  function transitionLiquidGlassStyle(fromOptions, toOptions){
-    try{
-      if(!liquidGlassReady){
-        applyLiquidGlassStyleOptions(toOptions);
-        return;
-      }
-      const duration = 420;
-      const started = performance.now();
-      const numericKeys = ["refraction", "bevelDepth", "bevelWidth", "frost"];
-      const tick = (now)=>{
-        const t = Math.max(0, Math.min(1, (now - started) / duration));
-        const eased = 1 - Math.pow(1 - t, 3);
-        const mixed = Object.assign({}, toOptions);
-        mixed.glassMode = eased < 0.55 ? fromOptions.glassMode : toOptions.glassMode;
-        numericKeys.forEach((key)=>{
-          const a = Number(fromOptions[key]);
-          const b = Number(toOptions[key]);
-          mixed[key] = (Number.isFinite(a) ? a : 0) + ((Number.isFinite(b) ? b : 0) - (Number.isFinite(a) ? a : 0)) * eased;
-        });
-        applyLiquidGlassStyleOptions(mixed);
-        if(t < 1){
-          requestAnimationFrame(tick);
-        }else{
-          applyLiquidGlassStyleOptions(toOptions);
-          scheduleLiquidGlassSnapshot("ui settings", true);
-        }
-      };
-      requestAnimationFrame(tick);
-    }catch(e){
-      applyLiquidGlassStyleOptions(toOptions);
+  function setLiquidGlassElementSetting(elementKey, field, value){
+    const current = cloneGlassElementSettings(uiSettings.liquidGlassElements);
+    if(!current[elementKey]) return;
+    if(field === "mode"){
+      current[elementKey].mode = normalizeLiquidGlassMode(value);
+      current[elementKey].glassTint = liquidGlassModeToTint(current[elementKey].mode);
     }
+    else if(field === "glassTint"){
+      current[elementKey].glassTint = normalizeLiquidGlassTint(value, current[elementKey].glassTint);
+      current[elementKey].mode = liquidGlassTintMode(current[elementKey].glassTint);
+    }
+    else if(field === "specular") current[elementKey].specular = !!value;
+    else if(field === "shadow") current[elementKey].shadow = !!value;
+    else current[elementKey][field] = clampNumber(Number(value), current[elementKey][field], field === "resolution" ? 0.25 : (field === "magnify" ? 0.001 : 0), field === "resolution" ? 3 : (field === "magnify" ? 3 : (field === "frost" ? 5 : (field === "bevelWidth" ? 0.5 : (field === "bevelDepth" ? 0.35 : (field === "refractionFill" ? 1 : 0.25))))));
+    uiSettings.liquidGlassElements = cloneGlassElementSettings(current);
+    liquidGlassElements = cloneGlassElementSettings(uiSettings.liquidGlassElements);
+    saveUiSettings();
+    applyLiquidGlassStyleOptions();
+    scheduleLiquidGlassSnapshot("glass element setting", true);
   }
 
-  function setLiquidGlassSettings(presetName, modeName, smooth){
-    const fromOptions = liquidGlassStyleOptions(liquidGlassPresetName, liquidGlassModeName);
-    liquidGlassPresetName = normalizeLiquidGlassPreset(presetName);
-    liquidGlassModeName = normalizeLiquidGlassMode(modeName);
-    uiSettings.liquidGlassPreset = liquidGlassPresetName;
-    uiSettings.liquidGlassMode = liquidGlassModeName;
-    saveUiSettings();
-    const toOptions = liquidGlassStyleOptions(liquidGlassPresetName, liquidGlassModeName);
-    if(smooth){
-      transitionLiquidGlassStyle(fromOptions, toOptions);
-    }else{
-      applyLiquidGlassStyleOptions(toOptions);
-    }
-  }
+  applyElementGlassModeClasses();
 
   function mountLiquidCanvas(){
     try{
@@ -147,6 +177,7 @@
         renderer.canvas.classList.toggle("liquidGlassCanvasWheel", key === "wheel");
         renderer.canvas.classList.toggle("liquidGlassCanvasNpOverlay", key === "npOverlay");
         renderer.canvas.classList.toggle("liquidGlassCanvasLibList", key === "libList");
+        renderer.canvas.classList.toggle("liquidGlassCanvasLibPills", key === "libPills");
         renderer.canvas.setAttribute("data-liquid-renderer", key || "unknown");
         if(key === "wheel"){
           const wheelHost = document.getElementById("wheel") || document.querySelector(".ipodWheelWrap");
@@ -160,6 +191,12 @@
             screenHost.insertBefore(renderer.canvas, screenHost.firstChild);
           }
           positionLibListLiquidCanvas();
+        }else if(key === "libPills"){
+          const screenHost = document.getElementById("ipodScreen");
+          if(screenHost && renderer.canvas.parentNode !== screenHost){
+            screenHost.insertBefore(renderer.canvas, screenHost.firstChild);
+          }
+          positionLibPillsLiquidCanvas();
         }else if(key === "npOverlay"){
           const pillHost = document.getElementById("npOverlayPill");
           if(pillHost && renderer.canvas.parentNode !== pillHost){
@@ -175,7 +212,7 @@
           }
         }
         renderer.canvas.style.pointerEvents = "none";
-        renderer.canvas.style.setProperty("z-index", key === "libList" ? "1" : (key === "npOverlay" ? "1" : (key === "wheel" ? "10" : "65")), "important");
+        renderer.canvas.style.setProperty("z-index", key === "libPills" ? "2" : (key === "libList" ? "1" : (key === "npOverlay" ? "1" : (key === "wheel" ? "10" : "65"))), "important");
       });
       debugLiquidGlassRenderers("mount");
     }catch(e){}
@@ -211,7 +248,7 @@
 
   function refreshLiquidGlassVisualizerSources(reason){
     try{
-      ["default", "wheel", "libList"].forEach((key)=>{
+      ["default", "wheel", "libList", "libPills"].forEach((key)=>{
         const renderer = liquidGlassRendererByKey(key);
         if(!renderer) return;
         if(visualizerBg && renderer.updateTextureFromCanvas){
@@ -358,8 +395,51 @@
     }catch(e){}
   }
 
+  function cssPointValue(style, name, axisSize, fallback){
+    try{
+      const raw = String(style.getPropertyValue(name) || "").trim();
+      if(!raw) return fallback;
+      if(raw.slice(-1) === "%") return (parseFloat(raw) || 0) / 100 * axisSize;
+      return parseFloat(raw) || fallback;
+    }catch(e){
+      return fallback;
+    }
+  }
+
+  function updateGlassTextUnderColors(){
+    try{
+      const root = document.documentElement;
+      const style = window.getComputedStyle ? window.getComputedStyle(root) : null;
+      if(!style) return;
+      const width = window.innerWidth || 1;
+      const height = window.innerHeight || 1;
+      const colors = [
+        {color: String(style.getPropertyValue("--theme-visualizer-a") || "rgba(10,132,255,.42)").trim(), x: cssPointValue(style, "--viz-x1", width, width * 0.5), y: cssPointValue(style, "--viz-y1", height, height * 0.28)},
+        {color: String(style.getPropertyValue("--theme-visualizer-b") || "rgba(94,92,230,.30)").trim(), x: cssPointValue(style, "--viz-x2", width, width * 0.22), y: cssPointValue(style, "--viz-y2", height, height * 0.68)},
+        {color: String(style.getPropertyValue("--theme-visualizer-c") || "rgba(255,69,58,.18)").trim(), x: cssPointValue(style, "--viz-x3", width, width * 0.78), y: cssPointValue(style, "--viz-y3", height, height * 0.64)}
+      ];
+      document.querySelectorAll(".glassText, .glassGlyph").forEach((el)=>{
+        try{
+          const rect = el.getBoundingClientRect();
+          if(!rect.width || !rect.height || rect.bottom < 0 || rect.right < 0 || rect.left > width || rect.top > height) return;
+          const cx = rect.left + rect.width / 2;
+          const cy = rect.top + rect.height / 2;
+          const ranked = colors.slice().sort((a, b)=>{
+            const da = Math.hypot(cx - a.x, cy - a.y);
+            const db = Math.hypot(cx - b.x, cy - b.y);
+            return da - db;
+          });
+          el.style.setProperty("--dp-engrave-under-a", ranked[0].color);
+          el.style.setProperty("--dp-engrave-under-b", ranked[1].color);
+          el.style.setProperty("--dp-engrave-under-c", ranked[2].color);
+        }catch(e){}
+      });
+    }catch(e){}
+  }
+
   function renderLiquidGlassNow(frameState){
     try{
+      updateGlassTextUnderColors();
       liquidGlassRenderers().forEach((renderer)=>{
         if(!renderer || !renderer.render) return;
         const key = renderer.rendererKey || "";
@@ -368,6 +448,7 @@
           applyNpOverlayGlassTuning(renderer);
         }
         if(key === "libList") positionLibListLiquidCanvas();
+        if(key === "libPills") positionLibPillsLiquidCanvas();
         renderer.render(frameState || currentVisualizerFrameState());
       });
     }catch(e){}
@@ -375,9 +456,11 @@
 
   function renderLiquidGlassVisualizerSourceNow(frameState){
     try{
-      ["default", "wheel", "libList"].forEach((key)=>{
+      updateGlassTextUnderColors();
+      ["default", "wheel", "libList", "libPills"].forEach((key)=>{
         const renderer = liquidGlassRendererByKey(key);
         if(key === "libList") positionLibListLiquidCanvas();
+        if(key === "libPills") positionLibPillsLiquidCanvas();
         if(renderer && renderer.render) renderer.render(frameState || currentVisualizerFrameState());
       });
       if(isPathPillVisible()) forcePathPillGlassRender("visualizer frame", false);
@@ -416,8 +499,29 @@
     positionViewportCanvasInsideHost(liquidGlassRendererByKey("libList"), document.getElementById("ipodScreen"), 1);
   }
 
+  function positionLibPillsLiquidCanvas(){
+    positionViewportCanvasInsideHost(liquidGlassRendererByKey("libPills"), document.getElementById("ipodScreen"), 2);
+  }
+
   function positionNpOverlayLiquidCanvas(){
     positionViewportCanvasInsideHost(liquidGlassRendererByKey("npOverlay"), document.getElementById("npOverlayPill"), 1);
+  }
+
+  function refreshLibPillGlassLenses(reason){
+    try{
+      if(typeof window.liquidGL !== "function") return;
+      window.liquidGL(Object.assign({}, liquidGlassElementOptions("listPills"), {
+        target: ".ipodPill.liquidGlass[data-liquid-row-pill]",
+        rendererKey: "libPills",
+        sourceType: "visualizerCanvas",
+        sourceElement: "#visualizerBg",
+        syncTargets: true
+      }));
+      applyElementGlassModeClasses();
+      mountLiquidCanvas();
+      refreshLiquidGlassVisualizerSources(reason || "lib pills");
+      renderLiquidGlassNow();
+    }catch(e){}
   }
 
   function scheduleLiquidGlassSnapshot(reason, includeLibList){
@@ -474,36 +578,37 @@
   function initLiquidGlass(){
     try{
       if(liquidGlassReady || typeof window.liquidGL !== "function") return;
-      const base = liquidGlassPresetOptions();
-      const sharedGlassOptions = Object.assign({}, base, {
+      const sharedGlassOptions = Object.assign({}, liquidGlassElementOptions("pathPill"), {
         target: ".pathPillGlass.liquidGlass",
         sourceType: "visualizerCanvas",
-        sourceElement: "#visualizerBg",
-        shadow: false
+        sourceElement: "#visualizerBg"
       });
       window.liquidGL(sharedGlassOptions);
-      const wheelGlassInstances = asLiquidArray(window.liquidGL(Object.assign({}, base, {
+      const wheelGlassInstances = asLiquidArray(window.liquidGL(Object.assign({}, liquidGlassElementOptions("wheel"), {
         target: ".wheelGlassRing.liquidGlass, .wheelCenterGlass.liquidGlass",
         rendererKey: "wheel",
         sourceType: "visualizerCanvas",
-        sourceElement: "#visualizerBg",
-        shadow: false
+        sourceElement: "#visualizerBg"
       })));
       liquidWheelLenses = wheelGlassInstances.filter(inst => inst && inst.el);
-      window.liquidGL(Object.assign({}, base, {
+      window.liquidGL(Object.assign({}, liquidGlassElementOptions("nowPlayingPill"), {
         target: ".npOverlayGlass.liquidGlass",
         sourceType: "albumArtCanvasOrImage",
         sourceElement: "#npArt",
-        rendererKey: "npOverlay",
-        shadow: false
+        rendererKey: "npOverlay"
       }));
-      window.liquidGL(Object.assign({}, base, {
+      window.liquidGL(Object.assign({}, liquidGlassElementOptions("libraryList"), {
         target: "#libList.liquidGlass",
         rendererKey: "libList",
         sourceType: "visualizerCanvas",
+        sourceElement: "#visualizerBg"
+      }));
+      window.liquidGL(Object.assign({}, liquidGlassElementOptions("listPills"), {
+        target: ".ipodPill.liquidGlass[data-liquid-row-pill]",
+        rendererKey: "libPills",
+        sourceType: "visualizerCanvas",
         sourceElement: "#visualizerBg",
-        refractionFill: 1,
-        shadow: false
+        syncTargets: true
       }));
       mountLiquidCanvas();
       refreshLiquidGlassVisualizerSources("init");

@@ -1042,16 +1042,26 @@ async function libDoSearch(engine, q){
     return text ? text.charAt(0).toUpperCase() + text.slice(1) : "";
   }
 
-  function nextLiquidGlassPreset(){
-    const order = Object.keys(LIQUID_GL_PRESETS);
-    const idx = order.indexOf(normalizeLiquidGlassPreset(liquidGlassPresetName));
-    return order[(idx + 1) % order.length] || "default";
+  function glassElementLabel(key){
+    const settings = cloneGlassElementSettings(uiSettings.liquidGlassElements);
+    return (settings[key] && settings[key].label) || key;
   }
 
-  function nextLiquidGlassMode(){
-    const order = ["clear", "light", "dark"];
-    const idx = order.indexOf(normalizeLiquidGlassMode(liquidGlassModeName));
-    return order[(idx + 1) % order.length] || "clear";
+  function glassTintLabel(value){
+    const tint = normalizeLiquidGlassTint(value, 1);
+    if(tint < 0.995) return tint.toFixed(2) + " Dark";
+    if(tint > 1.005) return tint.toFixed(2) + " Light";
+    return "1.00 Clear";
+  }
+
+  function glassElementSummary(key){
+    const settings = cloneGlassElementSettings(uiSettings.liquidGlassElements);
+    const item = settings[key] || {};
+    return [
+      glassTintLabel(item.glassTint),
+      "R " + String(item.refraction),
+      "B " + String(item.bevelDepth)
+    ];
   }
 
   async function viewLibUiSettings(push){
@@ -1070,9 +1080,38 @@ async function libDoSearch(engine, q){
         items.push({kind:"libui_action", label:"Visualizer Strength", action:"cycle_visualizer_strength", pills:[titleCaseSetting(visualizerStrength)]});
         items.push({kind:"libui_action", label:"Visualizer Preset", action:"cycle_visualizer_preset", pills:[visualizerPresetLabel(visualizerPresetName)]});
         items.push({kind:"info", label:"Estimated Tempo", pills:[String(Math.round(visualizerBpm || 120)) + " BPM"]});
-        items.push({kind:"libui_action", label:"Liquid Glass Preset", action:"cycle_liquid_preset", pills:[titleCaseSetting(liquidGlassPresetName)]});
-        items.push({kind:"libui_action", label:"Liquid Glass Mode", action:"cycle_liquid_mode", pills:[titleCaseSetting(liquidGlassModeName)]});
+        GLASS_ELEMENT_KEYS.forEach((key)=>{
+          items.push({kind:"libui_action", label:glassElementLabel(key), action:"glass_section:" + key, pills:glassElementSummary(key)});
+        });
         resetList(items);
+      }
+    }, push);
+  }
+
+  async function viewGlassElementSettings(elementKey, push){
+    showNowPlaying(false);
+    const settings = cloneGlassElementSettings(uiSettings.liquidGlassElements);
+    const item = settings[elementKey];
+    if(!item) return viewLibUiSettings(false);
+    await setView({
+      kind:"libglasselement",
+      label:item.label,
+      glassElementKey:elementKey,
+      load: async function(){
+        libControlsHide();
+        const rows = [
+          {label:"Glass tint", field:"glassTint", value:glassTintLabel(item.glassTint), action:"set_glass_value:" + elementKey + ":glassTint"},
+          {label:"Resolution", field:"resolution", value:item.resolution, action:"set_glass_value:" + elementKey + ":resolution"},
+          {label:"Refraction", field:"refraction", value:item.refraction, action:"set_glass_value:" + elementKey + ":refraction"},
+          {label:"Refraction fill", field:"refractionFill", value:item.refractionFill, action:"set_glass_value:" + elementKey + ":refractionFill"},
+          {label:"Bevel depth", field:"bevelDepth", value:item.bevelDepth, action:"set_glass_value:" + elementKey + ":bevelDepth"},
+          {label:"Bevel width", field:"bevelWidth", value:item.bevelWidth, action:"set_glass_value:" + elementKey + ":bevelWidth"},
+          {label:"Frost", field:"frost", value:item.frost, action:"set_glass_value:" + elementKey + ":frost"},
+          {label:"Magnification", field:"magnify", value:item.magnify, action:"set_glass_value:" + elementKey + ":magnify"},
+          {label:"Specular", field:"specular", value:item.specular ? "On" : "Off", action:"toggle_glass_specular:" + elementKey},
+          {label:"Shadow", field:"shadow", value:item.shadow ? "On" : "Off", action:"toggle_glass_shadow:" + elementKey}
+        ];
+        resetList(rows.map((row)=>({kind:"libui_action", label:row.label, action:row.action, pills:[String(row.value)]})));
       }
     }, push);
   }
@@ -1102,6 +1141,7 @@ async function libDoSearch(engine, q){
         uiTuningRows().forEach((row)=>{
           items.push({kind:"libui_action", label:row.label, action:row.action, pills:[String(row.value)]});
         });
+        items.push({kind:"libui_action", label:"Commit glass styling defaults", action:"commit_glass_defaults", pills:["Writes code"]});
         settingRowsForCategory("advanced").forEach((r)=>{
           items.push({
             kind:"setting_value",
@@ -1191,10 +1231,106 @@ async function libDoSearch(engine, q){
     }
   }
 
+  function settingRangeMeta(field, fallbackMin, fallbackMax){
+    const ranges = {
+      glassTint: {min:0, max:2, step:0.01},
+      resolution: {min:0.25, max:3, step:0.05},
+      refraction: {min:0, max:0.25, step:0.001},
+      refractionFill: {min:0, max:1, step:0.01},
+      bevelDepth: {min:0, max:0.35, step:0.001},
+      bevelWidth: {min:0, max:0.5, step:0.001},
+      frost: {min:0, max:5, step:0.01},
+      magnify: {min:0.001, max:3, step:0.001}
+    };
+    if(ranges[field]) return ranges[field];
+    const min = Number.isFinite(Number(fallbackMin)) ? Number(fallbackMin) : 0;
+    const max = Number.isFinite(Number(fallbackMax)) ? Number(fallbackMax) : 1;
+    const span = Math.abs(max - min);
+    return {min:min, max:max, step: span >= 100 ? 1 : (span >= 10 ? 0.1 : 0.01)};
+  }
+
+  function promptRangeValue(label, current, meta){
+    return new Promise((resolve)=>{
+      const range = meta || settingRangeMeta("", 0, 1);
+      const min = Number(range.min);
+      const max = Number(range.max);
+      const step = Number(range.step || 0.01);
+      const clamp = (value)=> clampNumber(Number(value), Number(current || 0), min, max);
+      const backdrop = document.createElement("div");
+      backdrop.className = "dpSettingModalBackdrop";
+      const modal = document.createElement("div");
+      modal.className = "dpSettingModal";
+      modal.setAttribute("role", "dialog");
+      modal.setAttribute("aria-modal", "true");
+      const title = document.createElement("div");
+      title.className = "dpSettingModalTitle";
+      title.textContent = String(label || "Value");
+      const controls = document.createElement("div");
+      controls.className = "dpSettingModalControls";
+      const slider = document.createElement("input");
+      slider.type = "range";
+      slider.min = String(min);
+      slider.max = String(max);
+      slider.step = String(step);
+      slider.value = String(clamp(current));
+      const number = document.createElement("input");
+      number.type = "number";
+      number.min = String(min);
+      number.max = String(max);
+      number.step = String(step);
+      number.value = slider.value;
+      const actions = document.createElement("div");
+      actions.className = "dpSettingModalActions";
+      const cancel = document.createElement("button");
+      cancel.type = "button";
+      cancel.textContent = "Cancel";
+      const ok = document.createElement("button");
+      ok.type = "button";
+      ok.textContent = "OK";
+      ok.setAttribute("data-primary", "true");
+      const close = (value)=>{
+        try{ backdrop.remove(); }catch(e){}
+        resolve(value);
+      };
+      const syncFromSlider = ()=>{
+        number.value = slider.value;
+      };
+      const syncFromNumber = ()=>{
+        const value = clamp(number.value);
+        slider.value = String(value);
+        number.value = String(value);
+      };
+      slider.addEventListener("input", syncFromSlider);
+      number.addEventListener("input", syncFromNumber);
+      cancel.addEventListener("click", ()=> close(null));
+      ok.addEventListener("click", ()=> close(clamp(number.value)));
+      backdrop.addEventListener("click", (ev)=>{ if(ev.target === backdrop) close(null); });
+      modal.addEventListener("keydown", (ev)=>{
+        if(ev.key === "Escape"){
+          ev.preventDefault();
+          close(null);
+        }else if(ev.key === "Enter"){
+          ev.preventDefault();
+          close(clamp(number.value));
+        }
+      });
+      controls.appendChild(slider);
+      controls.appendChild(number);
+      actions.appendChild(cancel);
+      actions.appendChild(ok);
+      modal.appendChild(title);
+      modal.appendChild(controls);
+      modal.appendChild(actions);
+      backdrop.appendChild(modal);
+      document.body.appendChild(backdrop);
+      try{ number.focus(); number.select(); }catch(e){}
+    });
+  }
+
   async function handleLibUiAction(action){
     const setNumber = async (key, label, min, max)=>{
       const current = uiSettings[key];
-      const raw = prompt(label, String(current));
+      const raw = await promptRangeValue(label, current, settingRangeMeta(key, min, max));
       if(raw == null) return true;
       uiSettings[key] = clampNumber(Number(raw), current, min, max);
       saveUiSettings();
@@ -1204,7 +1340,52 @@ async function libDoSearch(engine, q){
       else await viewLibUiSettings(false);
       return true;
     };
+    const setGlassNumber = async (elementKey, field)=>{
+      const settings = cloneGlassElementSettings(uiSettings.liquidGlassElements);
+      const current = settings[elementKey] ? settings[elementKey][field] : 0;
+      const raw = await promptRangeValue(glassElementLabel(elementKey) + " " + field, current, settingRangeMeta(field, 0, 1));
+      if(raw == null) return true;
+      setLiquidGlassElementSetting(elementKey, field, Number(raw));
+      if(state.current && state.current.kind === "libglasselement") await viewGlassElementSettings(elementKey, false);
+      else await viewLibUiSettings(false);
+      return true;
+    };
+    const commitGlassDefaults = async ()=>{
+      try{
+        const res = await apiPost("/api/ui/glass_defaults/commit", {liquidGlassElements: cloneGlassElementSettings(uiSettings.liquidGlassElements)});
+        const js = res && res.json ? res.json : {};
+        if(!res || !res.ok || !js.ok) throw new Error((js && js.error) ? js.error : "Failed to write defaults");
+      }catch(e){
+        alert(String(e && e.message ? e.message : e));
+      }
+      await viewLibAdvancedSettings(false);
+      return true;
+    };
     switch(action){
+      default:
+        if(String(action || "").indexOf("glass_section:") === 0){
+          await viewGlassElementSettings(String(action).split(":")[1] || "", true);
+          return true;
+        }
+        if(String(action || "").indexOf("toggle_glass_specular:") === 0){
+          const key = String(action).split(":")[1] || "";
+          const settings = cloneGlassElementSettings(uiSettings.liquidGlassElements);
+          if(settings[key]) setLiquidGlassElementSetting(key, "specular", !settings[key].specular);
+          await viewGlassElementSettings(key, false);
+          return true;
+        }
+        if(String(action || "").indexOf("toggle_glass_shadow:") === 0){
+          const key = String(action).split(":")[1] || "";
+          const settings = cloneGlassElementSettings(uiSettings.liquidGlassElements);
+          if(settings[key]) setLiquidGlassElementSetting(key, "shadow", !settings[key].shadow);
+          await viewGlassElementSettings(key, false);
+          return true;
+        }
+        if(String(action || "").indexOf("set_glass_value:") === 0){
+          const parts = String(action).split(":");
+          return await setGlassNumber(parts[1] || "", parts[2] || "");
+        }
+        return false;
       case "toggle_visualizer":
         setVisualizerEnabled(!visualizerEnabled);
         await viewLibUiSettings(false);
@@ -1217,14 +1398,8 @@ async function libDoSearch(engine, q){
         cycleVisualizerPreset();
         await viewLibUiSettings(false);
         return true;
-      case "cycle_liquid_preset":
-        setLiquidGlassSettings(nextLiquidGlassPreset(), liquidGlassModeName, true);
-        await viewLibUiSettings(false);
-        return true;
-      case "cycle_liquid_mode":
-        setLiquidGlassSettings(liquidGlassPresetName, nextLiquidGlassMode(), true);
-        await viewLibUiSettings(false);
-        return true;
+      case "commit_glass_defaults":
+        return await commitGlassDefaults();
       case "set_center_bounce_amount":
         return await setNumber("centerBounceAmount", "Center bounce amount", 0, 0.3);
       case "set_center_bounce_duration":
@@ -1241,7 +1416,5 @@ async function libDoSearch(engine, q){
         return await setNumber("infoPillDarkMultiplier", "Info pill dark multiplier", 0, 4);
       case "set_info_pill_light_multiplier":
         return await setNumber("infoPillLightMultiplier", "Info pill light multiplier", 0, 4);
-      default:
-        return false;
     }
   }

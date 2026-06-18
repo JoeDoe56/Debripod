@@ -973,6 +973,22 @@
       return lens;
     }
 
+    syncLenses(elements, options) {
+      const wanted = new Set(Array.from(elements || []).filter(Boolean));
+      this.lenses = this.lenses.filter((lens) => {
+        const keep = lens && lens.el && wanted.has(lens.el) && lens.el.isConnected;
+        if (!keep && lens && lens.destroy) lens.destroy();
+        return keep;
+      });
+      wanted.forEach((el) => {
+        if (!this.lenses.some((lens) => lens.el === el)) {
+          this.addLens(el, options);
+        }
+      });
+      this._metricsDirty = true;
+      return this.lenses.filter((lens) => wanted.has(lens.el));
+    }
+
     /* ----------------------------- */
     clear() {
       try {
@@ -2536,6 +2552,16 @@
       this._mirrorActive = false;
     }
 
+    destroy() {
+      try {
+        if (this._sizeObs) this._sizeObs.disconnect();
+      } catch (e) {}
+      try {
+        if (this._shadowEl) this._shadowEl.remove();
+      } catch (e) {}
+      this._destroyMirrorCanvas();
+    }
+
     _TriggerInit() {
       if (this._initCalled) return;
       this._initCalled = true;
@@ -2620,6 +2646,10 @@
 
     const nodeList = document.querySelectorAll(options.target);
     if (!nodeList || nodeList.length === 0) {
+      if (options.syncTargets && renderer.syncLenses) {
+        renderer.syncLenses([], options);
+        renderer.render();
+      }
       liquidGLLog(
         "warn",
         `liquidGL: Target element(s) '${options.target}' not found.`
@@ -2627,9 +2657,9 @@
       return;
     }
 
-    const instances = Array.from(nodeList).map((el) =>
-      renderer.addLens(el, options)
-    );
+    const instances = options.syncTargets && renderer.syncLenses
+      ? renderer.syncLenses(nodeList, options)
+      : Array.from(nodeList).map((el) => renderer.addLens(el, options));
     liquidGLLog("log", "liquidGL: Renderer lenses registered.", {
       rendererKey,
       lensCount: renderer.lenses.length,

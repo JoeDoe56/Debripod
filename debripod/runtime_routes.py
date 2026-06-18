@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import ipaddress
+import json
 import secrets
 import socket
+from pathlib import Path
 
 from flask import session
 
@@ -1222,6 +1224,68 @@ def api_settings_pick_path():
     if not path:
         return jsonify({"ok": False, "error": "No path selected", "canceled": True})
     return jsonify({"ok": True, "path": path})
+
+
+def _coerce_glass_defaults(raw: Any) -> dict[str, Any]:
+    keys = ["libraryList", "wheel", "pathPill", "nowPlayingPill", "listPills"]
+    labels = {
+        "libraryList": "Library list",
+        "wheel": "Wheel",
+        "pathPill": "Path pill",
+        "nowPlayingPill": "Now playing pill",
+        "listPills": "List pills",
+    }
+    numeric_limits = {
+        "glassTint": (0.0, 2.0),
+        "resolution": (0.25, 3.0),
+        "refraction": (0.0, 0.25),
+        "bevelDepth": (0.0, 0.35),
+        "bevelWidth": (0.0, 0.5),
+        "frost": (0.0, 5.0),
+        "refractionFill": (0.0, 1.0),
+        "magnify": (0.001, 3.0),
+    }
+    source = raw if isinstance(raw, dict) else {}
+    out: dict[str, Any] = {}
+    for key in keys:
+        item = source.get(key) if isinstance(source.get(key), dict) else {}
+        mode = str(item.get("mode") or "clear").strip().lower()
+        if mode not in {"clear", "light", "dark"}:
+            mode = "clear"
+        clean: dict[str, Any] = {"label": labels[key], "mode": mode}
+        for field, (min_value, max_value) in numeric_limits.items():
+            try:
+                value = float(item.get(field, 1.0 if field in {"glassTint", "magnify"} else 0.0))
+            except Exception:
+                value = 1.0 if field in {"glassTint", "magnify"} else 0.0
+            clean[field] = round(max(min_value, min(max_value, value)), 4)
+        if clean["glassTint"] < 0.995:
+            clean["mode"] = "dark"
+        elif clean["glassTint"] > 1.005:
+            clean["mode"] = "light"
+        else:
+            clean["mode"] = "clear"
+        clean["specular"] = bool(item.get("specular"))
+        clean["shadow"] = bool(item.get("shadow"))
+        out[key] = clean
+    return out
+
+
+@app.route("/api/ui/glass_defaults/commit", methods=["POST"])
+def api_ui_glass_defaults_commit():
+    data = request.get_json(silent=True) or {}
+    glass = _coerce_glass_defaults(data.get("liquidGlassElements"))
+    path = Path(__file__).resolve().parent / "static" / "js" / "ui-settings.js"
+    text = path.read_text(encoding="utf-8")
+    start = "  // GLASS_DEFAULTS_BEGIN"
+    end = "  // GLASS_DEFAULTS_END"
+    if start not in text or end not in text:
+        return jsonify({"ok": False, "error": "Glass defaults markers not found"}), 500
+    block = start + "\n  const DEFAULT_LIQUID_GLASS_ELEMENT_SETTINGS = " + json.dumps(glass, indent=2).replace("\n", "\n  ") + ";\n" + end
+    before, rest = text.split(start, 1)
+    _, after = rest.split(end, 1)
+    path.write_text(before + block + after, encoding="utf-8")
+    return jsonify({"ok": True})
 
 
 @app.route("/api/library/building", methods=["GET"])
