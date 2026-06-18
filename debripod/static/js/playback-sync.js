@@ -297,7 +297,7 @@
     state.lastfmEnabled = !!js.lastfm_enabled;
     state.playbackStreamingMode = (String(js.playback_streaming_mode || "http").toLowerCase() === "hls") ? "hls" : "http";
     wheelRotationMaxDegrees = normalizeWheelRotationMaxDegrees(js.wheel_rotation_max_degrees);
-    setLiquidGlassSettings(uiSettings.liquidGlassPreset, uiSettings.liquidGlassMode, false);
+    applyLiquidGlassStyleOptions();
     initLiquidGlass();
     return js;
   }
@@ -328,7 +328,12 @@
   function setHeader(){
     const text = headerText();
     const headerTextEl = document.getElementById("libHeaderText");
-    if(headerTextEl) headerTextEl.textContent = text;
+    if(headerTextEl){
+      headerTextEl.textContent = text;
+      headerTextEl.setAttribute("data-text", text);
+      headerTextEl.setAttribute("data-liquid-ignore", "");
+      headerTextEl.classList.add("glassText");
+    }
     else libHeader.textContent = text;
     try{ if(headerTextEl) headerTextEl.scrollLeft = 0; }catch(e){}
     try{ pathPillActivity(false); }catch(e){}

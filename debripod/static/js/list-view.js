@@ -1,3 +1,51 @@
+  function setGlassText(el, text){
+    if(!el) return el;
+    const value = String(text == null ? "" : text);
+    el.classList.add("glassText");
+    el.setAttribute("data-text", value);
+    el.setAttribute("data-liquid-ignore", "");
+    el.textContent = value;
+    return el;
+  }
+
+  function syncGlassText(el){
+    if(!el) return el;
+    el.classList.add("glassText");
+    el.setAttribute("data-text", String(el.textContent || ""));
+    el.setAttribute("data-liquid-ignore", "");
+    return el;
+  }
+
+  function makeGlassPillText(text, extraClass){
+    const span = document.createElement("span");
+    span.className = "ipodPillText glassText" + (extraClass ? (" " + extraClass) : "");
+    return setGlassText(span, text);
+  }
+
+  function prepareGlassPill(el, text){
+    if(!el) return el;
+    el.classList.add("liquidGlass");
+    el.setAttribute("data-liquid-row-pill", "");
+    el.setAttribute("data-liquid-ignore", "");
+    el.appendChild(makeGlassPillText(text));
+    return el;
+  }
+
+  function ensureLibItemVisible(el){
+    try{
+      if(!libList || !el) return;
+      const cs = window.getComputedStyle ? window.getComputedStyle(libList) : null;
+      const padTop = cs ? (parseFloat(cs.paddingTop || "0") || 0) : 0;
+      const padBottom = cs ? (parseFloat(cs.paddingBottom || "0") || 0) : padTop;
+      const top = el.offsetTop;
+      const bottom = top + el.offsetHeight;
+      const viewTop = libList.scrollTop + padTop;
+      const viewBottom = libList.scrollTop + libList.clientHeight - padBottom;
+      if(top < viewTop) libList.scrollTop = Math.max(0, top - padTop);
+      else if(bottom > viewBottom) libList.scrollTop = Math.max(0, bottom + padBottom - libList.clientHeight);
+    }catch(e){}
+  }
+
   function renderList(){
     const prevScroll = (libList ? libList.scrollTop : 0);
     let editInputToFocus = null;
@@ -205,7 +253,7 @@
             : (isPlaylistRename
                 ? ((state.playlistEdit && typeof state.playlistEdit.editNameValue === "string") ? state.playlistEdit.editNameValue : ((state.playlistEdit && state.playlistEdit.label) ? state.playlistEdit.label : ""))
                 : ((state.libSearch && typeof state.libSearch[field] === "string") ? state.libSearch[field] : "")));
-          labelSpan.textContent = (v && v.trim()) ? v : placeholder;
+          setGlassText(labelSpan, (v && v.trim()) ? v : placeholder);
           if(!isPlaylistCreate && !isSmartPlaylistCreate && !isPlaylistRename && field === "q" && v && String(v).trim() && state.libSearch && state.libSearch.searching){
             const searchTextWrap = document.createElement("span");
             searchTextWrap.className = "libSearchQueryText";
@@ -224,7 +272,7 @@
           wrap.className = "ipodPills";
           const sp = document.createElement("span");
           sp.className = "ipodPill" + ((!isPlaylistCreate && !isPlaylistRename && field === "q") ? " v" : "");
-          sp.textContent = isPlaylistCreate ? "New" : (isSmartPlaylistCreate ? "Smart" : (isPlaylistRename ? "Name" : ((field === "q") ? "Query" : "Filters")));
+          prepareGlassPill(sp, isPlaylistCreate ? "New" : (isSmartPlaylistCreate ? "Smart" : (isPlaylistRename ? "Name" : ((field === "q") ? "Query" : "Filters"))));
           wrap.appendChild(sp);
           // extra pills (status etc.)
           if(Array.isArray(it.pills)){
@@ -233,11 +281,11 @@
               const sp2 = document.createElement("span");
               if(typeof p === "string"){
                 sp2.className = "ipodPill";
-                sp2.textContent = p;
+                prepareGlassPill(sp2, p);
               }else{
                 const tone = String(p.tone || "");
                 sp2.className = "ipodPill" + (tone ? (" " + tone) : "");
-                sp2.textContent = String(p.text || "");
+                prepareGlassPill(sp2, String(p.text || ""));
               }
               wrap.appendChild(sp2);
             }
@@ -272,6 +320,7 @@
       labelSpan.className = "ipodLabel hScrollText";
       if(it && it.label_html){
         labelSpan.innerHTML = String(it.label_html || "");
+        syncGlassText(labelSpan);
       }else if(it && it.kind === "album") {
         let rendered = false;
         try{
@@ -280,18 +329,19 @@
           const album = String((raw && raw.album) || "").trim();
           if(artist && album){
             labelSpan.innerHTML = escapeHtml(album) + '   ' + '<span class="artistStrong">' + escapeHtml(artist) + '</span>';
+            syncGlassText(labelSpan);
             rendered = true;
           }
         }catch(e){}
-        if(!rendered) labelSpan.textContent = it.label || "";
+        if(!rendered) setGlassText(labelSpan, it.label || "");
       }else{
-        labelSpan.textContent = it.label || "";
+        setGlassText(labelSpan, it.label || "");
       }
       labelWrap.appendChild(labelSpan);
       if(it && it.sub_label){
         const sub = document.createElement("span");
         sub.className = "ipodSubLabel hScrollText";
-        sub.textContent = String(it.sub_label || "");
+        setGlassText(sub, String(it.sub_label || ""));
         labelWrap.appendChild(sub);
       }
       li.appendChild(labelWrap);
@@ -324,17 +374,18 @@
           const toneCls = p.tone ? (" " + p.tone) : "";
           if(p.bar != null && isFinite(Number(p.bar))){
             sp.className = "ipodPill bar" + toneCls;
+            sp.classList.add("liquidGlass");
+            sp.setAttribute("data-liquid-row-pill", "");
+            sp.setAttribute("data-liquid-ignore", "");
             const fill = document.createElement("span");
             fill.className = "pillBarFill";
             fill.style.width = (Math.max(0, Math.min(1, Number(p.bar))) * 100).toFixed(1) + "%";
-            const txt = document.createElement("span");
-            txt.className = "pillBarText";
-            txt.textContent = p.text || "";
+            const txt = makeGlassPillText(p.text || "", "pillBarText");
             sp.appendChild(fill);
             sp.appendChild(txt);
           }else{
             sp.className = "ipodPill" + toneCls;
-            sp.textContent = p.text || "";
+            prepareGlassPill(sp, p.text || "");
           }
           if(p._selectPill){
             sp.addEventListener("click", (ev)=>{
@@ -390,7 +441,10 @@
     if(state.items.length === 0){
       const li = document.createElement("li");
       li.className = "ipodItem info";
-      li.textContent = "Empty";
+      const emptyText = document.createElement("span");
+      emptyText.className = "ipodLabel hScrollText";
+      setGlassText(emptyText, "Empty");
+      li.appendChild(emptyText);
       libList.appendChild(li);
     }
 
@@ -400,7 +454,7 @@
     }catch(e){}
     const selEl = libList.querySelector(".ipodItem.sel");
     if(selEl){
-      selEl.scrollIntoView({block: "nearest"});
+      ensureLibItemVisible(selEl);
     }
     if(editInputToFocus){
       try{
@@ -413,7 +467,26 @@
     try{
       refreshSelectedHScrollText();
     }catch(e){}
+    try{
+      if(typeof refreshLibPillGlassLenses === "function") refreshLibPillGlassLenses("list render");
+    }catch(e){}
+    try{
+      if(typeof updateGlassTextUnderColors === "function") updateGlassTextUnderColors();
+    }catch(e){}
   }
+
+  try{
+    if(libList && !libList._dpLiquidPillScrollBound){
+      libList._dpLiquidPillScrollBound = true;
+      libList.addEventListener("scroll", ()=>{
+        try{
+          const renderer = (typeof liquidGlassRendererByKey === "function") ? liquidGlassRendererByKey("libPills") : null;
+          if(renderer) renderer._metricsDirty = true;
+          if(typeof scheduleLiquidGlassRender === "function") scheduleLiquidGlassRender();
+        }catch(e){}
+      }, {passive:true});
+    }
+  }catch(e){}
 
 function vibeTick(){
   try{
@@ -543,14 +616,10 @@ function vibeTick(){
       if(oldEl) oldEl.classList.remove("sel");
       if(newEl){
         newEl.classList.add("sel");
-        const top = newEl.offsetTop;
-        const bottom = top + newEl.offsetHeight;
-        const viewTop = libList.scrollTop;
-        const viewBottom = viewTop + libList.clientHeight;
-        if(top < viewTop) libList.scrollTop = top;
-        else if(bottom > viewBottom) libList.scrollTop = Math.max(0, bottom - libList.clientHeight);
+        ensureLibItemVisible(newEl);
       }
       refreshSelectedHScrollText();
+      if(typeof updateGlassTextUnderColors === "function") updateGlassTextUnderColors();
     }catch(e){
       renderList();
     }
