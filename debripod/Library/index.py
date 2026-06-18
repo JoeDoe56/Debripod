@@ -7,6 +7,7 @@ import time
 from typing import Dict, Optional, Tuple
 
 from .metadata import file_meta_cached
+from .library_db import clear_library_cache, load_index_snapshot, save_index_snapshot
 from .roots import root_by_id
 from .search_cache import _atomic_write_json, _read_json_file
 from ..media_types import AUDIO_EXTS, VIDEO_EXTS
@@ -92,12 +93,22 @@ def _index_cache_payload(root_id: str, root_abs: str, data: dict) -> dict:
 
 def _save_index_to_disk(root_id: str, root_abs: str, data: dict) -> None:
     try:
+        save_index_snapshot(root_id, root_abs, data)
+    except Exception:
+        pass
+    try:
         _atomic_write_json(_index_cache_path(root_id), _index_cache_payload(root_id, root_abs, data))
     except Exception:
         pass
 
 
 def _load_index_from_disk(root_id: str, root_abs: str) -> Optional[dict]:
+    try:
+        data = load_index_snapshot(root_id, root_abs)
+        if data is not None:
+            return data
+    except Exception:
+        pass
     try:
         js = _read_json_file(_index_cache_path(root_id))
         if not isinstance(js, dict):
@@ -118,6 +129,10 @@ def _load_index_from_disk(root_id: str, root_abs: str) -> Optional[dict]:
 
 
 def _clear_index_disk_cache() -> None:
+    try:
+        clear_library_cache()
+    except Exception:
+        pass
     try:
         root = _index_cache_dir()
         for fn in os.listdir(root):
@@ -209,3 +224,10 @@ def index_building_status() -> Tuple[bool, Dict[str, bool]]:
 def set_index_cache(root_id: str, data: dict) -> None:
     with INDEX_LOCK:
         INDEX_CACHE[root_id] = (time.time(), data)
+    try:
+        r = root_by_id(root_id)
+        if r:
+            _, _, root_abs, _ = r
+            _save_index_to_disk(root_id, root_abs, data)
+    except Exception:
+        pass

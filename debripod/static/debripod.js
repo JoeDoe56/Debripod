@@ -13,7 +13,13 @@
 
   // start
   (async ()=>{
+    try{
+      if(window.DebriPod && DebriPod.passkeys && typeof DebriPod.passkeys.maybeOfferAfterLogin === "function"){
+        await DebriPod.passkeys.maybeOfferAfterLogin();
+      }
+    }catch(e){}
     await showRoots();
     await maybeOpenFromUrl();
+    try{ await maybeStartSetupWizard(); }catch(e){}
     syncWheelZoneHeight();
   })().catch(()=>{});

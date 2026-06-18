@@ -1,6 +1,8 @@
 # Local Debripod config and secrets
 config/debripod.json
 config/*.local.json
+config/*.sqlite3
+config/*.sqlite3-*
 .env
 .env.*
 !.env.example

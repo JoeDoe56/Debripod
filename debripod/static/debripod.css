@@ -26,6 +26,9 @@
       --dp-glass-list-engrave-b: rgba(120,190,255,.78);
       --dp-glass-selected-text: #ffffff;
       --dp-glass-selected-pill-text: #ffffff;
+      --lib-selected-contrast: var(--dp-glass-selected-text);
+      --lib-selected-pill-contrast: var(--dp-glass-selected-pill-text);
+      --lib-selected-pill-edge: rgba(255,255,255,.72);
       --viz-energy: .0;
       --viz-bass: .0;
       --viz-mid: .0;
@@ -69,6 +72,66 @@
       overscroll-behavior-y: contain;
       }
     body, button, input, select, textarea{font-family: var(--uiFont);}
+    .passkeyGate{
+      position:fixed;
+      inset:0;
+      z-index:10000;
+      display:grid;
+      place-items:center;
+      padding:24px;
+      background:#07080a;
+      color:var(--text);
+    }
+    .passkeyGate[hidden]{display:none}
+    .passkeyGatePanel{
+      width:min(420px, calc(100vw - 48px));
+      display:grid;
+      gap:14px;
+    }
+    .passkeyGateKicker{
+      color:var(--muted);
+      font-size:13px;
+      font-weight:700;
+    }
+    .passkeyGate h1{
+      margin:0;
+      font-size:28px;
+      line-height:1.05;
+      letter-spacing:0;
+    }
+    .passkeyGate p{
+      margin:0;
+      color:var(--muted);
+      line-height:1.45;
+      font-size:15px;
+    }
+    .passkeyGateError{
+      min-height:20px;
+      color:#ff9d9d;
+      font-size:13px;
+      line-height:1.35;
+    }
+    .passkeyGateActions{
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:10px;
+      margin-top:2px;
+    }
+    .passkeyGate button{
+      border:0;
+      border-radius:8px;
+      padding:12px;
+      font:inherit;
+      font-weight:700;
+      cursor:pointer;
+      background:#f5f5f5;
+      color:#111;
+    }
+    .passkeyGate button.secondary{
+      background:#1b222c;
+      color:#f5f5f5;
+      border:1px solid #303846;
+    }
     .wrap{max-width:none;margin:0 auto;padding:0}
     .topbar{
       position: sticky;
@@ -689,7 +752,7 @@
       border-top-color:rgba(255,255,255,0.92);
       animation:dpSpin .75s linear infinite;
     }
-.ipodPill{
+    .ipodPill{
       position: relative;
       display:inline-flex;
       align-items:center;
@@ -703,7 +766,13 @@
       line-height: 1;
       white-space:nowrap;
       box-shadow: none;
+      isolation: isolate;
+      overflow: hidden;
       transition: background .45s ease, border-color .45s ease, box-shadow .45s ease;
+    }
+    .ipodPill.liquidGlass{
+      background: transparent;
+      border-color: transparent;
     }
     .ipodPillText{
       position: relative;
@@ -726,14 +795,14 @@
       top:0;
       bottom:0;
       width:0%;
-      display:none;
-      background: transparent;
+      display:none !important;
+      background: transparent !important;
     }
     .ipodPill.bar.ok .pillBarFill{
-      background: rgba(120,255,160,0.28);
+      background: transparent !important;
     }
     .ipodPill.bar.warn .pillBarFill{
-      background: rgba(255,214,120,0.28);
+      background: transparent !important;
     }
     .ipodPill.bar .pillBarText{
       position: relative;
@@ -753,6 +822,18 @@
       background: transparent;
       color: var(--dp-glass-selected-pill-text);
     }
+    .ipodPill.ok .ipodPillText{
+      color: color-mix(in srgb, var(--dp-glass-selected-pill-text) 88%, rgb(120,255,170) 12%);
+    }
+    .ipodPill.warn .ipodPillText{
+      color: color-mix(in srgb, var(--dp-glass-selected-pill-text) 86%, rgb(255,214,120) 14%);
+    }
+    .dpGlassModeClear .ipodPill.ok .ipodPillText,
+    .dpGlassModeClear .ipodPill.warn .ipodPillText,
+    html.dpGlassModeClear .ipodPill.ok .ipodPillText,
+    html.dpGlassModeClear .ipodPill.warn .ipodPillText{
+      color: transparent;
+    }
     .ipodItem{
       display:flex;
       align-items:center;
@@ -769,7 +850,7 @@
       margin: 0;
       overflow:auto;
       border-radius: var(--screenRadius);
-      clip-path: inset(var(--screenFrame));
+      clip-path: none;
       border: 0;
       background: transparent;
       pointer-events:auto;
@@ -786,6 +867,13 @@
       transform: translateY(0);
       transition: opacity .22s ease, transform .22s ease, background .45s ease, border-color .45s ease;
       will-change: opacity, transform;
+      -webkit-mask-image: linear-gradient(to bottom, transparent 0, black 18px, black calc(100% - 18px), transparent 100%);
+      mask-image: linear-gradient(to bottom, transparent 0, black 18px, black calc(100% - 18px), transparent 100%);
+    }
+    .ipodListItemsLayer{
+      position:relative;
+      z-index:3;
+      min-height:100%;
     }
     .ipodList::-webkit-scrollbar{
       display:none;
@@ -849,6 +937,17 @@
       outline: 0;
       box-shadow: none;
       transition: background .45s ease, outline-color .45s ease, box-shadow .45s ease;
+    }
+    .ipodItem.sel .glassText{
+      color: var(--lib-selected-contrast, var(--dp-glass-selected-text));
+    }
+    .ipodItem.sel .ipodPillText{
+      color: var(--lib-selected-pill-contrast, var(--dp-glass-selected-pill-text));
+    }
+    .ipodItem.sel .ipodPill{
+      color: var(--lib-selected-pill-contrast, var(--dp-glass-selected-pill-text));
+      --dp-engrave-under-a: var(--lib-selected-pill-edge);
+      --dp-engrave-under-b: var(--lib-selected-pill-contrast);
     }
     #libList.dpGlassModeLight .ipodItem.sel{
       background: transparent;

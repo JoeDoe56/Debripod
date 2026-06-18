@@ -83,6 +83,8 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {
     "LASTFM_API_ROOT": "https://ws.audioscrobbler.com/2.0/",
     "LASTFM_REQUEST_TIMEOUT_SECONDS": 12,
     "LIBRARY_FOLDERS": [],
+    "SETUP_WIZARD_COMPLETE": False,
+    "SETUP_SKIPPED_SERVICES": {},
 }
 
 APP_SETTING_KEYS = set(DEFAULT_APP_SETTINGS)
