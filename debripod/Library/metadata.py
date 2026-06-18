@@ -7,6 +7,7 @@ from typing import Dict, List, Optional, Tuple
 from ..paths import art_cache_dir
 from ..playback.probe import ffprobe_json, run_cmd
 from ..utils import is_audio, sha1_text
+from .library_db import load_metadata, save_metadata
 
 _ffmpeg_path = "ffmpeg"
 
@@ -36,6 +37,12 @@ def file_meta_cached(abs_path: str) -> dict:
         hit = META_CACHE.get(abs_path)
         if hit and hit[0] == mtime:
             return hit[1]
+
+    db_meta = load_metadata(abs_path)
+    if db_meta is not None:
+        with META_LOCK:
+            META_CACHE[abs_path] = (mtime, db_meta)
+        return db_meta
 
     meta: dict = {}
     try:
@@ -161,6 +168,10 @@ def file_meta_cached(abs_path: str) -> dict:
 
     with META_LOCK:
         META_CACHE[abs_path] = (mtime, meta)
+    try:
+        save_metadata(abs_path, meta)
+    except Exception:
+        pass
     return meta
 
 

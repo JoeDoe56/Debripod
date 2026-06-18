@@ -26,7 +26,6 @@
     if(!el) return el;
     el.classList.add("liquidGlass");
     el.setAttribute("data-liquid-row-pill", "");
-    el.setAttribute("data-liquid-ignore", "");
     el.appendChild(makeGlassPillText(text));
     return el;
   }
@@ -81,6 +80,10 @@
     const prevScroll = (libList ? libList.scrollTop : 0);
     let editInputToFocus = null;
     libList.innerHTML = "";
+    const itemsLayer = document.createElement("div");
+    itemsLayer.className = "ipodListItemsLayer";
+    itemsLayer.setAttribute("role", "presentation");
+    libList.appendChild(itemsLayer);
     for(let i=0;i<state.items.length;i++){
       const it = state.items[i];
       const li = document.createElement("li");
@@ -88,6 +91,8 @@
 
       const isSel = (i === state.sel);
       const settingsTall = (
+        it.forceTwoLine ||
+        it.settingRow ||
         it.kind === "setting_value" ||
         it.kind === "settings_library_folder" ||
         it.kind === "settings_library_mode_choice" ||
@@ -119,7 +124,7 @@
         });
         li.appendChild(inp);
         editInputToFocus = inp;
-        libList.appendChild(li);
+        itemsLayer.appendChild(li);
         continue;
       }
 
@@ -137,17 +142,15 @@
         sp.className = "ipodPill bar";
         sp.classList.add("liquidGlass");
         sp.setAttribute("data-liquid-row-pill", "");
-        sp.setAttribute("data-liquid-ignore", "");
         const fill = document.createElement("span");
         fill.className = "pillBarFill";
-        fill.style.display = "block";
         fill.style.width = (Math.max(0, Math.min(1, Number(it.bar || 0))) * 100).toFixed(1) + "%";
         const txt = makeGlassPillText(String(Math.round(Math.max(0, Math.min(1, Number(it.bar || 0))) * 100)) + "%", "pillBarText");
         sp.appendChild(fill);
         sp.appendChild(txt);
         wrap.appendChild(sp);
         li.appendChild(wrap);
-        libList.appendChild(li);
+        itemsLayer.appendChild(li);
         continue;
       }
 
@@ -168,7 +171,7 @@
         });
         li.appendChild(ta);
         editInputToFocus = ta;
-        libList.appendChild(li);
+        itemsLayer.appendChild(li);
         continue;
       }
 
@@ -396,7 +399,7 @@
           }
         });
 
-        libList.appendChild(li);
+        itemsLayer.appendChild(li);
         continue;
       }
 
@@ -462,7 +465,6 @@
             sp.className = "ipodPill bar" + toneCls;
             sp.classList.add("liquidGlass");
             sp.setAttribute("data-liquid-row-pill", "");
-            sp.setAttribute("data-liquid-ignore", "");
             const fill = document.createElement("span");
             fill.className = "pillBarFill";
             fill.style.width = (Math.max(0, Math.min(1, Number(p.bar))) * 100).toFixed(1) + "%";
@@ -522,7 +524,7 @@
           if(p && typeof p.catch === "function"){ p.catch(()=>{}); }
         }catch(e){}
       });
-      libList.appendChild(li);
+      itemsLayer.appendChild(li);
     }
     if(state.items.length === 0){
       const li = document.createElement("li");
@@ -531,7 +533,7 @@
       emptyText.className = "ipodLabel hScrollText";
       setGlassText(emptyText, "Empty");
       li.appendChild(emptyText);
-      libList.appendChild(li);
+      itemsLayer.appendChild(li);
     }
 
     // restore scroll position first, then ensure selection is visible without jumping to top
@@ -701,8 +703,8 @@ function vibeTick(){
     }
     try{
       if(!libList) return;
-      const oldEl = libList.querySelector('.ipodItem[data-index="' + prev + '"]') || libList.children[prev];
-      const newEl = libList.querySelector('.ipodItem[data-index="' + state.sel + '"]') || libList.children[state.sel];
+      const oldEl = libList.querySelector('.ipodItem[data-index="' + prev + '"]');
+      const newEl = libList.querySelector('.ipodItem[data-index="' + state.sel + '"]');
       if(oldEl) oldEl.classList.remove("sel");
       if(newEl){
         newEl.classList.add("sel");

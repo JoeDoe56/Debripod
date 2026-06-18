@@ -35,6 +35,11 @@ var defaultVisualizerPalette = [
 var visualizerPaletteCache = new Map();
 var visualizerPalette = defaultVisualizerPalette.slice();
 var visualizerTargetPalette = defaultVisualizerPalette.slice();
+var currentVisualizerPalette = null;
+var selectedTextContrastMix = {low: 0.18, mid: 0.42, high: 0.40};
+var selectedContrastRgb = {r:255,g:255,b:255};
+var selectedPillContrastRgb = {r:255,g:255,b:255};
+var visualizerPaletteDbPromise = null;
 var visualizerAudioCtx = null;
 var visualizerAnalyser = null;
 var visualizerData = null;
@@ -456,7 +461,9 @@ function currentVisualizerFrameState(ts){
     bands: visualizerBands,
     bandLabels: VISUALIZER_BAND_LABELS,
     bpm: visualizerBpm,
-    palette: visualizerPalette
+    palette: visualizerPalette,
+    paletteRoles: currentVisualizerPalette,
+    selectedTextContrastMix: selectedTextContrastMix
   };
 }
 
@@ -560,6 +567,7 @@ function visualizerFrame(ts){
     try{ if(state) state.visualizerBpm = Math.round(visualizerBpm); }catch(e){}
     sampleLiveVideoPalette(nowTs);
     renderVisualizerCanvas(nowTs);
+    applySelectedTextContrast();
     refreshLiquidGlassVisualizerSources("visualizer frame");
     renderLiquidGlassVisualizerSourceNow(currentVisualizerFrameState(nowTs));
   }catch(e){}
@@ -822,11 +830,181 @@ function rgbLuma(rgb){
   return ((rgb.r || 0) * .299 + (rgb.g || 0) * .587 + (rgb.b || 0) * .114) / 255;
 }
 
+function rgbToHex(rgb){
+  return "#" + [rgb.r, rgb.g, rgb.b].map(v=>clampByte(v).toString(16).padStart(2, "0")).join("");
+}
+
+function srgbChannelToLinear(value){
+  var v = Math.max(0, Math.min(1, Number(value || 0) / 255));
+  return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
+}
+
+function relativeLuminance(rgb){
+  return srgbChannelToLinear(rgb.r) * 0.2126 + srgbChannelToLinear(rgb.g) * 0.7152 + srgbChannelToLinear(rgb.b) * 0.0722;
+}
+
+function contrastRatio(a, b){
+  var la = relativeLuminance(a);
+  var lb = relativeLuminance(b);
+  var hi = Math.max(la, lb);
+  var lo = Math.min(la, lb);
+  return (hi + 0.05) / (lo + 0.05);
+}
+
+function brightenRgb(rgb, amount){
+  var p = Math.max(0, Math.min(1, Number(amount || 0)));
+  return {
+    r: (rgb.r || 0) + (255 - (rgb.r || 0)) * p,
+    g: (rgb.g || 0) + (255 - (rgb.g || 0)) * p,
+    b: (rgb.b || 0) + (255 - (rgb.b || 0)) * p
+  };
+}
+
+function darkenRgb(rgb, amount){
+  var p = 1 - Math.max(0, Math.min(1, Number(amount || 0)));
+  return {r:(rgb.r || 0) * p, g:(rgb.g || 0) * p, b:(rgb.b || 0) * p};
+}
+
+function bestContrastCandidate(bg, palette){
+  var candidates = [];
+  (palette || []).forEach((c)=>{
+    candidates.push(c, brightenRgb(c, .42), brightenRgb(c, .72), darkenRgb(c, .44), darkenRgb(c, .72));
+  });
+  candidates.push({r:255,g:255,b:255}, {r:0,g:0,b:0});
+  var best = candidates[0] || {r:255,g:255,b:255};
+  var bestScore = -1;
+  candidates.forEach((c)=>{
+    var ratio = contrastRatio(bg, c);
+    var paletteAffinity = (palette || []).some(p=> rgbDistance(p, c) < 2) ? 0.18 : 0;
+    var score = ratio + paletteAffinity;
+    if(score > bestScore){
+      bestScore = score;
+      best = c;
+    }
+  });
+  return {rgb:{r:clampByte(best.r), g:clampByte(best.g), b:clampByte(best.b)}, contrast:bestScore};
+}
+
+function buildVisualizerPaletteObject(colors){
+  var palette = (Array.isArray(colors) && colors.length ? colors : defaultVisualizerPalette)
+    .map(c=>({r:clampByte(c.r), g:clampByte(c.g), b:clampByte(c.b)}));
+  var roleNames = ["low", "lowHigh", "lowMid", "mid", "upperMid", "highLow", "high"];
+  var roles = {};
+  roleNames.forEach((name, idx)=>{
+    var bg = palette[idx % palette.length] || defaultVisualizerPalette[idx % defaultVisualizerPalette.length];
+    var best = bestContrastCandidate(bg, palette);
+    roles[name] = {
+      color: rgbToHex(bg),
+      contrast: rgbToHex(best.rgb),
+      contrastRatio: Number(best.contrast || 0)
+    };
+  });
+  var darkText = bestContrastCandidate({r:18,g:18,b:22}, palette).rgb;
+  var lightText = bestContrastCandidate({r:236,g:238,b:242}, palette).rgb;
+  var selectedFallback = bestContrastCandidate(palette[0] || defaultVisualizerPalette[0], palette).rgb;
+  return {
+    version: 1,
+    colors: palette.map(rgbToHex),
+    roles: roles,
+    ui: {
+      darkText: rgbToHex(darkText),
+      lightText: rgbToHex(lightText),
+      clearEngraveA: roles.low.contrast,
+      clearEngraveB: roles.high.contrast,
+      selectedFallbackText: rgbToHex(selectedFallback),
+      selectedFallbackPillText: rgbToHex(selectedFallback),
+      selectedPillEdge: roles.mid.contrast,
+      wheelText: rgbToHex(selectedFallback)
+    }
+  };
+}
+
+function rgbFromHex(hex, fallback){
+  var s = String(hex || "").trim().replace(/^#/, "");
+  if(s.length === 3) s = s.split("").map(ch=>ch + ch).join("");
+  if(s.length !== 6) return fallback || {r:255,g:255,b:255};
+  var n = parseInt(s, 16);
+  if(!Number.isFinite(n)) return fallback || {r:255,g:255,b:255};
+  return {r:(n >> 16) & 255, g:(n >> 8) & 255, b:n & 255};
+}
+
+function colorsFromPaletteObject(paletteObj){
+  try{
+    const colors = paletteObj && Array.isArray(paletteObj.colors) ? paletteObj.colors : [];
+    const out = colors.map(c=>rgbFromHex(c, null)).filter(Boolean);
+    return out.length ? out : null;
+  }catch(e){
+    return null;
+  }
+}
+
+function roleWeightsForSelectedText(){
+  try{
+    var bands = visualizerBands && visualizerBands.length ? visualizerBands : [visualizerBass, visualizerBass, visualizerMid, visualizerMid, visualizerMid, visualizerTreble, visualizerTreble];
+    var low = clamp01(((bands[0] || 0) + (bands[1] || 0)) * .5 + visualizerBass * .45 + visualizerBeatPulse * .18);
+    var mid = clamp01(((bands[2] || 0) + (bands[3] || 0) + (bands[4] || 0)) / 3 + visualizerMid * .42);
+    var high = clamp01(((bands[5] || 0) + (bands[6] || 0)) * .5 + visualizerTreble * .48);
+    var rowBias = .5;
+    const row = libList ? libList.querySelector(".ipodItem.sel") : null;
+    if(row){
+      const rect = row.getBoundingClientRect();
+      rowBias = clamp01((rect.top + rect.height * .5) / Math.max(1, window.innerHeight || 1));
+    }
+    low *= 0.82 + rowBias * 0.34;
+    high *= 1.16 - rowBias * 0.32;
+    var total = low + mid + high;
+    if(total < 0.001) return {low:0.18, mid:0.42, high:0.40};
+    return {low:low / total, mid:mid / total, high:high / total};
+  }catch(e){
+    return {low:0.18, mid:0.42, high:0.40};
+  }
+}
+
+function blendRoleContrast(roles, mix){
+  var low = rgbFromHex(roles.low && roles.low.contrast);
+  var mid = rgbFromHex(roles.mid && roles.mid.contrast);
+  var high = rgbFromHex(roles.high && roles.high.contrast);
+  return {
+    r: low.r * mix.low + mid.r * mix.mid + high.r * mix.high,
+    g: low.g * mix.low + mid.g * mix.mid + high.g * mix.high,
+    b: low.b * mix.low + mid.b * mix.mid + high.b * mix.high
+  };
+}
+
+function applySelectedTextContrast(){
+  try{
+    const list = libList || document.getElementById("libList");
+    if(!list) return;
+    const paletteObj = currentVisualizerPalette || buildVisualizerPaletteObject(defaultVisualizerPalette);
+    const nextMix = roleWeightsForSelectedText();
+    selectedTextContrastMix = {
+      low: selectedTextContrastMix.low + (nextMix.low - selectedTextContrastMix.low) * 0.16,
+      mid: selectedTextContrastMix.mid + (nextMix.mid - selectedTextContrastMix.mid) * 0.16,
+      high: selectedTextContrastMix.high + (nextMix.high - selectedTextContrastMix.high) * 0.16
+    };
+    var next = blendRoleContrast(paletteObj.roles || {}, selectedTextContrastMix);
+    selectedContrastRgb = {
+      r: selectedContrastRgb.r + (next.r - selectedContrastRgb.r) * 0.22,
+      g: selectedContrastRgb.g + (next.g - selectedContrastRgb.g) * 0.22,
+      b: selectedContrastRgb.b + (next.b - selectedContrastRgb.b) * 0.22
+    };
+    selectedPillContrastRgb = {
+      r: selectedPillContrastRgb.r + (next.r - selectedPillContrastRgb.r) * 0.20,
+      g: selectedPillContrastRgb.g + (next.g - selectedPillContrastRgb.g) * 0.20,
+      b: selectedPillContrastRgb.b + (next.b - selectedPillContrastRgb.b) * 0.20
+    };
+    list.style.setProperty("--lib-selected-contrast", rgbToHex(selectedContrastRgb));
+    list.style.setProperty("--lib-selected-pill-contrast", rgbToHex(selectedPillContrastRgb));
+    list.style.setProperty("--lib-selected-pill-edge", paletteObj.ui && paletteObj.ui.selectedPillEdge ? paletteObj.ui.selectedPillEdge : rgbToHex(selectedPillContrastRgb));
+  }catch(e){}
+}
+
 function setVisualizerPalette(palette){
   var colors = (Array.isArray(palette) && palette.length ? palette : defaultVisualizerPalette)
     .map(c=>({r:clampByte(c.r), g:clampByte(c.g), b:clampByte(c.b)}))
     .slice(0, 8);
   visualizerTargetPalette = colors.length ? colors : defaultVisualizerPalette.slice();
+  currentVisualizerPalette = buildVisualizerPaletteObject(visualizerTargetPalette);
   var rootTheme = themeFromBase(visualizerTargetPalette[0] || defaultVisualizerPalette[0]);
   if(visualizerTargetPalette.length >= 3){
     rootTheme.visualizerA = rgbaFrom(visualizerTargetPalette[0], .46);
@@ -834,6 +1012,7 @@ function setVisualizerPalette(palette){
     rootTheme.visualizerC = rgbaFrom(visualizerTargetPalette[2], .24);
   }
   applyThemeVars(rootTheme);
+  applySelectedTextContrast();
 }
 
 function applyVisualizerPresetPalette(){
@@ -861,14 +1040,119 @@ function cycleVisualizerPreset(){
   setVisualizerPreset(order[(idx + 1) % order.length] || "album");
 }
 
-function cacheVisualizerPalette(key, palette){
+function cacheVisualizerPalette(key, palette, paletteObj){
   try{
     visualizerPaletteCache.set(key, palette);
+    if(paletteObj && typeof paletteObj === "object") currentVisualizerPalette = paletteObj;
+    if(key && currentVisualizerPalette) saveVisualizerPaletteLocal(key, currentVisualizerPalette);
     while(visualizerPaletteCache.size > 48){
       const first = visualizerPaletteCache.keys().next().value;
       visualizerPaletteCache.delete(first);
     }
   }catch(e){}
+}
+
+function openVisualizerPaletteDb(){
+  try{
+    if(!("indexedDB" in window)) return Promise.resolve(null);
+    if(visualizerPaletteDbPromise) return visualizerPaletteDbPromise;
+    visualizerPaletteDbPromise = new Promise((resolve)=>{
+      const req = indexedDB.open("debripod-visualizer-cache", 1);
+      req.onupgradeneeded = ()=>{
+        try{
+          const db = req.result;
+          if(!db.objectStoreNames.contains("palettes")){
+            db.createObjectStore("palettes", {keyPath:"key"});
+          }
+        }catch(e){}
+      };
+      req.onsuccess = ()=>resolve(req.result || null);
+      req.onerror = ()=>resolve(null);
+      req.onblocked = ()=>resolve(null);
+    });
+    return visualizerPaletteDbPromise;
+  }catch(e){
+    return Promise.resolve(null);
+  }
+}
+
+function saveVisualizerPaletteLocal(key, paletteObj){
+  try{
+    if(!key || !paletteObj) return;
+    openVisualizerPaletteDb().then((db)=>{
+      try{
+        if(!db) return;
+        const tx = db.transaction("palettes", "readwrite");
+        tx.objectStore("palettes").put({key:String(key), savedAt:Date.now(), palette:paletteObj});
+      }catch(e){}
+    });
+  }catch(e){}
+}
+
+function loadVisualizerPaletteLocal(key, nonce){
+  try{
+    if(!key) return false;
+    openVisualizerPaletteDb().then((db)=>{
+      try{
+        if(!db || nonce !== visualizerSampleNonce) return;
+        const tx = db.transaction("palettes", "readonly");
+        const req = tx.objectStore("palettes").get(String(key));
+        req.onsuccess = ()=>{
+          try{
+            if(nonce !== visualizerSampleNonce) return;
+            const paletteObj = req.result && req.result.palette;
+            const colors = colorsFromPaletteObject(paletteObj);
+            if(!colors || !paletteObj) return;
+            cacheVisualizerPalette(key, colors, paletteObj);
+            setVisualizerPalette(colors);
+            currentVisualizerPalette = paletteObj;
+            applySelectedTextContrast();
+            updateVisualizerState();
+          }catch(e){}
+        };
+      }catch(e){}
+    });
+    return true;
+  }catch(e){
+    return false;
+  }
+}
+
+function persistVisualizerPalette(key, sourceIdentity){
+  try{
+    if(!key || !currentVisualizerPalette || typeof apiPost !== "function") return;
+    saveVisualizerPaletteLocal(key, currentVisualizerPalette);
+    apiPost("/api/library/palette", {
+      key: key,
+      source_kind: "art",
+      source_identity: String(sourceIdentity || key),
+      palette: currentVisualizerPalette
+    }).catch(()=>{});
+  }catch(e){}
+}
+
+function loadPersistedVisualizerPalette(key, sourceIdentity, nonce){
+  try{
+    if(!key || typeof apiGet !== "function") return false;
+    apiGet("/api/library/palette?key=" + encodeURIComponent(key))
+      .then((res)=>{
+        try{
+          if(nonce !== visualizerSampleNonce) return;
+          const paletteObj = res && res.palette;
+          const colors = colorsFromPaletteObject(paletteObj);
+          if(!colors || !paletteObj) return;
+          cacheVisualizerPalette(key, colors, paletteObj);
+          setVisualizerPalette(colors);
+          currentVisualizerPalette = paletteObj;
+          applySelectedTextContrast();
+          updateVisualizerState();
+        }catch(e){}
+      })
+      .catch(()=>{});
+    return true;
+  }catch(e){
+    return false;
+  }
 }
 
 function distinctPaletteFromImageData(data){
@@ -938,7 +1222,10 @@ function sampleLiveVideoPalette(ts){
     visualizerVideoSampleCtx.drawImage(npVideo, 0, 0, sampleW, sampleH);
     const data = visualizerVideoSampleCtx.getImageData(0, 0, sampleW, sampleH).data;
     const palette = distinctPaletteFromImageData(data);
-    if(palette && palette.length) setVisualizerPalette(palette);
+    if(palette && palette.length){
+      setVisualizerPalette(palette);
+      persistVisualizerPalette("video:" + nowPlayingArtCompareKey(String(npVideo.currentSrc || npVideo.src || "")), String(npVideo.currentSrc || npVideo.src || ""));
+    }
   }catch(e){}
 }
 
@@ -959,6 +1246,8 @@ function sampleThemeFromArt(src){
     return;
   }
   var myNonce = ++visualizerSampleNonce;
+  loadVisualizerPaletteLocal(key, myNonce);
+  loadPersistedVisualizerPalette(key, art, myNonce);
   var img = new Image();
   img.decoding = "async";
   try{
@@ -981,6 +1270,7 @@ function sampleThemeFromArt(src){
       if(!selected.length) throw new Error("empty sample");
       cacheVisualizerPalette(key, selected);
       setVisualizerPalette(selected);
+      persistVisualizerPalette(key, art);
     }catch(err){
       setVisualizerPalette(defaultVisualizerPalette);
     }

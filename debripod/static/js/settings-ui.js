@@ -25,6 +25,7 @@
     }
     items.push({kind:"libinfo_entry", label:"Info"});
     resetList(items);
+    try{ await maybeStartSetupWizard(); }catch(e){}
   }
 
   async function settingsLoad(){
@@ -68,11 +69,30 @@
 
   function settingValueLabel(value){
     if(Array.isArray(value)) return value.length ? (String(value.length) + " hosts") : "Unset";
+    if(value && typeof value === "object") return JSON.stringify(value);
     if(value === true) return "On";
     if(value === false) return "Off";
     if(value == null || value === "") return "Unset";
     if(value === "***") return "Saved";
     return String(value);
+  }
+
+  async function setupStatusLoad(){
+    try{
+      const js = await apiGet("/api/setup/status");
+      state.setupStatus = js || {};
+      return js || {};
+    }catch(e){
+      state.setupStatus = {};
+      return {};
+    }
+  }
+
+  async function maybeStartSetupWizard(){
+    const js = await setupStatusLoad();
+    if(js && js.ok && js.should_show && !(state.current && String(state.current.kind || "").indexOf("setupwizard") === 0)){
+      await viewSetupWizard(false);
+    }
   }
 
   function numberSettingRangeMeta(key, type){
@@ -163,14 +183,41 @@
       advanced: [
       {key:"PORT", label:"Port", type:"startup_number", value:startup.PORT},
       {key:"WHEEL_ROTATION_MAX_DEGREES", label:"Max wheel tilt", type:"number", value:(s.WHEEL_ROTATION_MAX_DEGREES == null ? 10 : s.WHEEL_ROTATION_MAX_DEGREES)},
+      {key:"RESULTS_PER_PAGE", label:"Results per page", type:"number", value:s.RESULTS_PER_PAGE},
+      {key:"MAX_FILES_PER_TORRENT", label:"Max files per torrent", type:"number", value:s.MAX_FILES_PER_TORRENT},
+      {key:"MAX_TORRENT_WAIT_SECONDS", label:"Max torrent wait", type:"number", value:s.MAX_TORRENT_WAIT_SECONDS},
+      {key:"SEARCH_HISTORY_MAX_ITEMS", label:"Search history max", type:"number", value:s.SEARCH_HISTORY_MAX_ITEMS},
+      {key:"SEARCH_DISK_CACHE_TTL_SECONDS", label:"Search cache TTL", type:"number", value:s.SEARCH_DISK_CACHE_TTL_SECONDS},
+      {key:"SEARCH_STREAM_SESSION_TTL_SECONDS", label:"Search stream TTL", type:"number", value:s.SEARCH_STREAM_SESSION_TTL_SECONDS},
+      {key:"POLL_INTERVAL_SECONDS", label:"Poll interval", type:"number", value:s.POLL_INTERVAL_SECONDS},
       {key:"SOULSEEK_LISTENING_PORT", label:"Soulseek listen port", type:"number", value:s.SOULSEEK_LISTENING_PORT, sub_label:"Effective: " + String(slskStatus.listening_port == null ? s.SOULSEEK_LISTENING_PORT : slskStatus.listening_port)},
       {key:"SOULSEEK_OBFUSCATED_PORT", label:"Soulseek obfuscated port", type:"number", value:s.SOULSEEK_OBFUSCATED_PORT, sub_label:"Effective: " + String(slskStatus.obfuscated_port == null ? s.SOULSEEK_OBFUSCATED_PORT : slskStatus.obfuscated_port)},
       {key:"SOULSEEK_SEARCH_TIMEOUT_SEC", label:"Soulseek search timeout", type:"number", value:s.SOULSEEK_SEARCH_TIMEOUT_SEC},
       {key:"SOULSEEK_SEARCH_MAX_RESULTS", label:"Soulseek search max results", type:"number", value:s.SOULSEEK_SEARCH_MAX_RESULTS},
       {key:"SOULSEEK_SEARCH_IDLE_STOP_SEC", label:"Soulseek idle stop", type:"number", value:s.SOULSEEK_SEARCH_IDLE_STOP_SEC},
       {key:"SOULSEEK_SEARCH_HARD_MAX_SEC", label:"Soulseek hard max", type:"number", value:s.SOULSEEK_SEARCH_HARD_MAX_SEC},
+      {key:"KNABEN_MIN_SECONDS_BETWEEN_REQUESTS", label:"Knaben min interval", type:"number", value:s.KNABEN_MIN_SECONDS_BETWEEN_REQUESTS},
+      {key:"KNABEN_CACHE_TTL_SECONDS", label:"Knaben cache TTL", type:"number", value:s.KNABEN_CACHE_TTL_SECONDS},
+      {key:"KNABEN_MAX_RETRIES", label:"Knaben retries", type:"number", value:s.KNABEN_MAX_RETRIES},
+      {key:"KNABEN_API_BASE", label:"Knaben API base", type:"text", value:s.KNABEN_API_BASE},
+      {key:"KNABEN_WEB_BASE", label:"Knaben web base", type:"text", value:s.KNABEN_WEB_BASE},
+      {key:"YOUTUBE_STREAM_CACHE_SUBDIR", label:"YouTube stream cache", type:"text", value:s.YOUTUBE_STREAM_CACHE_SUBDIR},
+      {key:"YOUTUBE_WEB_BASE", label:"YouTube web base", type:"text", value:s.YOUTUBE_WEB_BASE},
+      {key:"YOUTUBE_SEARCH_LIMIT", label:"YouTube search limit", type:"number", value:s.YOUTUBE_SEARCH_LIMIT},
+      {key:"YOUTUBE_CHANNEL_BROWSE_LIMIT", label:"YouTube channel limit", type:"number", value:s.YOUTUBE_CHANNEL_BROWSE_LIMIT},
+      {key:"YOUTUBE_REQUEST_HEADERS", label:"YouTube request headers", type:"json", value:s.YOUTUBE_REQUEST_HEADERS},
+      {key:"AUTO_TRANSCODE_FOR_BROWSER_COMPATIBILITY", label:"Auto browser transcode", type:"bool", value:s.AUTO_TRANSCODE_FOR_BROWSER_COMPATIBILITY},
+      {key:"PRELOAD_NEXT_CHUNK_BYTES", label:"Preload chunk bytes", type:"number", value:s.PRELOAD_NEXT_CHUNK_BYTES},
+      {key:"RD_BASE", label:"Real Debrid API base", type:"text", value:s.RD_BASE},
+      {key:"LASTFM_CALLBACK_URL", label:"Last.fm callback URL", type:"text", value:s.LASTFM_CALLBACK_URL},
+      {key:"LASTFM_API_ROOT", label:"Last.fm API root", type:"text", value:s.LASTFM_API_ROOT},
+      {key:"LASTFM_REQUEST_TIMEOUT_SECONDS", label:"Last.fm timeout", type:"number", value:s.LASTFM_REQUEST_TIMEOUT_SECONDS},
       {key:"ENABLE_MCP", label:"MCP enabled", type:"startup_bool", value:startup.ENABLE_MCP},
       {key:"MCP_TOKEN", label:"Reset MCP token", type:"mcp_token", value:startup.MCP_TOKEN_SET ? "Saved" : "Unset"},
+      {key:"MCP_PROTOCOL_VERSION", label:"MCP protocol", type:"text", value:s.MCP_PROTOCOL_VERSION},
+      {key:"MCP_SEARCH_RESULT_LIMIT", label:"MCP result limit", type:"number", value:s.MCP_SEARCH_RESULT_LIMIT},
+      {key:"MCP_SSE_KEEPALIVE_SECONDS", label:"MCP keepalive", type:"number", value:s.MCP_SSE_KEEPALIVE_SECONDS},
+      {key:"MCP_SESSION_TTL_SECONDS", label:"MCP session TTL", type:"number", value:s.MCP_SESSION_TTL_SECONDS},
       {key:"CACHE_DIR_NAME", label:"Cache folder name", type:"text", value:s.CACHE_DIR_NAME},
       {key:"STREAM_PROXY_ALLOWED_HOST_SUFFIXES", label:"Stream proxy hosts", type:"csv_list", value:s.STREAM_PROXY_ALLOWED_HOST_SUFFIXES},
       {key:"AUDIO_TRANSCODE", label:"Audio transcode rules", type:"text", value:s.AUDIO_TRANSCODE},
@@ -215,6 +262,9 @@
         const username = String((js && js.username) || "");
         items.push({kind:"info", label:"Signed in", pills:[username || "Unknown"]});
         items.push({kind:"account_action", label:"Create user", action:"create_user"});
+        items.push({kind:"account_action", label:"Export settings", action:"settings_export", pills:["No secrets"]});
+        items.push({kind:"account_action", label:"Export settings with secrets", sub_label:"Includes saved service credentials. Keep the file private.", action:"settings_export_secrets", pills:[{text:"Sensitive", tone:"warn"}]});
+        items.push({kind:"account_action", label:"Import settings", action:"settings_import"});
         items.push({kind:"account_action", label:"Log out", action:"logout"});
         const users = Array.isArray(js.users) ? js.users : [];
         if(users.length){
@@ -231,6 +281,102 @@
 
   async function createUserFromInfo(){
     window.location.href = "/account/create";
+  }
+
+  function serviceStatusPill(ok, goodText, badText){
+    return {text: ok ? goodText : badText, tone: ok ? "ok" : "warn"};
+  }
+
+  async function viewServiceStatusPanel(push){
+    showNowPlaying(false);
+    await setView({
+      kind:"servicestatus",
+      label:"Service Status",
+      load: async function(){
+        libControlsHide();
+        let services = {};
+        try{
+          const js = await apiGet("/api/services/status");
+          services = (js && js.services) || {};
+        }catch(e){}
+        const items = [];
+        const rd = services.real_debrid || {};
+        items.push({kind:"info", label:"Real Debrid", sub_label: rd.status === "skipped" ? "Skipped during setup. Add a token in Services to enable debrid streaming and downloads." : "", pills:[serviceStatusPill(!!rd.configured, "Configured", rd.status === "skipped" ? "Skipped" : "Missing token")]});
+        const slsk = services.soulseek || {};
+        const slskPills = [serviceStatusPill(!!slsk.configured, slsk.connected ? "Connected" : "Configured", slsk.status === "skipped" ? "Skipped" : "Missing credentials")];
+        if(slsk.listening_port != null) slskPills.push("Port " + String(slsk.listening_port));
+        if(slsk.obfuscated_port != null) slskPills.push("Obf " + String(slsk.obfuscated_port));
+        items.push({kind:"info", label:"Soulseek", sub_label:String(slsk.error || slsk.warning || ""), pills:slskPills});
+        const lf = services.lastfm || {};
+        items.push({kind:"info", label:"Last.fm", pills:[serviceStatusPill(!!lf.api_configured, lf.session_user ? ("Logged in " + String(lf.session_user)) : "API set", lf.status === "skipped" ? "Skipped" : "Missing API")]});
+        const kb = services.knaben || {};
+        items.push({kind:"info", label:"Knaben", pills:[{text:kb.api_key_configured ? "API key set" : "Optional"}]});
+        const yt = services.youtube || {};
+        const ytTool = yt.tool || {};
+        items.push({kind:"info", label:"YouTube", sub_label:String(yt.download_dir || ""), pills:[serviceStatusPill(!!ytTool.ok, "yt-dlp found", yt.status === "skipped" ? "Skipped" : "yt-dlp missing")]});
+        const ffmpeg = services.ffmpeg || {};
+        items.push({kind:"info", label:"ffmpeg", sub_label:String(ffmpeg.install_hint || ""), pills:[serviceStatusPill(!!ffmpeg.ok, "Detected", "Missing")]});
+        const ffprobe = services.ffprobe || {};
+        items.push({kind:"info", label:"ffprobe", sub_label:String(ffprobe.install_hint || ""), pills:[serviceStatusPill(!!ffprobe.ok, "Detected", "Missing")]});
+        resetList(items);
+      }
+    }, !!push);
+  }
+
+  async function exportUserSettings(includeSecrets){
+    const js = await apiGet("/api/settings/export?include_secrets=" + (includeSecrets ? "1" : "0"));
+    const text = JSON.stringify(js, null, 2);
+    try{
+      if(navigator.clipboard && navigator.clipboard.writeText){
+        await navigator.clipboard.writeText(text);
+        alert("Settings export copied to clipboard.");
+        return true;
+      }
+    }catch(e){}
+    prompt("Settings export", text);
+    return true;
+  }
+
+  async function importUserSettings(){
+    const raw = prompt("Paste settings export JSON", "");
+    if(raw == null) return false;
+    let parsed = null;
+    try{ parsed = JSON.parse(raw); }catch(e){ alert("Invalid JSON"); return false; }
+    const includeSecrets = !!confirm("Import service secrets if this export contains them?");
+    const res = await apiPost("/api/settings/import", {settings:(parsed && parsed.settings) || parsed, include_secrets:includeSecrets});
+    const js = res && res.json ? res.json : {};
+    if(!res || !res.ok || !js.ok){
+      alert((js && js.error) ? js.error : "Settings import failed.");
+      return false;
+    }
+    await settingsLoad();
+    alert("Settings imported.");
+    return true;
+  }
+
+  async function setupSkip(service, consequence){
+    if(consequence && !confirm(consequence)) return false;
+    const res = await apiPost("/api/setup/skip", {service:service});
+    const js = res && res.json ? res.json : {};
+    if(!res || !res.ok || !js.ok){
+      alert((js && js.error) ? js.error : "Could not skip setup step.");
+      return false;
+    }
+    await viewSetupWizard(false);
+    return true;
+  }
+
+  async function setupFinish(){
+    if(!confirm("Mark setup complete? Optional skipped services can be configured later from Services.")) return false;
+    const res = await apiPost("/api/setup/finish", {});
+    const js = res && res.json ? res.json : {};
+    if(!res || !res.ok || !js.ok){
+      alert((js && js.error) ? js.error : "Setup is not complete yet.");
+      await viewSetupWizard(false);
+      return false;
+    }
+    await showRoots(true);
+    return true;
   }
 
   async function viewSettingsCategory(category, push){
@@ -253,6 +399,9 @@
           toolStatus:r.toolStatus || null,
           pills:(settingConnectionPills(r) || [{text:settingValueLabel(r.value)}]).concat([settingSavePill(r)])
         }));
+        if(category === "services"){
+          rows.unshift({kind:"libinfo_action", label:"Service Status", action:"service_status"});
+        }
         resetList(rows);
       }
     };
@@ -387,6 +536,20 @@
       if(raw == null) return;
       const values = String(raw || "").split(",").map(x=>x.trim()).filter(Boolean);
       await settingsSave({[key]: values}, {});
+      await refreshAfterSettingEdit();
+      return;
+    }
+    if(type === "json"){
+      const raw = prompt(row.label || key, JSON.stringify(row.value == null ? {} : row.value, null, 2));
+      if(raw == null) return;
+      let value = {};
+      try{
+        value = JSON.parse(raw);
+      }catch(e){
+        alert("Invalid JSON");
+        return;
+      }
+      await settingsSave({[key]: value}, {});
       await refreshAfterSettingEdit();
       return;
     }
@@ -984,9 +1147,9 @@ async function libDoSearch(engine, q){
         libControlsHide();
         const items = [];
 
-        const v = (APP_INFO && APP_INFO.version) ? String(APP_INFO.version) : "dev";
+        const v = (APP_INFO && APP_INFO.display_version) ? String(APP_INFO.display_version) : ((APP_INFO && APP_INFO.version) ? ("v" + String(APP_INFO.version)) : "vdev");
         const vPills = [];
-        if(v) vPills.push("v" + v);
+        if(v) vPills.push(v);
         if(APP_INFO && APP_INFO.source) vPills.push("source: " + String(APP_INFO.source));
         if(APP_INFO && APP_INFO.short_commit) vPills.push(String(APP_INFO.short_commit));
         if(APP_INFO && APP_INFO.dirty) vPills.push({text:"dirty", tone:"warn"});
@@ -999,57 +1162,37 @@ async function libDoSearch(engine, q){
         if(port) hp.push(port);
         items.push({kind:"info", label:"Host and port", pills: hp});
 
-        const ddir = (APP_INFO && APP_INFO.ddir) ? String(APP_INFO.ddir) : "";
-        const dP = [];
-        if(ddir) dP.push(ddir);
-        items.push({kind:"info", label:"Debrid download dir", pills: dP});
-
-        const sdir = (APP_INFO && APP_INFO.sdir) ? String(APP_INFO.sdir) : "";
-        const sP = [];
-        if(sdir) sP.push(sdir);
-        items.push({kind:"info", label:"Soulseek download dir", pills: sP});
+        items.push({kind:"libinfo_action", label:"Full Screen", action:"force_fullscreen"});
+        items.push({kind:"libinfo_action", label:"Binds", action:"binds_menu"});
 
         try{
           await settingsLoad();
-          const slsk = (state.connectionStatus && state.connectionStatus.SOULSEEK) ? state.connectionStatus.SOULSEEK : {};
-          const slskStatus = slsk.startup_status || {};
-          const statusPills = [];
-          if(slsk.set) statusPills.push({text: slsk.connected ? "Connected" : "Not connected", tone: slsk.connected ? "ok" : "warn"});
-          else statusPills.push({text:"Not configured", tone:"warn"});
-          if(slskStatus.listening_port != null) statusPills.push("Port " + String(slskStatus.listening_port));
-          if(slskStatus.obfuscated_port != null) statusPills.push("Obf " + String(slskStatus.obfuscated_port));
-          items.push({kind:"info", label:"Soulseek", pills:statusPills});
-          const slskMessage = String(slsk.error || slsk.warning || "");
-          if(slskMessage){
-            items.push({kind:"info", label: slsk.error ? "Soulseek error" : "Soulseek warning", sub_label:slskMessage, pills:[{text: slsk.error ? "Error" : "Warning", tone:"warn"}]});
-          }
         }catch(e){}
-
-        let anyBuilding = false;
-        try{
-          anyBuilding = await getAnyIndexBuilding();
-        }catch(e){}
-        const rp = anyBuilding ? ["indexing"] : [];
-        items.push({kind:"libinfo_action", label:"Reindex", action:"reindex", pills: rp});
-
-        let lfUser = "";
-        try{
-          const js = await apiGet("/api/lastfm/status");
-          if(js && js.ok && js.username) lfUser = String(js.username || "");
-        }catch(e){}
-        const lp = [];
-        if(lfUser) lp.push("logged in as " + lfUser);
-        items.push({kind:"libinfo_action", label:"Login to Last.fm", action:"lastfm_login", pills: lp});
 
         items.push({kind:"libinfo_action", label:"Account", action:"account_settings"});
-        items.push({kind:"libinfo_action", label:"Visualizer", action:"ui_settings_menu"});
+        items.push({kind:"libinfo_action", label:"Interface", action:"ui_settings_menu"});
         items.push({kind:"libinfo_action", label:"Library", action:"settings_library"});
         items.push({kind:"libinfo_action", label:"Downloads", action:"settings_downloads"});
-        items.push({kind:"libinfo_action", label:"Services", action:"settings_services"});
+        const svcPills = [];
+        try{
+          const settings = state.appSettings || {};
+          const connections = state.connectionStatus || {};
+          const tools = state.toolStatus || {};
+          const slsk = connections.SOULSEEK || {};
+          const lf = connections.LASTFM_SESSION || {};
+          const rd = connections.REAL_DEBRID_API_KEY || {};
+          const knaben = connections.KNABEN_API_KEY || {};
+          svcPills.push({text: rd.set ? "Debrid set" : "Debrid unset", tone: rd.set ? "ok" : "warn"});
+          svcPills.push({text: slsk.set ? (slsk.connected ? "Soulseek connected" : "Soulseek not connected") : "Soulseek unset", tone: slsk.set && slsk.connected ? "ok" : "warn"});
+          svcPills.push({text: lf.set ? (lf.username ? ("Last.fm " + String(lf.username)) : "Last.fm set") : "Last.fm unset", tone: lf.set ? "ok" : "warn"});
+          svcPills.push({text: knaben.set ? "Knaben set" : "Knaben optional", tone: knaben.set ? "ok" : ""});
+          svcPills.push({text: settings.YTDLP_CMD ? "YouTube tool" : "YouTube default"});
+          if(tools.ffmpeg && tools.ffmpeg.ok === false) svcPills.push({text:"ffmpeg missing", tone:"warn"});
+        }catch(e){}
+        items.push({kind:"libinfo_action", label:"Services", action:"settings_services", pills:svcPills});
+        items.push({kind:"libinfo_action", label:"Service Status", action:"service_status"});
         items.push({kind:"libinfo_action", label:"Playback", action:"settings_playback"});
         items.push({kind:"libinfo_action", label:"Advanced", action:"settings_advanced"});
-        items.push({kind:"libinfo_action", label:"Full Screen", action:"force_fullscreen"});
-        items.push({kind:"libinfo_action", label:"Binds", action:"binds_menu"});
 
         resetList(items);
       }
@@ -1064,6 +1207,48 @@ async function libDoSearch(engine, q){
   function glassElementLabel(key){
     const settings = cloneGlassElementSettings(uiSettings.liquidGlassElements);
     return (settings[key] && settings[key].label) || key;
+  }
+
+  async function viewSetupWizard(push){
+    showNowPlaying(false);
+    await setView({
+      kind:"setupwizard",
+      label:"Setup",
+      load: async function(){
+        libControlsHide();
+        const status = await setupStatusLoad();
+        const skipped = (status && status.skipped) || {};
+        const services = (status && status.services) || {};
+        const items = [];
+        items.push({kind:"info", label:"Required setup", sub_label:"Add a local library folder, or explicitly finish without one and rely on Services/Search later."});
+        items.push({kind:"libinfo_action", label:"Library folders", sub_label: status.library_folder_count ? (String(status.library_folder_count) + " configured") : "Local browsing, artwork palettes, precomputed analysis, and playback history stay empty until a folder is added.", action:"setup_library", pills:[status.library_folder_count ? "Configured" : (skipped.library === "skipped" ? "Skipped" : "Required")]});
+        items.push({kind:"libinfo_action", label:"Skip local library", sub_label:"Finish without local folders. You can add folders later in Library settings.", action:"setup_skip_library", pills:[skipped.library === "skipped" ? "Skipped" : "Optional"]});
+        items.push({kind:"info", label:"Optional tools", sub_label:"Skipping these keeps the app usable, but limits metadata, thumbnails, transcoding, and compatibility conversion."});
+        const ffmpeg = (services && services.ffmpeg) || {};
+        const ffprobe = (services && services.ffprobe) || {};
+        items.push({kind:"libinfo_action", label:"ffmpeg", sub_label:ffmpeg.ok ? ("Detected: " + String(ffmpeg.found || "")) : String(ffmpeg.install_hint || "Set the ffmpeg path in Playback settings."), action:"setup_ffmpeg", pills:[ffmpeg.ok ? "Detected" : (skipped.ffmpeg === "skipped" ? "Skipped" : "Missing")]});
+        if(!ffmpeg.ok) items.push({kind:"libinfo_action", label:"Skip ffmpeg", sub_label:"Transcoding, compatibility conversion, thumbnails, and some precompute may be limited.", action:"setup_skip_ffmpeg", pills:[skipped.ffmpeg === "skipped" ? "Skipped" : "Optional"]});
+        items.push({kind:"libinfo_action", label:"ffprobe", sub_label:ffprobe.ok ? ("Detected: " + String(ffprobe.found || "")) : String(ffprobe.install_hint || "Set the ffprobe path in Playback settings."), action:"setup_ffprobe", pills:[ffprobe.ok ? "Detected" : (skipped.ffprobe === "skipped" ? "Skipped" : "Missing")]});
+        if(!ffprobe.ok) items.push({kind:"libinfo_action", label:"Skip ffprobe", sub_label:"Metadata extraction, technical labels, thumbnails, and some visualizer precompute may be limited.", action:"setup_skip_ffprobe", pills:[skipped.ffprobe === "skipped" ? "Skipped" : "Optional"]});
+        items.push({kind:"info", label:"Optional services", sub_label:"Every service can be skipped and configured later."});
+        items.push({kind:"libinfo_action", label:"Download paths", sub_label:"Set Real Debrid, Soulseek, and YouTube download folders.", action:"setup_downloads"});
+        const rd = (services && services.real_debrid) || {};
+        items.push({kind:"libinfo_action", label:"Real Debrid", sub_label:"Skipping disables debrid streaming, torrent lookup/download actions, and debrid backed playback until a token is added.", action:"setup_real_debrid", pills:[rd.configured ? "Configured" : (skipped.real_debrid === "skipped" ? "Skipped" : "Optional")]});
+        if(!rd.configured) items.push({kind:"libinfo_action", label:"Skip Real Debrid", action:"setup_skip_real_debrid", pills:[skipped.real_debrid === "skipped" ? "Skipped" : "Optional"]});
+        const slsk = (services && services.soulseek) || {};
+        items.push({kind:"libinfo_action", label:"Soulseek", sub_label:"Skipping disables Soulseek search and downloads until credentials and ports are configured.", action:"setup_soulseek", pills:[slsk.connected ? "Connected" : (slsk.configured ? "Configured" : (skipped.soulseek === "skipped" ? "Skipped" : "Optional"))]});
+        if(!slsk.configured) items.push({kind:"libinfo_action", label:"Skip Soulseek", action:"setup_skip_soulseek", pills:[skipped.soulseek === "skipped" ? "Skipped" : "Optional"]});
+        const lf = (services && services.lastfm) || {};
+        items.push({kind:"libinfo_action", label:"Last.fm", sub_label:"Skipping disables scrobbling, loved track sync, and Last.fm metadata actions until configured.", action:"setup_lastfm", pills:[lf.session_user ? ("Logged in " + String(lf.session_user)) : (lf.api_configured ? "API set" : (skipped.lastfm === "skipped" ? "Skipped" : "Optional"))]});
+        if(!lf.api_configured) items.push({kind:"libinfo_action", label:"Skip Last.fm", action:"setup_skip_lastfm", pills:[skipped.lastfm === "skipped" ? "Skipped" : "Optional"]});
+        const yt = (services && services.youtube) || {};
+        items.push({kind:"libinfo_action", label:"YouTube", sub_label:"Skipping keeps browsing/streaming where supported, but local YouTube downloads may be limited.", action:"setup_youtube", pills:[yt.status === "skipped" ? "Skipped" : "Optional"]});
+        items.push({kind:"libinfo_action", label:"Skip YouTube downloads", action:"setup_skip_youtube", pills:[skipped.youtube === "skipped" ? "Skipped" : "Optional"]});
+        items.push({kind:"libinfo_action", label:"Service Status", action:"service_status"});
+        items.push({kind:"libinfo_action", label:"Finish setup", sub_label: status.required_complete ? "Confirm setup completion." : "Add a library folder or skip local library first.", action:"setup_finish", pills:[status.required_complete ? "Ready" : {text:"Required", tone:"warn"}]});
+        resetList(items);
+      }
+    }, !!push);
   }
 
   function glassTintLabel(value){
@@ -1149,6 +1334,7 @@ async function libDoSearch(engine, q){
     return {
       glass:"Glass",
       ui:"Visualizer",
+      search:"Search",
       downloads:"Downloads",
       services:"Services",
       playback:"Playback",
@@ -1161,24 +1347,25 @@ async function libDoSearch(engine, q){
     if(cat === "glass"){
       const items = [];
       GLASS_ELEMENT_KEYS.forEach((key)=>{
-        items.push({kind:"libui_action", label:glassElementLabel(key), action:"glass_section:" + key, pills:glassElementSummary(key)});
+        items.push({kind:"libui_action", label:glassElementLabel(key), sub_label:"Liquid Glass element controls", action:"glass_section:" + key, pills:glassElementSummary(key), forceTwoLine:true, settingRow:true});
       });
-      items.push({kind:"libui_action", label:"Commit glass styling defaults", action:"commit_glass_defaults", pills:["Writes code"]});
+      items.push({kind:"libui_action", label:"Commit glass styling defaults", sub_label:"Writes current glass tuning into the code defaults", action:"commit_glass_defaults", pills:["Writes code"], forceTwoLine:true, settingRow:true});
       return items;
     }
     if(cat === "ui"){
-      return uiTuningRows().map((row)=>({kind:"libui_action", label:row.label, action:row.action, pills:[String(row.value)]}))
+      return uiTuningRows().map((row)=>({kind:"libui_action", label:row.label, sub_label:"Interface tuning", action:row.action, pills:[String(row.value)], forceTwoLine:true, settingRow:true}))
         .concat(settingRowsForCategory("advanced").filter((row)=> row && String(row.key || "").indexOf("TASKS_") === 0).map(settingRowToListItem));
     }
     if(cat === "system"){
-      const systemKeys = new Set(["PORT", "ENABLE_MCP", "MCP_TOKEN", "CACHE_DIR_NAME", "STREAM_PROXY_ALLOWED_HOST_SUFFIXES", "AUDIO_TRANSCODE", "VIDEO_BROWSER_TARGET_EXT", "REQUEST_TIMEOUT_SECONDS"]);
+      const systemKeys = new Set(["PORT", "ENABLE_MCP", "MCP_TOKEN", "MCP_PROTOCOL_VERSION", "MCP_SEARCH_RESULT_LIMIT", "MCP_SSE_KEEPALIVE_SECONDS", "MCP_SESSION_TTL_SECONDS", "CACHE_DIR_NAME", "STREAM_PROXY_ALLOWED_HOST_SUFFIXES", "REQUEST_TIMEOUT_SECONDS", "POLL_INTERVAL_SECONDS"]);
       return settingRowsForCategory("advanced").filter((row)=> row && systemKeys.has(String(row.key || ""))).map(settingRowToListItem);
     }
     return settingRowsForCategory("advanced").filter((row)=>{
       const key = String((row && row.key) || "");
+      if(cat === "search") return key === "RESULTS_PER_PAGE" || key === "MAX_FILES_PER_TORRENT" || key === "MAX_TORRENT_WAIT_SECONDS" || key === "SEARCH_HISTORY_MAX_ITEMS" || key === "SEARCH_DISK_CACHE_TTL_SECONDS" || key === "SEARCH_STREAM_SESSION_TTL_SECONDS";
       if(cat === "downloads") return key === "REPLACE_ORIGINAL";
-      if(cat === "services") return key.indexOf("SOULSEEK_") === 0 || key.indexOf("KNABEN_") === 0 || key.indexOf("LASTFM_") === 0 || key === "YTDLP_CMD";
-      if(cat === "playback") return key === "WHEEL_ROTATION_MAX_DEGREES" || key === "FFMPEG_PATH" || key === "FFPROBE_PATH";
+      if(cat === "services") return key.indexOf("SOULSEEK_") === 0 || key.indexOf("KNABEN_") === 0 || key.indexOf("LASTFM_") === 0 || key === "YTDLP_CMD" || key.indexOf("YOUTUBE_") === 0 || key === "RD_BASE";
+      if(cat === "playback") return key === "WHEEL_ROTATION_MAX_DEGREES" || key === "FFMPEG_PATH" || key === "FFPROBE_PATH" || key === "AUDIO_TRANSCODE" || key === "VIDEO_BROWSER_TARGET_EXT" || key === "AUTO_TRANSCODE_FOR_BROWSER_COMPATIBILITY" || key === "PRELOAD_NEXT_CHUNK_BYTES";
       return false;
     }).map(settingRowToListItem);
   }
@@ -1194,7 +1381,9 @@ async function libDoSearch(engine, q){
       value:r.value,
       tool:r.tool || "",
       toolStatus:r.toolStatus || null,
-      pills:(settingConnectionPills(r) || [{text:settingValueLabel(r.value)}]).concat([settingSavePill(r)])
+      pills:(settingConnectionPills(r) || [{text:settingValueLabel(r.value)}]).concat([settingSavePill(r)]),
+      forceTwoLine:true,
+      settingRow:true
     };
   }
 
@@ -1207,9 +1396,10 @@ async function libDoSearch(engine, q){
         libControlsHide();
         await settingsLoad();
         const labels = advancedCategoryLabels();
-        const items = ["glass", "ui", "downloads", "services", "playback", "system"].map((key)=>({
+        const items = ["glass", "ui", "search", "downloads", "services", "playback", "system"].map((key)=>({
           kind:"libui_action",
           label:labels[key],
+          sub_label:"Advanced " + String(labels[key] || key).toLowerCase() + " settings",
           action:"advanced_category:" + key,
           pills:[String(advancedRowsForCategory(key).length)]
         }));
@@ -1292,6 +1482,9 @@ async function libDoSearch(engine, q){
       case "settings_services":
         await viewSettingsCategory("services", true);
         return true;
+      case "service_status":
+        await viewServiceStatusPanel(true);
+        return true;
       case "settings_playback":
         await viewSettingsCategory("playback", true);
         return true;
@@ -1301,6 +1494,41 @@ async function libDoSearch(engine, q){
       case "binds_menu":
         await viewLibBinds(true);
         return true;
+      case "setup_wizard":
+        await viewSetupWizard(true);
+        return true;
+      case "setup_library":
+        await viewSettingsLibrary(true);
+        return true;
+      case "setup_skip_library":
+        return await setupSkip("library", "Skipping local library means local browsing, local metadata indexing, local artwork palettes, precomputed local audio analysis, and local playback history will be empty until a folder is added.");
+      case "setup_ffmpeg":
+      case "setup_ffprobe":
+        await viewSettingsCategory("playback", true);
+        return true;
+      case "setup_downloads":
+        await viewSettingsCategory("downloads", true);
+        return true;
+      case "setup_real_debrid":
+      case "setup_soulseek":
+      case "setup_lastfm":
+      case "setup_youtube":
+        await viewSettingsCategory("services", true);
+        return true;
+      case "setup_skip_real_debrid":
+        return await setupSkip("real_debrid", "Skipping Real Debrid disables Real Debrid streaming, torrent lookup/download actions, and debrid backed playback until a token is added later.");
+      case "setup_skip_soulseek":
+        return await setupSkip("soulseek", "Skipping Soulseek disables Soulseek search and Soulseek downloads until credentials and ports are configured later.");
+      case "setup_skip_lastfm":
+        return await setupSkip("lastfm", "Skipping Last.fm disables scrobbling, loved track sync, and Last.fm metadata actions until API credentials and login are added later.");
+      case "setup_skip_youtube":
+        return await setupSkip("youtube", "Skipping the YouTube download path allows browsing/streaming where supported, but disables or limits local YouTube downloads until configured.");
+      case "setup_skip_ffmpeg":
+        return await setupSkip("ffmpeg", "Skipping ffmpeg may limit transcoding, compatibility conversion, thumbnails, and some visualizer precompute until the path is fixed.");
+      case "setup_skip_ffprobe":
+        return await setupSkip("ffprobe", "Skipping ffprobe may limit metadata extraction, technical labels, thumbnails, and some visualizer precompute until the path is fixed.");
+      case "setup_finish":
+        return await setupFinish();
       default:
         return false;
     }

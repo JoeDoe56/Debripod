@@ -16,10 +16,11 @@ from .Services import soulseek as soulseek_module
 from .factory import DeferredApp
 from .auth import register_auth
 from .config import _coerce_config_value, ensure_startup_security_config, save_config
+from .Library.library_db import load_palette, save_palette
 from .Tasks.manager import task_belongs_to_owner
 from .runtime_state import *
 from .runtime_downloads import *
-from .settings import default_app_settings, executable_status, ensure_app_settings, masked_settings, pick_system_path, save_app_settings, settings_fingerprint
+from .settings import APP_SETTING_KEYS, SECRET_SETTING_KEYS, default_app_settings, executable_status, ensure_app_settings, masked_settings, pick_system_path, save_app_settings, settings_fingerprint
 
 # =========================
 # Flask app and templates
@@ -1169,6 +1170,170 @@ def api_settings_get():
     })
 
 
+def _setup_skipped_services(settings: dict[str, Any]) -> dict[str, str]:
+    raw = settings.get("SETUP_SKIPPED_SERVICES")
+    out: dict[str, str] = {}
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            k = str(key or "").strip().lower()
+            if k in {"library", "real_debrid", "soulseek", "lastfm", "youtube", "ffmpeg", "ffprobe", "downloads", "knaben"}:
+                out[k] = "skipped" if str(value or "").strip().lower() == "skipped" else str(value or "").strip().lower()
+    return out
+
+
+def _service_status_payload(settings: dict[str, Any]) -> dict[str, Any]:
+    tools = {
+        "ffmpeg": executable_status(str(settings.get("FFMPEG_PATH") or "ffmpeg")),
+        "ffprobe": executable_status(str(settings.get("FFPROBE_PATH") or "ffprobe")),
+        "yt_dlp": executable_status(str(settings.get("YTDLP_CMD") or "yt-dlp")),
+    }
+    soulseek_service = getattr(state_module, "SOULSEEK_SERVICE", None)
+    soulseek_status = soulseek_service.startup_status() if soulseek_service and hasattr(soulseek_service, "startup_status") else {}
+    skipped = _setup_skipped_services(settings)
+    return {
+        "skipped": skipped,
+        "real_debrid": {
+            "configured": bool(str(settings.get("REAL_DEBRID_API_KEY") or "").strip()),
+            "status": skipped.get("real_debrid") or ("configured" if str(settings.get("REAL_DEBRID_API_KEY") or "").strip() else "not_configured"),
+        },
+        "soulseek": {
+            "configured": bool(str(settings.get("SOULSEEK_USERNAME") or "").strip() and str(settings.get("SOULSEEK_PASSWORD") or "").strip()),
+            "connected": bool(soulseek_service and soulseek_service.is_ready()),
+            "listening_port": soulseek_status.get("listening_port"),
+            "obfuscated_port": soulseek_status.get("obfuscated_port"),
+            "warning": str(soulseek_status.get("warning") or ""),
+            "error": str(soulseek_service.start_error() or "") if soulseek_service else "",
+            "status": skipped.get("soulseek") or ("connected" if soulseek_service and soulseek_service.is_ready() else ("not_connected" if str(settings.get("SOULSEEK_USERNAME") or "").strip() and str(settings.get("SOULSEEK_PASSWORD") or "").strip() else "not_configured")),
+        },
+        "lastfm": {
+            "api_configured": bool(str(settings.get("LASTFM_API_KEY") or "").strip() and str(settings.get("LASTFM_API_SECRET") or "").strip()),
+            "session_user": lastfm_username(),
+            "status": skipped.get("lastfm") or ("logged_in" if lastfm_username() else ("configured" if str(settings.get("LASTFM_API_KEY") or "").strip() and str(settings.get("LASTFM_API_SECRET") or "").strip() else "not_configured")),
+        },
+        "knaben": {
+            "api_key_configured": bool(str(settings.get("KNABEN_API_KEY") or "").strip()),
+            "status": skipped.get("knaben") or ("configured" if str(settings.get("KNABEN_API_KEY") or "").strip() else "optional"),
+        },
+        "youtube": {
+            "tool": tools["yt_dlp"],
+            "download_dir": str(settings.get("YOUTUBE_DOWNLOAD_DIR") or ""),
+            "status": skipped.get("youtube") or ("tool_found" if tools["yt_dlp"].get("ok") else "tool_missing"),
+        },
+        "ffmpeg": tools["ffmpeg"],
+        "ffprobe": tools["ffprobe"],
+    }
+
+
+def _setup_status_for_user(username: str, settings: dict[str, Any]) -> dict[str, Any]:
+    folders = settings.get("LIBRARY_FOLDERS") if isinstance(settings.get("LIBRARY_FOLDERS"), list) else []
+    has_services = any(str(settings.get(key) or "").strip() for key in ("REAL_DEBRID_API_KEY", "SOULSEEK_USERNAME", "SOULSEEK_PASSWORD", "LASTFM_API_KEY", "LASTFM_API_SECRET", "LASTFM_SESSION_KEY"))
+    skipped = _setup_skipped_services(settings)
+    required_complete = bool(folders) or skipped.get("library") == "skipped"
+    should_show = not bool(settings.get("SETUP_WIZARD_COMPLETE")) and (not folders and not has_services)
+    return {
+        "ok": True,
+        "username": username,
+        "setup_complete": bool(settings.get("SETUP_WIZARD_COMPLETE")),
+        "should_show": bool(should_show),
+        "required_complete": bool(required_complete),
+        "library_folder_count": len(folders),
+        "skipped": skipped,
+        "services": _service_status_payload(settings),
+    }
+
+
+@app.route("/api/setup/status", methods=["GET"])
+def api_setup_status():
+    username = _current_settings_username()
+    settings = _apply_runtime_settings_for_user(username) if username else ensure_app_settings()
+    return jsonify(_setup_status_for_user(username, settings))
+
+
+@app.route("/api/setup/skip", methods=["POST"])
+def api_setup_skip():
+    data = request.get_json(silent=True) or {}
+    service = str(data.get("service") or "").strip().lower()
+    allowed = {"library", "real_debrid", "soulseek", "lastfm", "youtube", "ffmpeg", "ffprobe", "downloads", "knaben"}
+    if service not in allowed:
+        return jsonify({"ok": False, "error": "Unknown setup step"}), 400
+    username = _current_settings_username()
+    settings = ensure_app_settings(username=username)
+    skipped = _setup_skipped_services(settings)
+    skipped[service] = "skipped"
+    saved = save_app_settings({"SETUP_SKIPPED_SERVICES": skipped}, username=username)
+    return jsonify(_setup_status_for_user(username, saved))
+
+
+@app.route("/api/setup/finish", methods=["POST"])
+def api_setup_finish():
+    username = _current_settings_username()
+    settings = ensure_app_settings(username=username)
+    status = _setup_status_for_user(username, settings)
+    if not status.get("required_complete"):
+        return jsonify({"ok": False, "error": "Add a library folder or explicitly skip local library setup first."}), 400
+    saved = save_app_settings({"SETUP_WIZARD_COMPLETE": True}, username=username)
+    folders = saved.get("LIBRARY_FOLDERS") if isinstance(saved.get("LIBRARY_FOLDERS"), list) else []
+    for folder in folders:
+        try:
+            if isinstance(folder, dict):
+                path = str(folder.get("path") or "")
+                mode = str(folder.get("mode") or "list")
+            else:
+                path = str(folder or "")
+                mode = "list"
+            if path and mode in {"meta", "metadata"}:
+                rid = sha1_text(os.path.abspath(path))
+                ensure_index_async(rid, os.path.abspath(path))
+        except Exception:
+            pass
+    return jsonify(_setup_status_for_user(username, saved))
+
+
+@app.route("/api/services/status", methods=["GET"])
+def api_services_status():
+    username = _current_settings_username()
+    settings = _apply_runtime_settings_for_user(username) if username else ensure_app_settings()
+    return jsonify({"ok": True, "services": _service_status_payload(settings)})
+
+
+@app.route("/api/settings/export", methods=["GET"])
+def api_settings_export():
+    username = _current_settings_username()
+    include_secrets = (request.args.get("include_secrets") or "").strip() == "1"
+    settings = ensure_app_settings(username=username)
+    payload = {}
+    for key in sorted(APP_SETTING_KEYS):
+        if key in {"SETUP_SKIPPED_SERVICES", "SETUP_WIZARD_COMPLETE"}:
+            payload[key] = settings.get(key)
+            continue
+        if key in SECRET_SETTING_KEYS and not include_secrets:
+            continue
+        payload[key] = settings.get(key)
+    return jsonify({"ok": True, "version": 1, "username": username, "include_secrets": include_secrets, "settings": payload})
+
+
+@app.route("/api/settings/import", methods=["POST"])
+def api_settings_import():
+    data = request.get_json(silent=True) or {}
+    raw_settings = data.get("settings")
+    if not isinstance(raw_settings, dict):
+        return jsonify({"ok": False, "error": "Import file must contain a settings object."}), 400
+    include_secrets = bool(data.get("include_secrets"))
+    clean = {}
+    for key, value in raw_settings.items():
+        key_upper = str(key).upper()
+        if key_upper not in APP_SETTING_KEYS:
+            continue
+        if key_upper in SECRET_SETTING_KEYS and not include_secrets:
+            continue
+        clean[key_upper] = value
+    username = _current_settings_username()
+    saved = save_app_settings(clean, username=username)
+    if username:
+        _apply_runtime_settings_for_user(username, force=True)
+    return jsonify({"ok": True, "settings": masked_settings(saved), "imported_keys": sorted(clean.keys())})
+
+
 @app.route("/api/settings/save", methods=["POST"])
 def api_settings_save():
     data = request.get_json(silent=True) or {}
@@ -1293,6 +1458,29 @@ def api_ui_glass_defaults_commit():
 def api_library_building():
     any_building, roots_status = index_building_status()
     return jsonify({"ok": True, "any_building": any_building, "roots": roots_status})
+
+
+@app.route("/api/library/palette", methods=["GET", "POST"])
+def api_library_palette():
+    if request.method == "GET":
+        cache_key = (request.args.get("key") or "").strip()
+        if not cache_key:
+            return jsonify({"ok": False, "error": "Missing palette key"}), 400
+        palette = load_palette(cache_key)
+        return jsonify({"ok": True, "palette": palette})
+
+    data = request.get_json(silent=True) or {}
+    cache_key = str(data.get("key") or "").strip()
+    palette = data.get("palette")
+    if not cache_key or not isinstance(palette, dict):
+        return jsonify({"ok": False, "error": "Missing palette key or palette"}), 400
+    save_palette(
+        cache_key,
+        palette,
+        source_kind=str(data.get("source_kind") or ""),
+        source_identity=str(data.get("source_identity") or ""),
+    )
+    return jsonify({"ok": True})
 
 
 

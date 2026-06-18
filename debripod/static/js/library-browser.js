@@ -1183,6 +1183,19 @@ if(it.kind === "libtasks_entry"){
         await createUserFromInfo();
         return;
       }
+      if(it.action === "settings_export"){
+        await exportUserSettings(false);
+        return;
+      }
+      if(it.action === "settings_export_secrets"){
+        if(confirm("This export can include service credentials. Keep it private.")) await exportUserSettings(true);
+        return;
+      }
+      if(it.action === "settings_import"){
+        await importUserSettings();
+        await viewAccountSettings(false);
+        return;
+      }
       if(it.action === "logout"){
         window.location.href = "/logout";
         return;
