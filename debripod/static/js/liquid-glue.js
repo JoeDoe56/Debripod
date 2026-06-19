@@ -118,7 +118,14 @@
       return renderer.lenses.some((lens)=>{
         if(!lens || !lens.el || !lens.el.isConnected) return false;
         const style = window.getComputedStyle ? window.getComputedStyle(lens.el) : null;
-        if(style && (style.display === "none" || style.visibility === "hidden" || Number(style.opacity || 1) <= 0.01)) return false;
+        if(style && (style.display === "none" || style.visibility === "hidden")) return false;
+        let node = lens.el.parentElement;
+        while(node && node !== document.body){
+          const parentStyle = window.getComputedStyle ? window.getComputedStyle(node) : null;
+          if(parentStyle && (parentStyle.display === "none" || parentStyle.visibility === "hidden" || Number(parentStyle.opacity || 1) <= 0.01)) return false;
+          if(node.classList && (node.classList.contains("npPillHidden") || node.classList.contains("npPillSwapHidden"))) return false;
+          node = node.parentElement;
+        }
         const rect = lens.el.getBoundingClientRect();
         return rect.width > 0 && rect.height > 0 && rect.right > -2 && rect.bottom > -2 && rect.left < (window.innerWidth || 0) + 2 && rect.top < (window.innerHeight || 0) + 2;
       });
@@ -380,6 +387,7 @@
       }
       if(renderer.render) renderer.render(currentVisualizerFrameState());
       if(renderer.canvas) renderer.canvas.style.opacity = String(opacity);
+      debugLiquidGlassRenderers(reason || "np overlay render");
     }catch(e){}
   }
 
@@ -800,15 +808,24 @@
         const lenses = (renderer.lenses || []).map((lens)=> lens && lens.el ? {
           className: lens.el.className,
           id: lens.el.id || "",
-          hollow: !!lens.hollowMaskContent
+          hollow: !!lens.hollowMaskContent,
+          rectPx: lens.rectPx ? {
+            left: Math.round(lens.rectPx.left),
+            top: Math.round(lens.rectPx.top),
+            width: Math.round(lens.rectPx.width),
+            height: Math.round(lens.rectPx.height)
+          } : null
         } : null).filter(Boolean);
         console.log("[DebriPod LiquidGL]", reason || "state", {
           rendererKey: renderer.rendererKey || "unknown",
           texture: String(renderer.textureWidth || 0) + "x" + String(renderer.textureHeight || 0),
+          textureWidth: renderer.textureWidth || 0,
+          textureHeight: renderer.textureHeight || 0,
           lensCount: renderer.lenses ? renderer.lenses.length : 0,
           lenses: lenses,
           canvasClassName: renderer.canvas ? renderer.canvas.className : "",
-          canvasZIndex: renderer.canvas ? window.getComputedStyle(renderer.canvas).zIndex : ""
+          canvasZIndex: renderer.canvas ? window.getComputedStyle(renderer.canvas).zIndex : "",
+          canvasOpacity: renderer.canvas ? window.getComputedStyle(renderer.canvas).opacity : ""
         });
       });
     }catch(e){}
