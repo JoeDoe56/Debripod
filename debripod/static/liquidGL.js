@@ -252,6 +252,7 @@
       );
       this.sourceType = sourceOptions.sourceType || "visualizerCanvas";
       this.sourceSelector = sourceOptions.sourceElement || sourceOptions.source || "#visualizerBg";
+      this.sourceCssSelector = sourceOptions.sourceCssElement || sourceOptions.sourceCssSelector || null;
       this._engine = "snapdom";
       this._sourceElement = null;
       this._sourceCssRect = null;
@@ -677,13 +678,28 @@
     configureSource(options = {}) {
       const nextType = options.sourceType || this.sourceType || "visualizerCanvas";
       const nextSelector = options.sourceElement || options.source || this.sourceSelector || "#visualizerBg";
+      const nextCssSelector = options.sourceCssElement || options.sourceCssSelector || this.sourceCssSelector || null;
       this._engine = "snapdom";
-      if (nextType !== this.sourceType || nextSelector !== this.sourceSelector) {
+      if (nextType !== this.sourceType || nextSelector !== this.sourceSelector || nextCssSelector !== this.sourceCssSelector) {
         this.sourceType = nextType;
         this.sourceSelector = nextSelector;
+        this.sourceCssSelector = nextCssSelector;
         this._sourceElement = null;
         this.refreshSourceTexture("source configured");
       }
+    }
+
+    _resolveSourceCssRect() {
+      const el = this.sourceCssSelector ? document.querySelector(this.sourceCssSelector) : null;
+      if (!el) return null;
+      const rect = el.getBoundingClientRect();
+      if (!rect || !(rect.width > 0) || !(rect.height > 0)) return null;
+      return {
+        left: rect.left || 0,
+        top: rect.top || 0,
+        width: rect.width || 1,
+        height: rect.height || 1
+      };
     }
 
     _fallbackCanvas(width = 8, height = 8, rgba = [5, 5, 7, 255]) {
@@ -723,7 +739,11 @@
           });
         }
         if (source && source.complete && source.naturalWidth && source.naturalHeight) {
-          return this.updateTextureFromImage(source, { reason: reason || "album art" });
+          const sourceRect = this._resolveSourceCssRect ? this._resolveSourceCssRect() : null;
+          return this.updateTextureFromImage(source, {
+            reason: reason || "album art",
+            sourceRect: sourceRect || undefined
+          });
         }
         return false;
       }

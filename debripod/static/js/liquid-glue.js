@@ -890,6 +890,7 @@
         target: ".npOverlayGlass.liquidGlass",
         sourceType: "albumArtCanvasOrImage",
         sourceElement: "#npArtLiquidSource",
+        sourceCssElement: "#npArt",
         rendererKey: "npOverlay"
       }));
       window.liquidGL(Object.assign({}, liquidGlassElementOptions("libraryList"), {
