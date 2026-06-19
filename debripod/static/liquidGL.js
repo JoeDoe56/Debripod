@@ -709,6 +709,19 @@
     refreshSourceTexture(reason = "") {
       const source = this._resolveSourceElement();
       if (this.sourceType === "albumArtCanvasOrImage") {
+        if (source && source instanceof HTMLCanvasElement && source.width && source.height) {
+          const rect = source.getBoundingClientRect();
+          return this.updateTextureFromCanvas(source, {
+            reason: reason || "album art canvas",
+            allowDark: true,
+            sourceRect: {
+              left: rect.left || 0,
+              top: rect.top || 0,
+              width: rect.width || source.width || 1,
+              height: rect.height || source.height || 1
+            }
+          });
+        }
         if (source && source.complete && source.naturalWidth && source.naturalHeight) {
           return this.updateTextureFromImage(source, { reason: reason || "album art" });
         }
