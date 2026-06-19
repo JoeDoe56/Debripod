@@ -1386,6 +1386,18 @@
   object-fit: cover;
   z-index: 1;
 }
+.npArtLiquidSource{
+  position:absolute;
+  width:1px;
+  height:1px;
+  opacity:0;
+  pointer-events:none;
+  clip:rect(0 0 0 0);
+  clip-path:inset(50%);
+  overflow:hidden;
+  left:-9999px;
+  top:auto;
+}
 .npOverlayPill{
   position:absolute;
   left: 12px;
