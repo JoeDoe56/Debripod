@@ -250,13 +250,15 @@
         0.1,
         Math.min(3.0, snapshotResolution)
       );
-      this.sourceType = sourceOptions.sourceType || "visualizerCanvas";
+      this.sourceType = sourceOptions.sourceType || "visualizerWebgl";
       this.sourceSelector = sourceOptions.sourceElement || sourceOptions.source || "#visualizerBg";
       this.sourceCssSelector = sourceOptions.sourceCssElement || sourceOptions.sourceCssSelector || null;
       this._engine = "snapdom";
       this._sourceElement = null;
       this._sourceCssRect = null;
       this._sourceTextureReady = false;
+      this._sourceIsSolidFallback = false;
+      this._sourceOwnsTexture = true;
       this._solidCanvas = null;
       this.visible = true;
       this._adaptiveQuality = 1;
@@ -676,7 +678,7 @@
     }
 
     configureSource(options = {}) {
-      const nextType = options.sourceType || this.sourceType || "visualizerCanvas";
+      const nextType = options.sourceType || this.sourceType || "visualizerWebgl";
       const nextSelector = options.sourceElement || options.source || this.sourceSelector || "#visualizerBg";
       const nextCssSelector = options.sourceCssElement || options.sourceCssSelector || this.sourceCssSelector || null;
       this._engine = "snapdom";
@@ -724,13 +726,40 @@
 
     refreshSourceTexture(reason = "") {
       const source = this._resolveSourceElement();
+      if (this.sourceType === "visualizerWebgl" || this.sourceType === "webglTexture") {
+        const adapter =
+          window.DebriPod &&
+          window.DebriPod.visualizerRenderer &&
+          typeof window.DebriPod.visualizerRenderer.sourceForLiquidGL === "function"
+            ? window.DebriPod.visualizerRenderer.sourceForLiquidGL()
+            : null;
+        if (adapter && adapter.ready && adapter.texture && adapter.gl === this.gl) {
+          this.texture = adapter.texture;
+          this.textureWidth = adapter.width || 1;
+          this.textureHeight = adapter.height || 1;
+          this._sourceCssRect = adapter.sourceRect || { left: 0, top: 0, width: window.innerWidth || 1, height: window.innerHeight || 1 };
+          this._sourceTextureReady = true;
+          this._sourceIsSolidFallback = false;
+          this._sourceOwnsTexture = false;
+          return true;
+        }
+        if (adapter && adapter.ready && adapter.canvas) {
+          return this.updateTextureFromCanvas(adapter.canvas, {
+            reason: reason || "visualizer webgl source",
+            allowDark: true,
+            sourceRect: adapter.sourceRect || { left: 0, top: 0, width: window.innerWidth || adapter.width || 1, height: window.innerHeight || adapter.height || 1 }
+          });
+        }
+        return this.updateTextureFromSolidColor(8, 8, [0, 0, 0, 255], { reason: reason || "visualizer webgl fallback", allowDark: true });
+      }
       if (this.sourceType === "albumArtCanvasOrImage") {
         if (source && source instanceof HTMLCanvasElement && source.width && source.height) {
           const rect = source.getBoundingClientRect();
+          const sourceRect = this._resolveSourceCssRect ? this._resolveSourceCssRect() : null;
           return this.updateTextureFromCanvas(source, {
             reason: reason || "album art canvas",
-            allowDark: true,
-            sourceRect: {
+            allowDark: !this.sourceCssSelector,
+            sourceRect: sourceRect || {
               left: rect.left || 0,
               top: rect.top || 0,
               width: rect.width || source.width || 1,
@@ -794,7 +823,7 @@
 
     clearSourceTexture(reason = "") {
       try {
-        if (this.texture) {
+        if (this.texture && this._sourceOwnsTexture !== false) {
           this.gl.deleteTexture(this.texture);
         }
       } catch (e) {}
@@ -804,6 +833,7 @@
       this.staticSnapshotCanvas = null;
       this._sourceTextureReady = false;
       this._sourceIsSolidFallback = false;
+      this._sourceOwnsTexture = true;
       this._sourceCssRect = null;
       this.clear();
       liquidGLLog("log", "liquidGL: Source texture cleared.", {
@@ -845,9 +875,10 @@
         });
         return false;
       }
-      if (!this.texture) {
+      if (!this.texture || this._sourceOwnsTexture === false) {
         this.texture = gl.createTexture();
         if (!this.texture) return false;
+        this._sourceOwnsTexture = true;
       }
       const textureSizeChanged = this.textureWidth !== width || this.textureHeight !== height;
       try {
@@ -2645,7 +2676,7 @@
       magnify: 1,
       glassMode: "clear",
       engine: "snapdom",
-      sourceType: "visualizerCanvas",
+      sourceType: "visualizerWebgl",
       sourceElement: "#visualizerBg",
       on: {},
     };

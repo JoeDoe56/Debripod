@@ -1386,7 +1386,8 @@
   object-fit: cover;
   z-index: 1;
 }
-.npArtLiquidSource{
+.npArtLiquidSource,
+.npArtGlassSource{
   position:absolute;
   width:1px;
   height:1px;

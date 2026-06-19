@@ -754,6 +754,26 @@ def save_index_snapshot(root_id: str, root_abs: str, data: dict, *, mode: str = 
                 (root_id, rel, version, _path_mtime_ns(abs_dir), now, json.dumps(entries, ensure_ascii=False, sort_keys=True)),
             )
         conn.execute("DELETE FROM folder_entries WHERE root_id = ? AND root_version < ?", (root_id, version))
+        active_audio_identity = {
+            rel: (size, mtime_ns)
+            for rel, (_abs_path, media_type, size, mtime_ns) in next_items.items()
+            if media_type == "audio"
+        }
+        rows = conn.execute(
+            "SELECT analysis_key, rel, size, mtime_ns, algorithm_version FROM visualizer_analysis WHERE root_id = ?",
+            (root_id,),
+        ).fetchall()
+        for row in rows:
+            rel = str(row["rel"] or "")
+            ident = active_audio_identity.get(rel)
+            stale = (
+                ident is None
+                or int(row["size"] or 0) != int(ident[0] or 0)
+                or int(row["mtime_ns"] or 0) != int(ident[1] or 0)
+                or int(row["algorithm_version"] or 0) != ANALYSIS_ALGORITHM_VERSION
+            )
+            if stale:
+                conn.execute("DELETE FROM visualizer_analysis WHERE analysis_key = ?", (str(row["analysis_key"] or ""),))
     return version
 
 
@@ -1002,6 +1022,27 @@ def load_palette(cache_key: str) -> Optional[dict]:
         return None
 
 
+def load_palette_for_media(root_id: str, rel: str) -> Optional[dict]:
+    with library_db() as conn:
+        row = conn.execute(
+            """
+            SELECT palette_json
+            FROM art_palette_cache
+            WHERE root_id = ? AND rel = ?
+            ORDER BY saved_at DESC
+            LIMIT 1
+            """,
+            (str(root_id or ""), str(rel or "")),
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        data = json.loads(str(row["palette_json"] or "{}"))
+        return data if isinstance(data, dict) else None
+    except Exception:
+        return None
+
+
 def save_palette(cache_key: str, palette: dict, *, source_kind: str = "", source_identity: str = "", root_id: str = "", rel: str = "") -> None:
     payload = json.dumps(palette if isinstance(palette, dict) else {}, ensure_ascii=False, sort_keys=True)
     with library_db() as conn:
@@ -1064,13 +1105,21 @@ def load_visualizer_analysis_for_media(root_id: str, rel: str) -> Optional[dict[
     with library_db() as conn:
         row = conn.execute(
             """
-            SELECT analysis_key
-            FROM visualizer_analysis
-            WHERE root_id = ? AND rel = ?
-            ORDER BY saved_at DESC
+            SELECT va.analysis_key
+            FROM visualizer_analysis va
+            JOIN media_files mf
+              ON mf.root_id = va.root_id
+             AND mf.rel_path = va.rel
+             AND mf.size = va.size
+             AND mf.mtime_ns = va.mtime_ns
+            WHERE va.root_id = ?
+              AND va.rel = ?
+              AND va.algorithm_version = ?
+              AND mf.media_type = 'audio'
+            ORDER BY va.saved_at DESC
             LIMIT 1
             """,
-            (str(root_id or ""), str(rel or "")),
+            (str(root_id or ""), str(rel or ""), ANALYSIS_ALGORITHM_VERSION),
         ).fetchone()
     if not row:
         return None

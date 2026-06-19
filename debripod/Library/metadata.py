@@ -4,6 +4,7 @@ import os
 import math
 import struct
 import threading
+import zlib
 from typing import Dict, List, Optional, Tuple
 
 from ..paths import art_cache_dir
@@ -545,6 +546,18 @@ def _compute_audio_analysis(abs_path: str, key: str, *, root_id: str, rel: str, 
             pass
     if frame_count <= 0:
         return None
+    raw_blob = bytes(blob)
+    stored_blob = raw_blob
+    compression = "none"
+    try:
+        compressed = zlib.compress(raw_blob, level=3)
+        if len(compressed) < len(raw_blob) * 0.96:
+            stored_blob = compressed
+            compression = "zlib"
+    except Exception:
+        stored_blob = raw_blob
+        compression = "none"
+
     save_visualizer_analysis(
         key,
         media_id=media_id,
@@ -555,9 +568,9 @@ def _compute_audio_analysis(abs_path: str, key: str, *, root_id: str, rel: str, 
         analysis_rate_hz=ANALYSIS_RATE_HZ,
         band_count=len(ANALYSIS_BANDS),
         frame_count=frame_count,
-        feature_blob=bytes(blob),
-        compression="none",
+        feature_blob=stored_blob,
+        compression=compression,
         decoder_settings_hash=DECODER_SETTINGS_HASH,
-        metadata={"frame_stride": len(ANALYSIS_BANDS) + 2, "fields": ["band0", "band1", "band2", "band3", "band4", "band5", "band6", "energy", "beat"]},
+        metadata={"frame_stride": len(ANALYSIS_BANDS) + 2, "raw_bytes": len(raw_blob), "stored_bytes": len(stored_blob), "fields": ["band0", "band1", "band2", "band3", "band4", "band5", "band6", "energy", "beat"]},
     )
     return load_visualizer_analysis(key)

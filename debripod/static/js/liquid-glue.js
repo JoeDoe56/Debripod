@@ -26,7 +26,7 @@
   function liquidGlassElementOptions(key){
     const settings = glassElementSettings(key);
     const tint = normalizeLiquidGlassTint(settings.glassTint, liquidGlassModeToTint(settings.mode));
-    const mode = liquidGlassTintMode(tint);
+    const mode = normalizeLiquidGlassMode(settings.mode || liquidGlassTintMode(tint));
     const appleDarkAmount = 0.34;
     const appleLightAmount = 0.28;
     return Object.assign({
@@ -294,7 +294,9 @@
       ["default", "wheel", "libList", "libSelection", "libPills"].forEach((key)=>{
         const renderer = liquidGlassRendererByKey(key);
         if(!renderer) return;
-        if(visualizerBg && renderer.updateTextureFromCanvas){
+        if((renderer.sourceType === "visualizerWebgl" || renderer.sourceType === "webglTexture") && renderer.refreshSourceTexture){
+          renderer.refreshSourceTexture(reason || "visualizer webgl");
+        }else if(visualizerBg && renderer.updateTextureFromCanvas){
           renderer.updateTextureFromCanvas(visualizerBg, {reason: reason || "visualizer", allowDark: true, sourceRect: {left:0, top:0, width: window.innerWidth || 1, height: window.innerHeight || 1}});
         }else{
           refreshLiquidGlassSource(renderer, reason || "visualizer fallback");
@@ -303,26 +305,86 @@
     }catch(e){}
   }
 
+  function debugNpOverlaySource(kind, renderer, details){
+    try{
+      const enabled = window.DEBRIPOD_UI_DEBUG === true || (localStorage.getItem("debripod_ui_debug") || "") === "1";
+      if(!enabled || !console || !console.log) return;
+      const lenses = (renderer && renderer.lenses ? renderer.lenses : []).map((lens)=> lens && lens.el ? {
+        className: lens.el.className,
+        id: lens.el.id || "",
+        rectPx: lens.rectPx ? {
+          left: Math.round(lens.rectPx.left),
+          top: Math.round(lens.rectPx.top),
+          width: Math.round(lens.rectPx.width),
+          height: Math.round(lens.rectPx.height)
+        } : null
+      } : null).filter(Boolean);
+      console.log("[DebriPod LiquidGL npOverlay source]", kind || "state", Object.assign({
+        textureWidth: renderer ? renderer.textureWidth || 0 : 0,
+        textureHeight: renderer ? renderer.textureHeight || 0 : 0,
+        sourceCssRect: renderer && renderer._sourceCssRect ? renderer._sourceCssRect : null,
+        lenses: lenses
+      }, details || {}));
+    }catch(e){}
+  }
+
   function refreshNpOverlayGlassSource(reason){
     try{
       const renderer = liquidGlassRendererByKey("npOverlay");
       if(!renderer) return;
       const artEl = document.getElementById("npArt");
-      const liveArtCanvas = root.albumArtTexture && root.albumArtTexture.renderToCanvas ? root.albumArtTexture.renderToCanvas(artEl) : artEl;
-      if(liveArtCanvas && renderer.updateTextureFromCanvas){
-        const rect = artEl ? artEl.getBoundingClientRect() : {left:0, top:0, width:liveArtCanvas.width || 1, height:liveArtCanvas.height || 1};
-        renderer.updateTextureFromCanvas(liveArtCanvas, {
-          reason: reason || "rendered album art canvas",
-          allowDark: true,
-          sourceRect: {left: rect.left || 0, top: rect.top || 0, width: rect.width || liveArtCanvas.width || 1, height: rect.height || liveArtCanvas.height || 1}
-        });
-        return;
+      const glassCanvas = root.albumArtTexture && root.albumArtTexture.renderGlassSourceCanvas ? root.albumArtTexture.renderGlassSourceCanvas() : null;
+      if(renderer && artEl && glassCanvas && renderer.updateTextureFromCanvas){
+        const rect = artEl.getBoundingClientRect();
+        if(rect && rect.width > 0 && rect.height > 0 && glassCanvas.width > 0 && glassCanvas.height > 0){
+          const updated = renderer.updateTextureFromCanvas(glassCanvas, {
+            reason: reason || "rendered album art glass source",
+            allowDark: false,
+            sourceRect: {
+              left: rect.left || 0,
+              top: rect.top || 0,
+              width: rect.width || 1,
+              height: rect.height || 1
+            }
+          });
+          debugNpOverlaySource(updated ? "rendered glass canvas" : "skipped keep previous", renderer, {
+            reason: reason || "",
+            glassCanvasWidth: glassCanvas.width || 0,
+            glassCanvasHeight: glassCanvas.height || 0,
+            artRect: {left: rect.left || 0, top: rect.top || 0, width: rect.width || 0, height: rect.height || 0},
+            updateReturned: !!updated
+          });
+          if(updated || renderer.texture || renderer._sourceTextureReady) return;
+        }
+      }
+      if(artEl && artEl instanceof HTMLCanvasElement && artEl.width > 0 && artEl.height > 0 && renderer.updateTextureFromCanvas){
+        const rect = artEl.getBoundingClientRect();
+        if(rect && rect.width > 0 && rect.height > 0){
+          const updated = renderer.updateTextureFromCanvas(artEl, {
+            reason: reason || "visible album art canvas fallback",
+            allowDark: false,
+            sourceRect: {
+              left: rect.left || 0,
+              top: rect.top || 0,
+              width: rect.width || 1,
+              height: rect.height || 1
+            }
+          });
+          debugNpOverlaySource(updated ? "visible canvas fallback" : "skipped keep previous", renderer, {
+            reason: reason || "",
+            glassCanvasWidth: glassCanvas ? glassCanvas.width || 0 : 0,
+            glassCanvasHeight: glassCanvas ? glassCanvas.height || 0 : 0,
+            artRect: {left: rect.left || 0, top: rect.top || 0, width: rect.width || 0, height: rect.height || 0},
+            updateReturned: !!updated
+          });
+          if(updated || renderer.texture || renderer._sourceTextureReady) return;
+        }
       }
       const sourceImg = document.getElementById("npArtLiquidSource");
       if(sourceImg && sourceImg.complete && sourceImg.naturalWidth && sourceImg.naturalHeight){
         if(renderer.updateTextureFromImage){
           const rect = artEl ? artEl.getBoundingClientRect() : null;
-          renderer.updateTextureFromImage(sourceImg, {
+          const updated = renderer.updateTextureFromImage(sourceImg, {
             reason: reason || "album art image fallback",
             sourceRect: {
               left: (rect && rect.left) || 0,
@@ -331,20 +393,26 @@
               height: (rect && rect.height) || sourceImg.naturalHeight || 1
             }
           });
-          debugLiquidGlassRenderers("np overlay image fallback");
+          debugNpOverlaySource("raw image fallback", renderer, {
+            reason: reason || "",
+            glassCanvasWidth: glassCanvas ? glassCanvas.width || 0 : 0,
+            glassCanvasHeight: glassCanvas ? glassCanvas.height || 0 : 0,
+            artRect: rect ? {left: rect.left || 0, top: rect.top || 0, width: rect.width || 0, height: rect.height || 0} : null,
+            updateReturned: !!updated
+          });
         }else{
           refreshLiquidGlassSource(renderer, reason || "album art image fallback");
         }
         return;
       }
-      if(renderer.texture || renderer._sourceTextureReady){
-        if(renderer._sourceIsSolidFallback && renderer.clearSourceTexture){
-          renderer.clearSourceTexture(reason || "album art source unavailable");
-        }
-        return;
-      }else{
-        return;
-      }
+      debugNpOverlaySource("skipped keep previous", renderer, {
+        reason: reason || "",
+        glassCanvasWidth: glassCanvas ? glassCanvas.width || 0 : 0,
+        glassCanvasHeight: glassCanvas ? glassCanvas.height || 0 : 0,
+        artRect: artEl ? (function(){ const r = artEl.getBoundingClientRect(); return {left:r.left || 0, top:r.top || 0, width:r.width || 0, height:r.height || 0}; })() : null,
+        updateReturned: false
+      });
+      return;
     }catch(e){}
   }
 
@@ -782,10 +850,10 @@
   function refreshLibPillGlassLenses(reason){
     try{
       if(typeof window.liquidGL !== "function") return;
-      window.liquidGL(Object.assign({}, liquidGlassElementOptions("selectedRow"), {
+      window.liquidGL(Object.assign({}, liquidGlassElementOptions("listPills"), {
         target: ".ipodPill.liquidGlass[data-liquid-row-pill]",
         rendererKey: "libPills",
-        sourceType: "visualizerCanvas",
+        sourceType: "visualizerWebgl",
         sourceElement: "#visualizerBg",
         clipTarget: "#libList",
         clipToPaddingBox: true,
@@ -875,40 +943,40 @@
       if(liquidGlassReady || typeof window.liquidGL !== "function") return;
       const sharedGlassOptions = Object.assign({}, liquidGlassElementOptions("pathPill"), {
         target: ".pathPillGlass.liquidGlass",
-        sourceType: "visualizerCanvas",
+        sourceType: "visualizerWebgl",
         sourceElement: "#visualizerBg"
       });
       window.liquidGL(sharedGlassOptions);
       const wheelGlassInstances = asLiquidArray(window.liquidGL(Object.assign({}, liquidGlassElementOptions("wheel"), {
         target: ".wheelGlassRing.liquidGlass, .wheelCenterGlass.liquidGlass",
         rendererKey: "wheel",
-        sourceType: "visualizerCanvas",
+        sourceType: "visualizerWebgl",
         sourceElement: "#visualizerBg"
       })));
       liquidWheelLenses = wheelGlassInstances.filter(inst => inst && inst.el);
       window.liquidGL(Object.assign({}, liquidGlassElementOptions("nowPlayingPill"), {
         target: ".npOverlayGlass.liquidGlass",
         sourceType: "albumArtCanvasOrImage",
-        sourceElement: "#npArt",
+        sourceElement: "#npArtGlassSource",
         sourceCssElement: "#npArt",
         rendererKey: "npOverlay"
       }));
       window.liquidGL(Object.assign({}, liquidGlassElementOptions("libraryList"), {
         target: "#libList.liquidGlass",
         rendererKey: "libList",
-        sourceType: "visualizerCanvas",
+        sourceType: "visualizerWebgl",
         sourceElement: "#visualizerBg"
       }));
-      window.liquidGL(Object.assign({}, liquidGlassElementOptions("listPills"), {
+      window.liquidGL(Object.assign({}, liquidGlassElementOptions("selectedRow"), {
         target: "#libListSelectedGlass.liquidGlass",
         rendererKey: "libSelection",
-        sourceType: "visualizerCanvas",
+        sourceType: "visualizerWebgl",
         sourceElement: "#visualizerBg"
       }));
       window.liquidGL(Object.assign({}, liquidGlassElementOptions("listPills"), {
         target: ".ipodPill.liquidGlass[data-liquid-row-pill]",
         rendererKey: "libPills",
-        sourceType: "visualizerCanvas",
+        sourceType: "visualizerWebgl",
         sourceElement: "#visualizerBg",
         clipTarget: "#libList",
         clipToPaddingBox: true,

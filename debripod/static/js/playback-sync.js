@@ -163,10 +163,19 @@
       try{ setHeader(); }catch(e){}
       try{ nowPlaying.classList.remove("npPageActive"); }catch(e){}
       updateVisualizerState();
+      try{
+        if(window.DebriPod && DebriPod.albumArtTexture && DebriPod.albumArtTexture.renderToCanvas){
+          DebriPod.albumArtTexture.renderToCanvas(npArt);
+        }
+      }catch(e){}
       scheduleLiquidGlassSnapshot("now playing entering", true);
       setTimeout(()=>{
         try{
+          if(window.DebriPod && DebriPod.albumArtTexture && DebriPod.albumArtTexture.renderToCanvas){
+            DebriPod.albumArtTexture.renderToCanvas(npArt);
+          }
           recaptureLiquidGlassElement(npArt);
+          scheduleNpOverlayGlassRender();
           scheduleLiquidGlassRender();
         }catch(e){}
       }, 80);
@@ -175,6 +184,12 @@
           try{
             if(fadeToken !== npPageFadeToken) return;
             nowPlaying.classList.add("npPageActive");
+            try{
+              if(window.DebriPod && DebriPod.albumArtTexture && DebriPod.albumArtTexture.renderToCanvas){
+                DebriPod.albumArtTexture.renderToCanvas(npArt);
+              }
+              scheduleNpOverlayGlassRender();
+            }catch(e){}
             scheduleLiquidGlassSnapshot("now playing active", true);
           }catch(e){}
         });

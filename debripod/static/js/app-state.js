@@ -11,6 +11,7 @@ var DEFAULT_UI_SETTINGS = DebriPod.uiSettings.DEFAULT_UI_SETTINGS;
 var clampNumber = DebriPod.uiSettings.clampNumber;
 var normalizeVisualizerStrength = DebriPod.uiSettings.normalizeVisualizerStrength;
 var normalizeVisualizerPreset = DebriPod.uiSettings.normalizeVisualizerPreset;
+var normalizeVisualizerFpsLock = DebriPod.uiSettings.normalizeVisualizerFpsLock;
 var normalizeLiquidGlassMode = DebriPod.uiSettings.normalizeLiquidGlassMode;
 var normalizeLiquidGlassTint = DebriPod.uiSettings.normalizeLiquidGlassTint;
 var liquidGlassTintMode = DebriPod.uiSettings.liquidGlassTintMode;

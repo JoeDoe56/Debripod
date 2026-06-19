@@ -224,6 +224,7 @@ async function goBack(){
       const meta = Object.assign({}, await apiGet("/api/library/filemeta?root_id=" + encodeURIComponent(rootId) + "&rel=" + encodeURIComponent(rel)), {streamed: !!item.streamed, source: item.source || "", ext: item.ext || "", quality: item.quality || ""});
       state.now = {rootId: rootId, rel: rel, media: "audio", streamed: !!item.streamed};
       state.nowMeta = meta;
+      try{ loadVisualizerAnalysisForTrack(rootId, rel, "audio", {streamed: !!item.streamed}); }catch(err){}
       saveResumeNowPlaying();
       await updateNowPlayingDisplay(meta, item.label || "Track", {animateArt: true, animatePill: true});
       npPillActivity(false);
@@ -311,6 +312,7 @@ async function goBack(){
 
     state.now = {rootId: rootId, rel: rel, media: "video", streamed: !!item.streamed};
     state.nowMeta = meta;
+    try{ loadVisualizerAnalysisForTrack(rootId, rel, "video", {streamed: !!item.streamed}); }catch(err){}
     visualizerVideoSampleLastTs = 0;
     saveResumeNowPlaying();
 
@@ -360,6 +362,7 @@ async function goBack(){
       if(forceShow) showNowPlaying(true);
 
       const meta = Object.assign({}, state.nowMeta || {}, {streamed: !!item.streamed, source: item.source || "", ext: item.ext || "", quality: item.quality || ""});
+      try{ loadVisualizerAnalysisForTrack(rootId, rel, "audio", {streamed: !!item.streamed}); }catch(err){}
       await updateNowPlayingDisplay(meta, item.label || "Track", {animateArt: false, animatePill: false});
       updateMediaSession({title: meta.title, artist: meta.artist, album: meta.album, art: meta.art});
       try{ syncMediaSessionControls(); }catch(e){}
@@ -440,8 +443,9 @@ async function goBack(){
     state.playIndex = (typeof index === "number") ? index : 0;
     ensurePlayOrder(false);
 
-    state.now = {rootId: rootId, rel: rel};
+    state.now = {rootId: rootId, rel: rel, media: "audio", streamed: !!item.streamed};
     state.nowMeta = meta;
+    try{ loadVisualizerAnalysisForTrack(rootId, rel, "audio", {streamed: !!item.streamed}); }catch(err){}
     saveResumeNowPlaying();
 
     let playlistCtx = null;
