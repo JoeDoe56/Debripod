@@ -307,13 +307,23 @@
     try{
       const renderer = liquidGlassRendererByKey("npOverlay");
       if(!renderer) return;
+      const artEl = document.getElementById("npArt");
+      const liveArtCanvas = root.albumArtTexture && root.albumArtTexture.renderToCanvas ? root.albumArtTexture.renderToCanvas(artEl) : artEl;
+      if(liveArtCanvas && renderer.updateTextureFromCanvas){
+        const rect = artEl ? artEl.getBoundingClientRect() : {left:0, top:0, width:liveArtCanvas.width || 1, height:liveArtCanvas.height || 1};
+        renderer.updateTextureFromCanvas(liveArtCanvas, {
+          reason: reason || "rendered album art canvas",
+          allowDark: true,
+          sourceRect: {left: rect.left || 0, top: rect.top || 0, width: rect.width || liveArtCanvas.width || 1, height: rect.height || liveArtCanvas.height || 1}
+        });
+        return;
+      }
       const sourceImg = document.getElementById("npArtLiquidSource");
       if(sourceImg && sourceImg.complete && sourceImg.naturalWidth && sourceImg.naturalHeight){
         if(renderer.updateTextureFromImage){
-          const artEl = document.getElementById("npArt");
           const rect = artEl ? artEl.getBoundingClientRect() : null;
           renderer.updateTextureFromImage(sourceImg, {
-            reason: reason || "album art image",
+            reason: reason || "album art image fallback",
             sourceRect: {
               left: (rect && rect.left) || 0,
               top: (rect && rect.top) || 0,
@@ -321,20 +331,10 @@
               height: (rect && rect.height) || sourceImg.naturalHeight || 1
             }
           });
+          debugLiquidGlassRenderers("np overlay image fallback");
         }else{
-          refreshLiquidGlassSource(renderer, reason || "album art image");
+          refreshLiquidGlassSource(renderer, reason || "album art image fallback");
         }
-        return;
-      }
-      const liveArtCanvas = root.albumArtTexture && root.albumArtTexture.renderToCanvas ? root.albumArtTexture.renderToCanvas(npArt) : null;
-      if(liveArtCanvas && renderer.updateTextureFromCanvas){
-        const artEl = npArt;
-        const rect = artEl ? artEl.getBoundingClientRect() : {left:0, top:0, width:liveArtCanvas.width || 1, height:liveArtCanvas.height || 1};
-        renderer.updateTextureFromCanvas(liveArtCanvas, {
-          reason: reason || "album art canvas texture",
-          allowDark: true,
-          sourceRect: {left: rect.left || 0, top: rect.top || 0, width: rect.width || liveArtCanvas.width || 1, height: rect.height || liveArtCanvas.height || 1}
-        });
         return;
       }
       if(renderer.texture || renderer._sourceTextureReady){
@@ -889,7 +889,7 @@
       window.liquidGL(Object.assign({}, liquidGlassElementOptions("nowPlayingPill"), {
         target: ".npOverlayGlass.liquidGlass",
         sourceType: "albumArtCanvasOrImage",
-        sourceElement: "#npArtLiquidSource",
+        sourceElement: "#npArt",
         sourceCssElement: "#npArt",
         rendererKey: "npOverlay"
       }));
