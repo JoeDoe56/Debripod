@@ -755,7 +755,8 @@
 
     updateTextureFromImage(img, options = {}) {
       if (!img || !img.complete || !img.naturalWidth || !img.naturalHeight) return false;
-      this._sourceCssRect = null;
+      if (options.sourceRect) this._sourceCssRect = options.sourceRect;
+      else this._sourceCssRect = null;
       return this._uploadTextureSource(img, img.naturalWidth, img.naturalHeight, options.reason || "image source", { allowDark: true, skipBlankCheck: true, solidFallback: false });
     }
 

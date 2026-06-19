@@ -310,7 +310,17 @@
       const sourceImg = document.getElementById("npArtLiquidSource");
       if(sourceImg && sourceImg.complete && sourceImg.naturalWidth && sourceImg.naturalHeight){
         if(renderer.updateTextureFromImage){
-          renderer.updateTextureFromImage(sourceImg, {reason: reason || "album art image"});
+          const artEl = document.getElementById("npArt");
+          const rect = artEl ? artEl.getBoundingClientRect() : null;
+          renderer.updateTextureFromImage(sourceImg, {
+            reason: reason || "album art image",
+            sourceRect: {
+              left: (rect && rect.left) || 0,
+              top: (rect && rect.top) || 0,
+              width: (rect && rect.width) || sourceImg.naturalWidth || 1,
+              height: (rect && rect.height) || sourceImg.naturalHeight || 1
+            }
+          });
         }else{
           refreshLiquidGlassSource(renderer, reason || "album art image");
         }
