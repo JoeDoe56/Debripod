@@ -1078,7 +1078,22 @@
       try {
         if (!lens || !lens.el || !lens.el.isConnected) return false;
         const style = window.getComputedStyle(lens.el);
-        if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity || 1) <= 0.01) return false;
+        if (style.display === "none" || style.visibility === "hidden") return false;
+        let node = lens.el.parentElement;
+        while (node && node !== document.body) {
+          const parentStyle = window.getComputedStyle(node);
+          if (
+            parentStyle.display === "none" ||
+            parentStyle.visibility === "hidden" ||
+            Number(parentStyle.opacity || 1) <= 0.01 ||
+            (node.classList &&
+              (node.classList.contains("npPillHidden") ||
+                node.classList.contains("npPillSwapHidden")))
+          ) {
+            return false;
+          }
+          node = node.parentElement;
+        }
         const rect = lens.rectPx || lens.el.getBoundingClientRect();
         if (!rect || !(rect.width > 0) || !(rect.height > 0)) return false;
         if (rect.right < -2 || rect.bottom < -2 || rect.left > (window.innerWidth || 0) + 2 || rect.top > (window.innerHeight || 0) + 2) return false;
@@ -2001,7 +2016,7 @@
         if (
           style.display === "none" ||
           style.visibility === "hidden" ||
-          parseFloat(style.opacity || "1") <= 0.01 ||
+          (node !== this.el && parseFloat(style.opacity || "1") <= 0.01) ||
             (node.classList &&
             (node.classList.contains("npPillHidden") ||
               node.classList.contains("npPillSwapHidden")))
