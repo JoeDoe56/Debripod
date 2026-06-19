@@ -106,6 +106,7 @@
     visualizer: true,
     visualizerStrength: "high",
     visualizerPreset: "album",
+    visualizerFpsLock: 60,
     liquidGlassElements: cloneGlassElementSettings(DEFAULT_LIQUID_GLASS_ELEMENT_SETTINGS),
     centerBounceAmount: 0.075,
     centerBounceDuration: 240,
@@ -131,6 +132,12 @@
   function normalizeVisualizerPreset(value){
     const k = String(value || "album").trim().toLowerCase();
     return VISUALIZER_PRESETS[k] ? k : "album";
+  }
+
+  function normalizeVisualizerFpsLock(value){
+    const n = Number(value);
+    if(n === 30 || n === 60 || n === 120) return n;
+    return 60;
   }
 
   function normalizeLiquidGlassMode(name){
@@ -166,7 +173,7 @@
       const srcTint = src.glassTint == null ? liquidGlassModeToTint(src.mode || def.mode) : src.glassTint;
       out[key] = {
         label: def.label,
-        mode: normalizeLiquidGlassMode(src.mode || def.mode),
+        mode: normalizeLiquidGlassMode(src.mode || liquidGlassTintMode(srcTint)),
         glassTint: normalizeLiquidGlassTint(srcTint, tintFallback),
         resolution: clampNumber(src.resolution, def.resolution, 0.25, 3),
         refraction: clampNumber(src.refraction, def.refraction, 0, 0.25),
@@ -178,7 +185,6 @@
         shadow: src.shadow === undefined ? !!def.shadow : !!src.shadow,
         refractionFill: clampNumber(src.refractionFill, def.refractionFill, 0, 1)
       };
-      out[key].mode = liquidGlassTintMode(out[key].glassTint);
     });
     return out;
   }
@@ -193,6 +199,7 @@
           if(Object.prototype.hasOwnProperty.call(saved, "visualizer")) out.visualizer = !!saved.visualizer;
           if(saved.visualizerStrength != null) out.visualizerStrength = normalizeVisualizerStrength(saved.visualizerStrength);
           if(saved.visualizerPreset != null) out.visualizerPreset = normalizeVisualizerPreset(saved.visualizerPreset);
+          if(saved.visualizerFpsLock != null) out.visualizerFpsLock = normalizeVisualizerFpsLock(saved.visualizerFpsLock);
           out.liquidGlassElements = cloneGlassElementSettings(saved.liquidGlassElements);
           out.centerBounceAmount = clampNumber(saved.centerBounceAmount, out.centerBounceAmount, 0, 0.3);
           out.centerBounceDuration = clampNumber(saved.centerBounceDuration, out.centerBounceDuration, 0, 1000);
@@ -212,6 +219,7 @@
     }catch(e){}
     try{ out.visualizerStrength = normalizeVisualizerStrength(localStorage.getItem("debripod_visualizer_strength") || out.visualizerStrength); }catch(e){}
     try{ out.visualizerPreset = normalizeVisualizerPreset(localStorage.getItem("debripod_visualizer_preset") || out.visualizerPreset); }catch(e){}
+    try{ out.visualizerFpsLock = normalizeVisualizerFpsLock(localStorage.getItem("debripod_visualizer_fps_lock") || out.visualizerFpsLock); }catch(e){}
     try{
       const mode = normalizeLiquidGlassMode(localStorage.getItem("debripod_liquid_gl_mode") || "");
       if(mode) {
@@ -231,6 +239,7 @@
     try{ localStorage.setItem("debripod_visualizer", uiSettings.visualizer ? "1" : "0"); }catch(e){}
     try{ localStorage.setItem("debripod_visualizer_strength", uiSettings.visualizerStrength); }catch(e){}
     try{ localStorage.setItem("debripod_visualizer_preset", uiSettings.visualizerPreset); }catch(e){}
+    try{ localStorage.setItem("debripod_visualizer_fps_lock", String(normalizeVisualizerFpsLock(uiSettings.visualizerFpsLock))); }catch(e){}
     try{ uiSettings.liquidGlassElements = cloneGlassElementSettings(uiSettings.liquidGlassElements); }catch(e){}
   }
 
@@ -244,6 +253,7 @@
     clampNumber,
     normalizeVisualizerStrength,
     normalizeVisualizerPreset,
+    normalizeVisualizerFpsLock,
     normalizeLiquidGlassMode,
     normalizeLiquidGlassTint,
     liquidGlassTintMode,

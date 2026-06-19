@@ -12,6 +12,7 @@ var visualizerTrackKey = "";
 var visualizerSampleNonce = 0;
 var visualizerStrength = normalizeVisualizerStrength(uiSettings.visualizerStrength);
 var visualizerPresetName = normalizeVisualizerPreset(uiSettings.visualizerPreset);
+var visualizerFpsLock = normalizeVisualizerFpsLock(uiSettings.visualizerFpsLock);
 var visualizerStrengthTransition = null;
 var defaultTheme = {
   accent: "rgba(10,132,255,.88)",
@@ -56,20 +57,41 @@ var visualizerBeatPulse = 0;
 var visualizerBeatLastTs = 0;
 var visualizerBeatEnergyAvg = 0;
 var visualizerBeatIntervals = [];
-var visualizerCtx = null;
 var visualizerCanvasDpr = 0;
 var visualizerCanvasW = 0;
 var visualizerCanvasH = 0;
+var visualizerGl = null;
+var visualizerProgram = null;
+var visualizerCopyProgram = null;
+var visualizerBuffer = null;
+var visualizerTexture = null;
+var visualizerFramebuffer = null;
+var visualizerWebglUnavailable = false;
 var visualizerVideoSampleCanvas = null;
 var visualizerVideoSampleCtx = null;
 var visualizerVideoSampleLastTs = 0;
 var visualizerArtBounds = null;
 var visualizerArtBoundsLastTs = 0;
+var visualizerAnalysisNonce = 0;
+var visualizerAnalysisState = {
+  key: "",
+  loaded: false,
+  loading: false,
+  stale: false,
+  rate: 30,
+  stride: 9,
+  bandCount: 7,
+  frameCount: 0,
+  bytes: null,
+  rootId: "",
+  rel: "",
+  source: ""
+};
 
 var VISUALIZER_STRENGTHS = {
-  low: {dpr: 0.62, interval: 33, bassFields: 1, midFields: 1, trebleFields: 1, speed: 0.58, alpha: 0.42, bright: 0.72, coverage: 0.72},
-  medium: {dpr: 0.86, interval: 17, bassFields: 2, midFields: 2, trebleFields: 2, speed: 0.82, alpha: 0.68, bright: 0.92, coverage: 1.0},
-  high: {dpr: 1.05, interval: 17, bassFields: 3, midFields: 3, trebleFields: 3, speed: 1.02, alpha: 0.86, bright: 1.06, coverage: 1.22}
+  low: {dpr: 0.62, interval: 33, bassFields: 1, midFields: 1, trebleFields: 1, speed: 0.58, alpha: 0.42, bright: 0.72, coverage: 0.72, density: 0.08},
+  medium: {dpr: 0.86, interval: 17, bassFields: 2, midFields: 2, trebleFields: 2, speed: 0.82, alpha: 0.72, bright: 0.98, coverage: 1.05, density: 0.45},
+  high: {dpr: 1.12, interval: 8, bassFields: 5, midFields: 5, trebleFields: 5, speed: 1.08, alpha: 1.08, bright: 1.34, coverage: 1.46, density: 1.0}
 };
 
 function visualizerStrengthConfigFor(name){
@@ -214,65 +236,480 @@ function resetVisualizerTempo(){
   visualizerBands = [0, 0, 0, 0, 0, 0, 0];
 }
 
+function resetVisualizerAnalysis(reason){
+  visualizerAnalysisNonce += 1;
+  visualizerAnalysisState = {
+    key: "",
+    loaded: false,
+    loading: false,
+    stale: false,
+    rate: 30,
+    stride: 9,
+    bandCount: 7,
+    frameCount: 0,
+    bytes: null,
+    rootId: "",
+    rel: "",
+    source: String(reason || "")
+  };
+}
+
+function bytesFromBase64(value){
+  try{
+    const text = String(value || "");
+    if(!text) return null;
+    const raw = atob(text);
+    const out = new Uint8Array(raw.length);
+    for(let i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i) & 255;
+    return out;
+  }catch(e){
+    return null;
+  }
+}
+
+function applyVisualizerAnalysis(rootId, rel, analysis, nonce){
+  try{
+    if(nonce !== visualizerAnalysisNonce) return;
+    if(!analysis || typeof analysis !== "object"){
+      visualizerAnalysisState.loading = false;
+      visualizerAnalysisState.loaded = false;
+      visualizerAnalysisState.stale = true;
+      return;
+    }
+    const bytes = bytesFromBase64(analysis.feature_blob_b64 || "");
+    const metadata = analysis.metadata && typeof analysis.metadata === "object" ? analysis.metadata : {};
+    const bandCount = Math.max(1, Math.min(7, Number(analysis.band_count || 7)));
+    const stride = Math.max(bandCount + 2, Number(metadata.frame_stride || (bandCount + 2)));
+    const frameCount = Math.max(0, Number(analysis.frame_count || Math.floor((bytes ? bytes.length : 0) / stride)));
+    if(!bytes || !frameCount || bytes.length < stride){
+      visualizerAnalysisState.loading = false;
+      visualizerAnalysisState.loaded = false;
+      visualizerAnalysisState.stale = true;
+      return;
+    }
+    visualizerAnalysisState = {
+      key: String(analysis.analysis_key || (rootId + ":" + rel)),
+      loaded: true,
+      loading: false,
+      stale: false,
+      rate: Math.max(1, Number(analysis.analysis_rate_hz || 30)),
+      stride: stride,
+      bandCount: bandCount,
+      frameCount: Math.min(frameCount, Math.floor(bytes.length / stride)),
+      bytes: bytes,
+      rootId: String(rootId || ""),
+      rel: String(rel || ""),
+      source: "sqlite"
+    };
+    resetVisualizerTempo();
+    scheduleVisualizerFrame(0);
+  }catch(e){
+    visualizerAnalysisState.loading = false;
+    visualizerAnalysisState.loaded = false;
+  }
+}
+
+function loadVisualizerAnalysisForTrack(rootId, rel, mediaKind, options){
+  try{
+    const opts = options || {};
+    const media = String(mediaKind || "audio").toLowerCase();
+    const rid = String(rootId || "");
+    const rp = String(rel || "");
+    if(media !== "audio" || opts.streamed || !rid || !rp || typeof apiGet !== "function"){
+      resetVisualizerAnalysis(media === "audio" ? "uncached audio" : media);
+      return;
+    }
+    const key = rid + "\n" + rp;
+    if(visualizerAnalysisState.key === key && (visualizerAnalysisState.loaded || visualizerAnalysisState.loading)) return;
+    const nonce = ++visualizerAnalysisNonce;
+    visualizerAnalysisState = Object.assign({}, visualizerAnalysisState, {
+      key: key,
+      rootId: rid,
+      rel: rp,
+      loaded: false,
+      loading: true,
+      stale: false,
+      source: "loading"
+    });
+    apiGet("/api/library/analysis?root_id=" + encodeURIComponent(rid) + "&rel=" + encodeURIComponent(rp), {networkOnly:true, cache:"no-store", abortKey:"visualizer-analysis"})
+      .then((res)=>{
+        try{
+          if(nonce !== visualizerAnalysisNonce) return;
+          if(!res || !res.analysis){
+            visualizerAnalysisState.loading = false;
+            visualizerAnalysisState.loaded = false;
+            visualizerAnalysisState.stale = true;
+            visualizerAnalysisState.source = "live";
+            return;
+          }
+          applyVisualizerAnalysis(rid, rp, res.analysis, nonce);
+        }catch(e){}
+      })
+      .catch(()=>{
+        if(nonce !== visualizerAnalysisNonce) return;
+        visualizerAnalysisState.loading = false;
+        visualizerAnalysisState.loaded = false;
+        visualizerAnalysisState.stale = true;
+        visualizerAnalysisState.source = "live";
+      });
+  }catch(e){
+    resetVisualizerAnalysis("analysis error");
+  }
+}
+
+function sampleCachedVisualizerAnalysis(el){
+  try{
+    const analysis = visualizerAnalysisState;
+    if(!analysis || !analysis.loaded || !analysis.bytes || !analysis.frameCount || !el) return null;
+    const rate = Math.max(1, Number(analysis.rate || 30));
+    const stride = Math.max(1, Number(analysis.stride || 9));
+    const count = Math.max(1, Number(analysis.frameCount || 0));
+    const time = Math.max(0, Number(el.currentTime || 0));
+    const pos = Math.max(0, Math.min(count - 1, time * rate));
+    const i0 = Math.floor(pos);
+    const i1 = Math.min(count - 1, i0 + 1);
+    const frac = pos - i0;
+    const off0 = i0 * stride;
+    const off1 = i1 * stride;
+    const bytes = analysis.bytes;
+    const bands = [];
+    for(let i = 0; i < 7; i++){
+      const a = Number(bytes[off0 + i] || 0) / 255;
+      const b = Number(bytes[off1 + i] || 0) / 255;
+      bands.push(a + (b - a) * frac);
+    }
+    const energyIdx = Math.min(stride - 2, 7);
+    const beatIdx = Math.min(stride - 1, 8);
+    const e0 = Number(bytes[off0 + energyIdx] || 0) / 255;
+    const e1 = Number(bytes[off1 + energyIdx] || 0) / 255;
+    const p0 = Number(bytes[off0 + beatIdx] || 0) / 255;
+    const p1 = Number(bytes[off1 + beatIdx] || 0) / 255;
+    const energy = e0 + (e1 - e0) * frac;
+    const beat = p0 + (p1 - p0) * frac;
+    return {
+      bands: bands,
+      bass: clamp01((bands[0] + bands[1]) * 0.5),
+      mid: clamp01((bands[2] + bands[3] + bands[4]) / 3),
+      treble: clamp01((bands[5] + bands[6]) * 0.5),
+      energy: clamp01(energy),
+      beat: clamp01(beat)
+    };
+  }catch(e){
+    return null;
+  }
+}
+
 function rgbForPaletteIndex(i){
   var palette = visualizerPalette && visualizerPalette.length ? visualizerPalette : defaultVisualizerPalette;
   return palette[i % palette.length] || defaultVisualizerPalette[i % defaultVisualizerPalette.length];
 }
 
-function rgbaCss(rgb, alpha, bright){
-  var b = Number.isFinite(bright) ? bright : 1;
-  return "rgba(" + clampByte((rgb.r || 0) * b) + "," + clampByte((rgb.g || 0) * b) + "," + clampByte((rgb.b || 0) * b) + "," + clamp01(alpha).toFixed(3) + ")";
+function compileVisualizerShader(gl, type, source){
+  const shader = gl.createShader(type);
+  gl.shaderSource(shader, source);
+  gl.compileShader(shader);
+  if(!gl.getShaderParameter(shader, gl.COMPILE_STATUS)){
+    try{ console.warn("[DebriPod visualizer] shader compile failed", gl.getShaderInfoLog(shader) || ""); }catch(e){}
+    try{ gl.deleteShader(shader); }catch(e){}
+    return null;
+  }
+  return shader;
 }
 
-function drawRadialField(ctx, w, h, x, y, radius, rgb, alpha, bright, midStop){
-  var grad = ctx.createRadialGradient(x, y, 0, x, y, Math.max(1, radius));
-  grad.addColorStop(0, rgbaCss(rgb, alpha, bright));
-  grad.addColorStop(Math.max(0.12, Math.min(0.82, midStop || 0.42)), rgbaCss(rgb, alpha * 0.32, bright));
-  grad.addColorStop(1, "rgba(0,0,0,0)");
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, w, h);
+function linkVisualizerProgram(gl, vsSource, fsSource){
+  const vs = compileVisualizerShader(gl, gl.VERTEX_SHADER, vsSource);
+  const fs = compileVisualizerShader(gl, gl.FRAGMENT_SHADER, fsSource);
+  if(!vs || !fs) return null;
+  const program = gl.createProgram();
+  gl.attachShader(program, vs);
+  gl.attachShader(program, fs);
+  gl.linkProgram(program);
+  if(!gl.getProgramParameter(program, gl.LINK_STATUS)){
+    try{ console.warn("[DebriPod visualizer] shader link failed", gl.getProgramInfoLog(program) || ""); }catch(e){}
+    try{ gl.deleteProgram(program); }catch(e){}
+    return null;
+  }
+  return program;
 }
 
-function drawLinearGlow(ctx, w, h, x0, y0, x1, y1, rgb, alpha, bright){
-  var grad = ctx.createLinearGradient(x0, y0, x1, y1);
-  grad.addColorStop(0, "rgba(0,0,0,0)");
-  grad.addColorStop(0.50, rgbaCss(rgb, alpha, bright));
-  grad.addColorStop(1, "rgba(0,0,0,0)");
-  ctx.fillStyle = grad;
-  ctx.fillRect(0, 0, w, h);
-}
-
-function visualizerAnchorForCanvas(w, h, ts){
-  var minDim = Math.min(w, h);
-  var maxDim = Math.max(w, h);
-  return {cx: w * 0.5, cy: h * 0.50, rx: maxDim * 0.36, ry: maxDim * 0.36, art: minDim * 0.52};
-}
-
-function resizeVisualizerCanvas(cfg){
+function ensureVisualizerWebGL(){
+  if(visualizerWebglUnavailable) return false;
   try{
     if(!visualizerBg || !visualizerBg.getContext) return false;
-    const dpr = Math.max(0.45, Math.min(cfg.dpr, window.devicePixelRatio || 1));
+    if(visualizerGl && visualizerProgram && visualizerCopyProgram && visualizerTexture && visualizerFramebuffer) return true;
+    const attrs = {alpha:true, premultipliedAlpha:true, preserveDrawingBuffer:true, antialias:false, depth:false, stencil:false};
+    visualizerGl = visualizerBg.getContext("webgl", attrs) || visualizerBg.getContext("experimental-webgl", attrs);
+    if(!visualizerGl){
+      visualizerWebglUnavailable = true;
+      return false;
+    }
+    const vsSource = "attribute vec2 p; varying vec2 uv; void main(){ uv=(p+1.0)*0.5; gl_Position=vec4(p,0.0,1.0); }";
+    let fsSource = [
+      "precision mediump float;",
+      "varying vec2 uv;",
+      "uniform vec2 canvasSize;",
+      "uniform float time;",
+      "uniform float playbackTime;",
+      "uniform float presetIndex;",
+      "uniform float energy;",
+      "uniform float bass;",
+      "uniform float mid;",
+      "uniform float treble;",
+      "uniform float beat;",
+      "uniform float activeAmount;",
+      "uniform float idleAmount;",
+      "uniform float alphaScale;",
+      "uniform float brightScale;",
+      "uniform float coverage;",
+      "uniform float densityScale;",
+      "uniform vec4 anchor;",
+      "uniform float bands[7];",
+      "uniform vec3 palette0;",
+      "uniform vec3 palette1;",
+      "uniform vec3 palette2;",
+      "uniform vec3 palette3;",
+      "uniform vec3 palette4;",
+      "uniform vec3 palette5;",
+      "uniform vec3 palette6;",
+      "uniform vec3 palette7;",
+      "vec3 pal(float i){",
+      "  if(i < 0.5) return palette0;",
+      "  if(i < 1.5) return palette1;",
+      "  if(i < 2.5) return palette2;",
+      "  if(i < 3.5) return palette3;",
+      "  if(i < 4.5) return palette4;",
+      "  if(i < 5.5) return palette5;",
+      "  if(i < 6.5) return palette6;",
+      "  return palette7;",
+      "}",
+      "float band(float i){",
+      "  if(i < 0.5) return bands[0];",
+      "  if(i < 1.5) return bands[1];",
+      "  if(i < 2.5) return bands[2];",
+      "  if(i < 3.5) return bands[3];",
+      "  if(i < 4.5) return bands[4];",
+      "  if(i < 5.5) return bands[5];",
+      "  return bands[6];",
+      "}",
+      "float field(vec2 p, vec2 c, float r){",
+      "  vec2 d = p - c;",
+      "  float rr = max(0.0008, r * r);",
+      "  return exp(-dot(d,d) / rr);",
+      "}",
+      "vec2 orbit(float idx, float level, float t, float style){",
+      "  float a = idx * 2.399963 + t * (0.18 + idx * 0.017) + sin(t * 0.11 + idx) * 0.24;",
+      "  float ring = 0.38 + fract(idx * 0.37) * 0.56 + level * 0.11 + beat * 0.035;",
+      "  if(style > 0.5 && style < 1.5){ a = idx * 1.37 + sin(t * 0.19 + idx) * 0.8; ring = 0.50 + fract(idx * 0.29) * 0.72; }",
+      "  else if(style > 1.5 && style < 2.5){ a = 1.5707 + (idx - 5.5) * 0.18 + sin(t * 0.42 + idx) * 0.28; ring = 0.35 + fract(idx * 0.23) * 0.78; }",
+      "  else if(style > 2.5 && style < 3.5){ a = idx * 1.11 + t * (0.28 + idx * 0.018); ring = 0.56 + sin(idx * 1.9) * 0.32; }",
+      "  else if(style > 3.5 && style < 4.5){ a = idx * 6.28318 / 14.0; ring = 0.22 + fract(t * 0.08 + idx * 0.071) * 1.08; }",
+      "  else if(style > 4.5 && style < 5.5){ a = 0.32 + idx * 0.52; ring = fract(t * (0.05 + idx * 0.006) + idx * 0.17) * 1.35; }",
+      "  else if(style > 5.5 && style < 6.5){ a = idx * 6.28318 / 14.0 + t * 0.34; ring = 0.18 + fract(t * 0.14 + idx * 0.071) * 0.86 + beat * 0.14; }",
+      "  else if(style > 6.5){ a = idx * 0.785 + sin(t * 0.18 + idx) * 0.15; ring = 0.34 + fract(idx * 0.43) * 0.84; }",
+      "  return vec2(cos(a), sin(a)) * ring;",
+      "}",
+      "void main(){",
+      "  vec2 p = uv;",
+      "  p.y = 1.0 - p.y;",
+      "  vec2 aspect = vec2(canvasSize.x / max(1.0, canvasSize.y), 1.0);",
+      "  vec2 center = anchor.xy;",
+      "  vec2 scale = max(anchor.zw, vec2(0.24));",
+      "  float style = presetIndex;",
+      "  float t = time + playbackTime * 0.08;",
+      "  vec3 color = vec3(0.0);",
+      "  float opacity = 0.0;",
+      "  float high = treble;",
+      "  float baseStyle = style < 0.5 ? 1.0 : 0.38;",
+      "  for(int i=0; i<28; i++){",
+      "    float fi = float(i);",
+      "    float bi = mod(fi, 7.0);",
+      "    float level = band(bi);",
+      "    float extra = fi < 14.0 ? 1.0 : densityScale;",
+      "    vec2 o = orbit(fi, level, t, style);",
+      "    vec2 c = center + vec2(o.x * scale.x / aspect.x, o.y * scale.y);",
+      "    float lowTone = 1.0 - clamp(bi / 6.0, 0.0, 1.0);",
+      "    float highTone = clamp(bi / 6.0, 0.0, 1.0);",
+      "    float radius = (0.10 + lowTone * 0.18 + highTone * 0.032 + level * 0.08 + beat * 0.025) * coverage * mix(1.0, 0.58, step(14.0, fi));",
+      "    float f = field(p * aspect, c * aspect, radius);",
+      "    float a = (0.028 + level * 0.15 + energy * 0.045 + beat * (0.018 + lowTone * 0.035)) * alphaScale * extra * baseStyle;",
+      "    float br = (0.46 + highTone * 0.78 + level * 0.22) * brightScale;",
+      "    color += pal(bi) * br * f * a;",
+      "    opacity += f * a;",
+      "  }",
+      "  float ribbon = 0.0;",
+      "  ribbon += exp(-abs((p.y - 0.50) + sin(p.x * 5.2 + t * 0.38) * 0.09) * 20.0) * mid;",
+      "  ribbon += exp(-abs((p.y - 0.32) + sin(p.x * 4.0 - t * 0.31) * 0.07) * 24.0) * treble;",
+      "  if(style > 0.5 && style < 1.5){",
+      "    float aurora = 0.0;",
+      "    aurora += exp(-abs(p.y - (0.28 + sin(p.x * 4.2 + t * 0.72) * 0.12)) * 17.0);",
+      "    aurora += exp(-abs(p.y - (0.58 + sin(p.x * 5.7 - t * 0.48) * 0.15)) * 14.0);",
+      "    color += (palette1 * 0.75 + palette2 * 0.35) * aurora * alphaScale * (0.08 + mid * 0.22);",
+      "    opacity += aurora * alphaScale * 0.10;",
+      "  }else if(style > 1.5 && style < 2.5){",
+      "    float d = distance((p - center) * aspect, vec2(0.0));",
+      "    float ember = exp(-d * 4.2) * (0.50 + bass * 1.7 + beat * 1.2);",
+      "    float sparks = pow(fract(sin(dot(floor(p * canvasSize / 18.0), vec2(12.7, 81.3))) * 43758.5), 18.0) * (0.18 + treble);",
+      "    color += (palette2 * 0.90 + palette3 * 0.35) * ember * alphaScale * 0.14;",
+      "    color += palette6 * sparks * alphaScale * 0.22;",
+      "    opacity += (ember * 0.10 + sparks * 0.16) * alphaScale;",
+      "  }else if(style > 2.5 && style < 3.5){",
+      "    vec2 q = abs(fract((p + vec2(t * 0.035, -t * 0.021)) * vec2(6.0, 4.0)) - 0.5);",
+      "    float prism = smoothstep(0.035, 0.0, min(q.x, q.y));",
+      "    prism += smoothstep(0.025, 0.0, abs((p.x + p.y) - (0.55 + sin(t * 0.3) * 0.2)));",
+      "    color += (palette0 * 0.45 + palette4 * 0.55 + palette6 * 0.40) * prism * alphaScale * (0.11 + energy * 0.18);",
+      "    opacity += prism * alphaScale * 0.09;",
+      "  }else if(style > 3.5 && style < 4.5){",
+      "    float d = distance((p - center) * aspect, vec2(0.0));",
+      "    float rings = 0.0;",
+      "    rings += smoothstep(0.035, 0.0, abs(fract(d * 7.0 - t * 0.34 - beat * 0.22) - 0.5));",
+      "    color += (palette0 * 0.42 + palette5 * 0.58) * rings * alphaScale * (0.10 + bass * 0.20);",
+      "    opacity += rings * alphaScale * 0.11;",
+      "  }else if(style > 4.5 && style < 5.5){",
+      "    float lanes = 0.0;",
+      "    lanes += smoothstep(0.06, 0.0, abs(fract(p.y * 7.0 + t * 0.17) - 0.5)) * (0.3 + mid);",
+      "    lanes += smoothstep(0.04, 0.0, abs(fract(p.x * 4.0 - t * 0.11) - 0.5)) * (0.2 + treble);",
+      "    color += (palette3 * 0.68 + palette1 * 0.32) * lanes * alphaScale * 0.12;",
+      "    opacity += lanes * alphaScale * 0.08;",
+      "  }else if(style > 5.5 && style < 6.5){",
+      "    float d = distance((p - center) * aspect, vec2(0.0));",
+      "    float nova = exp(-d * 2.8) * (0.25 + energy * 1.2) + smoothstep(0.025, 0.0, abs(fract(atan(p.y-center.y, (p.x-center.x)*aspect.x) * 7.0 + t * 0.45) - 0.5)) * smoothstep(0.85, 0.05, d);",
+      "    color += (palette0 * 0.55 + palette2 * 0.65 + palette7 * 0.25) * nova * alphaScale * 0.13;",
+      "    opacity += nova * alphaScale * 0.09;",
+      "  }else if(style > 6.5){",
+      "    vec2 grid = abs(fract((p + vec2(sin(t*.08), cos(t*.07)) * 0.04) * vec2(8.0, 8.0)) - 0.5);",
+      "    float lattice = smoothstep(0.032, 0.0, min(grid.x, grid.y));",
+      "    color += (palette4 * 0.60 + palette6 * 0.50) * lattice * alphaScale * (0.07 + high * 0.15);",
+      "    opacity += lattice * alphaScale * 0.08;",
+      "  }else{",
+      "    color += (palette1 * 0.48 + palette3 * 0.32) * ribbon * alphaScale * 0.12;",
+      "    opacity += ribbon * alphaScale * 0.08;",
+      "  }",
+      "  float v = smoothstep(0.92, 0.18, distance(p, vec2(0.5)));",
+      "  vec3 outColor = color * mix(0.36, 1.0, v);",
+      "  outColor = mix(vec3(0.0), outColor, max(activeAmount, idleAmount));",
+      "  gl_FragColor = vec4(outColor, 1.0);",
+      "}"
+    ].join("\n");
+    const copyFs = [
+      "precision mediump float;",
+      "varying vec2 uv;",
+      "uniform sampler2D tex;",
+      "void main(){ gl_FragColor = texture2D(tex, uv); }"
+    ].join("\n");
+    visualizerProgram = linkVisualizerProgram(visualizerGl, vsSource, fsSource);
+    visualizerCopyProgram = linkVisualizerProgram(visualizerGl, vsSource, copyFs);
+    if(!visualizerProgram || !visualizerCopyProgram){
+      visualizerWebglUnavailable = true;
+      return false;
+    }
+    visualizerBuffer = visualizerGl.createBuffer();
+    visualizerGl.bindBuffer(visualizerGl.ARRAY_BUFFER, visualizerBuffer);
+    visualizerGl.bufferData(visualizerGl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), visualizerGl.STATIC_DRAW);
+    visualizerTexture = visualizerGl.createTexture();
+    visualizerFramebuffer = visualizerGl.createFramebuffer();
+    visualizerGl.disable(visualizerGl.DEPTH_TEST);
+    visualizerGl.disable(visualizerGl.STENCIL_TEST);
+    return !!(visualizerBuffer && visualizerTexture && visualizerFramebuffer);
+  }catch(e){
+    visualizerWebglUnavailable = true;
+    return false;
+  }
+}
+
+function resizeVisualizerSurface(cfg){
+  try{
+    if(!ensureVisualizerWebGL()) return false;
+    const dpr = Math.max(0.45, Math.min(Number(cfg && cfg.dpr) || 1, window.devicePixelRatio || 1));
     const w = Math.max(1, Math.round(window.innerWidth * dpr));
     const h = Math.max(1, Math.round(window.innerHeight * dpr));
-    if(!visualizerCtx) visualizerCtx = visualizerBg.getContext("2d", {alpha:true});
-    if(!visualizerCtx) return false;
-    if(w !== visualizerCanvasW || h !== visualizerCanvasH || dpr !== visualizerCanvasDpr){
-      visualizerBg.width = w;
-      visualizerBg.height = h;
-      visualizerCanvasW = w;
-      visualizerCanvasH = h;
-      visualizerCanvasDpr = dpr;
-    }
+    if(w === visualizerCanvasW && h === visualizerCanvasH && dpr === visualizerCanvasDpr) return true;
+    visualizerBg.width = w;
+    visualizerBg.height = h;
+    visualizerCanvasW = w;
+    visualizerCanvasH = h;
+    visualizerCanvasDpr = dpr;
+    const gl = visualizerGl;
+    gl.bindTexture(gl.TEXTURE_2D, visualizerTexture);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+    gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+    gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, w, h, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, visualizerFramebuffer);
+    gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, visualizerTexture, 0);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
     return true;
   }catch(e){
     return false;
   }
 }
 
+function visualizerPresetIndex(){
+  try{
+    const order = Object.keys(VISUALIZER_PRESETS || {});
+    const idx = order.indexOf(normalizeVisualizerPreset(visualizerPresetName));
+    return idx >= 0 ? idx : 0;
+  }catch(e){
+    return 0;
+  }
+}
+
+function currentVisualizerPlaybackTime(){
+  try{
+    const el = currentVisualizerMediaElement();
+    return el && Number.isFinite(Number(el.currentTime)) ? Number(el.currentTime) : 0;
+  }catch(e){
+    return 0;
+  }
+}
+
+function visualizerAnchorForSurface(){
+  try{
+    const now = performance.now();
+    if(visualizerArtBounds && now - visualizerArtBoundsLastTs < 750) return visualizerArtBounds;
+    const artEl = (isVideoActive && isVideoActive() && npVideo) ? npVideo : document.getElementById("npArt");
+    if(artEl && artEl.getBoundingClientRect){
+      const rect = artEl.getBoundingClientRect();
+      const vw = Math.max(1, window.innerWidth || 1);
+      const vh = Math.max(1, window.innerHeight || 1);
+      if(rect.width > 0 && rect.height > 0){
+        visualizerArtBounds = {
+          cx: clamp01((rect.left + rect.width * 0.5) / vw),
+          cy: clamp01((rect.top + rect.height * 0.5) / vh),
+          rx: clamp01(Math.max(rect.width / vw, 0.18)),
+          ry: clamp01(Math.max(rect.height / vh, 0.18))
+        };
+        visualizerArtBoundsLastTs = now;
+        return visualizerArtBounds;
+      }
+    }
+  }catch(e){}
+  return {cx:0.5, cy:0.5, rx:0.36, ry:0.36};
+}
+
+function setVisualizerAttribute(program){
+  const gl = visualizerGl;
+  const loc = gl.getAttribLocation(program, "p");
+  gl.bindBuffer(gl.ARRAY_BUFFER, visualizerBuffer);
+  gl.enableVertexAttribArray(loc);
+  gl.vertexAttribPointer(loc, 2, gl.FLOAT, false, 0, 0);
+}
+
+function setPaletteUniforms(program){
+  try{
+    const gl = visualizerGl;
+    for(let i = 0; i < 8; i++){
+      const rgb = visualizerPalette[i % visualizerPalette.length] || defaultVisualizerPalette[i % defaultVisualizerPalette.length];
+      const loc = gl.getUniformLocation(program, "palette" + i);
+      if(loc) gl.uniform3f(loc, clampByte(rgb.r) / 255, clampByte(rgb.g) / 255, clampByte(rgb.b) / 255);
+    }
+  }catch(e){}
+}
+
 function blendVisualizerPalette(){
   try{
     const target = visualizerTargetPalette && visualizerTargetPalette.length ? visualizerTargetPalette : defaultVisualizerPalette;
-    const maxLen = Math.max(4, target.length);
+    const maxLen = Math.max(8, target.length);
     while(visualizerPalette.length < maxLen) visualizerPalette.push(target[visualizerPalette.length % target.length]);
     for(let i = 0; i < maxLen; i++){
       const cur = visualizerPalette[i] || target[i % target.length];
@@ -287,166 +724,82 @@ function blendVisualizerPalette(){
   }catch(e){}
 }
 
-function renderVisualizerCanvas(ts){
+function renderVisualizerWebGL(ts){
   try{
-    if(!visualizerBg) return;
+    if(!visualizerBg) return false;
     const cfg = currentVisualizerStrengthConfig(ts);
-    if(!resizeVisualizerCanvas(cfg)) return;
-    const ctx = visualizerCtx;
-    const w = visualizerCanvasW;
-    const h = visualizerCanvasH;
-    const preset = currentVisualizerPreset();
-    const style = String(preset.style || "orbit");
-    const t = visualizerMotionTime(ts) * cfg.speed;
-    const drawActive = visualizerActive || visualizerResidualVisible(ts);
-    const e = drawActive ? clamp01(visualizerEnergy) : 0;
-    const b = drawActive ? clamp01(visualizerBass) : 0;
-    const m = drawActive ? clamp01(visualizerMid) : 0;
-    const tr = drawActive ? clamp01(visualizerTreble) : 0;
-    const beat = drawActive ? clamp01(visualizerBeatPulse) : 0;
+    if(!resizeVisualizerSurface(cfg)) return false;
+    const gl = visualizerGl;
+    const nowTs = Number(ts || performance.now() || 0);
+    const drawActive = visualizerActive || visualizerResidualVisible(nowTs);
+    const activeAmount = drawActive ? 1 : 0;
+    const idleAmount = visualizerEnabled && !drawActive ? 0.34 : 0;
+    const anchor = visualizerAnchorForSurface();
     blendVisualizerPalette();
-    const anchor = visualizerAnchorForCanvas(w, h, ts);
 
-    ctx.globalCompositeOperation = "source-over";
-    ctx.clearRect(0, 0, w, h);
-    ctx.fillStyle = "rgb(0,0,0)";
-    ctx.fillRect(0, 0, w, h);
+    gl.bindFramebuffer(gl.FRAMEBUFFER, visualizerFramebuffer);
+    gl.viewport(0, 0, visualizerCanvasW, visualizerCanvasH);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(visualizerProgram);
+    setVisualizerAttribute(visualizerProgram);
+    setPaletteUniforms(visualizerProgram);
+    gl.uniform2f(gl.getUniformLocation(visualizerProgram, "canvasSize"), visualizerCanvasW, visualizerCanvasH);
+    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "time"), visualizerMotionTime(nowTs) * Number(cfg.speed || 1));
+    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "playbackTime"), currentVisualizerPlaybackTime());
+    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "presetIndex"), visualizerPresetIndex());
+    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "energy"), activeAmount ? clamp01(visualizerEnergy) : 0);
+    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "bass"), activeAmount ? clamp01(visualizerBass) : 0);
+    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "mid"), activeAmount ? clamp01(visualizerMid) : 0);
+    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "treble"), activeAmount ? clamp01(visualizerTreble) : 0);
+    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "beat"), activeAmount ? clamp01(visualizerBeatPulse) : 0);
+    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "activeAmount"), activeAmount);
+    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "idleAmount"), idleAmount);
+    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "alphaScale"), Number(cfg.alpha || 0.68));
+    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "brightScale"), Number(cfg.bright || 1));
+    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "coverage"), Number(cfg.coverage || 1));
+    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "densityScale"), Number(cfg.density || 0));
+    gl.uniform4f(gl.getUniformLocation(visualizerProgram, "anchor"), anchor.cx, anchor.cy, anchor.rx, anchor.ry);
+    gl.uniform1fv(gl.getUniformLocation(visualizerProgram, "bands[0]"), new Float32Array((visualizerBands || []).slice(0, 7).map((v)=> activeAmount ? clamp01(v) : 0)));
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
 
-    const minDim = Math.min(w, h);
-    const maxDim = Math.max(w, h);
-    ctx.globalCompositeOperation = "lighter";
-
-    if(style === "ribbon" || style === "prism" || style === "cascade"){
-      const bands = style === "prism" ? 6 : (style === "cascade" ? 5 : 4);
-      for(let i = 0; i < bands; i++){
-        const col = rgbForPaletteIndex(i + 1);
-        const swing = Math.sin(t * (style === "cascade" ? 1.25 : 0.72) + i * 1.7);
-        if(style === "cascade"){
-          const x = ((i + 0.2 + (t * (0.08 + i * 0.012))) % bands) / bands * w;
-          const drift = swing * anchor.rx * (0.18 + m * 0.16);
-          drawLinearGlow(ctx, w, h, x + drift, -h * 0.1, x - drift * 0.55, h * 1.08, col, cfg.alpha * (0.05 + visualizerBands[i % 7] * 0.13), cfg.bright * (0.76 + i * 0.08));
-        }else if(style === "prism"){
-          const xA = anchor.cx + Math.cos(i * 1.37 + t * 0.24) * anchor.rx * 1.55;
-          const yA = anchor.cy + Math.sin(i * 0.91 - t * 0.18) * anchor.ry * 1.38;
-          const xB = anchor.cx - Math.sin(i * 1.11 + t * 0.38) * anchor.rx * 1.62;
-          const yB = anchor.cy + Math.cos(i * 1.49 + t * 0.32) * anchor.ry * 1.46;
-          drawLinearGlow(ctx, w, h, xA, yA, xB, yB, col, cfg.alpha * (0.055 + tr * 0.12 + beat * 0.06), cfg.bright * 1.24);
-        }else{
-          const yA = anchor.cy + (i - (bands - 1) / 2) * anchor.ry * 0.42 + swing * anchor.ry * (0.32 + m * 0.18);
-          const yB = anchor.cy - (i - (bands - 1) / 2) * anchor.ry * 0.36 - swing * anchor.ry * (0.26 + tr * 0.18);
-          drawLinearGlow(ctx, w, h, -w * 0.05, yA, w * 1.05, yB, col, cfg.alpha * (0.05 + m * 0.12 + tr * 0.08), cfg.bright * 1.02);
-        }
-      }
-    }
-
-    if(style === "rings" || style === "nova"){
-      const ringCount = style === "nova" ? 4 : 6;
-      for(let i = 0; i < ringCount; i++){
-        const col = rgbForPaletteIndex(i);
-        const phase = (t * (style === "nova" ? 1.18 : 0.72) + i / ringCount) % 1;
-        const radius = (anchor.art * (style === "nova" ? 0.16 : 0.22) + minDim * (style === "nova" ? (phase * 0.34) : (0.10 + phase * 0.48))) * cfg.coverage * (1 + beat * (style === "nova" ? 0.32 : 0.14));
-        const alpha = cfg.alpha * (style === "nova" ? (0.08 + (1 - phase) * 0.20 + beat * 0.12) : (0.13 + (1 - phase) * 0.10 + (i < 2 ? b * 0.14 : tr * 0.10)));
-        drawRadialField(ctx, w, h, anchor.cx, anchor.cy, radius, col, alpha, cfg.bright * (style === "nova" ? (0.80 + i * 0.13) : (0.58 + i * 0.14)), style === "nova" ? 0.26 : 0.72);
-      }
-    }
-
-    if(style === "lattice"){
-      const lines = visualizerStrength === "high" ? 7 : 5;
-      for(let i = 0; i < lines; i++){
-        const level = clamp01(visualizerBands[i % 7] || (i < 2 ? b : (i < 4 ? m : tr)));
-        const col = rgbForPaletteIndex(i);
-        const phase = i / Math.max(1, lines - 1);
-        const skew = Math.sin(t * 0.42 + i * 0.8) * minDim * 0.10;
-        drawLinearGlow(ctx, w, h, w * phase + skew, 0, w * (1 - phase) - skew, h, col, cfg.alpha * (0.035 + level * 0.13), cfg.bright * (0.72 + i * 0.08));
-        drawLinearGlow(ctx, w, h, 0, h * phase - skew * 0.55, w, h * (1 - phase) + skew * 0.55, col, cfg.alpha * (0.026 + level * 0.08), cfg.bright * (0.68 + i * 0.06));
-      }
-    }
-
-    if(style === "bloom"){
-      const sparks = visualizerStrength === "high" ? 10 : 6;
-      for(let i = 0; i < sparks; i++){
-        const level = clamp01(visualizerBands[i % 7] || (i < 3 ? b : (i < 6 ? m : tr)));
-        const phase = (t * (0.10 + i * 0.006) + i * 0.173) % 1;
-        const side = (i % 2 ? -1 : 1);
-        const x = anchor.cx + side * anchor.rx * (0.18 + (i % 4) * 0.16) + Math.sin(t * 0.9 + i) * anchor.rx * 0.08;
-        const y = anchor.cy + anchor.ry * 0.52 - phase * anchor.ry * 1.65;
-        const radius = (anchor.art * 0.045 + minDim * 0.035) * (1 + level * 1.1 + beat * 0.22);
-        drawRadialField(ctx, w, h, x, y, radius, rgbForPaletteIndex(i + 2), cfg.alpha * (0.08 + level * 0.20), cfg.bright * (0.95 + phase * 0.28), 0.24);
-      }
-      drawRadialField(ctx, w, h, anchor.cx, anchor.cy + anchor.ry * 0.28, anchor.art * 0.58 * (1 + b * 0.22 + beat * 0.16), rgbForPaletteIndex(0), cfg.alpha * (0.12 + b * 0.28), cfg.bright * 0.62, 0.64);
-    }
-
-    if(visualizerStrength === "high"){
-      const layers = [
-        {idx:0, scale:.42, bright:.46, alpha:.18, orbit:.34},
-        {idx:1, scale:.52, bright:.58, alpha:.17, orbit:.50},
-        {idx:2, scale:.36, bright:.74, alpha:.15, orbit:.72},
-        {idx:3, scale:.30, bright:.92, alpha:.13, orbit:.92},
-        {idx:4, scale:.24, bright:1.05, alpha:.12, orbit:1.08},
-        {idx:5, scale:.18, bright:1.18, alpha:.11, orbit:1.22},
-        {idx:6, scale:.13, bright:1.30, alpha:.10, orbit:1.34}
-      ];
-      for(const layer of layers){
-        const level = clamp01(visualizerBands[layer.idx] || 0);
-        const angle = t * (0.42 + layer.idx * 0.09) + layer.idx * 0.92;
-        const wobble = Math.sin(t * (0.62 + layer.idx * 0.05) + layer.idx) * 0.10;
-        const orbit = layer.orbit + level * 0.16 + beat * 0.06;
-        const x = anchor.cx + Math.cos(angle + wobble) * anchor.rx * orbit;
-        const y = anchor.cy + Math.sin(angle - wobble) * anchor.ry * orbit;
-        const radius = (anchor.art * layer.scale + minDim * layer.scale * 0.72) * cfg.coverage * (1 + level * 0.42 + beat * 0.08);
-        drawRadialField(ctx, w, h, x, y, radius, rgbForPaletteIndex(layer.idx), cfg.alpha * (layer.alpha + level * 0.22), cfg.bright * layer.bright, 0.38);
-      }
-    }
-
-    for(let i = 0; i < cfg.bassFields; i++){
-      const col = rgbForPaletteIndex(i);
-      const spread = cfg.bassFields <= 1 ? 0 : (i / (cfg.bassFields - 1) - 0.5);
-      const angleBase = style === "bloom" ? Math.PI * 0.5 : (style === "rings" ? t * 0.28 : (style === "nova" ? t * 0.95 : (style === "cascade" ? Math.PI * 0.08 : Math.PI * 0.5)));
-      const angle = angleBase + spread * Math.PI * (style === "prism" ? 1.35 : 0.72) + Math.sin(t * 0.72 + i) * 0.10;
-      const orbitScale = style === "bloom" ? 0.16 : (style === "rings" ? 0.36 : (style === "nova" ? 0.08 + beat * 0.12 : (style === "cascade" ? 0.58 : (style === "lattice" ? 0.72 : 0.88))));
-      const x = anchor.cx + Math.cos(angle) * anchor.rx * (orbitScale + b * 0.10);
-      const yOffset = style === "cascade" ? ((t * 0.11 + i * 0.28) % 1 - 0.5) * h * 0.72 : Math.sin(angle) * anchor.ry * (orbitScale + 0.10 + b * 0.12);
-      const y = style === "cascade" ? anchor.cy + yOffset : anchor.cy + yOffset;
-      const radius = (anchor.art * (style === "nova" ? 0.32 : 0.42) + minDim * (0.26 + i * 0.055)) * cfg.coverage * (1 + b * 0.30 + e * 0.12 + beat * (style === "nova" ? 0.38 : 0.16));
-      drawRadialField(ctx, w, h, x, y, radius, col, cfg.alpha * (0.18 + b * 0.34 + e * 0.12), cfg.bright * 0.62, 0.52);
-    }
-
-    for(let i = 0; i < cfg.midFields; i++){
-      const col = rgbForPaletteIndex(i + cfg.bassFields);
-      const angle = (i / Math.max(1, cfg.midFields)) * Math.PI * 2 + t * (style === "prism" ? 1.18 : (style === "lattice" ? 0.18 : (style === "cascade" ? 0.68 : 0.46))) + Math.sin(t * 0.58 + i) * 0.12;
-      const spread = style === "bloom" ? 0.48 : (style === "rings" ? 0.78 : (style === "nova" ? 0.34 + beat * 0.20 : (style === "lattice" ? 1.18 : 1.02)));
-      const x = anchor.cx + Math.cos(angle) * anchor.rx * (spread + m * 0.12);
-      const y = anchor.cy + Math.sin(angle) * anchor.ry * (spread + m * 0.10);
-      const radius = (anchor.art * 0.24 + minDim * (0.15 + i * 0.035)) * cfg.coverage * (1 + m * 0.26 + e * 0.08 + beat * 0.08);
-      drawRadialField(ctx, w, h, x, y, radius, col, cfg.alpha * (0.16 + m * 0.30 + e * 0.08), cfg.bright * 0.90, 0.42);
-    }
-
-    for(let i = 0; i < cfg.trebleFields; i++){
-      const col = rgbForPaletteIndex(i + cfg.bassFields + cfg.midFields);
-      const angle = (i / Math.max(1, cfg.trebleFields)) * Math.PI * 2 + Math.PI / Math.max(2, cfg.trebleFields) + t * (style === "ribbon" ? 1.12 : (style === "prism" ? -1.26 : (style === "nova" ? 1.72 : 0.88)));
-      const spread = style === "bloom" ? 1.05 : (style === "rings" ? 1.36 : (style === "cascade" ? 1.48 : (style === "lattice" ? 1.05 : 1.16)));
-      const x = anchor.cx + Math.cos(angle) * anchor.rx * (spread + tr * 0.14);
-      const y = anchor.cy + Math.sin(angle) * anchor.ry * (spread * 0.95 + tr * 0.12);
-      const radius = (anchor.art * 0.13 + minDim * (0.075 + i * 0.018)) * cfg.coverage * (1 + tr * 0.38 + e * 0.06 + beat * 0.10);
-      drawRadialField(ctx, w, h, x, y, radius, col, cfg.alpha * (0.08 + tr * 0.30 + e * 0.08), cfg.bright * 1.16, 0.34);
-    }
-
-    if(visualizerStrength !== "low"){
-      drawLinearGlow(ctx, w, h, anchor.cx - anchor.rx * 1.8, anchor.cy - anchor.ry * (0.95 + tr * 0.2), anchor.cx + anchor.rx * 1.8, anchor.cy + anchor.ry * (0.95 - m * 0.14), rgbForPaletteIndex(1), cfg.alpha * (0.035 + m * 0.08), cfg.bright);
-    }
-    if(visualizerStrength === "high"){
-      drawLinearGlow(ctx, w, h, anchor.cx - anchor.rx * 1.2, anchor.cy - anchor.ry * 1.65, anchor.cx + anchor.rx * 1.2, anchor.cy + anchor.ry * 1.65, rgbForPaletteIndex(3), cfg.alpha * (0.04 + tr * 0.10), cfg.bright * 1.08);
-    }
-
-    ctx.globalCompositeOperation = "source-over";
-    const vignette = ctx.createRadialGradient(w * .5, h * .5, minDim * .08, w * .5, h * .5, maxDim * .68);
-    vignette.addColorStop(0, "rgba(0,0,0,0)");
-    vignette.addColorStop(0.62, "rgba(0,0,0,.20)");
-    vignette.addColorStop(1, "rgba(0,0,0,.86)");
-    ctx.fillStyle = vignette;
-    ctx.fillRect(0, 0, w, h);
-  }catch(e){}
+    gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+    gl.viewport(0, 0, visualizerCanvasW, visualizerCanvasH);
+    gl.clearColor(0, 0, 0, 1);
+    gl.clear(gl.COLOR_BUFFER_BIT);
+    gl.useProgram(visualizerCopyProgram);
+    setVisualizerAttribute(visualizerCopyProgram);
+    gl.activeTexture(gl.TEXTURE0);
+    gl.bindTexture(gl.TEXTURE_2D, visualizerTexture);
+    gl.uniform1i(gl.getUniformLocation(visualizerCopyProgram, "tex"), 0);
+    gl.drawArrays(gl.TRIANGLES, 0, 6);
+    try{ gl.flush(); }catch(e){}
+    return true;
+  }catch(e){
+    return false;
+  }
 }
+
+function visualizerSourceForLiquidGL(){
+  return {
+    canvas: visualizerBg,
+    gl: visualizerGl,
+    texture: visualizerTexture,
+    width: visualizerCanvasW,
+    height: visualizerCanvasH,
+    sourceRect: {left:0, top:0, width: window.innerWidth || 1, height: window.innerHeight || 1},
+    ready: !!(visualizerGl && visualizerTexture && visualizerCanvasW && visualizerCanvasH)
+  };
+}
+
+try{
+  const rootForVisualizer = window.DebriPod = window.DebriPod || {};
+  rootForVisualizer.visualizerRenderer = Object.assign(rootForVisualizer.visualizerRenderer || {}, {
+    sourceForLiquidGL: visualizerSourceForLiquidGL,
+    render: renderVisualizerWebGL,
+    available: function(){ return !!(visualizerGl && !visualizerWebglUnavailable); }
+  });
+}catch(e){}
 
 function currentVisualizerFrameState(ts){
   return {
@@ -462,7 +815,9 @@ function currentVisualizerFrameState(ts){
     bpm: visualizerBpm,
     palette: visualizerPalette,
     paletteRoles: currentVisualizerPalette,
-    selectedTextContrastMix: selectedTextContrastMix
+    roleWeights: roleWeightsForSelectedText(),
+    selectedTextContrastMix: selectedTextContrastMix,
+    analysisSource: visualizerAnalysisState && visualizerAnalysisState.loaded ? "sqlite" : "live"
   };
 }
 
@@ -470,14 +825,24 @@ function scheduleVisualizerFrame(delayMs){
   try{
     if(visualizerFrameHandle || visualizerFrameTimer) return;
     const delay = Math.max(0, Number(delayMs || 0));
+    const queueFrame = ()=>{
+      const scheduler = window.DebriPod && DebriPod.frameScheduler ? DebriPod.frameScheduler : null;
+      if(scheduler && scheduler.request){
+        visualizerFrameHandle = -1;
+        scheduler.request("visualizer-frame", (frameState)=> visualizerFrame(frameState && frameState.timestamp ? frameState.timestamp : performance.now()));
+        scheduler.mark({keepAlive:true});
+      }else{
+        visualizerFrameHandle = requestAnimationFrame(visualizerFrame);
+      }
+    };
     if(delay > 34){
       visualizerFrameTimer = setTimeout(()=>{
         visualizerFrameTimer = 0;
-        visualizerFrameHandle = requestAnimationFrame(visualizerFrame);
+        queueFrame();
       }, delay);
       return;
     }
-    visualizerFrameHandle = requestAnimationFrame(visualizerFrame);
+    queueFrame();
   }catch(e){}
 }
 
@@ -490,20 +855,28 @@ function visualizerFrame(ts){
     const pathNeedsFrame = visualizerEnabled && (visualizerActive || residual) && isPathPillVisible();
     const hasResidualEnergy = visualizerEnabled && (visualizerEnergy > 0.003 || visualizerBass > 0.003 || visualizerMid > 0.003 || visualizerTreble > 0.003);
     const glassNeedsFrame = visualizerEnabled || visualizerActive || residual || hasResidualEnergy || pathNeedsFrame;
-    const interval = glassNeedsFrame ? cfg.interval : 180;
+    const fpsInterval = 1000 / normalizeVisualizerFpsLock(visualizerFpsLock);
+    const interval = glassNeedsFrame ? Math.max(cfg.interval, fpsInterval) : 180;
     if(visualizerLastFrameTs && (nowTs - visualizerLastFrameTs) < interval){
       scheduleVisualizerFrame(interval - (nowTs - visualizerLastFrameTs));
       return;
     }
     visualizerLastFrameTs = nowTs;
     const el = currentVisualizerMediaElement();
-    const canAnalyze = !!(visualizerEnabled && visualizerActive && !document.hidden && el && ensureVisualizerAudioGraphFor(el) && visualizerAnalyser && visualizerData);
+    const cachedFeatures = visualizerEnabled && visualizerActive && !document.hidden ? sampleCachedVisualizerAnalysis(el) : null;
+    const canAnalyze = !!(!cachedFeatures && visualizerEnabled && visualizerActive && !document.hidden && el && ensureVisualizerAudioGraphFor(el) && visualizerAnalyser && visualizerData);
     let nextBass = 0;
     let nextMid = 0;
     let nextTreble = 0;
     let nextEnergy = 0;
     let nextBands = [0, 0, 0, 0, 0, 0, 0];
-    if(canAnalyze){
+    if(cachedFeatures){
+      nextBass = cachedFeatures.bass;
+      nextMid = cachedFeatures.mid;
+      nextTreble = cachedFeatures.treble;
+      nextEnergy = cachedFeatures.energy;
+      nextBands = cachedFeatures.bands;
+    }else if(canAnalyze){
       try{ visualizerAnalyser.getByteFrequencyData(visualizerData); }catch(e){}
       const n = visualizerData.length || 0;
       if(n > 0){
@@ -562,10 +935,14 @@ function visualizerFrame(ts){
     visualizerTreble = mixVal(visualizerTreble, nextTreble);
     visualizerEnergy = mixVal(visualizerEnergy, nextEnergy);
     visualizerBands = visualizerBands.map((prev, idx)=> mixVal(prev || 0, nextBands[idx] || 0));
-    updateVisualizerTempo(nowTs, nextBands[0] || nextBass, nextEnergy);
+    if(cachedFeatures){
+      visualizerBeatPulse = visualizerBeatPulse + (cachedFeatures.beat - visualizerBeatPulse) * (cachedFeatures.beat > visualizerBeatPulse ? 0.54 : 0.22);
+    }else{
+      updateVisualizerTempo(nowTs, nextBands[0] || nextBass, nextEnergy);
+    }
     try{ if(state) state.visualizerBpm = Math.round(visualizerBpm); }catch(e){}
     sampleLiveVideoPalette(nowTs);
-    renderVisualizerCanvas(nowTs);
+    renderVisualizerWebGL(nowTs);
     applySelectedTextContrast();
     refreshLiquidGlassVisualizerSources("visualizer frame");
     renderLiquidGlassVisualizerSourceNow(currentVisualizerFrameState(nowTs));
@@ -752,13 +1129,14 @@ function visualizerResidualVisible(ts){
 
 function setVisualizerActive(on){
   var wasActive = !!visualizerActive;
+  if(on && !ensureVisualizerWebGL()) on = false;
   visualizerActive = !!on;
   if(wasActive && !visualizerActive) visualizerResidualUntil = performance.now() + 2200;
   try{
     if(!visualizerBg) return;
     visualizerBg.classList.toggle("active", !!on);
     visualizerBg.classList.toggle("off", !on);
-    renderVisualizerCanvas(performance.now());
+    renderVisualizerWebGL(performance.now());
     if(on && visualizerFrameTimer){
       clearTimeout(visualizerFrameTimer);
       visualizerFrameTimer = 0;
@@ -792,7 +1170,7 @@ function setVisualizerStrength(value){
   uiSettings.visualizerStrength = visualizerStrength;
   saveUiSettings();
   visualizerCanvasDpr = 0;
-  renderVisualizerCanvas(now);
+  renderVisualizerWebGL(now);
   scheduleVisualizerFrame(0);
 }
 
@@ -800,6 +1178,20 @@ function cycleVisualizerStrength(){
   var order = ["low", "medium", "high"];
   var idx = order.indexOf(normalizeVisualizerStrength(visualizerStrength));
   setVisualizerStrength(order[(idx + 1) % order.length]);
+}
+
+function setVisualizerFpsLock(value){
+  visualizerFpsLock = normalizeVisualizerFpsLock(value);
+  uiSettings.visualizerFpsLock = visualizerFpsLock;
+  saveUiSettings();
+  visualizerLastFrameTs = 0;
+  scheduleVisualizerFrame(0);
+}
+
+function cycleVisualizerFpsLock(){
+  var order = [30, 60, 120];
+  var idx = order.indexOf(normalizeVisualizerFpsLock(visualizerFpsLock));
+  setVisualizerFpsLock(order[(idx + 1) % order.length]);
 }
 
 function rgbDistance(a, b){
@@ -1019,7 +1411,7 @@ function setVisualizerPreset(value){
   try{ if(state) state.visualizerPreset = visualizerPresetName; }catch(e){}
   resetVisualizerTempo();
   applyVisualizerPresetPalette();
-  renderVisualizerCanvas(performance.now());
+  renderVisualizerWebGL(performance.now());
   scheduleLiquidGlassSnapshot("visualizer preset", true);
 }
 

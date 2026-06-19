@@ -1170,7 +1170,7 @@ async function libDoSearch(engine, q){
         }catch(e){}
 
         items.push({kind:"libinfo_action", label:"Account", action:"account_settings"});
-        items.push({kind:"libinfo_action", label:"Interface", action:"ui_settings_menu"});
+        items.push({kind:"libinfo_action", label:"Visualizer", action:"ui_settings_menu"});
         items.push({kind:"libinfo_action", label:"Library", action:"settings_library"});
         items.push({kind:"libinfo_action", label:"Downloads", action:"settings_downloads"});
         const svcPills = [];
@@ -1283,6 +1283,7 @@ async function libDoSearch(engine, q){
         items.push({kind:"libui_action", label:"Visualizer", action:"toggle_visualizer", pills:[visualizerEnabled ? "On" : "Off"]});
         items.push({kind:"libui_action", label:"Visualizer Strength", action:"cycle_visualizer_strength", pills:[titleCaseSetting(visualizerStrength)]});
         items.push({kind:"libui_action", label:"Visualizer Preset", action:"cycle_visualizer_preset", pills:[visualizerPresetLabel(visualizerPresetName)]});
+        items.push({kind:"libui_action", label:"FPS Lock", action:"cycle_visualizer_fps_lock", pills:[String(normalizeVisualizerFpsLock(visualizerFpsLock)) + " FPS"]});
         items.push({kind:"info", label:"Estimated Tempo", pills:[String(Math.round(visualizerBpm || 120)) + " BPM"]});
         resetList(items);
       }
@@ -1353,7 +1354,7 @@ async function libDoSearch(engine, q){
       return items;
     }
     if(cat === "ui"){
-      return uiTuningRows().map((row)=>({kind:"libui_action", label:row.label, sub_label:"Interface tuning", action:row.action, pills:[String(row.value)], forceTwoLine:true, settingRow:true}))
+      return uiTuningRows().map((row)=>({kind:"libui_action", label:row.label, sub_label:"Visualizer tuning", action:row.action, pills:[String(row.value)], forceTwoLine:true, settingRow:true}))
         .concat(settingRowsForCategory("advanced").filter((row)=> row && String(row.key || "").indexOf("TASKS_") === 0).map(settingRowToListItem));
     }
     if(cat === "system"){
@@ -1828,6 +1829,10 @@ async function libDoSearch(engine, q){
         return true;
       case "cycle_visualizer_preset":
         cycleVisualizerPreset();
+        await viewLibUiSettings(false);
+        return true;
+      case "cycle_visualizer_fps_lock":
+        cycleVisualizerFpsLock();
         await viewLibUiSettings(false);
         return true;
       case "commit_glass_defaults":

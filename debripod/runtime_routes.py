@@ -3,10 +3,12 @@ from __future__ import annotations
 import ipaddress
 import json
 import base64
+import zlib
 import secrets
 import socket
 import time
 from pathlib import Path
+from urllib.parse import unquote
 
 from flask import session
 
@@ -18,7 +20,7 @@ from .Services import soulseek as soulseek_module
 from .factory import DeferredApp
 from .auth import register_auth
 from .config import _coerce_config_value, ensure_startup_security_config, save_config
-from .Library.library_db import load_folder_entries, load_palette, load_visualizer_analysis_for_media, save_folder_entries, save_palette
+from .Library.library_db import load_folder_entries, load_palette, load_palette_for_media, load_visualizer_analysis_for_media, save_folder_entries, save_palette
 from .Tasks.manager import task_belongs_to_owner
 from .runtime_state import *
 from .runtime_downloads import *
@@ -1493,12 +1495,6 @@ def _coerce_glass_defaults(raw: Any) -> dict[str, Any]:
             except Exception:
                 value = 1.0 if field in {"glassTint", "magnify"} else 0.0
             clean[field] = round(max(min_value, min(max_value, value)), 4)
-        if clean["glassTint"] < 0.995:
-            clean["mode"] = "dark"
-        elif clean["glassTint"] > 1.005:
-            clean["mode"] = "light"
-        else:
-            clean["mode"] = "clear"
         clean["specular"] = bool(item.get("specular"))
         clean["shadow"] = bool(item.get("shadow"))
         out[key] = clean
@@ -1638,6 +1634,8 @@ def api_library_palette():
         if not cache_key:
             return jsonify({"ok": False, "error": "Missing palette key"}), 400
         palette = load_palette(cache_key)
+        if palette is None:
+            palette = _palette_from_art_cache_key(cache_key)
         return jsonify({"ok": True, "palette": palette})
 
     data = request.get_json(silent=True) or {}
@@ -1656,6 +1654,25 @@ def api_library_palette():
     return jsonify({"ok": True})
 
 
+def _palette_from_art_cache_key(cache_key: str) -> dict | None:
+    try:
+        path_part = str(cache_key or "").split("|", 1)[0]
+        marker = "/art/"
+        if marker not in path_part:
+            return None
+        suffix = path_part.split(marker, 1)[1].strip("/")
+        if not suffix or "/" not in suffix:
+            return None
+        root_id, rel_encoded = suffix.split("/", 1)
+        root_id = unquote(root_id)
+        rel = unquote(rel_encoded)
+        if not root_id or not rel:
+            return None
+        return load_palette_for_media(root_id, rel)
+    except Exception:
+        return None
+
+
 @app.route("/api/library/analysis", methods=["GET"])
 def api_library_analysis():
     root_id = (request.args.get("root_id") or "").strip()
@@ -1669,7 +1686,16 @@ def api_library_analysis():
     if not analysis:
         return jsonify({"ok": True, "analysis": None, "stale": True})
     blob = analysis.pop("feature_blob", b"")
+    storage_compression = str(analysis.get("compression") or "none")
+    if storage_compression == "zlib":
+        try:
+            blob = zlib.decompress(blob)
+            analysis["storage_compression"] = storage_compression
+            analysis["compression"] = "none"
+        except Exception:
+            return jsonify({"ok": True, "analysis": None, "stale": True, "error": "Analysis cache is unreadable"})
     analysis["feature_blob_b64"] = base64.b64encode(blob).decode("ascii")
+    analysis["feature_blob_encoding"] = "base64-raw"
     return jsonify({"ok": True, "analysis": analysis, "stale": False})
 
 
