@@ -12,6 +12,35 @@ function setNowPlayingArtSrc(src, opts){
   try{
     if(!npArt) return;
     const v = nowPlayingArtSrcValue(src);
+    const sourceImg = document.getElementById("npArtLiquidSource");
+    if(sourceImg && !sourceImg.__npLiquidSourceBound){
+      sourceImg.__npLiquidSourceBound = true;
+      try{ sourceImg.crossOrigin = "anonymous"; }catch(e){}
+      sourceImg.addEventListener("load", ()=>{
+        try{
+          if(typeof forceNpOverlayGlassRender === "function") forceNpOverlayGlassRender("np art image loaded", true);
+          else if(typeof scheduleNpOverlayGlassRender === "function") scheduleNpOverlayGlassRender();
+        }catch(e){}
+      }, {passive:true});
+      sourceImg.addEventListener("error", ()=>{
+        try{
+          if(typeof forceNpOverlayGlassRender === "function") forceNpOverlayGlassRender("np art image unavailable", true);
+          else if(typeof scheduleNpOverlayGlassRender === "function") scheduleNpOverlayGlassRender();
+        }catch(e){}
+      }, {passive:true});
+    }
+    if(sourceImg && !v && sourceImg.getAttribute("src")){
+      sourceImg.removeAttribute("src");
+      try{
+        if(typeof scheduleNpOverlayGlassRender === "function") scheduleNpOverlayGlassRender();
+      }catch(e){}
+    }else if(sourceImg && v && (sourceImg.getAttribute("src") || "") !== v) sourceImg.src = v;
+    else if(sourceImg && sourceImg.complete && sourceImg.naturalWidth && sourceImg.naturalHeight){
+      try{
+        if(typeof forceNpOverlayGlassRender === "function") forceNpOverlayGlassRender("np art image ready", true);
+        else if(typeof scheduleNpOverlayGlassRender === "function") scheduleNpOverlayGlassRender();
+      }catch(e){}
+    }
     if(window.DebriPod && DebriPod.albumArtTexture && DebriPod.albumArtTexture.setSource){
       DebriPod.albumArtTexture.setSource(v, opts || {});
     }

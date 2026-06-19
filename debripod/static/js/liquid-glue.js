@@ -300,6 +300,15 @@
     try{
       const renderer = liquidGlassRendererByKey("npOverlay");
       if(!renderer) return;
+      const sourceImg = document.getElementById("npArtLiquidSource");
+      if(sourceImg && sourceImg.complete && sourceImg.naturalWidth && sourceImg.naturalHeight){
+        if(renderer.updateTextureFromImage){
+          renderer.updateTextureFromImage(sourceImg, {reason: reason || "album art image"});
+        }else{
+          refreshLiquidGlassSource(renderer, reason || "album art image");
+        }
+        return;
+      }
       const liveArtCanvas = root.albumArtTexture && root.albumArtTexture.renderToCanvas ? root.albumArtTexture.renderToCanvas(npArt) : null;
       if(liveArtCanvas && renderer.updateTextureFromCanvas){
         const artEl = npArt;
@@ -853,7 +862,7 @@
       window.liquidGL(Object.assign({}, liquidGlassElementOptions("nowPlayingPill"), {
         target: ".npOverlayGlass.liquidGlass",
         sourceType: "albumArtCanvasOrImage",
-        sourceElement: "#npArt",
+        sourceElement: "#npArtLiquidSource",
         rendererKey: "npOverlay"
       }));
       window.liquidGL(Object.assign({}, liquidGlassElementOptions("libraryList"), {
