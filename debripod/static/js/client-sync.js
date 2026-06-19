@@ -9,8 +9,14 @@
     "/api/library/manifest",
     "/api/library/analysis",
     "/api/library/palette",
+    "/api/library/filemeta",
     "/api/client-state",
     "/api/sync",
+    "/api/settings",
+    "/api/setup/status",
+    "/api/services/status",
+    "/api/tasks",
+    "/api/auth/status",
     "/api/search_history",
     "/api/playback/recent",
     "/api/playback/snapshot"
@@ -23,7 +29,11 @@
   let online = true;
   let scope = "anonymous@" + location.host;
   let stateSummary = null;
+  let lastSyncedVersionKey = "";
   let updateReloading = false;
+  let startupRestored = false;
+  let readyResolve = null;
+  const ready = new Promise((resolve)=>{ readyResolve = resolve; });
 
   function openDb(){
     if(dbPromise) return dbPromise;
@@ -123,11 +133,15 @@
     const rec = await get("api", apiKey(url));
     if(!rec) return null;
     if(isSearchUrl(url) && rec.savedAt && Date.now() - rec.savedAt > SEARCH_TTL_MS) return null;
+    if(rec.payload && (rec.payload.stale === true || rec.payload.building === true)){
+      return null;
+    }
     return rec.payload || null;
   }
 
   async function maybeStoreApiGet(url, payload){
     if(!isSafeGet(url) || !payload || typeof payload !== "object") return false;
+    if(payload.stale === true || payload.building === true) return false;
     return put("api", {
       key: apiKey(url),
       scope: scope,
@@ -185,8 +199,12 @@
   }
 
   function currentViewKey(){
+    return viewKeyForCurrent(state && state.current);
+  }
+
+  function viewKeyForCurrent(cur){
     try{
-      const cur = state.current || {};
+      cur = cur || {};
       const rootId = cur.root && cur.root.id ? String(cur.root.id) : "";
       return scope + "::view::" + [cur.kind || "", rootId, cur.rel || "", cur.level || "", cur.value || "", cur.playlistRel || ""].join("|");
     }catch(e){
@@ -194,37 +212,153 @@
     }
   }
 
+  function viewKeyForDescriptor(desc){
+    try{
+      const cur = desc || {};
+      const rootId = cur.root && cur.root.id ? String(cur.root.id) : String(cur.rootId || "");
+      return scope + "::view::" + [cur.kind || "", rootId, cur.rel || "", cur.level || "", cur.value || "", cur.playlistRel || ""].join("|");
+    }catch(e){
+      return scope + "::view::unknown";
+    }
+  }
+
+  function sanitizeRoot(value){
+    if(!value || typeof value !== "object") return null;
+    return {
+      id: String(value.id || ""),
+      name: String(value.name || ""),
+      path: String(value.path || ""),
+      mode: String(value.mode || "")
+    };
+  }
+
+  function sanitizeItem(value, depth){
+    if(value == null || depth > 4) return value == null ? value : null;
+    const type = typeof value;
+    if(type === "string" || type === "number" || type === "boolean") return value;
+    if(type === "function" || type === "symbol" || type === "undefined") return undefined;
+    if(Array.isArray(value)){
+      const out = [];
+      value.slice(0, 80).forEach((item)=>{
+        const next = sanitizeItem(item, depth + 1);
+        if(next !== undefined) out.push(next);
+      });
+      return out;
+    }
+    if(value instanceof Set) return Array.from(value).slice(0, 80);
+    if(value instanceof Map) return Array.from(value.entries()).slice(0, 80);
+    if(type === "object"){
+      const out = {};
+      Object.keys(value).slice(0, 80).forEach((key)=>{
+        if(key.charAt(0) === "_" || key === "onToggle" || key === "action" || key === "load") return;
+        const next = sanitizeItem(value[key], depth + 1);
+        if(next !== undefined) out[key] = next;
+      });
+      return out;
+    }
+    return undefined;
+  }
+
+  function restoreLoadForCurrent(current){
+    const cur = current || {};
+    const rootObj = sanitizeRoot({id: cur.rootId || "", name: cur.rootName || "", mode: cur.rootMode || ""}) || {id: String(cur.rootId || "")};
+    if(cur.kind === "folder"){
+      return function(){
+        if(typeof viewFolder === "function") return viewFolder(rootObj, cur.rel || "", cur.label || "", false);
+      };
+    }
+    if(cur.kind === "metatop"){
+      return function(){
+        if(typeof viewMetaTop === "function") return viewMetaTop(rootObj, false);
+      };
+    }
+    if(cur.kind === "metalist"){
+      return function(){
+        if(typeof viewMetaList === "function") return viewMetaList(rootObj, cur.level || "", cur.value || "", cur.label || "", false);
+      };
+    }
+    if(cur.kind === "roots"){
+      return function(){
+        if(typeof showRoots === "function") return showRoots(false);
+      };
+    }
+    return function(){};
+  }
+
+  function applyViewRecord(rec){
+    try{
+      if(!rec || !Array.isArray(rec.items) || !rec.items.length || !state) return false;
+      const cur = rec.current || {};
+      const rootObj = sanitizeRoot({id: cur.rootId || "", name: cur.rootName || cur.label || "", mode: cur.rootMode || ""});
+      state.current = {
+        kind: cur.kind || "",
+        label: cur.label || "",
+        root: rootObj,
+        rel: cur.rel || "",
+        level: cur.level || "",
+        value: cur.value || "",
+        playlistRel: cur.playlistRel || "",
+        load: restoreLoadForCurrent(cur)
+      };
+      state.items = rec.items;
+      state.sel = Math.max(0, Math.min(rec.items.length - 1, Number(rec.sel || 0)));
+      if(typeof setHeader === "function") setHeader();
+      if(typeof renderList === "function") renderList();
+      if(libList) libList.scrollTop = Number(rec.scrollTop || 0);
+      return true;
+    }catch(e){
+      return false;
+    }
+  }
+
   async function saveCurrentViewState(){
     try{
       if(!state || !state.current) return;
-      await put("views", {
-        key: currentViewKey(),
-        scope: scope,
-        savedAt: Date.now(),
-        current: {
-          kind: state.current.kind || "",
-          label: state.current.label || "",
-          rootId: state.current.root && state.current.root.id ? String(state.current.root.id) : "",
-          rel: state.current.rel || "",
-          level: state.current.level || "",
-          value: state.current.value || "",
-          playlistRel: state.current.playlistRel || ""
-        },
-        sel: Number(state.sel || 0),
-        scrollTop: libList ? Number(libList.scrollTop || 0) : 0,
-        items: Array.isArray(state.items) ? state.items.slice(0, 1000) : []
-      });
+      const current = {
+        kind: state.current.kind || "",
+        label: state.current.label || "",
+        rootId: state.current.root && state.current.root.id ? String(state.current.root.id) : "",
+        rootName: state.current.root && state.current.root.name ? String(state.current.root.name) : "",
+        rootMode: state.current.root && state.current.root.mode ? String(state.current.root.mode) : "",
+        rel: state.current.rel || "",
+        level: state.current.level || "",
+        value: state.current.value || "",
+        playlistRel: state.current.playlistRel || ""
+      };
+      await put("kv", {key:scope + "::last-view", value:{current:current, sel:Number(state.sel || 0), scrollTop:libList ? Number(libList.scrollTop || 0) : 0}, savedAt:Date.now()});
     }catch(e){}
   }
 
   async function restoreCurrentViewState(){
+    return false;
+  }
+
+  async function restoreCachedView(desc){
+    return false;
+  }
+
+  async function restoreStartupViewState(){
     try{
-      const rec = await get("views", currentViewKey());
-      if(!rec || !Array.isArray(rec.items) || !rec.items.length) return false;
-      state.items = rec.items;
-      state.sel = Math.max(0, Math.min(rec.items.length - 1, Number(rec.sel || 0)));
+      const active = await get("kv", "active_scope");
+      if(active && active.value) scope = String(active.value || scope);
+      const last = await get("kv", scope + "::last-view");
+      const cur = last && last.value && last.value.current ? last.value.current : null;
+      if(!cur || !cur.kind) return false;
+      const rootObj = sanitizeRoot({id: cur.rootId || "", name: cur.rootName || "", mode: cur.rootMode || ""}) || {id: String(cur.rootId || "")};
+      if(cur.kind === "folder" && typeof viewFolder === "function"){
+        await viewFolder(rootObj, cur.rel || "", cur.label || "", false);
+      }else if(cur.kind === "metatop" && typeof viewMetaTop === "function"){
+        await viewMetaTop(rootObj, false);
+      }else if(cur.kind === "metalist" && typeof viewMetaList === "function"){
+        await viewMetaList(rootObj, cur.level || "", cur.value || "", cur.label || "", false);
+      }else if(cur.kind === "roots" && typeof showRoots === "function"){
+        await showRoots(false);
+      }else{
+        return false;
+      }
+      if(typeof last.value.sel === "number") state.sel = Math.max(0, Math.min((state.items || []).length - 1, Number(last.value.sel || 0)));
       if(typeof renderList === "function") renderList();
-      if(libList) libList.scrollTop = Number(rec.scrollTop || 0);
+      if(libList) libList.scrollTop = Number(last.value.scrollTop || 0);
       return true;
     }catch(e){
       return false;
@@ -265,6 +399,18 @@
       if(Array.isArray(js.search_history)) await put("search", {key:scope + "::history", value:js.search_history, savedAt:Date.now()});
       if(js.playback) await put("playback", {key:scope + "::recent", value:js.playback, savedAt:Date.now()});
     }catch(e){}
+  }
+
+  function versionKey(summary){
+    try{
+      return JSON.stringify({
+        library_versions: (summary && summary.library_versions) || {},
+        search_history_version: summary && summary.search_history_version,
+        settings_version: summary && summary.settings_version
+      });
+    }catch(e){
+      return "";
+    }
   }
 
   function serverHasNewerShell(summary){
@@ -323,6 +469,7 @@
       const prev = stateSummary || {};
       stateSummary = js;
       await put("kv", {key:scope + "::client-state", value:js, savedAt:Date.now()});
+      const nextVersionKey = versionKey(js);
       const prevVersions = prev.library_versions || {};
       const nextVersions = js.library_versions || {};
       const changed = [];
@@ -331,7 +478,10 @@
           changed.push(rootId);
         }
       });
-      await syncFromServer(js);
+      if(nextVersionKey && nextVersionKey !== lastSyncedVersionKey){
+        lastSyncedVersionKey = nextVersionKey;
+        if(prev && prev.ok) await syncFromServer(js);
+      }
       const active = activeRootId();
       if(active && changed.indexOf(active) >= 0){
         await refreshActiveRootView(active);
@@ -343,7 +493,7 @@
 
   function schedule(){
     if(timer || !started) return;
-    timer = setTimeout(tick, document.hidden ? 30000 : 6000);
+    timer = setTimeout(tick, document.hidden ? 120000 : 60000);
   }
 
   function registerServiceWorker(){
@@ -354,19 +504,28 @@
   }
 
   async function start(){
-    if(started) return;
+    if(started) return ready;
     started = true;
     await openDb();
     registerServiceWorker();
-    await restoreCurrentViewState();
-    timer = setTimeout(tick, 250);
+    startupRestored = await restoreStartupViewState();
+    try{
+      const cachedState = await cachedApiGet("/api/client-state");
+      if(cachedState && cachedState.ok){
+        stateSummary = cachedState;
+        lastSyncedVersionKey = versionKey(cachedState);
+      }
+    }catch(e){}
+    if(readyResolve) readyResolve(startupRestored);
+    timer = setTimeout(tick, 800);
+    return ready;
   }
 
   try{
     document.addEventListener("visibilitychange", ()=>{
       if(!document.hidden && started){
         if(timer) clearTimeout(timer);
-        timer = setTimeout(tick, 250);
+        timer = setTimeout(tick, 1500);
       }
     });
     window.addEventListener("beforeunload", ()=>{ saveCurrentViewState(); });
@@ -374,11 +533,16 @@
 
   root.clientSync = {
     start,
+    ready,
+    awaitReady: function(){ return ready; },
     cachedApiGet,
     maybeStoreApiGet,
     restoreCurrentViewState,
+    restoreCachedView,
+    restoreStartupViewState,
     saveCurrentViewState,
     isSafeGet,
+    restoredStartup: function(){ return startupRestored; },
     getStateSummary: function(){ return stateSummary; }
   };
   start();

@@ -6,7 +6,13 @@
       rel: rel || "",
       load: async function(){
         const url = "/api/library/browse?root_id=" + encodeURIComponent(root.id) + "&rel=" + encodeURIComponent(this.rel);
-        const js = await apiGet(url);
+        let js = null;
+        try{
+          js = await apiGet(url);
+        }catch(e){
+          if(await restoreCachedLibraryView({kind:"folder", root:root, rel:this.rel, label:this.label})) return;
+          throw e;
+        }
         const items = [];
         for(const e of (js.entries || [])){
           if(e.type === "dir"){
@@ -20,6 +26,15 @@
         resetList(items);
       }
     };
+  }
+
+  async function restoreCachedLibraryView(desc){
+    try{
+      if(window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.restoreCachedView){
+        return await DebriPod.clientSync.restoreCachedView(desc || {});
+      }
+    }catch(e){}
+    return false;
   }
 
   async function openNowFolder(){
@@ -119,6 +134,9 @@
 
 
 async function goBack(){
+    if(typeof rangeEditorCancelActive === "function" && rangeEditorCancelActive()){
+      return;
+    }
     if(nowPlaying.style.display === "block"){
       hideNpPillImmediate("go back");
       showNowPlaying(false);
@@ -129,7 +147,13 @@ async function goBack(){
       await runLibraryPageTransition(async ()=>{
         state.current = state.history.pop();
         setHeader();
-        await state.current.load();
+        try{
+          await state.current.load();
+        }catch(loadErr){
+          let restored = false;
+          try{ restored = await restoreCachedLibraryView(state.current); }catch(e){ restored = false; }
+          if(!restored) throw loadErr;
+        }
         if(state.pendingLibSearch && state.current && state.current.kind === "libsearch"){
           const p = state.pendingLibSearch;
           state.pendingLibSearch = null;
@@ -146,7 +170,12 @@ async function goBack(){
       return;
     }
     await runLibraryPageTransition(async ()=>{
-      await showRoots();
+      try{
+        await showRoots();
+      }catch(loadErr){
+        const restored = await restoreCachedLibraryView({kind:"roots"});
+        if(!restored) throw loadErr;
+      }
     });
   }
 
@@ -814,7 +843,13 @@ async function goBack(){
       rel: rel || "",
       load: async function(){
         const url = "/api/library/browse?root_id=" + encodeURIComponent(root.id) + "&rel=" + encodeURIComponent(this.rel);
-        const js = await apiGet(url);
+        let js = null;
+        try{
+          js = await apiGet(url);
+        }catch(e){
+          if(await restoreCachedLibraryView({kind:"folder", root:root, rel:this.rel, label:this.label})) return;
+          throw e;
+        }
         const items = [];
         if(state.history.length || this.rel){
           items.push({kind:"up", label:".."});
@@ -840,7 +875,13 @@ async function goBack(){
       label: "Browse",
       root: root,
       load: async function(){
-        const js = await apiGet("/api/library/metadata?root_id=" + encodeURIComponent(root.id) + "&level=top");
+        let js = null;
+        try{
+          js = await apiGet("/api/library/metadata?root_id=" + encodeURIComponent(root.id) + "&level=top");
+        }catch(e){
+          if(await restoreCachedLibraryView({kind:"metatop", root:root, label:"Browse"})) return;
+          throw e;
+        }
         const items = [];
         for(const c of (js.categories || [])){
           items.push({kind:"metacat", label:c.label, cat:c.key, root: root, badge: js.building ? "indexing" : ""});
@@ -863,7 +904,13 @@ async function goBack(){
       value: value || "",
       load: async function(){
         const url = "/api/library/metadata?root_id=" + encodeURIComponent(root.id) + "&level=" + encodeURIComponent(this.level) + (this.value ? "&value=" + encodeURIComponent(this.value) : "");
-        const js = await apiGet(url);
+        let js = null;
+        try{
+          js = await apiGet(url);
+        }catch(e){
+          if(await restoreCachedLibraryView({kind:"metalist", root:root, level:this.level, value:this.value, label:this.label})) return;
+          throw e;
+        }
         const items = [];
         if(this.level === "playlists"){
           items.push({kind:"playlist_create", label:"Create playlist"});
@@ -895,6 +942,9 @@ async function goBack(){
   }
 
   async function selectItem(forcedItem){
+    if(!forcedItem && typeof rangeEditorCenterPress === "function" && rangeEditorCenterPress()){
+      return;
+    }
     const it = forcedItem || currentItem();
 if(!it) return;
     if(it.kind === "info") return;
@@ -1267,6 +1317,11 @@ if(it.kind === "libtasks_entry"){
       if(await handleLibUiAction(it.action)) return;
     }
     if(it.kind === "range_editor_input"){
+      try{
+        const editor = state.inlineRangeEditor || ((state.current && state.current.kind === "range_editor") ? state.current : null);
+        if(editor && editor.rangeWheelArmed) openRangeEditorKeyboard();
+        else armRangeEditorWheel();
+      }catch(e){}
       return;
     }
     if(it.kind === "range_editor_slider"){

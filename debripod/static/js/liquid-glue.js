@@ -100,6 +100,33 @@
     return null;
   }
 
+  function frameScheduler(){
+    try{ return root && root.frameScheduler ? root.frameScheduler : null; }catch(e){ return null; }
+  }
+
+  function markFrameWork(flags){
+    try{
+      const scheduler = frameScheduler();
+      if(scheduler && scheduler.mark) scheduler.mark(flags || {render:true});
+      else requestAnimationFrame(()=> renderLiquidGlassNow());
+    }catch(e){}
+  }
+
+  function rendererTargetVisible(renderer){
+    try{
+      if(!renderer || !renderer.lenses || !renderer.lenses.length || document.hidden) return false;
+      return renderer.lenses.some((lens)=>{
+        if(!lens || !lens.el || !lens.el.isConnected) return false;
+        const style = window.getComputedStyle ? window.getComputedStyle(lens.el) : null;
+        if(style && (style.display === "none" || style.visibility === "hidden" || Number(style.opacity || 1) <= 0.01)) return false;
+        const rect = lens.el.getBoundingClientRect();
+        return rect.width > 0 && rect.height > 0 && rect.right > -2 && rect.bottom > -2 && rect.left < (window.innerWidth || 0) + 2 && rect.top < (window.innerHeight || 0) + 2;
+      });
+    }catch(e){
+      return true;
+    }
+  }
+
   function liquidWheelRenderer(){
     return liquidGlassRendererByKey("wheel");
   }
@@ -237,8 +264,8 @@
       canvas.style.position = "absolute";
       canvas.style.setProperty("position", "absolute", "important");
       canvas.style.setProperty("inset", "auto", "important");
-      canvas.style.setProperty("left", (-Math.round(rect.left || 0)) + "px", "important");
-      canvas.style.setProperty("top", (-Math.round(rect.top || 0)) + "px", "important");
+      canvas.style.setProperty("left", (-(rect.left || 0)).toFixed(3) + "px", "important");
+      canvas.style.setProperty("top", (-(rect.top || 0)).toFixed(3) + "px", "important");
       canvas.style.right = "auto";
       canvas.style.bottom = "auto";
       canvas.style.setProperty("width", (window.innerWidth || canvas.width || 1) + "px", "important");
@@ -273,50 +300,24 @@
     try{
       const renderer = liquidGlassRendererByKey("npOverlay");
       if(!renderer) return;
-      const img = (npArt && npArt.complete && npArt.naturalWidth && npArt.naturalHeight) ? npArt : null;
-      if(img && renderer.updateTextureFromCanvas){
-        const rect = img.getBoundingClientRect();
-        const cssW = Math.max(1, Math.round(rect.width || 0));
-        const cssH = Math.max(1, Math.round(rect.height || 0));
-        if(cssW > 1 && cssH > 1){
-          if(!refreshNpOverlayGlassSource._canvas){
-            refreshNpOverlayGlassSource._canvas = document.createElement("canvas");
-            refreshNpOverlayGlassSource._ctx = refreshNpOverlayGlassSource._canvas.getContext("2d");
-          }
-          const canvas = refreshNpOverlayGlassSource._canvas;
-          const ctx = refreshNpOverlayGlassSource._ctx;
-          const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
-          const drawW = Math.max(1, Math.round(cssW * dpr));
-          const drawH = Math.max(1, Math.round(cssH * dpr));
-          if(canvas.width !== drawW || canvas.height !== drawH){
-            canvas.width = drawW;
-            canvas.height = drawH;
-          }
-          if(ctx){
-            const iw = img.naturalWidth || 1;
-            const ih = img.naturalHeight || 1;
-            const coverScale = Math.max(cssW / iw, cssH / ih);
-            const srcW = Math.max(1, cssW / coverScale);
-            const srcH = Math.max(1, cssH / coverScale);
-            const sx = Math.max(0, (iw - srcW) / 2);
-            const sy = Math.max(0, (ih - srcH) / 2);
-            ctx.clearRect(0, 0, drawW, drawH);
-            ctx.drawImage(img, sx, sy, srcW, srcH, 0, 0, drawW, drawH);
-            renderer.updateTextureFromCanvas(canvas, {
-              reason: reason || "album art visible crop",
-              allowDark: true,
-              sourceRect: {left: rect.left, top: rect.top, width: rect.width || cssW, height: rect.height || cssH}
-            });
-          }else if(renderer.updateTextureFromImage){
-            renderer.updateTextureFromImage(img, {reason: reason || "album art"});
-          }
-        }else if(renderer.updateTextureFromImage){
-          renderer.updateTextureFromImage(img, {reason: reason || "album art"});
+      const liveArtCanvas = root.albumArtTexture && root.albumArtTexture.renderToCanvas ? root.albumArtTexture.renderToCanvas(npArt) : null;
+      if(liveArtCanvas && renderer.updateTextureFromCanvas){
+        const artEl = npArt;
+        const rect = artEl ? artEl.getBoundingClientRect() : {left:0, top:0, width:liveArtCanvas.width || 1, height:liveArtCanvas.height || 1};
+        renderer.updateTextureFromCanvas(liveArtCanvas, {
+          reason: reason || "album art canvas texture",
+          allowDark: true,
+          sourceRect: {left: rect.left || 0, top: rect.top || 0, width: rect.width || liveArtCanvas.width || 1, height: rect.height || liveArtCanvas.height || 1}
+        });
+        return;
+      }
+      if(renderer.texture || renderer._sourceTextureReady){
+        if(renderer._sourceIsSolidFallback && renderer.clearSourceTexture){
+          renderer.clearSourceTexture(reason || "album art source unavailable");
         }
-      }else if(renderer.updateTextureFromSolidColor){
-        renderer.updateTextureFromSolidColor(8, 8, [5, 5, 7, 255], {reason: reason || "album art fallback", allowDark: true});
+        return;
       }else{
-      refreshLiquidGlassSource(renderer, reason || "album art fallback");
+        return;
       }
     }catch(e){}
   }
@@ -381,17 +382,21 @@
       const token = ((animateNpOverlayGlassTransition._token || 0) + 1);
       animateNpOverlayGlassTransition._token = token;
       const started = performance.now();
-      let didRefresh = false;
       const tick = ()=>{
         try{
           if(animateNpOverlayGlassTransition._token !== token) return;
           const elapsed = performance.now() - started;
-          forceNpOverlayGlassRender(reason || "np overlay transition", !didRefresh);
-          didRefresh = true;
+          forceNpOverlayGlassRender(reason || "np overlay transition", true);
           if(elapsed < dur){
-            requestAnimationFrame(tick);
+            const scheduler = frameScheduler();
+            if(scheduler && scheduler.request){
+              scheduler.request("np-overlay-transition", tick);
+              scheduler.mark({refreshSources:true, metrics:true, render:true, keepAlive:true});
+            }else{
+              requestAnimationFrame(tick);
+            }
           }else{
-            forceNpOverlayGlassRender((reason || "np overlay transition") + " end", false);
+            forceNpOverlayGlassRender((reason || "np overlay transition") + " end", true);
             try{
               if(npOverlayPill && npOverlayPill.classList.contains("npPillHidden") && renderer.setVisible){
                 renderer.setVisible(false);
@@ -400,7 +405,13 @@
           }
         }catch(e){}
       };
-      requestAnimationFrame(tick);
+      const scheduler = frameScheduler();
+      if(scheduler && scheduler.request){
+        scheduler.request("np-overlay-transition", tick);
+        scheduler.mark({refreshSources:true, metrics:true, render:true, keepAlive:true});
+      }else{
+        requestAnimationFrame(tick);
+      }
     }catch(e){}
   }
 
@@ -452,6 +463,11 @@
       updateLibSelectionGlass("");
       liquidGlassRenderers().forEach((renderer)=>{
         if(!renderer || !renderer.render) return;
+        if(!rendererTargetVisible(renderer)){
+          if(renderer.setVisible) renderer.setVisible(false);
+          return;
+        }
+        if(renderer.setVisible) renderer.setVisible(true);
         const key = renderer.rendererKey || "";
         if(key === "npOverlay"){
           positionNpOverlayLiquidCanvas();
@@ -473,7 +489,7 @@
         if(key === "libList") positionLibListLiquidCanvas();
         if(key === "libSelection") positionLibSelectionLiquidCanvas();
         if(key === "libPills") positionLibPillsLiquidCanvas();
-        if(renderer && renderer.render) renderer.render(frameState || currentVisualizerFrameState());
+        if(renderer && renderer.render && rendererTargetVisible(renderer)) renderer.render(frameState || currentVisualizerFrameState());
       });
       if(isPathPillVisible()) forcePathPillGlassRender("visualizer frame", false);
     }catch(e){}
@@ -619,13 +635,30 @@
         listSelectionMotion.currentOpacity = listSelectionMotion.targetOpacity;
       }
       applyLibSelectionMotion();
-      if(!done) listSelectionMotion.raf = requestAnimationFrame(stepLibSelectionMotion);
+      if(!done){
+        const scheduler = frameScheduler();
+        if(scheduler && scheduler.request){
+          listSelectionMotion.raf = -1;
+          scheduler.request("lib-selection-motion", stepLibSelectionMotion);
+          scheduler.mark({metrics:true, render:true, keepAlive:true});
+        }else{
+          listSelectionMotion.raf = requestAnimationFrame(stepLibSelectionMotion);
+        }
+      }
     }catch(e){}
   }
 
   function scheduleLibSelectionMotion(){
     try{
-      if(!listSelectionMotion.raf) listSelectionMotion.raf = requestAnimationFrame(stepLibSelectionMotion);
+      if(listSelectionMotion.raf) return;
+      const scheduler = frameScheduler();
+      if(scheduler && scheduler.request){
+        listSelectionMotion.raf = -1;
+        scheduler.request("lib-selection-motion", stepLibSelectionMotion);
+        scheduler.mark({metrics:true, render:true, keepAlive:true});
+      }else{
+        listSelectionMotion.raf = requestAnimationFrame(stepLibSelectionMotion);
+      }
     }catch(e){}
   }
 
@@ -711,21 +744,7 @@
           renderer.lenses.forEach((lens)=>{ try{ lens.rectPx = null; }catch(e){} });
         }
       }
-      renderLiquidGlassNow();
-      requestAnimationFrame(()=>{
-        try{
-          updateLibSelectionGlass((reason || "lib pills") + " settled");
-          const nextRenderer = liquidGlassRendererByKey("libPills");
-          if(nextRenderer){
-            nextRenderer._metricsDirty = true;
-            nextRenderer._snapshotRectPx = null;
-            if(nextRenderer.lenses){
-              nextRenderer.lenses.forEach((lens)=>{ try{ lens.rectPx = null; }catch(e){} });
-            }
-          }
-          renderLiquidGlassNow();
-        }catch(e){}
-      });
+      markFrameWork({metrics:true, render:true, textContrast:true});
     }catch(e){}
   }
 
@@ -753,7 +772,15 @@
   }
 
   function scheduleLiquidGlassSnapshot(reason, includeLibList){
-    try{ requestAnimationFrame(()=> captureLiquidGlassSnapshot(reason, includeLibList)); }catch(e){}
+    try{
+      const scheduler = frameScheduler();
+      if(scheduler && scheduler.request){
+        scheduler.request("liquid-snapshot", ()=> captureLiquidGlassSnapshot(reason, includeLibList));
+        scheduler.mark({refreshSources:true, metrics:true, render:true, textContrast:true});
+      }else{
+        requestAnimationFrame(()=> captureLiquidGlassSnapshot(reason, includeLibList));
+      }
+    }catch(e){}
   }
 
   function debugLiquidGlassRenderers(reason){
@@ -791,15 +818,19 @@
   }
 
   function scheduleLiquidGlassRender(){
-    try{ requestAnimationFrame(renderLiquidGlassNow); }catch(e){}
+    markFrameWork({metrics:true, render:true, textContrast:true});
   }
 
   function scheduleNpOverlayGlassRender(){
     try{
       if(!npOverlayPill) return;
-      requestAnimationFrame(()=>{
-        forceNpOverlayGlassRender("np overlay scheduled", true);
-      });
+      const scheduler = frameScheduler();
+      if(scheduler && scheduler.request){
+        scheduler.request("np-overlay", ()=> forceNpOverlayGlassRender("np overlay scheduled", true));
+        scheduler.mark({refreshSources:true, metrics:true, render:true});
+      }else{
+        requestAnimationFrame(()=> forceNpOverlayGlassRender("np overlay scheduled", true));
+      }
     }catch(e){}
   }
 
@@ -858,7 +889,21 @@
           }
         }catch(err){}
       });
+      try{
+        const scheduler = frameScheduler();
+        if(scheduler && scheduler.register){
+          scheduler.register("liquid-glass", (frameState)=>{
+            const flags = frameState && frameState.flags ? frameState.flags : {};
+            if(flags.refreshSources) refreshLiquidGlassVisualizerSources("scheduler");
+            if(flags.textContrast) updateGlassTextUnderColors();
+            if(flags.metrics || flags.render || flags.refreshSources || flags.textContrast || flags.keepAlive){
+              renderLiquidGlassNow(frameState);
+            }
+          });
+        }
+      }catch(err){}
       liquidGlassReady = true;
+      markFrameWork({refreshSources:true, metrics:true, render:true, textContrast:true});
     }catch(e){
       liquidGlassReady = true;
       try{ document.documentElement.classList.add("liquidGlassFallback"); }catch(err){}
@@ -919,7 +964,14 @@
       }
       applyWheelTiltTransform(wheelTiltRenderX, wheelTiltRenderY);
       if(wheelTiltRenderX !== wheelTiltTargetX || wheelTiltRenderY !== wheelTiltTargetY){
-        wheelTiltAnimFrame = requestAnimationFrame(wheelTiltEaseStep);
+        const scheduler = frameScheduler();
+        if(scheduler && scheduler.request){
+          wheelTiltAnimFrame = -1;
+          scheduler.request("wheel-tilt", wheelTiltEaseStep);
+          scheduler.mark({metrics:true, render:true, keepAlive:true});
+        }else{
+          wheelTiltAnimFrame = requestAnimationFrame(wheelTiltEaseStep);
+        }
       }else if(wheelTiltRenderX === 0 && wheelTiltRenderY === 0){
         try{ if(wheel) wheel.style.transform = ""; }catch(e){}
       }
@@ -931,7 +983,16 @@
       wheelTiltTargetX = Number.isFinite(rotX) ? rotX : 0;
       wheelTiltTargetY = Number.isFinite(rotY) ? rotY : 0;
       wheelTiltAnimUntil = Math.max(0, Number(durationMs || 0));
-      if(!wheelTiltAnimFrame) wheelTiltAnimFrame = requestAnimationFrame(wheelTiltEaseStep);
+      if(!wheelTiltAnimFrame){
+        const scheduler = frameScheduler();
+        if(scheduler && scheduler.request){
+          wheelTiltAnimFrame = -1;
+          scheduler.request("wheel-tilt", wheelTiltEaseStep);
+          scheduler.mark({metrics:true, render:true, keepAlive:true});
+        }else{
+          wheelTiltAnimFrame = requestAnimationFrame(wheelTiltEaseStep);
+        }
+      }
     }catch(e){}
   }
 

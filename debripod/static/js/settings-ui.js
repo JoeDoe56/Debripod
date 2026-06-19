@@ -1566,44 +1566,53 @@ async function libDoSearch(engine, q){
   async function viewRangeEditor(config, push){
     const meta = config.meta || settingRangeMeta("", 0, 1);
     const current = rangeEditorClamp(config.current, meta, Number(meta.min || 0));
-    const view = {
+    state.inlineRangeEditor = {
       kind:"range_editor",
       label:String(config.label || "Value"),
       rangeConfig:config,
       rangeMeta:meta,
       rangeValue:current,
-      load: async function(){
-        renderRangeEditor();
-      }
+      rangeWheelArmed:true,
+      rangeKeyboardOpen:false,
+      itemIndex: state.sel,
+      committing:false
     };
-    await setView(view, !!push);
+    renderRangeEditor();
+  }
+
+  function activeRangeEditor(){
+    return state.inlineRangeEditor || ((state.current && state.current.kind === "range_editor") ? state.current : null);
   }
 
   function rangeEditorRows(){
-    const view = state.current || {};
+    const view = activeRangeEditor() || {};
     const meta = view.rangeMeta || settingRangeMeta("", 0, 1);
     const value = rangeEditorClamp(view.rangeValue, meta, Number(meta.min || 0));
     const min = Number(meta.min);
     const max = Number(meta.max);
     const pct = max > min ? ((value - min) / (max - min)) : 0;
-    return [
-      {kind:"range_editor_input", label:view.label || "Value", value:rangeEditorValueLabel(value, meta), pills:[rangeEditorValueLabel(value, meta)]},
-      {kind:"range_editor_slider", label:"Slider", value:value, bar:Math.max(0, Math.min(1, pct)), pills:[rangeEditorValueLabel(min, meta), rangeEditorValueLabel(max, meta)]},
-      {kind:"libui_action", label:"Apply", action:"range_editor_apply", pills:[rangeEditorValueLabel(value, meta)]},
-      {kind:"libui_action", label:"Cancel", action:"range_editor_cancel"}
-    ];
+    const armed = !!view.rangeWheelArmed;
+    return [{kind:"range_editor_input", label:view.label || "Value", value:rangeEditorValueLabel(value, meta), bar:Math.max(0, Math.min(1, pct)), pills:[armed ? "Wheel active" : "Click to adjust", rangeEditorValueLabel(value, meta), rangeEditorValueLabel(min, meta) + "-" + rangeEditorValueLabel(max, meta)]}];
   }
 
   function renderRangeEditor(){
+    if(state.inlineRangeEditor && Array.isArray(state.items)){
+      const idx = Math.max(0, Math.min(state.items.length - 1, Number(state.inlineRangeEditor.itemIndex || state.sel || 0)));
+      state.inlineRangeEditor.itemIndex = idx;
+      state.sel = idx;
+      renderList();
+      return;
+    }
     resetList(rangeEditorRows());
   }
 
   function adjustRangeEditor(delta){
     try{
-      const view = state.current || {};
+      const view = activeRangeEditor() || {};
       if(view.kind !== "range_editor") return false;
+      if(!view.rangeWheelArmed) return false;
       const meta = view.rangeMeta || settingRangeMeta("", 0, 1);
-      const step = Number(meta.step || 1);
+      const step = rangeEditorWheelStep(meta);
       const next = rangeEditorClamp(Number(view.rangeValue || 0) + Number(delta || 0) * step, meta, Number(view.rangeValue || 0));
       view.rangeValue = next;
       renderRangeEditor();
@@ -1613,23 +1622,113 @@ async function libDoSearch(engine, q){
     }
   }
 
-  async function applyRangeEditor(){
-    const view = state.current || {};
+  function rangeEditorWheelStep(meta){
+    if(meta && meta.integer) return Math.max(1, Math.abs(Number(meta.step || 1)) || 1);
+    const rawText = String((meta && meta.step != null) ? meta.step : 0.1);
+    const decimal = rawText.indexOf(".") >= 0 ? rawText.split(".")[1].replace(/0+$/, "").length : 0;
+    if(decimal >= 3) return 0.001;
+    if(decimal >= 2) return 0.01;
+    return 0.1;
+  }
+
+  function armRangeEditorWheel(){
+    const view = activeRangeEditor() || {};
     if(view.kind !== "range_editor") return false;
+    view.rangeWheelArmed = true;
+    view.rangeKeyboardOpen = false;
+    renderRangeEditor();
+    return true;
+  }
+
+  function rangeEditorWheelActive(){
+    const view = activeRangeEditor() || {};
+    return !!(view && view.kind === "range_editor" && view.rangeWheelArmed);
+  }
+
+  function openRangeEditorKeyboard(){
+    const view = activeRangeEditor() || {};
+    if(view.kind !== "range_editor") return false;
+    view.rangeWheelArmed = false;
+    view.rangeKeyboardOpen = true;
+    renderRangeEditor();
+    setTimeout(()=>{
+      try{
+        const input = libList ? libList.querySelector(".ipodItem.sel .libInlineInput") : null;
+        if(input){
+          input.focus();
+          input.click();
+          const n = String(input.value || "").length;
+          input.setSelectionRange(n, n);
+        }
+      }catch(e){}
+    }, 0);
+    return true;
+  }
+
+  function rangeEditorDisplayForIndex(index){
+    const view = activeRangeEditor() || {};
+    if(view.kind !== "range_editor") return null;
+    if(Number(view.itemIndex) !== Number(index)) return null;
+    const meta = view.rangeMeta || settingRangeMeta("", 0, 1);
+    const value = rangeEditorClamp(view.rangeValue, meta, Number(meta.min || 0));
+    const min = Number(meta.min);
+    const max = Number(meta.max);
+    return {
+      text: rangeEditorValueLabel(value, meta),
+      value:value,
+      bar: max > min ? Math.max(0, Math.min(1, (value - min) / (max - min))) : null,
+      armed: !!view.rangeWheelArmed,
+      keyboardOpen: !!view.rangeKeyboardOpen
+    };
+  }
+
+  function rangeEditorOwnsIndex(index){
+    const view = activeRangeEditor() || {};
+    return !!(view.kind === "range_editor" && Number(view.itemIndex) === Number(index));
+  }
+
+  function rangeEditorCenterPress(){
+    const view = activeRangeEditor() || {};
+    if(view.kind !== "range_editor") return false;
+    if(view.rangeKeyboardOpen) return false;
+    if(view.rangeWheelArmed) return openRangeEditorKeyboard();
+    return armRangeEditorWheel();
+  }
+
+  function rangeEditorCancelActive(){
+    const view = activeRangeEditor() || {};
+    if(view.kind !== "range_editor") return false;
+    cancelRangeEditor();
+    return true;
+  }
+
+  async function applyRangeEditor(){
+    const view = activeRangeEditor() || {};
+    if(view.kind !== "range_editor") return false;
+    if(view.committing) return false;
+    view.committing = true;
     const config = view.rangeConfig || {};
     const meta = view.rangeMeta || settingRangeMeta("", 0, 1);
     const value = rangeEditorClamp(view.rangeValue, meta, Number(meta.min || 0));
-    if(typeof config.onCommit === "function") await config.onCommit(value);
-    if(typeof config.onReturn === "function") await config.onReturn();
-    else goBack();
+    try{
+      if(typeof config.onCommit === "function") await config.onCommit(value);
+      state.inlineRangeEditor = null;
+      if(typeof config.onReturn === "function") await config.onReturn();
+      else if(state.current && state.current.kind === "range_editor") goBack();
+      else if(typeof renderList === "function") renderList();
+    }finally{
+      if(view && view.kind === "range_editor") view.committing = false;
+    }
     return true;
   }
 
   async function cancelRangeEditor(){
-    const view = state.current || {};
+    const view = activeRangeEditor() || {};
     const config = view.rangeConfig || {};
+    state.inlineRangeEditor = null;
     if(typeof config.onReturn === "function") await config.onReturn();
-    else goBack();
+    else if(state.current && state.current.kind === "range_editor") goBack();
+    else if(typeof renderList === "function") renderList();
     return true;
   }
 
@@ -1670,6 +1769,16 @@ async function libDoSearch(engine, q){
         const res = await apiPost("/api/ui/glass_defaults/commit", {liquidGlassElements: cloneGlassElementSettings(uiSettings.liquidGlassElements)});
         const js = res && res.json ? res.json : {};
         if(!res || !res.ok || !js.ok) throw new Error((js && js.error) ? js.error : "Failed to write defaults");
+        try{
+          if(window.caches && caches.keys){
+            const keys = await caches.keys();
+            await Promise.all(keys.filter(k=> /^debripod-/.test(k)).map(k=> caches.delete(k)));
+          }
+          if(navigator.serviceWorker && navigator.serviceWorker.getRegistration){
+            const reg = await navigator.serviceWorker.getRegistration("/");
+            if(reg && reg.update) await reg.update();
+          }
+        }catch(cacheErr){}
       }catch(e){
         alert(String(e && e.message ? e.message : e));
       }

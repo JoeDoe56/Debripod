@@ -167,7 +167,6 @@
       setTimeout(()=>{
         try{
           recaptureLiquidGlassElement(npArt);
-          recaptureLiquidGlassElement(npArtSwap);
           scheduleLiquidGlassRender();
         }catch(e){}
       }, 80);

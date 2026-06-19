@@ -13,12 +13,23 @@
 
   // start
   (async ()=>{
+    let restoredFromLocal = false;
     try{
       if(window.DebriPod && DebriPod.passkeys && typeof DebriPod.passkeys.maybeOfferAfterLogin === "function"){
         await DebriPod.passkeys.maybeOfferAfterLogin();
       }
     }catch(e){}
-    await showRoots();
+    try{
+      if(window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.awaitReady){
+        restoredFromLocal = !!(await Promise.race([
+          DebriPod.clientSync.awaitReady(),
+          new Promise(resolve=> setTimeout(()=> resolve(false), 160))
+        ]));
+      }
+    }catch(e){}
+    if(!restoredFromLocal){
+      await showRoots();
+    }
     await maybeOpenFromUrl();
     try{ await maybeStartSetupWizard(); }catch(e){}
     syncWheelZoneHeight();

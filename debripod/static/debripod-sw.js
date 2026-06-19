@@ -20,6 +20,23 @@ function isUnsafeRequest(request, url){
   return false;
 }
 
+function isAuthNavigation(url){
+  const path = url.pathname;
+  return path === "/login" || path === "/logout" || path === "/setup" || path.indexOf("/account/") === 0;
+}
+
+function responseLooksLikeAppShell(response){
+  try{
+    if(!response || !response.ok || response.redirected) return false;
+    const u = new URL(response.url || self.location.href);
+    if(u.origin !== self.location.origin) return false;
+    if(u.pathname === "/login" || u.pathname === "/setup" || u.pathname === "/logout") return false;
+    return true;
+  }catch(e){
+    return false;
+  }
+}
+
 function isShellAsset(url){
   if(url.pathname === "/" || url.pathname === "/site.webmanifest") return true;
   if(url.pathname === "/favicon.ico" || url.pathname === "/apple-touch-icon.png" || url.pathname === "/apple-touch-icon-precomposed.png") return true;
@@ -59,14 +76,36 @@ self.addEventListener("fetch", (event)=>{
   if(isUnsafeRequest(request, url)) return;
 
   if(request.mode === "navigate"){
+    if(isAuthNavigation(url)) return;
+    if(url.pathname === "/"){
+      event.respondWith(
+        fetch(request)
+          .then((response)=>{
+            if(responseLooksLikeAppShell(response)){
+              const copy = response.clone();
+              caches.open(DP_CACHE).then((cache)=> cache.put("/", copy)).catch(()=>{});
+            }
+            return response;
+          })
+          .catch(()=> caches.match("/") || caches.match("/?pwa=1"))
+      );
+      return;
+    }
     event.respondWith(
-      fetch(request)
-        .then((response)=>{
-          const copy = response.clone();
-          caches.open(DP_CACHE).then((cache)=> cache.put("/", copy)).catch(()=>{});
-          return response;
+      caches.match("/")
+        .then((cached)=>{
+          const refresh = fetch(request)
+            .then((response)=>{
+              if(responseLooksLikeAppShell(response)){
+                const copy = response.clone();
+                caches.open(DP_CACHE).then((cache)=> cache.put("/", copy)).catch(()=>{});
+              }
+              return response;
+            })
+            .catch(()=> null);
+          if(cached) return cached;
+          return refresh.then((response)=> response || caches.match("/?pwa=1"));
         })
-        .catch(()=> caches.match("/") || caches.match("/?pwa=1"))
     );
     return;
   }
@@ -85,17 +124,5 @@ self.addEventListener("fetch", (event)=>{
     return;
   }
 
-  if(url.pathname.startsWith("/api/library/") || url.pathname === "/api/client-state" || url.pathname === "/api/sync" || url.pathname === "/api/search_history" || url.pathname === "/api/playback/recent" || url.pathname === "/api/playback/snapshot"){
-    event.respondWith(
-      fetch(request)
-        .then((response)=>{
-          if(response && response.ok){
-            const copy = response.clone();
-            caches.open(DP_RUNTIME_CACHE).then((cache)=> cache.put(request, copy)).catch(()=>{});
-          }
-          return response;
-        })
-        .catch(()=> caches.match(request))
-    );
-  }
+  if(url.pathname.startsWith("/api/")) return;
 });

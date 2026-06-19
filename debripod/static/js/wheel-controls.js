@@ -122,6 +122,9 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
       }
       return;
     }
+    if(typeof rangeEditorCenterPress === "function" && rangeEditorCenterPress()){
+      return;
+    }
     selectItem();
   }
 
@@ -240,7 +243,7 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
       return;
     }
 
-    if(state.current && state.current.kind === "range_editor"){
+    if(typeof rangeEditorWheelActive === "function" && rangeEditorWheelActive()){
       if(Math.abs(accum) >= step){
         const steps = Math.trunc(accum / step);
         try{ adjustRangeEditor(steps); }catch(e){}
@@ -275,7 +278,7 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
   window.addEventListener("wheel", (ev)=>{
     // Let normal browser zoom and text input scrolling work.
     if(ev.ctrlKey) return;
-    if(state.current && state.current.kind === "range_editor"){
+    if(typeof rangeEditorWheelActive === "function" && rangeEditorWheelActive()){
       ev.preventDefault();
       const dir = ev.deltaY > 0 ? 1 : -1;
       try{ adjustRangeEditor(dir); }catch(e){}
@@ -298,7 +301,7 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
         adjustVolumeStep(dir);
       }
     }else{
-      if(state.current && state.current.kind === "range_editor"){
+      if(typeof rangeEditorWheelActive === "function" && rangeEditorWheelActive()){
         try{ adjustRangeEditor(dir); }catch(e){}
         return;
       }
@@ -313,7 +316,7 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
     // Don't hijack typing inside inputs/textareas/selects/contenteditable elements
     const tgt = ev.target;
     if(tgt && (tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA" || tgt.tagName === "SELECT" || tgt.isContentEditable)){
-      if(state.current && state.current.kind === "range_editor" && (ev.key === "ArrowUp" || ev.key === "ArrowDown")){
+      if(typeof rangeEditorWheelActive === "function" && rangeEditorWheelActive() && (ev.key === "ArrowUp" || ev.key === "ArrowDown")){
         ev.preventDefault();
         adjustRangeEditor(ev.key === "ArrowUp" ? -1 : 1);
       }
@@ -358,7 +361,7 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
         }else{
           adjustVolumeStep(1);
         }
-      }else if(state.current && state.current.kind === "range_editor"){
+      }else if(typeof rangeEditorWheelActive === "function" && rangeEditorWheelActive()){
         adjustRangeEditor(-1);
       }else{
         scrollSel(-1);
@@ -371,7 +374,7 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
         }else{
           adjustVolumeStep(-1);
         }
-      }else if(state.current && state.current.kind === "range_editor"){
+      }else if(typeof rangeEditorWheelActive === "function" && rangeEditorWheelActive()){
         adjustRangeEditor(1);
       }else{
         scrollSel(1);

@@ -5,7 +5,6 @@ var seekPreview = 0;
 var seekIdleTimer = null;
 
 var npPillHideTimer = null;
-var npArtSwapTimer = null;
 var npPillSwapTimer = null;
 var visualizerEnabled = !!uiSettings.visualizer;
 var visualizerActive = false;
@@ -667,16 +666,6 @@ function toggleNpPillFromArt(){
 
 if(npArt){
   npArt.addEventListener("click", (ev)=>{ try{ ev.stopPropagation(); }catch(e){} toggleNpPillFromArt(); });
-  npArt.addEventListener("load", ()=>{
-    visualizerArtBounds = null;
-    visualizerArtBoundsLastTs = 0;
-    recaptureLiquidGlassElement(npArt);
-    scheduleNpOverlayGlassRender();
-  }, {passive:true});
-}
-if(npArtSwap){
-  npArtSwap.addEventListener("click", (ev)=>{ try{ ev.stopPropagation(); }catch(e){} toggleNpPillFromArt(); });
-  npArtSwap.addEventListener("load", ()=>{ recaptureLiquidGlassElement(npArtSwap); scheduleNpOverlayGlassRender(); }, {passive:true});
 }
 if(nowPlaying){
   nowPlaying.addEventListener("click", (ev)=>{

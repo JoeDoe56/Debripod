@@ -307,7 +307,7 @@ def _is_static_or_public_path() -> bool:
     path = request.path or "/"
     if path.startswith("/static/"):
         return True
-    if path in {"/favicon.ico", "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png", "/site.webmanifest"}:
+    if path in {"/favicon.ico", "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png", "/site.webmanifest", "/debripod-sw.js"}:
         return True
     if path in {"/login", "/logout", "/setup"}:
         return True

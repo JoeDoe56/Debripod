@@ -76,6 +76,87 @@
     }catch(e){}
   }
 
+  function estimatedItemHeight(item){
+    try{
+      if(!item) return 44;
+      if(item.kind === "smart_playlist_rules_text") return 236;
+      if(item.kind === "range_editor_input" || item.kind === "range_editor_slider") return 76;
+      if(item.forceTwoLine || item.settingRow || item.kind === "setting_value" || item.kind === "settings_library_folder" || item.kind === "settings_library_mode_choice" || item.kind === "settings_library_remove") return 76;
+      if(item.kind === "libsearch_result" || item.kind === "libsearch_file" || item.kind === "libtask_file") return 76;
+    }catch(e){}
+    return 44;
+  }
+
+  function canVirtualizeList(){
+    try{
+      if(!libList || !state || !Array.isArray(state.items)) return false;
+      if(state.items.length < 220) return false;
+      return !state.items.some((item)=> item && (
+        item.kind === "range_editor_input" ||
+        item.kind === "smart_playlist_rules_text" ||
+        item.kind === "libsearch_query" ||
+        item.kind === "libsearch_filter" ||
+        item.kind === "playlist_create" ||
+        item.kind === "smart_playlist_create" ||
+        item.kind === "playlist_edit_name"
+      ));
+    }catch(e){
+      return false;
+    }
+  }
+
+  function listVirtualWindow(){
+    const count = state && Array.isArray(state.items) ? state.items.length : 0;
+    const enabled = canVirtualizeList();
+    if(!enabled) return {enabled:false, start:0, end:count, top:0, bottom:0, visible:count, total:count};
+    const heights = [];
+    let total = 0;
+    for(let i = 0; i < count; i++){
+      const h = estimatedItemHeight(state.items[i]);
+      heights.push(h);
+      total += h;
+    }
+    const viewportTop = Math.max(0, libList.scrollTop || 0);
+    const viewportBottom = viewportTop + Math.max(1, libList.clientHeight || 1);
+    const overscan = Math.max(280, (libList.clientHeight || 360) * 0.8);
+    let y = 0;
+    let start = 0;
+    while(start < count && y + heights[start] < viewportTop - overscan){
+      y += heights[start];
+      start += 1;
+    }
+    let end = start;
+    let visibleY = y;
+    while(end < count && visibleY < viewportBottom + overscan){
+      visibleY += heights[end];
+      end += 1;
+    }
+    const top = y;
+    const bottom = Math.max(0, total - visibleY);
+    return {enabled:true, start, end, top, bottom, visible:end - start, total:count};
+  }
+
+  function appendVirtualSpacer(layer, height, pos){
+    if(!(height > 0)) return;
+    const spacer = document.createElement("li");
+    spacer.className = "ipodVirtualSpacer";
+    spacer.setAttribute("aria-hidden", "true");
+    spacer.dataset.virtualSpacer = pos || "";
+    spacer.style.height = Math.max(0, height).toFixed(1) + "px";
+    layer.appendChild(spacer);
+  }
+
+  function virtualOffsetForIndex(index){
+    try{
+      const n = Math.max(0, Math.min((state.items.length || 1) - 1, Number(index || 0)));
+      let y = 0;
+      for(let i = 0; i < n; i++) y += estimatedItemHeight(state.items[i]);
+      return y;
+    }catch(e){
+      return 0;
+    }
+  }
+
   function renderList(){
     const prevScroll = (libList ? libList.scrollTop : 0);
     let editInputToFocus = null;
@@ -84,7 +165,10 @@
     itemsLayer.className = "ipodListItemsLayer";
     itemsLayer.setAttribute("role", "presentation");
     libList.appendChild(itemsLayer);
-    for(let i=0;i<state.items.length;i++){
+    const virtual = listVirtualWindow();
+    if(libList) libList._dpVirtualized = !!virtual.enabled;
+    appendVirtualSpacer(itemsLayer, virtual.top, "top");
+    for(let i=virtual.start;i<virtual.end;i++){
       const it = state.items[i];
       const li = document.createElement("li");
       li.dataset.index = String(i);
@@ -102,28 +186,74 @@
       li.className = "ipodItem" + (isSel ? " sel" : "") + (it.kind === "info" ? " info" : "") + (it.kind === "random" ? " random" : "") + (twoLine ? " twoLine" : "") + (settingsTall ? " settingRow" : "");
 
       if(it.kind === "range_editor_input"){
-        li.className += " editing";
-        const inp = document.createElement("input");
-        inp.type = "text";
-        inp.inputMode = "decimal";
-        inp.className = "libInlineInput";
-        inp.value = String(it.value == null ? "" : it.value);
-        inp.addEventListener("input", ()=>{
-          try{
-            if(state.current && state.current.kind === "range_editor"){
-              state.current.rangeValue = Number(inp.value);
+        const editing = !!((state.inlineRangeEditor && state.inlineRangeEditor.rangeKeyboardOpen) || (state.current && state.current.kind === "range_editor" && state.current.rangeKeyboardOpen));
+        if(editing){
+          li.className += " editing";
+          const inp = document.createElement("input");
+          inp.type = "text";
+          inp.inputMode = "decimal";
+          inp.className = "libInlineInput";
+          inp.value = String(it.value == null ? "" : it.value);
+          inp.addEventListener("input", ()=>{
+            try{
+              const editor = state.inlineRangeEditor || ((state.current && state.current.kind === "range_editor") ? state.current : null);
+              if(editor){
+                editor.rangeValue = Number(inp.value);
+              }
+            }catch(e){}
+          });
+          inp.addEventListener("keydown", (ev)=>{
+            if(ev.key === "Enter"){
+              ev.preventDefault();
+              try{
+                const editor = state.inlineRangeEditor || ((state.current && state.current.kind === "range_editor") ? state.current : null);
+                if(editor) editor.rangeValue = Number(inp.value);
+              }catch(e){}
+              try{ applyRangeEditor(); }catch(e){}
             }
-          }catch(e){}
-        });
-        inp.addEventListener("keydown", (ev)=>{
-          if(ev.key === "Enter"){
-            ev.preventDefault();
-            try{ if(state.current && state.current.kind === "range_editor") state.current.rangeValue = Number(inp.value); }catch(e){}
-            try{ applyRangeEditor(); }catch(e){}
+          });
+          li.appendChild(inp);
+          editInputToFocus = inp;
+        }else{
+          const labelWrap = document.createElement("span");
+          labelWrap.className = "ipodLabelWrap";
+          const labelSpan = document.createElement("span");
+          labelSpan.className = "ipodLabel hScrollText";
+          setGlassText(labelSpan, it.label || "Value");
+          labelWrap.appendChild(labelSpan);
+          li.appendChild(labelWrap);
+          const wrap = document.createElement("span");
+          wrap.className = "ipodPills";
+          const bar = document.createElement("span");
+          bar.className = "ipodPill bar";
+          bar.classList.add("liquidGlass");
+          bar.setAttribute("data-liquid-row-pill", "");
+          const fill = document.createElement("span");
+          fill.className = "pillBarFill";
+          fill.style.width = (Math.max(0, Math.min(1, Number(it.bar || 0))) * 100).toFixed(1) + "%";
+          const txt = makeGlassPillText(String(it.value == null ? "" : it.value), "pillBarText");
+          bar.appendChild(fill);
+          bar.appendChild(txt);
+          wrap.appendChild(bar);
+          if(Array.isArray(it.pills)){
+            for(const p of it.pills){
+              if(!p) continue;
+              const sp = document.createElement("span");
+              sp.className = "ipodPill";
+              prepareGlassPill(sp, String(p));
+              wrap.appendChild(sp);
+            }
           }
-        });
-        li.appendChild(inp);
-        editInputToFocus = inp;
+          li.appendChild(wrap);
+          li.addEventListener("click", ()=>{
+            state.sel = i;
+            try{
+              const editor = state.inlineRangeEditor || ((state.current && state.current.kind === "range_editor") ? state.current : null);
+              if(editor && editor.rangeWheelArmed) openRangeEditorKeyboard();
+              else armRangeEditorWheel();
+            }catch(e){}
+          });
+        }
         itemsLayer.appendChild(li);
         continue;
       }
@@ -455,13 +585,69 @@
         pills.push({text: it.selected ? "Selected" : "Select", tone: it.selected ? "ok" : "" , _selectPill: true});
       }
 
+      try{
+        if(typeof rangeEditorDisplayForIndex === "function"){
+          const editorPill = rangeEditorDisplayForIndex(i);
+          if(editorPill){
+            const replacement = {
+              text: editorPill.text,
+              tone: editorPill.armed ? "ok" : "",
+              bar: null,
+              _rangeEditor: true,
+              _keyboardOpen: editorPill.keyboardOpen
+            };
+            if(pills.length) pills[0] = replacement;
+            else pills.push(replacement);
+          }
+        }
+      }catch(e){}
+
       if(pills.length){
         const wrap = document.createElement("span");
         wrap.className = "ipodPills";
         for(const p of pills){
           const sp = document.createElement("span");
           const toneCls = p.tone ? (" " + p.tone) : "";
-          if(p.bar != null && isFinite(Number(p.bar))){
+          if(p._rangeEditor && p._keyboardOpen){
+            sp.className = "ipodPill rangeValueEditing" + toneCls;
+            sp.setAttribute("data-liquid-row-pill", "");
+            const inp = document.createElement("input");
+            inp.type = "text";
+            inp.inputMode = "decimal";
+            inp.className = "libInlineInput";
+            inp.value = String(p.text || "");
+            let committed = false;
+            const syncValue = ()=>{
+              try{
+                const editor = state.inlineRangeEditor || ((state.current && state.current.kind === "range_editor") ? state.current : null);
+                if(editor) editor.rangeValue = Number(inp.value);
+              }catch(e){}
+            };
+            const commit = ()=>{
+              if(committed) return;
+              committed = true;
+              syncValue();
+              try{
+                const result = applyRangeEditor();
+                if(result && typeof result.catch === "function") result.catch(()=>{});
+              }catch(e){}
+            };
+            inp.addEventListener("input", syncValue);
+            inp.addEventListener("click", (ev)=>{ ev.stopPropagation(); });
+            inp.addEventListener("pointerdown", (ev)=>{ ev.stopPropagation(); });
+            inp.addEventListener("keydown", (ev)=>{
+              if(ev.key === "Enter"){
+                ev.preventDefault();
+                commit();
+              }else if(ev.key === "Escape"){
+                ev.preventDefault();
+                try{ cancelRangeEditor(); }catch(e){}
+              }
+            });
+            inp.addEventListener("blur", commit);
+            sp.appendChild(inp);
+            editInputToFocus = inp;
+          }else if(p.bar != null && isFinite(Number(p.bar))){
             sp.className = "ipodPill bar" + toneCls;
             sp.classList.add("liquidGlass");
             sp.setAttribute("data-liquid-row-pill", "");
@@ -520,12 +706,21 @@
       li.addEventListener("click", ()=>{
         setSelectionFast(i);
         try{
+          if(typeof rangeEditorOwnsIndex === "function" && rangeEditorOwnsIndex(i)){
+            const editor = state.inlineRangeEditor || ((state.current && state.current.kind === "range_editor") ? state.current : null);
+            if(editor && editor.rangeWheelArmed) openRangeEditorKeyboard();
+            else armRangeEditorWheel();
+            return;
+          }
+        }catch(e){}
+        try{
           const p = selectItem(it);
           if(p && typeof p.catch === "function"){ p.catch(()=>{}); }
         }catch(e){}
       });
       itemsLayer.appendChild(li);
     }
+    appendVirtualSpacer(itemsLayer, virtual.bottom, "bottom");
     if(state.items.length === 0){
       const li = document.createElement("li");
       li.className = "ipodItem info";
@@ -564,6 +759,10 @@
     try{
       if(typeof updateGlassTextUnderColors === "function") updateGlassTextUnderColors();
     }catch(e){}
+    try{
+      document.documentElement.style.setProperty("--dp-visible-row-count", String(virtual.visible || 0));
+      document.documentElement.style.setProperty("--dp-total-row-count", String(virtual.total || 0));
+    }catch(e){}
   }
 
   try{
@@ -573,6 +772,13 @@
         try{
           const renderer = (typeof liquidGlassRendererByKey === "function") ? liquidGlassRendererByKey("libPills") : null;
           if(renderer) renderer._metricsDirty = true;
+          if(libList._dpVirtualized){
+            if(libList._dpVirtualFrame) cancelAnimationFrame(libList._dpVirtualFrame);
+            libList._dpVirtualFrame = requestAnimationFrame(()=>{
+              libList._dpVirtualFrame = 0;
+              try{ renderList(); }catch(e){}
+            });
+          }
           if(typeof invalidateLibPillGlass === "function") invalidateLibPillGlass("list scroll");
           if(typeof scheduleLiquidGlassRender === "function") scheduleLiquidGlassRender();
         }catch(e){}
@@ -699,6 +905,10 @@ function vibeTick(){
       if(newEl){
         newEl.classList.add("sel");
         ensureLibItemVisible(newEl);
+      }else if(libList._dpVirtualized){
+        libList.scrollTop = Math.max(0, virtualOffsetForIndex(state.sel) - Math.max(32, (libList.clientHeight || 320) * 0.35));
+        renderList();
+        return;
       }
       refreshSelectedHScrollText();
       if(typeof invalidateLibPillGlass === "function") invalidateLibPillGlass("selection");
@@ -793,25 +1003,31 @@ function vibeTick(){
     }catch(e){}
   }
 
-  function waitLibPageFade(ms){
-    return new Promise(resolve=> setTimeout(resolve, ms || 220));
-  }
-
   async function runLibraryPageTransition(loadFn){
+    let fadeTimer = 0;
+    let faded = false;
     try{
       if(libList){
-        libList.classList.add("pageFadeHidden");
-        await waitLibPageFade(220);
+        fadeTimer = setTimeout(()=>{
+          faded = true;
+          try{ libList.classList.add("pageFadeHidden"); }catch(e){}
+        }, 80);
       }
       await loadFn();
+      if(fadeTimer) clearTimeout(fadeTimer);
       if(libList){
-        requestAnimationFrame(()=>{
+        if(faded){
           requestAnimationFrame(()=>{
-            try{ libList.classList.remove("pageFadeHidden"); }catch(e){}
+            requestAnimationFrame(()=>{
+              try{ libList.classList.remove("pageFadeHidden"); }catch(e){}
+            });
           });
-        });
+        }else{
+          try{ libList.classList.remove("pageFadeHidden"); }catch(e){}
+        }
       }
     }catch(e){
+      if(fadeTimer) clearTimeout(fadeTimer);
       try{ if(libList) libList.classList.remove("pageFadeHidden"); }catch(_e){}
       throw e;
     }
@@ -825,8 +1041,23 @@ function vibeTick(){
       }
       state.current = view;
       setHeader();
-      await view.load();
+      try{
+        await view.load();
+      }catch(loadErr){
+        let restored = false;
+        try{
+          if(window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.restoreCachedView){
+            restored = await DebriPod.clientSync.restoreCachedView(view);
+          }
+        }catch(e){ restored = false; }
+        if(!restored) throw loadErr;
+      }
       setHeader();
+      try{
+        if(window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.saveCurrentViewState){
+          DebriPod.clientSync.saveCurrentViewState();
+        }
+      }catch(e){}
     });
   }
 

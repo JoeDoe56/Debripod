@@ -1,5 +1,3 @@
-  var npArtSwap = document.getElementById("npArtSwap");
-
   var audioMain = document.getElementById("audioMain");
   var npBufferedFill = document.getElementById("npBufferedFill");
   var activeAudio = audioMain;
