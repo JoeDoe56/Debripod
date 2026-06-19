@@ -1,23 +1,21 @@
 function currentNowPlayingArtSrc(){
   try{
-    if(!npArt) return "";
-    return nowPlayingArtSrcValue(npArt.getAttribute("src") || "");
+    if(window.DebriPod && DebriPod.albumArtTexture && DebriPod.albumArtTexture.currentSource){
+      return nowPlayingArtSrcValue(DebriPod.albumArtTexture.currentSource() || "");
+    }
   }catch(e){
-    return "";
   }
+  return "";
 }
 
-function setNowPlayingArtSrc(src){
+function setNowPlayingArtSrc(src, opts){
   try{
     if(!npArt) return;
     const v = nowPlayingArtSrcValue(src);
-    if(v){
-      npArt.src = v;
-      recaptureLiquidGlassElement(npArt);
-    }else{
-      npArt.removeAttribute("src");
-      recaptureLiquidGlassElement(npArt);
+    if(window.DebriPod && DebriPod.albumArtTexture && DebriPod.albumArtTexture.setSource){
+      DebriPod.albumArtTexture.setSource(v, opts || {});
     }
+    recaptureLiquidGlassElement(npArt);
   }catch(e){}
 }
 
@@ -62,30 +60,13 @@ async function updateNowPlayingDisplay(meta, fallbackLabel, opts){
   var currentArt = currentNowPlayingArtSrc();
   var currentArtKey = nowPlayingArtCompareKey(currentArt);
   var nextArtKey = nowPlayingArtCompareKey(nextArt);
-  var animateArt = !!(options.animateArt && npArt && npArtSwap && currentArtKey && nextArtKey && currentArtKey !== nextArtKey);
+  var animateArt = !!(options.animateArt && npArt && currentArtKey && nextArtKey && currentArtKey !== nextArtKey);
   var animatePill = !!(options.animatePill && isNpPillShown());
   sampleThemeFromArt(nextArt);
   var swapMs = 220;
 
-  try{ if(npArtSwapTimer) clearTimeout(npArtSwapTimer); }catch(e){}
-  npArtSwapTimer = null;
   try{ if(npPillSwapTimer) clearTimeout(npPillSwapTimer); }catch(e){}
   npPillSwapTimer = null;
-
-  if(animateArt){
-    try{
-      if(currentArt){
-        npArtSwap.src = currentArt;
-      }else{
-        npArtSwap.removeAttribute("src");
-      }
-      const prevTransition = npArtSwap.style.transition;
-      npArtSwap.style.transition = "none";
-      npArtSwap.classList.remove("npArtSwapHidden");
-      void npArtSwap.offsetWidth;
-      npArtSwap.style.transition = prevTransition || "";
-    }catch(e){}
-  }
 
   if(animatePill){
     try{
@@ -95,23 +76,7 @@ async function updateNowPlayingDisplay(meta, fallbackLabel, opts){
     }catch(e){}
   }
 
-  setNowPlayingArtSrc(nextArt);
-
-  if(animateArt){
-    requestAnimationFrame(()=>{
-      requestAnimationFrame(()=>{
-        try{ npArtSwap.classList.add("npArtSwapHidden"); }catch(e){}
-      });
-    });
-    npArtSwapTimer = setTimeout(()=>{
-      try{
-        if(!npArtSwap) return;
-        npArtSwap.removeAttribute("src");
-        npArtSwap.classList.add("npArtSwapHidden");
-      }catch(e){}
-      npArtSwapTimer = null;
-    }, swapMs + 40);
-  }
+  setNowPlayingArtSrc(nextArt, {animate: animateArt, duration: swapMs});
 
   if(animatePill){
     npPillSwapTimer = setTimeout(()=>{

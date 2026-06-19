@@ -85,34 +85,11 @@
   }
 
   /* --------------------------------------------------
-   *  Glassworks capture backend: snapdom first, lazy html2canvas fallback.
-   *  DebriPod keeps direct visualizer/album texture sources, but DOM snapshot
-   *  renderers can opt into this engine without reintroducing eager html2canvas.
+   *  Glassworks capture backend.
+   *  DebriPod uses direct visualizer, album art, video, or WebGL sources for
+   *  normal renderers. DOM snapshots are snapdom-only and never use fallback
+   *  canvas rasterizers, so text can stay isolated above the glass.
    * ------------------------------------------------*/
-  const HTML2CANVAS_CDN = "/static/html2canvas.min.js";
-  let _h2cLoadPromise = null;
-
-  function ensureHtml2canvas() {
-    if (typeof window.html2canvas === "function") return Promise.resolve(window.html2canvas);
-    if (_h2cLoadPromise) return _h2cLoadPromise;
-    _h2cLoadPromise = new Promise((resolve, reject) => {
-      const s = document.createElement("script");
-      s.src = HTML2CANVAS_CDN;
-      s.onload = () => {
-        if (typeof window.html2canvas === "function") resolve(window.html2canvas);
-        else {
-          _h2cLoadPromise = null;
-          reject(new Error("liquidGL: html2canvas loaded without global."));
-        }
-      };
-      s.onerror = () => {
-        _h2cLoadPromise = null;
-        reject(new Error("liquidGL: failed to lazy-load html2canvas."));
-      };
-      document.head.appendChild(s);
-    });
-    return _h2cLoadPromise;
-  }
 
   function parseBackgroundImageUrl(value) {
     if (!value || value === "none") return null;
@@ -201,49 +178,10 @@
     });
   }
 
-  async function captureViaHtml2canvas(target, { scale, ignore } = {}) {
-    const html2canvas = await ensureHtml2canvas();
-    const restores = [];
-    if (typeof ignore === "function" && target.querySelectorAll) {
-      target.querySelectorAll("*").forEach((el) => {
-        try {
-          if (ignore(el)) {
-            el.setAttribute("data-liquidgl-hide", "");
-            restores.push(() => el.removeAttribute("data-liquidgl-hide"));
-          }
-        } catch (e) {}
-      });
-    }
-    try {
-      return await html2canvas(target, {
-        allowTaint: false,
-        useCORS: true,
-        backgroundColor: null,
-        removeContainer: true,
-        width: target.scrollWidth,
-        height: target.scrollHeight,
-        scrollX: 0,
-        scrollY: 0,
-        scale,
-        logging: false,
-        ignoreElements: (el) => !!(el && el.tagName === "CANVAS" && el.hasAttribute && el.hasAttribute("data-liquid-ignore")),
-        onclone: (doc) => {
-          doc.querySelectorAll("[data-liquidgl-hide]").forEach((el) => {
-            el.style.visibility = "hidden";
-          });
-        }
-      });
-    } finally {
-      for (let i = restores.length - 1; i >= 0; i--) restores[i]();
-    }
-  }
-
   async function snapToCanvas(target, { scale, ignore, engine, onEngineFallback, validateCompleteness } = {}) {
-    if ((engine || "snapdom") === "html2canvas") return captureViaHtml2canvas(target, { scale, ignore });
+    if ((engine || "snapdom") !== "snapdom") throw new Error("liquidGL: DOM snapshot engine disabled.");
     if (typeof window.snapdom === "undefined") {
-      liquidGLLog("warn", "liquidGL: snapdom missing; falling back to html2canvas.");
-      if (typeof onEngineFallback === "function") onEngineFallback("html2canvas");
-      return captureViaHtml2canvas(target, { scale, ignore });
+      throw new Error("liquidGL: snapdom missing and DOM snapshot fallback is disabled.");
     }
     const restores = [];
     if (typeof ignore === "function" && target.querySelectorAll) {
@@ -264,17 +202,14 @@
       canvas = await snapdomCapture(target, scale);
     } catch (e) {
       failed = true;
-      liquidGLLog("warn", "liquidGL: snapdom capture failed; falling back to html2canvas.", e);
+      liquidGLLog("warn", "liquidGL: snapdom capture failed.", e);
     } finally {
       for (let i = restores.length - 1; i >= 0; i--) restores[i]();
     }
     if (failed || (validateCompleteness === true && !snapshotLooksComplete(canvas))) {
-      if (typeof onEngineFallback === "function") onEngineFallback("html2canvas");
-      try {
-        return await captureViaHtml2canvas(target, { scale, ignore });
-      } finally {
-        for (let i = shimCleanups.length - 1; i >= 0; i--) shimCleanups[i]();
-      }
+      if (typeof onEngineFallback === "function") onEngineFallback("disabled");
+      for (let i = shimCleanups.length - 1; i >= 0; i--) shimCleanups[i]();
+      throw new Error("liquidGL: DOM snapshot capture unavailable.");
     }
     for (let i = shimCleanups.length - 1; i >= 0; i--) shimCleanups[i]();
     return canvas;
@@ -317,12 +252,13 @@
       );
       this.sourceType = sourceOptions.sourceType || "visualizerCanvas";
       this.sourceSelector = sourceOptions.sourceElement || sourceOptions.source || "#visualizerBg";
-      this._engine = sourceOptions.engine === "html2canvas" ? "html2canvas" : "snapdom";
+      this._engine = "snapdom";
       this._sourceElement = null;
       this._sourceCssRect = null;
       this._sourceTextureReady = false;
       this._solidCanvas = null;
       this.visible = true;
+      this._adaptiveQuality = 1;
 
       this._initGL();
 
@@ -342,9 +278,8 @@
             this._isScrolling = false;
           }, 200);
         }
-        requestAnimationFrame(scrollCheck);
       };
-      requestAnimationFrame(scrollCheck);
+      window.addEventListener("scroll", scrollCheck, { passive: true });
 
       const onResize = debounce(() => {
         if (this._capturing || this._isScrolling) return;
@@ -715,8 +650,7 @@
           scale,
           ignore,
           engine: this._engine,
-          validateCompleteness: true,
-          onEngineFallback: (next) => { this._engine = next; }
+          validateCompleteness: true
         });
         if (!snapCanvas) return false;
         this._snapshotRectPx = this.snapshotTarget.getBoundingClientRect();
@@ -743,7 +677,7 @@
     configureSource(options = {}) {
       const nextType = options.sourceType || this.sourceType || "visualizerCanvas";
       const nextSelector = options.sourceElement || options.source || this.sourceSelector || "#visualizerBg";
-      this._engine = options.engine === "html2canvas" ? "html2canvas" : (this._engine || "snapdom");
+      this._engine = "snapdom";
       if (nextType !== this.sourceType || nextSelector !== this.sourceSelector) {
         this.sourceType = nextType;
         this.sourceSelector = nextSelector;
@@ -778,7 +712,7 @@
         if (source && source.complete && source.naturalWidth && source.naturalHeight) {
           return this.updateTextureFromImage(source, { reason: reason || "album art" });
         }
-        return this.updateTextureFromSolidColor(8, 8, [5, 5, 7, 255], { reason: reason || "album art fallback", allowDark: true });
+        return false;
       }
       if (this.sourceType === "liveVideoFrame") {
         if (source && source.readyState >= 2 && source.videoWidth && source.videoHeight) {
@@ -803,25 +737,45 @@
       }
       if (options.sourceRect) this._sourceCssRect = options.sourceRect;
       else this._sourceCssRect = { left: 0, top: 0, width: window.innerWidth || canvas.width || 1, height: window.innerHeight || canvas.height || 1 };
-      return this._uploadTextureSource(canvas, canvas.width, canvas.height, options.reason || "canvas source", { allowDark: options.allowDark === true });
+      return this._uploadTextureSource(canvas, canvas.width, canvas.height, options.reason || "canvas source", { allowDark: options.allowDark === true, solidFallback: false });
     }
 
     updateTextureFromImage(img, options = {}) {
       if (!img || !img.complete || !img.naturalWidth || !img.naturalHeight) return false;
       this._sourceCssRect = null;
-      return this._uploadTextureSource(img, img.naturalWidth, img.naturalHeight, options.reason || "image source", { allowDark: true, skipBlankCheck: true });
+      return this._uploadTextureSource(img, img.naturalWidth, img.naturalHeight, options.reason || "image source", { allowDark: true, skipBlankCheck: true, solidFallback: false });
     }
 
     updateTextureFromVideo(video, options = {}) {
       if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return false;
       this._sourceCssRect = null;
-      return this._uploadTextureSource(video, video.videoWidth, video.videoHeight, options.reason || "video source", { allowDark: options.allowDark === true, skipBlankCheck: true });
+      return this._uploadTextureSource(video, video.videoWidth, video.videoHeight, options.reason || "video source", { allowDark: options.allowDark === true, skipBlankCheck: true, solidFallback: false });
     }
 
     updateTextureFromSolidColor(width = 8, height = 8, rgba = [0, 0, 0, 255], options = {}) {
       const canvas = this._fallbackCanvas(width, height, rgba);
       this._sourceCssRect = null;
-      return this._uploadTextureSource(canvas, canvas.width, canvas.height, options.reason || "solid fallback", { allowDark: true, skipBlankCheck: true });
+      return this._uploadTextureSource(canvas, canvas.width, canvas.height, options.reason || "solid fallback", { allowDark: true, skipBlankCheck: true, solidFallback: true });
+    }
+
+    clearSourceTexture(reason = "") {
+      try {
+        if (this.texture) {
+          this.gl.deleteTexture(this.texture);
+        }
+      } catch (e) {}
+      this.texture = null;
+      this.textureWidth = 0;
+      this.textureHeight = 0;
+      this.staticSnapshotCanvas = null;
+      this._sourceTextureReady = false;
+      this._sourceIsSolidFallback = false;
+      this._sourceCssRect = null;
+      this.clear();
+      liquidGLLog("log", "liquidGL: Source texture cleared.", {
+        rendererKey: this.rendererKey,
+        reason
+      });
     }
 
     _uploadTexture(srcCanvas, reason = "") {
@@ -884,6 +838,7 @@
       }
 
       this._sourceTextureReady = true;
+      this._sourceIsSolidFallback = options.solidFallback === true;
       this.staticSnapshotCanvas = source instanceof HTMLCanvasElement ? source : null;
       this.textureWidth = width;
       this.textureHeight = height;
@@ -1023,7 +978,7 @@
     /* ----------------------------- */
     render(frameState) {
       const gl = this.gl;
-      if (!this.visible) {
+      if (!this.visible || document.hidden) {
         this.clear();
         return;
       }
@@ -1031,6 +986,8 @@
       if (!this.texture) return;
       if (frameState) this._externalFrameState = frameState;
       const fs = this._externalFrameState || {};
+      this._adaptiveQuality = Math.max(0.45, Math.min(1, Number(fs.qualityBias || 1)));
+      if (this._isScrolling) this._adaptiveQuality = Math.min(this._adaptiveQuality, 0.7);
 
       if (this._isScrolling) {
         this._scrollUpdateCounter++;
@@ -1058,7 +1015,7 @@
       }
 
       this.lenses.forEach((lens) => {
-        this._renderLens(lens);
+        if (this._lensVisible(lens)) this._renderLens(lens);
       });
 
       this.lenses.forEach((ln) => {
@@ -1102,6 +1059,20 @@
           }
         }
       });
+    }
+
+    _lensVisible(lens) {
+      try {
+        if (!lens || !lens.el || !lens.el.isConnected) return false;
+        const style = window.getComputedStyle(lens.el);
+        if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity || 1) <= 0.01) return false;
+        const rect = lens.rectPx || lens.el.getBoundingClientRect();
+        if (!rect || !(rect.width > 0) || !(rect.height > 0)) return false;
+        if (rect.right < -2 || rect.bottom < -2 || rect.left > (window.innerWidth || 0) + 2 || rect.top > (window.innerHeight || 0) + 2) return false;
+        return true;
+      } catch (e) {
+        return true;
+      }
     }
 
     /* ----------------------------- */
@@ -1167,7 +1138,7 @@
       gl.uniform1f(this.u.refractionFill, Number.isFinite(Number(lens.options.refractionFill)) ? Number(lens.options.refractionFill) : 0);
       gl.uniform1f(this.u.bevelDepth, lens.options.bevelDepth);
       gl.uniform1f(this.u.bevelWidth, lens.options.bevelWidth);
-      gl.uniform1f(this.u.frost, lens.options.frost);
+      gl.uniform1f(this.u.frost, Math.max(0, Number(lens.options.frost || 0) * (this._adaptiveQuality || 1)));
       gl.uniform1f(this.u.radius, lens.radiusGl);
       gl.uniform1i(this.u.specular, lens.options.specular ? 1 : 0);
       gl.uniform1f(this.u.revealProgress, lens._revealProgress || 1.0);
@@ -2701,6 +2672,11 @@
       canvasClassName: renderer.canvas.className,
       canvasZIndex: window.getComputedStyle(renderer.canvas).zIndex
     });
+
+    if (window.DebriPod && window.DebriPod.frameScheduler) {
+      renderer.useExternalTicker = true;
+      if (window.DebriPod.frameScheduler.mark) window.DebriPod.frameScheduler.mark({ render: true });
+    }
 
     if (!renderer._rafId && !renderer.useExternalTicker) {
       const loop = () => {

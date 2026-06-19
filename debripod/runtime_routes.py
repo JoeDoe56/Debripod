@@ -249,9 +249,7 @@ def _pwa_shell_assets() -> list[str]:
         f"/static/debripod.css?v={ASSET_VERSION}",
         f"/static/debripod.js?v={ASSET_VERSION}",
         f"/static/liquidGL.js?v={ASSET_VERSION}",
-        f"/static/html2canvas.min.js?v={ASSET_VERSION}",
         f"/static/vendor/hls-local.js?v={ASSET_VERSION}",
-        f"/static/vendor/snapdom-local.js?v={ASSET_VERSION}",
         f"/static/fonts/inter-4.1/InterVariable.woff2?v=inter-4.1",
         f"/static/fonts/inter-4.1/InterVariable-Italic.woff2?v=inter-4.1",
     ]

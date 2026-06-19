@@ -815,6 +815,20 @@
       line-height: 18px;
       color: var(--dp-glass-selected-pill-text);
     }
+    .ipodPill.rangeValueEditing{
+      min-width: 86px;
+      min-height: 18px;
+      padding: 2px 8px;
+    }
+    .ipodPill.rangeValueEditing .libInlineInput{
+      width: 72px;
+      height: 14px;
+      max-height: 14px;
+      flex: 0 0 auto;
+      text-align: center;
+      font-size: 11px;
+      line-height: 14px;
+    }
     .ipodPill.ok{
       border-color: transparent;
       background: transparent;
@@ -877,6 +891,15 @@
       position:relative;
       z-index:3;
       min-height:100%;
+    }
+    .ipodVirtualSpacer{
+      display:block;
+      flex:0 0 auto;
+      width:100%;
+      padding:0;
+      margin:0;
+      border:0;
+      pointer-events:none;
     }
     .ipodList::-webkit-scrollbar{
       display:none;
@@ -1363,18 +1386,6 @@
   object-fit: cover;
   z-index: 1;
 }
-.npArtSwapLayer{
-  z-index: 3;
-  pointer-events: none;
-  opacity: 1;
-  transform: translateY(0) scale(1);
-  transition: opacity .22s ease, transform .22s ease;
-  will-change: opacity, transform;
-}
-.npArtSwapLayer.npArtSwapHidden{
-  opacity: 0;
-  transform: translateY(10px) scale(1.015);
-}
 .npOverlayPill{
   position:absolute;
   left: 12px;
@@ -1424,9 +1435,9 @@
 }
 .npOverlayPill.npPillSwapHidden{
   opacity: 0;
-  transform: translateY(10px);
+  transform: none;
   visibility: hidden;
-  transition: opacity .22s ease, transform .22s ease, visibility 0s linear .22s;
+  transition: opacity .22s ease, visibility 0s linear .22s;
 }
 .npOverlaySurface .npTitle{
   font-weight: 800;
@@ -1748,8 +1759,7 @@
         margin: 0;
         aspect-ratio: auto;
       }
-      .npArt,
-      .npArtSwapLayer{
+      .npArt{
         object-fit: contain;
         background: #000;
       }

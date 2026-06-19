@@ -5,8 +5,8 @@
   const DEFAULT_LIQUID_GLASS_ELEMENT_SETTINGS = {
     "libraryList": {
       "label": "Library list",
-      "mode": "clear",
-      "glassTint": 1.0,
+      "mode": "dark",
+      "glassTint": 0.5,
       "resolution": 1.0,
       "refraction": 0.047,
       "bevelDepth": 0.136,
@@ -75,17 +75,17 @@
     },
     "selectedRow": {
       "label": "Selected row",
-      "mode": "clear",
-      "glassTint": 1.0,
+      "mode": "light",
+      "glassTint": 1.2,
       "resolution": 1.0,
-      "refraction": 0.047,
+      "refraction": 0.085,
       "bevelDepth": 0.136,
       "bevelWidth": 0.076,
       "frost": 2.0,
       "refractionFill": 0.0,
-      "magnify": 1.0,
+      "magnify": 1.5,
       "specular": false,
-      "shadow": false
+      "shadow": true
     }
   };
   // GLASS_DEFAULTS_END
