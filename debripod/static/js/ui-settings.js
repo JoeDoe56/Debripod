@@ -103,8 +103,8 @@
   };
   const VISUALIZER_BAND_LABELS = ["low low", "low high", "low mids", "mids", "upper mids", "high low", "high high"];
   const DEFAULT_UI_SETTINGS = {
-    visualizer: false,
-    visualizerStrength: "medium",
+    visualizer: true,
+    visualizerStrength: "high",
     visualizerPreset: "album",
     liquidGlassElements: cloneGlassElementSettings(DEFAULT_LIQUID_GLASS_ELEMENT_SETTINGS),
     centerBounceAmount: 0.075,
@@ -190,9 +190,9 @@
       if(raw){
         const saved = JSON.parse(raw);
         if(saved && typeof saved === "object"){
-          out.visualizer = !!saved.visualizer;
-          out.visualizerStrength = normalizeVisualizerStrength(saved.visualizerStrength);
-          out.visualizerPreset = normalizeVisualizerPreset(saved.visualizerPreset);
+          if(Object.prototype.hasOwnProperty.call(saved, "visualizer")) out.visualizer = !!saved.visualizer;
+          if(saved.visualizerStrength != null) out.visualizerStrength = normalizeVisualizerStrength(saved.visualizerStrength);
+          if(saved.visualizerPreset != null) out.visualizerPreset = normalizeVisualizerPreset(saved.visualizerPreset);
           out.liquidGlassElements = cloneGlassElementSettings(saved.liquidGlassElements);
           out.centerBounceAmount = clampNumber(saved.centerBounceAmount, out.centerBounceAmount, 0, 0.3);
           out.centerBounceDuration = clampNumber(saved.centerBounceDuration, out.centerBounceDuration, 0, 1000);
@@ -206,7 +206,10 @@
         }
       }
     }catch(e){}
-    try{ out.visualizer = (localStorage.getItem("debripod_visualizer") || "") === "1"; }catch(e){}
+    try{
+      const legacyVisualizer = localStorage.getItem("debripod_visualizer");
+      if(legacyVisualizer !== null) out.visualizer = legacyVisualizer === "1";
+    }catch(e){}
     try{ out.visualizerStrength = normalizeVisualizerStrength(localStorage.getItem("debripod_visualizer_strength") || out.visualizerStrength); }catch(e){}
     try{ out.visualizerPreset = normalizeVisualizerPreset(localStorage.getItem("debripod_visualizer_preset") || out.visualizerPreset); }catch(e){}
     try{
