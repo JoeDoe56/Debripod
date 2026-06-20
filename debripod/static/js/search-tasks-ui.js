@@ -684,7 +684,7 @@ async function viewRecently(push){
           });
         }
         if(items.length === (state.history.length ? 1 : 0)){
-          items.push({kind:"info", label:"Empty"});
+          items.push({kind:"info", label:"No recently played items yet"});
         }
         resetList(items);
       }

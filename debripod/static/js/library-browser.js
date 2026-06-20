@@ -1237,6 +1237,10 @@ if(it.kind === "libtasks_entry"){
         await createUserFromInfo();
         return;
       }
+      if(it.action === "delete_current_user"){
+        await deleteCurrentUserFromInfo();
+        return;
+      }
       if(it.action === "settings_export"){
         await exportUserSettings(false);
         return;

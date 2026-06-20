@@ -47,11 +47,49 @@
 
   var playbackLastPostTs = 0;
   var playbackLastPos = -1;
+  var playbackLastPlaylistHash = "";
+
+  function playbackStringHash(text){
+    let h = 2166136261;
+    const s = String(text || "");
+    for(let i=0;i<s.length;i++){
+      h ^= s.charCodeAt(i);
+      h = Math.imul(h, 16777619);
+    }
+    return (h >>> 0).toString(16);
+  }
+
+  function playbackPlaylistContext(media){
+    let playlistCtx = null;
+    try{
+      const srcList = media === "video" ? state.videoPlaylist : state.playlist;
+      const srcIndex = media === "video" ? state.videoIndex : state.playIndex;
+      if(Array.isArray(srcList) && srcList.length){
+        const items = srcList.slice(0, 500).map(it=>({
+          root_id: (it.root && it.root.id) ? it.root.id : "",
+          rel: it.rel || "",
+          media: String(it.media || media || "audio"),
+          label: it.label || "",
+          streamed: !!it.streamed,
+          source: it.source || "",
+          ext: it.ext || "",
+          quality: it.quality || ""
+        })).filter(x=>x.root_id && x.rel);
+        playlistCtx = {items: items, index: (srcIndex >= 0 ? srcIndex : 0)};
+      }
+    }catch(e){ playlistCtx = null; }
+    if(!playlistCtx || !playlistCtx.items || !playlistCtx.items.length) return {hash:"", playlist:null, changed:false};
+    const hash = playbackStringHash(JSON.stringify(playlistCtx));
+    const changed = hash !== playbackLastPlaylistHash;
+    if(changed) playbackLastPlaylistHash = hash;
+    return {hash:hash, playlist: changed ? playlistCtx : null, changed:changed};
+  }
+
   function playbackMaybePost(media, rootId, rel, metaObj, pos, dur, playing, ev){
     const nowTs = Date.now();
     const p = (pos && isFinite(pos)) ? Number(pos) : 0;
     if(ev === "time"){
-      if(nowTs - playbackLastPostTs < 2000 && Math.abs(p - playbackLastPos) < 1.0) return;
+      if(nowTs - playbackLastPostTs < 5000 && Math.abs(p - playbackLastPos) < 4.0) return;
       playbackLastPostTs = nowTs;
       playbackLastPos = p;
     }else{
@@ -59,41 +97,13 @@
       playbackLastPos = p;
     }
     const m = metaObj || {};
-
-    // include the current playback playlist context so next/prev works when restoring from server state
-    let playlistCtx = null;
-    try{
-      if(media === "audio" && Array.isArray(state.playlist) && state.playlist.length){
-        const items = state.playlist.slice(0, 500).map(it=>({
-          root_id: (it.root && it.root.id) ? it.root.id : "",
-          rel: it.rel || "",
-          media: String(it.media || "audio"),
-          label: it.label || "",
-          streamed: !!it.streamed,
-          source: it.source || "",
-          ext: it.ext || "",
-          quality: it.quality || ""
-        })).filter(x=>x.root_id && x.rel);
-        playlistCtx = {items: items, index: (state.playIndex >= 0 ? state.playIndex : 0)};
-      }else if(media === "video" && Array.isArray(state.videoPlaylist) && state.videoPlaylist.length){
-        const items = state.videoPlaylist.slice(0, 500).map(it=>({
-          root_id: (it.root && it.root.id) ? it.root.id : "",
-          rel: it.rel || "",
-          media: String(it.media || "video"),
-          label: it.label || "",
-          streamed: !!it.streamed,
-          source: it.source || "",
-          ext: it.ext || "",
-          quality: it.quality || ""
-        })).filter(x=>x.root_id && x.rel);
-        playlistCtx = {items: items, index: (state.videoIndex >= 0 ? state.videoIndex : 0)};
-      }
-    }catch(e){ playlistCtx = null; }
+    const playlistInfo = playbackPlaylistContext(media);
     playbackPost({
       media: media,
       root_id: rootId,
       rel: rel,
-      playlist: playlistCtx,
+      playlist_hash: playlistInfo.hash,
+      playlist: playlistInfo.playlist,
       label: m.label || "",
       title: m.title || "",
       artist: m.artist || "",

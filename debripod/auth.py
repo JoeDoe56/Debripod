@@ -12,6 +12,7 @@ from flask import Response, abort, jsonify, redirect, render_template_string, re
 from werkzeug.security import check_password_hash, generate_password_hash
 
 from .config import ensure_startup_security_config, save_config
+from .settings import default_app_settings, save_app_settings
 from .Library.library_db import (
     passkey_by_credential_id,
     passkeys_for_user,
@@ -287,7 +288,37 @@ def _create_user(username: str, password: str) -> tuple[bool, str]:
         return False, "User already exists"
     users.append({"username": username, "password_hash": generate_password_hash(password)})
     _save_users(users)
+    _initialize_new_user_settings(username)
     return True, ""
+
+
+def _initialize_new_user_settings(username: str) -> None:
+    settings = default_app_settings(username)
+    settings["SETUP_WIZARD_COMPLETE"] = False
+    settings["SETUP_SKIPPED_SERVICES"] = {}
+    settings["LIBRARY_FOLDERS"] = []
+    save_app_settings(settings, username=username)
+
+
+def _delete_current_user(password: str) -> tuple[bool, str, bool]:
+    username = str(session.get("username") or "").strip()
+    if not username:
+        return False, "Authentication required", _setup_needed()
+    user = _find_user(username)
+    password_hash = str((user or {}).get("password_hash") or "")
+    if not user or not password_hash or not check_password_hash(password_hash, password or ""):
+        return False, "Password did not match.", _setup_needed()
+    remaining = [u for u in _valid_users() if str(u.get("username") or "").strip().lower() != username.lower()]
+    try:
+      for item in passkeys_for_user(username):
+          credential_id = str(item.get("credential_id") or "")
+          if credential_id:
+              revoke_passkey(username, credential_id)
+    except Exception:
+        pass
+    _save_users(remaining)
+    session.clear()
+    return True, "", not bool(remaining)
 
 
 def _mcp_bearer_token_valid() -> bool:
@@ -491,6 +522,7 @@ def register_auth(app: Any) -> None:
                 error = "Could not create account."
             else:
                 _save_users([{"username": username, "password_hash": generate_password_hash(password)}])
+                _initialize_new_user_settings(username)
                 session.clear()
                 session["username"] = username
                 _mark_recent_password_auth()
@@ -560,12 +592,15 @@ def register_auth(app: Any) -> None:
                 ok, _err = _create_user(username, password)
                 if ok:
                     session.clear()
-                    return redirect(url_for("login"))
+                    session["username"] = username
+                    _mark_recent_password_auth()
+                    _csrf_token()
+                    return redirect("/?setup=1")
                 error = "Could not create account."
         return render_template_string(
             LOGIN_TEMPLATE,
             title="Create Account",
-            subtitle="Create another local DebriPod user.",
+            subtitle="Create another local DebriPod user. After creation, DebriPod will open setup for that user.",
             action=url_for("account_create"),
             button="Create Account",
             error=error,
@@ -770,4 +805,14 @@ def register_auth(app: Any) -> None:
         ok, _err = _create_user(username, password)
         if not ok:
             return jsonify({"ok": False, "error": "Could not create user"}), 400
-        return jsonify({"ok": True, "users": [_public_user(u) for u in _valid_users()]})
+        return jsonify({"ok": True, "users": [_public_user(u) for u in _valid_users()], "setup_required": True})
+
+    @app.route("/api/auth/users/delete_current", methods=["POST"])
+    def api_auth_delete_current_user() -> Any:
+        if not _is_logged_in():
+            return jsonify({"ok": False, "error": "Authentication required"}), 401
+        js = request.get_json(silent=True) or {}
+        ok, err, setup_required = _delete_current_user(str(js.get("password") or ""))
+        if not ok:
+            return jsonify({"ok": False, "error": err or "Could not delete user"}), 400
+        return jsonify({"ok": True, "setup_required": bool(setup_required)})

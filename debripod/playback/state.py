@@ -322,8 +322,19 @@ def playback_update_from_client(payload: dict) -> dict:
                 clean_items.append({"root_id": rid, "rel": rrel, "media": m2, "label": lbl2})
             playlist_ctx["items"] = clean_items
 
+    playlist_hash = str(js.get("playlist_hash") or "").strip()
     if playlist_ctx:
         now_entry["playlist"] = playlist_ctx
+        if playlist_hash:
+            now_entry["playlist_hash"] = playlist_hash
+    elif playlist_hash:
+        try:
+            prev_now = PLAYBACK_STATE.get("now") if isinstance(PLAYBACK_STATE, dict) else None
+            if isinstance(prev_now, dict) and str(prev_now.get("playlist_hash") or "") == playlist_hash and isinstance(prev_now.get("playlist"), dict):
+                now_entry["playlist"] = dict(prev_now.get("playlist") or {})
+                now_entry["playlist_hash"] = playlist_hash
+        except Exception:
+            pass
     if stream_item:
         now_entry["streamed"] = True
         now_entry["source"] = str(stream_item.get("source") or now_entry.get("source") or "").strip().lower()

@@ -7,10 +7,11 @@ import zlib
 import secrets
 import socket
 import time
+import concurrent.futures
 from pathlib import Path
 from urllib.parse import unquote
 
-from flask import session
+from flask import g, session, stream_with_context
 
 from . import runtime_downloads as downloads_module
 from . import runtime_route_state as route_state_module
@@ -33,6 +34,7 @@ app = DeferredApp()
 _ACTIVE_SETTINGS_USERNAME = ""
 _ACTIVE_SETTINGS_SIGNATURE: tuple[int, int] = (0, 0)
 _ACTIVE_SETTINGS_DATA: dict[str, Any] = {}
+_RECENT_API_TIMINGS: list[dict[str, Any]] = []
 
 
 from .runtime_route_state import *
@@ -206,11 +208,39 @@ def _apply_runtime_settings_for_user(username: str, force: bool = False) -> dict
 
 @app.before_request
 def apply_user_settings_before_request():
+    try:
+        g.dp_request_started_at = time.perf_counter()
+    except Exception:
+        pass
     username = _current_settings_username()
     if username:
-        _apply_runtime_settings_for_user(username, force=True)
+        _apply_runtime_settings_for_user(username)
     else:
         _clear_active_user_runtime_settings()
+
+
+def add_request_timing_headers(resp):
+    try:
+        elapsed_ms = (time.perf_counter() - float(getattr(g, "dp_request_started_at", time.perf_counter()))) * 1000.0
+        path = request.path or ""
+        if path.startswith("/static/") and request.args.get("v"):
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        if path.startswith("/api/") or path.startswith("/hls/") or path.startswith("/stream/"):
+            resp.headers["X-DebriPod-Request-Ms"] = f"{elapsed_ms:.1f}"
+        if path.startswith("/api/"):
+            _RECENT_API_TIMINGS.append({
+                "method": request.method,
+                "path": path,
+                "status": int(getattr(resp, "status_code", 0) or 0),
+                "ms": round(elapsed_ms, 1),
+                "ts": time.time(),
+            })
+            del _RECENT_API_TIMINGS[:-60]
+        if elapsed_ms >= 750 and path.startswith("/api/"):
+            app.logger.info("slow endpoint %s %.1fms", path, elapsed_ms)
+    except Exception:
+        pass
+    return resp
 
 
 @app.context_processor
@@ -252,8 +282,8 @@ def _pwa_shell_assets() -> list[str]:
         f"/static/debripod.js?v={ASSET_VERSION}",
         f"/static/liquidGL.js?v={ASSET_VERSION}",
         f"/static/vendor/hls-local.js?v={ASSET_VERSION}",
-        f"/static/fonts/inter-4.1/InterVariable.woff2?v=inter-4.1",
-        f"/static/fonts/inter-4.1/InterVariable-Italic.woff2?v=inter-4.1",
+        f"/static/fonts/inter-4.1/InterVariable.woff2?v={ASSET_VERSION}",
+        f"/static/fonts/inter-4.1/InterVariable-Italic.woff2?v={ASSET_VERSION}",
     ]
     js_dir = Path(__file__).resolve().parent / "static" / "js"
     try:
@@ -494,19 +524,152 @@ def api_libsearch_combined():
     if not q:
         return jsonify(ok=False, error="Missing query", results=[], result_count=0, cache_key="")
     combined_cache_key = _make_search_cache_key("combined", q, {})
-    knaben_results, knaben_err, _, _, _ = _search_knaben_cached(q, 1)
-    slsk_users, slsk_total_results, dir_count, _, slsk_err = _search_soulseek_cached(q)
-    youtube_results, youtube_err, _ = _search_youtube_cached(q)
-    results = _standardize_youtube_results(youtube_results) + _standardize_soulseek_results(slsk_users) + _standardize_knaben_results(knaben_results)
-    results.sort(key=lambda x: (int(x.get("_score") or 0), int(x.get("size") or 0), str(x.get("title") or "").lower()), reverse=True)
-    for r in results:
-        r.pop("_score", None)
+    if str(request.args.get("stream") or "").strip().lower() in {"1", "true", "yes"}:
+        def gen():
+            yield json.dumps({"event": "start", "ok": True, "q": q, "cache_key": combined_cache_key, "sources": ["youtube", "soulseek", "knaben"]}, ensure_ascii=False) + "\n"
+            payloads: dict[str, dict[str, Any]] = {}
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="dp-search") as executor:
+                future_map = {executor.submit(_libsearch_source_payload, source, q): source for source in ("youtube", "soulseek", "knaben")}
+                for future in concurrent.futures.as_completed(future_map):
+                    source = future_map[future]
+                    try:
+                        payload = future.result()
+                    except Exception as exc:
+                        payload = {"source": source, "source_label": source.title(), "results": [], "result_count": 0, "error": "Search failed", "duration_ms": 0}
+                        try:
+                            app.logger.info("libsearch source failed %s: %s", source, exc)
+                        except Exception:
+                            pass
+                    payloads[source] = payload
+                    yield json.dumps({"event": "source", **payload}, ensure_ascii=False) + "\n"
+            final_payload = _combined_search_response_payload(q, combined_cache_key, payloads)
+            try:
+                record_search_history(q, "combined", combined_cache_key)
+            except Exception:
+                pass
+            yield json.dumps({"event": "done", **final_payload}, ensure_ascii=False) + "\n"
+        return Response(stream_with_context(gen()), mimetype="application/x-ndjson")
+
+    payloads = _run_combined_search_sources(q)
+    response_payload = _combined_search_response_payload(q, combined_cache_key, payloads)
     try:
         record_search_history(q, "combined", combined_cache_key)
     except Exception:
         pass
-    err = "; ".join([x for x in [youtube_err, slsk_err, knaben_err] if x])
-    return jsonify(ok=True, q=q, cache_key=combined_cache_key, results=results, result_count=len(results), knaben_results=knaben_results, slsk_users=slsk_users, youtube_results=youtube_results, dir_count=dir_count, file_count=slsk_total_results, error=err)
+    return jsonify(response_payload)
+
+
+def _libsearch_source_payload(source: str, q: str) -> dict[str, Any]:
+    started = time.perf_counter()
+    src = str(source or "").strip().lower()
+    try:
+        if src == "youtube":
+            raw_results, err, cache_key = _search_youtube_cached(q)
+            results = _standardize_youtube_results(raw_results)
+            return {
+                "ok": True,
+                "source": "youtube",
+                "source_label": "YouTube",
+                "cache_key": cache_key,
+                "results": results,
+                "youtube_results": raw_results,
+                "result_count": len(results),
+                "error": err,
+                "duration_ms": round((time.perf_counter() - started) * 1000.0, 1),
+            }
+        if src == "soulseek":
+            slsk_users, slsk_total_results, dir_count, cache_key, err = _search_soulseek_cached(q)
+            results = _standardize_soulseek_results(slsk_users)
+            return {
+                "ok": not bool(err),
+                "source": "soulseek",
+                "source_label": "Soulseek",
+                "cache_key": cache_key,
+                "results": results,
+                "slsk_users": slsk_users,
+                "result_count": len(results),
+                "file_count": int(slsk_total_results or 0),
+                "dir_count": int(dir_count or 0),
+                "error": err,
+                "duration_ms": round((time.perf_counter() - started) * 1000.0, 1),
+            }
+        knaben_results, err, remaining, reset, cache_key = _search_knaben_cached(q, 1)
+        results = _standardize_knaben_results(knaben_results)
+        return {
+            "ok": not bool(err),
+            "source": "knaben",
+            "source_label": "Knaben",
+            "cache_key": cache_key,
+            "results": results,
+            "knaben_results": knaben_results,
+            "result_count": len(results),
+            "rate_remaining": remaining,
+            "rate_reset": reset,
+            "error": err,
+            "duration_ms": round((time.perf_counter() - started) * 1000.0, 1),
+        }
+    except Exception:
+        return {
+            "ok": False,
+            "source": src or "unknown",
+            "source_label": (src or "unknown").title(),
+            "cache_key": "",
+            "results": [],
+            "result_count": 0,
+            "error": "Search failed",
+            "duration_ms": round((time.perf_counter() - started) * 1000.0, 1),
+        }
+
+
+def _run_combined_search_sources(q: str) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="dp-search") as executor:
+        future_map = {executor.submit(_libsearch_source_payload, source, q): source for source in ("youtube", "soulseek", "knaben")}
+        for future in concurrent.futures.as_completed(future_map):
+            source = future_map[future]
+            try:
+                out[source] = future.result()
+            except Exception:
+                out[source] = {"ok": False, "source": source, "source_label": source.title(), "results": [], "result_count": 0, "error": "Search failed", "duration_ms": 0}
+    return out
+
+
+def _combined_search_response_payload(q: str, combined_cache_key: str, payloads: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    results: list[dict[str, Any]] = []
+    source_status: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for source in ("youtube", "soulseek", "knaben"):
+        payload = payloads.get(source) or {}
+        results.extend([dict(x) for x in (payload.get("results") or []) if isinstance(x, dict)])
+        err = str(payload.get("error") or "").strip()
+        if err:
+            errors.append(f"{payload.get('source_label') or source}: {err}")
+        source_status.append({
+            "source": source,
+            "label": str(payload.get("source_label") or source.title()),
+            "ok": bool(payload.get("ok", not bool(err))),
+            "error": err,
+            "result_count": int(payload.get("result_count") or len(payload.get("results") or []) or 0),
+            "duration_ms": float(payload.get("duration_ms") or 0),
+        })
+    results.sort(key=lambda x: (int(x.get("_score") or 0), int(x.get("size") or 0), str(x.get("title") or "").lower()), reverse=True)
+    for r in results:
+        r.pop("_score", None)
+    slsk_payload = payloads.get("soulseek") or {}
+    return {
+        "ok": True,
+        "q": q,
+        "cache_key": combined_cache_key,
+        "results": results,
+        "result_count": len(results),
+        "source_status": source_status,
+        "knaben_results": (payloads.get("knaben") or {}).get("knaben_results") or [],
+        "slsk_users": slsk_payload.get("slsk_users") or [],
+        "youtube_results": (payloads.get("youtube") or {}).get("youtube_results") or [],
+        "dir_count": int(slsk_payload.get("dir_count") or 0),
+        "file_count": int(slsk_payload.get("file_count") or 0),
+        "error": "; ".join(errors),
+    }
 
 
 def _removed_route(*args, **kwargs):
@@ -1034,7 +1197,7 @@ def api_rd_enqueue_selected():
 def api_soulseek_enqueue():
     svc = SOULSEEK_SERVICE
     if not svc or not svc.is_ready():
-        return jsonify({"ok": False, "error": "Soulseek is not configured or failed to start"}), 400
+        return jsonify({"ok": False, "error": "Soulseek is configured but not connected. Check username, password, and listening port in Services."}), 400
 
     try:
         data = request.get_json(force=True, silent=False) or {}
@@ -1557,6 +1720,38 @@ def api_client_state():
     })
 
 
+@app.route("/api/performance", methods=["GET"])
+def api_performance():
+    username = _current_settings_username()
+    settings = ensure_app_settings(username=username)
+    any_building, roots_status = index_building_status()
+    services = _service_status_payload(settings)
+    service_summary = {}
+    for key, value in services.items():
+        if isinstance(value, dict):
+            service_summary[key] = {
+                "status": str(value.get("status") or ""),
+                "configured": bool(value.get("configured") or value.get("api_configured") or value.get("set")),
+                "connected": bool(value.get("connected")),
+                "error": str(value.get("error") or value.get("warning") or ""),
+            }
+    return jsonify({
+        "ok": True,
+        "library_versions": library_root_versions(),
+        "indexing": {"any_building": bool(any_building), "roots": roots_status},
+        "services": service_summary,
+        "api_timings": list(_RECENT_API_TIMINGS[-30:]),
+        "version": {
+            "display": str(VERSION_INFO.get("display_version") or VERSION),
+            "source": str(VERSION_INFO.get("source") or ""),
+            "short_commit": str(VERSION_INFO.get("short_commit") or ""),
+            "dirty": bool(VERSION_INFO.get("dirty")),
+            "asset_version": str(ASSET_VERSION),
+        },
+        "server_time": time.time(),
+    })
+
+
 @app.route("/api/sync", methods=["GET"])
 def api_sync():
     username = _current_settings_username()
@@ -1919,7 +2114,7 @@ def api_library_metadata():
         genre = (sel.get("genre") or "").strip()
         liked_only = bool(sel.get("liked") or sel.get("loved") or sel.get("liked_only"))
         if liked_only and not lastfm_enabled():
-            return jsonify({"items": [{"kind": "info", "label": "Last.fm not configured"}], **response_meta})
+            return jsonify({"items": [{"kind": "info", "label": "Last.fm is not configured. Add API credentials or skip Last.fm features."}], **response_meta})
         if not liked_only and isinstance(facets.get("tracks_by_key"), dict):
             payload = facets.get("tracks_by_key", {}).get(track_facet_key(artist=artist, album=album, genre=genre))
             if isinstance(payload, list):
@@ -1948,7 +2143,7 @@ def api_library_metadata():
 
     if level == "liked_songs":
         if not lastfm_enabled():
-            return jsonify({"items": [{"kind": "info", "label": "Last.fm not configured"}], **response_meta})
+            return jsonify({"items": [{"kind": "info", "label": "Last.fm is not configured. Add API credentials or skip Last.fm features."}], **response_meta})
         items = []
         for t in tracks:
             a = (t.get("artist") or "").strip()
@@ -2555,4 +2750,5 @@ def create_app() -> Flask:
     mcp_routes.app.apply_to(real_app)
     app.apply_to(real_app)
     register_auth(real_app)
+    real_app.after_request(add_request_timing_headers)
     return real_app
