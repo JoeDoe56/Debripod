@@ -909,6 +909,27 @@
     }catch(e){}
   }
 
+  function liquidGlassDiagnostics(){
+    const out = [];
+    try{
+      liquidGlassRenderers().forEach((renderer)=>{
+        if(!renderer) return;
+        const key = renderer.rendererKey || "default";
+        const settingsKey = key === "libList" ? "libraryList" : (key === "libSelection" ? "selectedRow" : (key === "libPills" ? "listPills" : (key === "npOverlay" ? "nowPlayingPill" : (key === "wheel" ? "wheel" : "pathPill"))));
+        const settings = glassElementSettings(settingsKey) || {};
+        out.push({
+          key:key,
+          visible:rendererTargetVisible(renderer),
+          resolution:Number(settings.resolution || renderer.resolution || 0),
+          texture:String(renderer.textureWidth || 0) + "x" + String(renderer.textureHeight || 0),
+          lens_count:renderer.lenses ? renderer.lenses.length : 0,
+          canvas_opacity:renderer.canvas && window.getComputedStyle ? window.getComputedStyle(renderer.canvas).opacity : ""
+        });
+      });
+    }catch(e){}
+    return out;
+  }
+
   function recaptureLiquidGlassElement(el){
     try{
       if(!el) return;
@@ -1164,3 +1185,9 @@
       }, clampNumber(uiSettings.wheelTiltReleaseDuration, DEFAULT_UI_SETTINGS.wheelTiltReleaseDuration, 0, 1200) + 40);
     }catch(e){}
   }
+
+  try{
+    root.liquidDiagnostics = {
+      renderers: liquidGlassDiagnostics
+    };
+  }catch(e){}

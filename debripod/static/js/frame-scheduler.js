@@ -15,6 +15,7 @@
   let longFrames = 0;
   let frameCount = 0;
   let qualityBias = 1;
+  const frameSamples = [];
 
   function request(key, fn){
     if(typeof fn !== "function") return;
@@ -76,6 +77,8 @@
     const delta = lastTime ? Math.max(0, ts - lastTime) : 16.7;
     lastTime = ts;
     frameCount += 1;
+    frameSamples.push(ts);
+    while(frameSamples.length && ts - frameSamples[0] > 1000) frameSamples.shift();
     if(delta > 34) longFrames += 1;
     if(delta > 24) qualityBias = Math.max(0.55, qualityBias * 0.92);
     else if(delta < 18) qualityBias = Math.min(1, qualityBias + 0.015);
@@ -120,6 +123,9 @@
     unregister,
     hasPending: function(){ return !!frame; },
     isRunning: function(){ return running; },
-    stats: function(){ return {frameCount, longFrames, qualityBias, pending: !!frame, tasks: tasks.size}; }
+    stats: function(){
+      const fps = frameSamples.length > 1 ? (frameSamples.length - 1) * 1000 / Math.max(1, frameSamples[frameSamples.length - 1] - frameSamples[0]) : 0;
+      return {frameCount, longFrames, fps, qualityBias, pending: !!frame, tasks: tasks.size};
+    }
   };
 })();

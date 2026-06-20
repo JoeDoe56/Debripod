@@ -1703,14 +1703,14 @@
     }
     @font-face{
       font-family: "Inter";
-      src: url("/static/fonts/inter-4.1/InterVariable.woff2?v=inter-4.1") format("woff2");
+      src: url("/static/fonts/inter-4.1/InterVariable.woff2?v=61") format("woff2");
       font-weight: 100 900;
       font-style: normal;
       font-display: swap;
     }
     @font-face{
       font-family: "Inter";
-      src: url("/static/fonts/inter-4.1/InterVariable-Italic.woff2?v=inter-4.1") format("woff2");
+      src: url("/static/fonts/inter-4.1/InterVariable-Italic.woff2?v=61") format("woff2");
       font-weight: 100 900;
       font-style: italic;
       font-display: swap;

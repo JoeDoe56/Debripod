@@ -11,7 +11,11 @@
       state.rootView = rootViewObj();
     }
     state.current = state.rootView;
-    const items = [{kind:"libsearch_entry", label:"Search"},{kind:"libtasks_entry", label:"Tasks"}].concat((cfg.roots||[]).map(r=>({kind:"root", label:r.name, root:r})));
+    const roots = cfg.roots || [];
+    const items = [{kind:"libsearch_entry", label:"Search"},{kind:"libtasks_entry", label:"Tasks"}].concat(roots.map(r=>({kind:"root", label:r.name, root:r})));
+    if(!roots.length){
+      items.push({kind:"info", label:"No library folders yet. Add one in Library settings or run setup."});
+    }
     if(state.now || state.serverNow){
       items.push({kind:"nowplaying", label:"Now Playing"});
       if(state.serverRecent && state.serverRecent.length){
@@ -168,16 +172,16 @@
         {key:"REAL_DEBRID_API_KEY", label:"Real Debrid token", type:"secret", value:s.REAL_DEBRID_API_KEY},
         {key:"KNABEN_API_KEY", label:"Knaben API key", type:"secret", value:s.KNABEN_API_KEY, advanced:true},
         {key:"SOULSEEK_USERNAME", label:"Soulseek username", type:"secret", value:s.SOULSEEK_USERNAME},
-        {key:"SOULSEEK_PASSWORD", label:"Soulseek password", type:"secret", value:s.SOULSEEK_PASSWORD, sub_label: slsk.set ? (slsk.connected ? "Soulseek is connected for this account." : (slsk.error ? ("Soulseek is not connected: " + slsk.error) : "Soulseek is not connected for this account.")) : "Set username and password to connect Soulseek for this account."},
+        {key:"SOULSEEK_PASSWORD", label:"Soulseek password", type:"secret", value:s.SOULSEEK_PASSWORD, sub_label: slsk.set ? (slsk.connected ? "Soulseek is connected for this account." : "Soulseek is configured but not connected. Check username, password, and listening port in Services.") : "Set username and password to connect Soulseek for this account."},
         {key:"LASTFM_API_KEY", label:"Last.fm API key", type:"secret", value:s.LASTFM_API_KEY},
         {key:"LASTFM_API_SECRET", label:"Last.fm secret", type:"secret", value:s.LASTFM_API_SECRET},
-        {key:"LASTFM_SESSION_KEY", label:"Last.fm session key", type:"secret", value:s.LASTFM_SESSION_KEY, sub_label: lf.set ? ("Last.fm session is set for this account" + (lf.username ? (": " + lf.username) : ".")) : "Use Last.fm login or paste a session key for this account.", advanced:true},
+        {key:"LASTFM_SESSION_KEY", label:"Last.fm session key", type:"secret", value:s.LASTFM_SESSION_KEY, sub_label: lf.set ? ("Last.fm session is set for this account" + (lf.username ? (": " + lf.username) : ".")) : "Last.fm is not configured. Add API credentials or skip Last.fm features.", advanced:true},
         {key:"YTDLP_CMD", label:"yt-dlp command", type:"text", value:s.YTDLP_CMD, advanced:true}
       ],
       playback: [
         {key:"PLAYBACK_STREAMING_MODE", label:"Streaming mode", type:"choice", choices:["http","hls"], value:s.PLAYBACK_STREAMING_MODE},
         {key:"PRELOAD_NEXT_FOR_GAPLESS", label:"Preload next", type:"bool", value:s.PRELOAD_NEXT_FOR_GAPLESS},
-        {key:"FFMPEG_PATH", label:"ffmpeg", type:"tool_path", value:s.FFMPEG_PATH, tool:"ffmpeg", toolStatus:ffmpeg, sub_label: ffmpeg.ok ? ("Detected: " + (ffmpeg.found || "ffmpeg")) : (ffmpeg.install_hint || "Install ffmpeg or set a path."), advanced:true},
+        {key:"FFMPEG_PATH", label:"ffmpeg", type:"tool_path", value:s.FFMPEG_PATH, tool:"ffmpeg", toolStatus:ffmpeg, sub_label: ffmpeg.ok ? ("Detected: " + (ffmpeg.found || "ffmpeg")) : "ffmpeg was not found. Set the ffmpeg path in Playback settings.", advanced:true},
         {key:"FFPROBE_PATH", label:"ffprobe", type:"tool_path", value:s.FFPROBE_PATH, tool:"ffprobe", toolStatus:ffprobe, sub_label: ffprobe.ok ? ("Detected: " + (ffprobe.found || "ffprobe")) : (ffprobe.install_hint || "Install ffprobe or set a path."), advanced:true}
       ],
       advanced: [
@@ -274,6 +278,7 @@
             if(name) items.push({kind:"info", label:name, pills:[name === username ? "current" : "user"]});
           });
         }
+        items.push({kind:"account_action", label:"Delete current user", sub_label:"Requires your password. This removes the current local login and signs you out.", action:"delete_current_user", pills:[{text:"Danger", tone:"warn"}]});
         resetList(items);
       }
     }, !!push);
@@ -281,6 +286,23 @@
 
   async function createUserFromInfo(){
     window.location.href = "/account/create";
+  }
+
+  async function deleteCurrentUserFromInfo(){
+    const password = prompt("Enter your password to delete the current user.");
+    if(password == null) return;
+    if(!password){
+      alert("Password is required.");
+      return;
+    }
+    if(!confirm("Delete the current DebriPod user? This signs you out immediately.")) return;
+    const res = await apiPost("/api/auth/users/delete_current", {password: password});
+    const js = (res && res.json) ? res.json : {};
+    if(!res || !res.ok || !js.ok){
+      alert(String((js && js.error) ? js.error : "Could not delete user"));
+      return;
+    }
+    window.location.href = js.setup_required ? "/setup" : "/login";
   }
 
   function serviceStatusPill(ok, goodText, badText){
@@ -306,16 +328,16 @@
         const slskPills = [serviceStatusPill(!!slsk.configured, slsk.connected ? "Connected" : "Configured", slsk.status === "skipped" ? "Skipped" : "Missing credentials")];
         if(slsk.listening_port != null) slskPills.push("Port " + String(slsk.listening_port));
         if(slsk.obfuscated_port != null) slskPills.push("Obf " + String(slsk.obfuscated_port));
-        items.push({kind:"info", label:"Soulseek", sub_label:String(slsk.error || slsk.warning || ""), pills:slskPills});
+        items.push({kind:"info", label:"Soulseek", sub_label:slsk.configured && !slsk.connected ? "Soulseek is configured but not connected. Check username, password, and listening port in Services." : String(slsk.error || slsk.warning || ""), pills:slskPills});
         const lf = services.lastfm || {};
-        items.push({kind:"info", label:"Last.fm", pills:[serviceStatusPill(!!lf.api_configured, lf.session_user ? ("Logged in " + String(lf.session_user)) : "API set", lf.status === "skipped" ? "Skipped" : "Missing API")]});
+        items.push({kind:"info", label:"Last.fm", sub_label:lf.api_configured ? "" : "Last.fm is not configured. Add API credentials or skip Last.fm features.", pills:[serviceStatusPill(!!lf.api_configured, lf.session_user ? ("Logged in " + String(lf.session_user)) : "API set", lf.status === "skipped" ? "Skipped" : "Missing API")]});
         const kb = services.knaben || {};
         items.push({kind:"info", label:"Knaben", pills:[{text:kb.api_key_configured ? "API key set" : "Optional"}]});
         const yt = services.youtube || {};
         const ytTool = yt.tool || {};
         items.push({kind:"info", label:"YouTube", sub_label:String(yt.download_dir || ""), pills:[serviceStatusPill(!!ytTool.ok, "yt-dlp found", yt.status === "skipped" ? "Skipped" : "yt-dlp missing")]});
         const ffmpeg = services.ffmpeg || {};
-        items.push({kind:"info", label:"ffmpeg", sub_label:String(ffmpeg.install_hint || ""), pills:[serviceStatusPill(!!ffmpeg.ok, "Detected", "Missing")]});
+        items.push({kind:"info", label:"ffmpeg", sub_label:ffmpeg.ok ? String(ffmpeg.found || "") : "ffmpeg was not found. Set the ffmpeg path in Playback settings.", pills:[serviceStatusPill(!!ffmpeg.ok, "Detected", "Missing")]});
         const ffprobe = services.ffprobe || {};
         items.push({kind:"info", label:"ffprobe", sub_label:String(ffprobe.install_hint || ""), pills:[serviceStatusPill(!!ffprobe.ok, "Detected", "Missing")]});
         resetList(items);
@@ -426,7 +448,7 @@
             pills:[{text: mode === "meta" ? "Metadata" : "List"}]
           });
         });
-        if(!folders.length) items.push({kind:"info", label:"No library folders"});
+        if(!folders.length) items.push({kind:"info", label:"No library folders yet. Add one in Library settings or run setup."});
         resetList(items);
       }
     };
@@ -699,11 +721,29 @@
     if(stMsg){
       qPills.push({text: stMsg, tone: stTone || ""});
     }
+    if(state.libSearch && Array.isArray(state.libSearch.source_status)){
+      for(const src of state.libSearch.source_status){
+        if(!src) continue;
+        const label = String(src.label || src.source || "");
+        const count = Number(src.result_count || 0);
+        const err = String(src.error || "");
+        if(err) qPills.push({text: label + " error", tone:"warn"});
+        else if(label) qPills.push({text: label + " " + String(count), tone: src.done === false ? "" : "ok"});
+      }
+    }
     items.push({kind:"libsearch_query", label:"Enter query", pills: qPills});
     items.push({kind:"libsearch_filter", label:"Enter filters"});
 
     items.push({kind:"libsearch_action", label:"Clear"});
     items.push({kind:"libsearch_action", label:"Search history"});
+    if(state.libSearch && Array.isArray(state.libSearch.source_status)){
+      for(const src of state.libSearch.source_status){
+        const err = String((src && src.error) || "").trim();
+        if(err){
+          items.push({kind:"info", label:String(src.label || src.source || "Source") + ": " + err});
+        }
+      }
+    }
 
     for(const r of (state.libSearch.results || [])){
       const source = String(r.source || "").toLowerCase();
@@ -1044,6 +1084,19 @@ async function libTasksPollTick(){
   try{
     const js = await apiGet("/api/tasks");
     const tasks = (js && js.tasks) ? js.tasks : [];
+    const signature = JSON.stringify(tasks.map(t=>({
+      id:t.id || "",
+      state:t.state || "",
+      paused:!!t.paused,
+      message:t.message || "",
+      overall_done:t.overall_done || 0,
+      overall_total:t.overall_total || 0,
+      rd_files:(t.rd_files || []).map(f=>[f.file_id, f.state, f.done, f.total]),
+      slsk_files:(t.slsk_files || []).map(f=>[f.file_id, f.state, f.done, f.total])
+    })));
+    if(state.libTasks && state.libTasks.lastSignature === signature) return;
+    if(!state.libTasks) state.libTasks = {tasks:[]};
+    state.libTasks.lastSignature = signature;
     if(vk === "libtasks"){
       state.libTasks.tasks = tasks;
       libTasksRefreshList(true);
@@ -1067,8 +1120,25 @@ async function libTasksPollTick(){
 }
 
 // start/refresh library tasks poller
-if(window.dpLibTasksTimer) clearInterval(window.dpLibTasksTimer);
-window.dpLibTasksTimer = setInterval(()=>{ libTasksPollTick(); }, window.DEBRIPOD_TASKS_POLL_MS || 1200);
+if(window.dpLibTasksTimer) clearTimeout(window.dpLibTasksTimer);
+function scheduleLibTasksPoll(delay){
+  try{
+    if(window.dpLibTasksTimer) clearTimeout(window.dpLibTasksTimer);
+    window.dpLibTasksTimer = setTimeout(async ()=>{
+      try{ await libTasksPollTick(); }catch(e){}
+      const visible = !!(state.current && (state.current.kind === "libtasks" || state.current.kind === "libtask"));
+      const base = Number(window.DEBRIPOD_TASKS_POLL_MS || 1200);
+      const next = visible ? base : Math.max(15000, base * 6);
+      scheduleLibTasksPoll(document.hidden ? Math.max(30000, next) : next);
+    }, Math.max(500, Number(delay || window.DEBRIPOD_TASKS_POLL_MS || 1200)));
+  }catch(e){}
+}
+scheduleLibTasksPoll(window.DEBRIPOD_TASKS_POLL_MS || 1200);
+try{
+  document.addEventListener("visibilitychange", ()=>{
+    scheduleLibTasksPoll(document.hidden ? 30000 : 500);
+  });
+}catch(e){}
 
 async function libDoSearch(engine, q){
     const qq = String(q || "").trim();
@@ -1079,12 +1149,15 @@ async function libDoSearch(engine, q){
     const useEngine = String(engine || "combined").toLowerCase() || "combined";
     state.libSearch.q = qq;
     state.libSearch.engine = useEngine;
+    const searchToken = Date.now() + ":" + Math.random().toString(16).slice(2);
+    state.libSearch.search_token = searchToken;
     state.libSearch.searching = true;
+    state.libSearch.source_status = [];
     libSetStatus("Searching", "");
     libRefreshList(true);
     try{
-      const endpoint = (useEngine === "youtube") ? "/api/libsearch/youtube?q=" : "/api/libsearch/combined?q=";
-      const js = await apiGet(endpoint + encodeURIComponent(qq));
+      const js = useEngine === "combined" ? await libSearchCombinedProgressive(qq, searchToken) : await apiGet("/api/libsearch/youtube?q=" + encodeURIComponent(qq));
+      if(state.libSearch.search_token !== searchToken) return;
       if(!js || !js.ok){
         throw new Error((js && js.error) ? js.error : "Search failed");
       }
@@ -1095,6 +1168,7 @@ async function libDoSearch(engine, q){
       state.libSearch.slsk_users = js.slsk_users || [];
       state.libSearch.last_count = Number(js.result_count || state.libSearch.results.length || 0);
       state.libSearch.searching = false;
+      state.libSearch.source_status = Array.isArray(js.source_status) ? js.source_status : state.libSearch.source_status;
       libSetStatus(String(state.libSearch.last_count) + " results", "ok");
       libRefreshList(true);
     }catch(e){
@@ -1164,6 +1238,7 @@ async function libDoSearch(engine, q){
 
         items.push({kind:"libinfo_action", label:"Full Screen", action:"force_fullscreen"});
         items.push({kind:"libinfo_action", label:"Binds", action:"binds_menu"});
+        items.push({kind:"libinfo_action", label:"Performance", action:"performance_panel"});
 
         try{
           await settingsLoad();
@@ -1226,7 +1301,7 @@ async function libDoSearch(engine, q){
         items.push({kind:"info", label:"Optional tools", sub_label:"Skipping these keeps the app usable, but limits metadata, thumbnails, transcoding, and compatibility conversion."});
         const ffmpeg = (services && services.ffmpeg) || {};
         const ffprobe = (services && services.ffprobe) || {};
-        items.push({kind:"libinfo_action", label:"ffmpeg", sub_label:ffmpeg.ok ? ("Detected: " + String(ffmpeg.found || "")) : String(ffmpeg.install_hint || "Set the ffmpeg path in Playback settings."), action:"setup_ffmpeg", pills:[ffmpeg.ok ? "Detected" : (skipped.ffmpeg === "skipped" ? "Skipped" : "Missing")]});
+        items.push({kind:"libinfo_action", label:"ffmpeg", sub_label:ffmpeg.ok ? ("Detected: " + String(ffmpeg.found || "")) : "ffmpeg was not found. Set the ffmpeg path in Playback settings.", action:"setup_ffmpeg", pills:[ffmpeg.ok ? "Detected" : (skipped.ffmpeg === "skipped" ? "Skipped" : "Missing")]});
         if(!ffmpeg.ok) items.push({kind:"libinfo_action", label:"Skip ffmpeg", sub_label:"Transcoding, compatibility conversion, thumbnails, and some precompute may be limited.", action:"setup_skip_ffmpeg", pills:[skipped.ffmpeg === "skipped" ? "Skipped" : "Optional"]});
         items.push({kind:"libinfo_action", label:"ffprobe", sub_label:ffprobe.ok ? ("Detected: " + String(ffprobe.found || "")) : String(ffprobe.install_hint || "Set the ffprobe path in Playback settings."), action:"setup_ffprobe", pills:[ffprobe.ok ? "Detected" : (skipped.ffprobe === "skipped" ? "Skipped" : "Missing")]});
         if(!ffprobe.ok) items.push({kind:"libinfo_action", label:"Skip ffprobe", sub_label:"Metadata extraction, technical labels, thumbnails, and some visualizer precompute may be limited.", action:"setup_skip_ffprobe", pills:[skipped.ffprobe === "skipped" ? "Skipped" : "Optional"]});
@@ -1239,7 +1314,7 @@ async function libDoSearch(engine, q){
         items.push({kind:"libinfo_action", label:"Soulseek", sub_label:"Skipping disables Soulseek search and downloads until credentials and ports are configured.", action:"setup_soulseek", pills:[slsk.connected ? "Connected" : (slsk.configured ? "Configured" : (skipped.soulseek === "skipped" ? "Skipped" : "Optional"))]});
         if(!slsk.configured) items.push({kind:"libinfo_action", label:"Skip Soulseek", action:"setup_skip_soulseek", pills:[skipped.soulseek === "skipped" ? "Skipped" : "Optional"]});
         const lf = (services && services.lastfm) || {};
-        items.push({kind:"libinfo_action", label:"Last.fm", sub_label:"Skipping disables scrobbling, loved track sync, and Last.fm metadata actions until configured.", action:"setup_lastfm", pills:[lf.session_user ? ("Logged in " + String(lf.session_user)) : (lf.api_configured ? "API set" : (skipped.lastfm === "skipped" ? "Skipped" : "Optional"))]});
+        items.push({kind:"libinfo_action", label:"Last.fm", sub_label:lf.api_configured ? "Skipping disables scrobbling, loved track sync, and Last.fm metadata actions until configured." : "Last.fm is not configured. Add API credentials or skip Last.fm features.", action:"setup_lastfm", pills:[lf.session_user ? ("Logged in " + String(lf.session_user)) : (lf.api_configured ? "API set" : (skipped.lastfm === "skipped" ? "Skipped" : "Optional"))]});
         if(!lf.api_configured) items.push({kind:"libinfo_action", label:"Skip Last.fm", action:"setup_skip_lastfm", pills:[skipped.lastfm === "skipped" ? "Skipped" : "Optional"]});
         const yt = (services && services.youtube) || {};
         items.push({kind:"libinfo_action", label:"YouTube", sub_label:"Skipping keeps browsing/streaming where supported, but local YouTube downloads may be limited.", action:"setup_youtube", pills:[yt.status === "skipped" ? "Skipped" : "Optional"]});
@@ -1285,6 +1360,54 @@ async function libDoSearch(engine, q){
         items.push({kind:"libui_action", label:"Visualizer Preset", action:"cycle_visualizer_preset", pills:[visualizerPresetLabel(visualizerPresetName)]});
         items.push({kind:"libui_action", label:"FPS Lock", action:"cycle_visualizer_fps_lock", pills:[String(normalizeVisualizerFpsLock(visualizerFpsLock)) + " FPS"]});
         items.push({kind:"info", label:"Estimated Tempo", pills:[String(Math.round(visualizerBpm || 120)) + " BPM"]});
+        resetList(items);
+      }
+    }, push);
+  }
+
+  async function viewPerformancePanel(push){
+    showNowPlaying(false);
+    await setView({
+      kind:"performance",
+      label:"Performance",
+      load: async function(){
+        libControlsHide();
+        const items = [];
+        let backend = null;
+        try{ backend = await apiGet("/api/performance", {networkOnly:true, skipMirror:true}); }catch(e){ backend = null; }
+        const schedulerStats = (window.DebriPod && DebriPod.frameScheduler && DebriPod.frameScheduler.stats) ? DebriPod.frameScheduler.stats() : {};
+        items.push({kind:"info", label:"FPS", pills:[String(Math.round(Number(schedulerStats.fps || 0))), "long " + String(Number(schedulerStats.longFrames || 0))]});
+        const renderers = (window.DebriPod && DebriPod.liquidDiagnostics && DebriPod.liquidDiagnostics.renderers) ? DebriPod.liquidDiagnostics.renderers() : [];
+        for(const r of renderers){
+          items.push({kind:"info", label:"LiquidGL " + String(r.key || "renderer"), pills:[r.visible ? "visible" : "hidden", "res " + String(r.resolution || ""), String(r.texture || "")]});
+        }
+        const rows = (window.DebriPod && DebriPod.listDiagnostics && DebriPod.listDiagnostics.rows) ? DebriPod.listDiagnostics.rows() : {visible:0,total:(state.items || []).length};
+        items.push({kind:"info", label:"Rows", pills:[String(rows.visible || 0) + " visible", String(rows.total || 0) + " total"]});
+        const sync = (window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.getStateSummary) ? DebriPod.clientSync.getStateSummary() : null;
+        const versions = (backend && backend.library_versions) || (sync && sync.library_versions) || {};
+        Object.keys(versions).forEach((rootId)=>{
+          items.push({kind:"info", label:"Library root " + rootId, pills:["v" + String(versions[rootId] || 0)]});
+        });
+        if(sync) items.push({kind:"info", label:"Last sync", pills:[sync.server_version ? String(new Date(Number(sync.server_version) * 1000).toLocaleTimeString()) : "Unknown"]});
+        const indexing = (backend && backend.indexing) || {};
+        items.push({kind:"info", label:"Indexing", pills:[indexing.any_building ? "building" : "idle"]});
+        const services = (backend && backend.services) || {};
+        Object.keys(services).forEach((name)=>{
+          const svc = services[name] || {};
+          const pills = [svc.connected ? "connected" : (svc.configured ? "configured" : (svc.status || "not configured"))];
+          if(svc.error) pills.push({text:String(svc.error), tone:"warn"});
+          items.push({kind:"info", label:"Service " + name, pills:pills});
+        });
+        const clientTimings = (window.DebriPod && DebriPod.apiClient && DebriPod.apiClient.recentTimings) ? DebriPod.apiClient.recentTimings().slice(-8).reverse() : [];
+        clientTimings.forEach((t)=>{
+          items.push({kind:"info", label:String(t.method || "GET") + " " + String(t.url || ""), pills:[String(Math.round(Number(t.ms || 0))) + " ms", String(t.status || "")]});
+        });
+        const serverTimings = (backend && Array.isArray(backend.api_timings)) ? backend.api_timings.slice(-8).reverse() : [];
+        serverTimings.forEach((t)=>{
+          items.push({kind:"info", label:"Server " + String(t.path || ""), pills:[String(t.ms || 0) + " ms", String(t.status || "")]});
+        });
+        const version = (backend && backend.version) || APP_INFO || {};
+        items.push({kind:"info", label:"Version", pills:[String(version.display || version.display_version || "vdev"), String(version.source || ""), String(version.short_commit || ""), version.dirty ? {text:"dirty", tone:"warn"} : "clean"]});
         resetList(items);
       }
     }, push);
@@ -1491,6 +1614,9 @@ async function libDoSearch(engine, q){
       case "binds_menu":
         await viewLibBinds(true);
         return true;
+      case "performance_panel":
+        await viewPerformancePanel(true);
+        return true;
       case "setup_wizard":
         await viewSetupWizard(true);
         return true;
@@ -1529,6 +1655,114 @@ async function libDoSearch(engine, q){
       default:
         return false;
     }
+  }
+
+  function libSearchSortResults(results){
+    const arr = (Array.isArray(results) ? results : []).map(x=> Object.assign({}, x || {}));
+    arr.sort((a,b)=>{
+      const as = Number(a._score || 0);
+      const bs = Number(b._score || 0);
+      if(bs !== as) return bs - as;
+      const az = Number(a.size || 0);
+      const bz = Number(b.size || 0);
+      if(bz !== az) return bz - az;
+      return String(a.title || "").localeCompare(String(b.title || ""));
+    });
+    arr.forEach(x=>{ try{ delete x._score; }catch(e){} });
+    return arr;
+  }
+
+  function libSearchCombinedStatusText(status){
+    const list = Array.isArray(status) ? status : [];
+    if(!list.length) return "Searching";
+    const done = list.filter(x=>x && x.done !== false).length;
+    const total = Math.max(3, list.length);
+    const count = list.reduce((n, x)=> n + Number((x && x.result_count) || 0), 0);
+    return String(done) + "/" + String(total) + " sources, " + String(count) + " results";
+  }
+
+  async function libSearchCombinedProgressive(qq, searchToken){
+    const url = "/api/libsearch/combined?q=" + encodeURIComponent(qq) + "&stream=1";
+    const started = (performance && performance.now) ? performance.now() : Date.now();
+    const res = await fetch(url, {cache:"no-store"});
+    try{
+      if(window.DebriPod && DebriPod.apiClient && DebriPod.apiClient.rememberTiming){
+        DebriPod.apiClient.rememberTiming("GET", url, res.status, started);
+      }
+    }catch(e){}
+    if(!res.ok || !res.body || !window.TextDecoder){
+      return await apiGet("/api/libsearch/combined?q=" + encodeURIComponent(qq));
+    }
+    const decoder = new TextDecoder();
+    const reader = res.body.getReader();
+    let buffer = "";
+    const sourceResults = {};
+    const sourceStatus = [];
+    let finalPayload = null;
+    function upsertStatus(payload, done){
+      const source = String(payload.source || "");
+      if(!source) return;
+      const row = {
+        source:source,
+        label:String(payload.source_label || payload.label || source),
+        ok:payload.ok !== false,
+        error:String(payload.error || ""),
+        result_count:Number(payload.result_count || (Array.isArray(payload.results) ? payload.results.length : 0) || 0),
+        duration_ms:Number(payload.duration_ms || 0),
+        done:done !== false
+      };
+      const idx = sourceStatus.findIndex(x=>x && x.source === source);
+      if(idx >= 0) sourceStatus[idx] = row;
+      else sourceStatus.push(row);
+    }
+    function applyProgress(){
+      if(state.libSearch.search_token !== searchToken) return;
+      const merged = [];
+      Object.keys(sourceResults).forEach((key)=>{
+        merged.push.apply(merged, sourceResults[key] || []);
+      });
+      state.libSearch.results = libSearchSortResults(merged);
+      state.libSearch.last_count = state.libSearch.results.length;
+      state.libSearch.source_status = sourceStatus.slice();
+      libSetStatus(libSearchCombinedStatusText(sourceStatus), sourceStatus.some(x=>x && x.error) ? "warn" : "");
+      libRefreshList(true);
+    }
+    function handleLine(line){
+      if(!line) return;
+      let ev = null;
+      try{ ev = JSON.parse(line); }catch(e){ return; }
+      if(!ev || state.libSearch.search_token !== searchToken) return;
+      if(ev.event === "source"){
+        sourceResults[String(ev.source || "")] = Array.isArray(ev.results) ? ev.results : [];
+        upsertStatus(ev, true);
+        applyProgress();
+      }else if(ev.event === "done"){
+        finalPayload = ev;
+      }else if(ev.event === "start"){
+        const sources = Array.isArray(ev.sources) ? ev.sources : ["youtube", "soulseek", "knaben"];
+        state.libSearch.source_status = sources.map(src=>({source:String(src), label:String(src), result_count:0, done:false, error:""}));
+        libSetStatus("Searching", "");
+        libRefreshList(true);
+      }
+    }
+    while(true){
+      const chunk = await reader.read();
+      if(chunk.done) break;
+      buffer += decoder.decode(chunk.value, {stream:true});
+      const lines = buffer.split(/\n/);
+      buffer = lines.pop() || "";
+      lines.forEach(handleLine);
+    }
+    if(buffer) handleLine(buffer);
+    if(finalPayload) return finalPayload;
+    return {
+      ok:true,
+      q:qq,
+      cache_key:"",
+      results:state.libSearch.results || [],
+      result_count:(state.libSearch.results || []).length,
+      source_status:sourceStatus
+    };
   }
 
   function settingRangeMeta(field, fallbackMin, fallbackMax){

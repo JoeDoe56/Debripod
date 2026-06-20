@@ -1072,3 +1072,16 @@ function vibeTick(){
       }
     };
   }
+
+  try{
+    DebriPod.listDiagnostics = {
+      rows: function(){
+        const virtual = listVirtualWindow();
+        return {
+          visible:Number(virtual.visible || 0),
+          total:Number(virtual.total || (state && state.items ? state.items.length : 0) || 0),
+          virtualized:!!virtual.enabled
+        };
+      }
+    };
+  }catch(e){}

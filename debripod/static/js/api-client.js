@@ -5,6 +5,7 @@
   const memoryCache = new Map();
   const pendingGets = new Map();
   const abortGroups = new Map();
+  const recentTimings = [];
   const MEMORY_TTL_MS = 2000;
   const LIVE_PREFIXES = [
     "/api/client-state",
@@ -103,7 +104,9 @@
     if(!opts.cache) opts.cache = isLiveUrl(url) ? "no-store" : "default";
     if(pendingGets.has(key)) return pendingGets.get(key);
     const task = (async ()=>{
+      const started = performance && performance.now ? performance.now() : Date.now();
       const r = await fetch(url, opts);
+      rememberTiming("GET", url, r.status, started);
       if(!r.ok) throw new Error("HTTP " + r.status);
       const js = await r.json();
       remember(url, js);
@@ -165,10 +168,26 @@
       body: JSON.stringify(payload || {}),
       cache:"no-store"
     }, options || {});
+    const started = performance && performance.now ? performance.now() : Date.now();
     const res = await fetch(url, opts);
+    rememberTiming("POST", url, res.status, started);
     let j = null;
     try{ j = await res.json(); }catch(e){}
     return {ok: res.ok, status: res.status, json: j};
+  }
+
+  function rememberTiming(method, url, status, started){
+    try{
+      const now = performance && performance.now ? performance.now() : Date.now();
+      recentTimings.push({
+        method:String(method || "GET"),
+        url:normalizeUrl(url),
+        status:Number(status || 0),
+        ms:Math.max(0, now - Number(started || now)),
+        ts:Date.now()
+      });
+      while(recentTimings.length > 40) recentTimings.shift();
+    }catch(e){}
   }
 
   root.apiClient = {
@@ -183,6 +202,8 @@
       }catch(e){}
     },
     clearMemoryCache: function(){ memoryCache.clear(); },
-    isLiveUrl
+    isLiveUrl,
+    recentTimings: function(){ return recentTimings.slice(); },
+    rememberTiming
   };
 })();
