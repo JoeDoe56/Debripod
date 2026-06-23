@@ -73,6 +73,13 @@
 
     showNowPlaying(false);
     await setView(folderViewObj(root, folderRel, folderRel ? folderRel.split("/").slice(-1)[0] : ""), false);
+    try{
+      const idx = (state.items || []).findIndex(x => x && x.rel === state.now.rel && x.root && x.root.id === root.id);
+      if(idx >= 0){
+        state.sel = idx;
+        renderList();
+      }
+    }catch(e){}
   }
 
   
@@ -359,6 +366,11 @@ async function goBack(){
       state.playlist = playlist || state.playlist || [item];
       if(typeof index === "number") state.playIndex = index;
       ensurePlayOrder(false);
+      const hasPlayableSource = !!(activeAudio && (activeAudio.currentSrc || activeAudio.src));
+      if(!hasPlayableSource){
+        state.now = null;
+        state.nowMeta = null;
+      }else{
       if(forceShow) showNowPlaying(true);
 
       const meta = Object.assign({}, state.nowMeta || {}, {streamed: !!item.streamed, source: item.source || "", ext: item.ext || "", quality: item.quality || ""});
@@ -403,6 +415,7 @@ async function goBack(){
 
       preloadNextAudio();
       return;
+      }
     }
 
     if(forceShow) showNowPlaying(true);
@@ -600,9 +613,29 @@ async function goBack(){
   }
 
   function setShuffleEnabled(on){
-    state.shuffleEnabled = !!on;
+    const nextOn = !!on;
+    if(nextOn){
+      try{
+        const needsQueue = !Array.isArray(state.playlist) || state.playlist.length <= 1;
+        const canUseCurrentList = !(state.current && (state.current.kind === "history" || state.current.kind === "playback_queue"));
+        if(needsQueue && canUseCurrentList && state.now && state.now.media !== "video"){
+          const pl = buildPlaylistFromItems(state.items || []);
+          const idx = pl.findIndex(x => x && x.rel === state.now.rel && x.root && x.root.id === state.now.rootId);
+          if(pl.length > 1 && idx >= 0){
+            state.playlist = pl;
+            state.playIndex = idx;
+          }
+        }
+      }catch(e){}
+    }
+    state.shuffleEnabled = nextOn;
     try{ localStorage.setItem("debripod_shuffle", state.shuffleEnabled ? "1" : "0"); }catch(e){}
-    ensurePlayOrder(true);
+    if(state.shuffleEnabled) ensurePlayOrder(true);
+    else{
+      state.playOrder = null;
+      state.orderPos = 0;
+      state.playOrderPlaylist = null;
+    }
     preloadNextAudio();
     updateWheelLabels();
   }
@@ -1787,6 +1820,34 @@ if(it.kind === "libtask_file"){
   }
 }
 
+if(it.kind === "queue_item"){
+      const item = it.queueItem || null;
+      const index = Math.max(0, Number(it.queueIndex || 0));
+      if(it.queueKind === "stream" && typeof playStreamQueueIndex === "function"){
+        await playStreamQueueIndex(index, true);
+        return;
+      }
+      if(it.queueKind === "video"){
+        playVideoIndex(index, true, 0);
+        return;
+      }
+      if(it.queueKind === "shuffle"){
+        const orderPos = Math.max(0, Number(it.queueOrderPos || 0));
+        if(Array.isArray(state.playOrder) && orderPos >= 0 && orderPos < state.playOrder.length){
+          state.orderPos = orderPos;
+        }
+        if(Array.isArray(state.playlist) && item){
+          await startAudioFromItem(item, state.playlist, index, true, 0);
+        }
+        return;
+      }
+      if(it.queueKind === "audio" && Array.isArray(state.playlist) && item){
+        await startAudioFromItem(item, state.playlist, index, true, 0);
+        return;
+      }
+      return;
+    }
+
 if(it.kind === "root"){
       state.root = it.root;
       setHeader();
@@ -1802,11 +1863,7 @@ if(it.kind === "root"){
       showNowPlaying(true);
       return;
     }
-    if(it.kind === "recently"){
-      await viewRecently(true);
-      return;
-    }
-    if(it.kind === "recent_item"){
+    if(it.kind === "history_item"){
       // Restore the last browsing context first, then play
       const nav = (it.nav && typeof it.nav === "object") ? it.nav : {};
       if(nav && nav.root_id){

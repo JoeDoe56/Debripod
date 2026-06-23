@@ -219,6 +219,17 @@
     animFrame = requestAnimationFrame(fn);
   }
 
+  function animationIntervalMs(){
+    try{
+      const ui = root.uiSettings || {};
+      const settings = ui.settings || {};
+      const fps = ui.normalizeAnimationFps ? ui.normalizeAnimationFps(settings.animationFps && settings.animationFps.albumArtTransition) : 60;
+      return 1000 / fps;
+    }catch(e){
+      return 1000 / 60;
+    }
+  }
+
   function setSource(src, options){
     const next = String(src || "").trim();
     const opts = options || {};
@@ -264,8 +275,15 @@
 
   function animateTransition(outputCanvas){
     cancelTransitionFrame();
-    const tick = ()=>{
+    let lastTick = 0;
+    const tick = (frameState)=>{
       animFrame = 0;
+      const now = (frameState && frameState.timestamp) || (performance && performance.now ? performance.now() : Date.now());
+      if(lastTick && now - lastTick < animationIntervalMs() - 1){
+        requestTransitionFrame(tick);
+        return;
+      }
+      lastTick = now;
       renderToCanvas(outputCanvas);
       try{ if(typeof scheduleNpOverlayGlassRender === "function") scheduleNpOverlayGlassRender(); }catch(e){}
       if(nextSrc){

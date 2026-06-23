@@ -18,14 +18,6 @@
     }
     if(state.now || state.serverNow){
       items.push({kind:"nowplaying", label:"Now Playing"});
-      if(state.serverRecent && state.serverRecent.length){
-        items.push({kind:"recently", label:"Recently Played"});
-      }
-    }else{
-      // show Recently Played only if there is history (even without now playing)
-      if(state.serverRecent && state.serverRecent.length){
-        items.push({kind:"recently", label:"Recently Played"});
-      }
     }
     items.push({kind:"libinfo_entry", label:"Info"});
     resetList(items);
@@ -95,7 +87,7 @@
   async function maybeStartSetupWizard(){
     const js = await setupStatusLoad();
     if(js && js.ok && js.should_show && !(state.current && String(state.current.kind || "").indexOf("setupwizard") === 0)){
-      await viewSetupWizard(false);
+      await viewSetupWizardPage((state.current && state.current.setupPage) || "finish", false);
     }
   }
 
@@ -384,7 +376,7 @@
       alert((js && js.error) ? js.error : "Could not skip setup step.");
       return false;
     }
-    await viewSetupWizard(false);
+    await viewSetupWizardPage((state.current && state.current.setupPage) || "overview", false);
     return true;
   }
 
@@ -1238,7 +1230,6 @@ async function libDoSearch(engine, q){
 
         items.push({kind:"libinfo_action", label:"Full Screen", action:"force_fullscreen"});
         items.push({kind:"libinfo_action", label:"Binds", action:"binds_menu"});
-        items.push({kind:"libinfo_action", label:"Performance", action:"performance_panel"});
 
         try{
           await settingsLoad();
@@ -1285,42 +1276,64 @@ async function libDoSearch(engine, q){
   }
 
   async function viewSetupWizard(push){
+    return viewSetupWizardPage("overview", push);
+  }
+
+  function setupRequiredPill(status, skipped){
+    return status.library_folder_count ? "Configured" : (skipped.library === "skipped" ? "Skipped" : "Required");
+  }
+
+  async function viewSetupWizardPage(page, push){
+    const setupPage = String(page || "overview");
     showNowPlaying(false);
     await setView({
       kind:"setupwizard",
-      label:"Setup",
+      setupPage:setupPage,
+      label:setupPage === "overview" ? "Setup" : (setupPage === "library" ? "Library" : (setupPage === "tools" ? "Tools" : (setupPage === "services" ? "Services" : "Finish"))),
       load: async function(){
         libControlsHide();
         const status = await setupStatusLoad();
         const skipped = (status && status.skipped) || {};
         const services = (status && status.services) || {};
         const items = [];
-        items.push({kind:"info", label:"Required setup", sub_label:"Add a local library folder, or explicitly finish without one and rely on Services/Search later."});
-        items.push({kind:"libinfo_action", label:"Library folders", sub_label: status.library_folder_count ? (String(status.library_folder_count) + " configured") : "Local browsing, artwork palettes, precomputed analysis, and playback history stay empty until a folder is added.", action:"setup_library", pills:[status.library_folder_count ? "Configured" : (skipped.library === "skipped" ? "Skipped" : "Required")]});
-        items.push({kind:"libinfo_action", label:"Skip local library", sub_label:"Finish without local folders. You can add folders later in Library settings.", action:"setup_skip_library", pills:[skipped.library === "skipped" ? "Skipped" : "Optional"]});
-        items.push({kind:"info", label:"Optional tools", sub_label:"Skipping these keeps the app usable, but limits metadata, thumbnails, transcoding, and compatibility conversion."});
         const ffmpeg = (services && services.ffmpeg) || {};
         const ffprobe = (services && services.ffprobe) || {};
-        items.push({kind:"libinfo_action", label:"ffmpeg", sub_label:ffmpeg.ok ? ("Detected: " + String(ffmpeg.found || "")) : "ffmpeg was not found. Set the ffmpeg path in Playback settings.", action:"setup_ffmpeg", pills:[ffmpeg.ok ? "Detected" : (skipped.ffmpeg === "skipped" ? "Skipped" : "Missing")]});
-        if(!ffmpeg.ok) items.push({kind:"libinfo_action", label:"Skip ffmpeg", sub_label:"Transcoding, compatibility conversion, thumbnails, and some precompute may be limited.", action:"setup_skip_ffmpeg", pills:[skipped.ffmpeg === "skipped" ? "Skipped" : "Optional"]});
-        items.push({kind:"libinfo_action", label:"ffprobe", sub_label:ffprobe.ok ? ("Detected: " + String(ffprobe.found || "")) : String(ffprobe.install_hint || "Set the ffprobe path in Playback settings."), action:"setup_ffprobe", pills:[ffprobe.ok ? "Detected" : (skipped.ffprobe === "skipped" ? "Skipped" : "Missing")]});
-        if(!ffprobe.ok) items.push({kind:"libinfo_action", label:"Skip ffprobe", sub_label:"Metadata extraction, technical labels, thumbnails, and some visualizer precompute may be limited.", action:"setup_skip_ffprobe", pills:[skipped.ffprobe === "skipped" ? "Skipped" : "Optional"]});
-        items.push({kind:"info", label:"Optional services", sub_label:"Every service can be skipped and configured later."});
-        items.push({kind:"libinfo_action", label:"Download paths", sub_label:"Set Real Debrid, Soulseek, and YouTube download folders.", action:"setup_downloads"});
         const rd = (services && services.real_debrid) || {};
-        items.push({kind:"libinfo_action", label:"Real Debrid", sub_label:"Skipping disables debrid streaming, torrent lookup/download actions, and debrid backed playback until a token is added.", action:"setup_real_debrid", pills:[rd.configured ? "Configured" : (skipped.real_debrid === "skipped" ? "Skipped" : "Optional")]});
-        if(!rd.configured) items.push({kind:"libinfo_action", label:"Skip Real Debrid", action:"setup_skip_real_debrid", pills:[skipped.real_debrid === "skipped" ? "Skipped" : "Optional"]});
         const slsk = (services && services.soulseek) || {};
-        items.push({kind:"libinfo_action", label:"Soulseek", sub_label:"Skipping disables Soulseek search and downloads until credentials and ports are configured.", action:"setup_soulseek", pills:[slsk.connected ? "Connected" : (slsk.configured ? "Configured" : (skipped.soulseek === "skipped" ? "Skipped" : "Optional"))]});
-        if(!slsk.configured) items.push({kind:"libinfo_action", label:"Skip Soulseek", action:"setup_skip_soulseek", pills:[skipped.soulseek === "skipped" ? "Skipped" : "Optional"]});
         const lf = (services && services.lastfm) || {};
-        items.push({kind:"libinfo_action", label:"Last.fm", sub_label:lf.api_configured ? "Skipping disables scrobbling, loved track sync, and Last.fm metadata actions until configured." : "Last.fm is not configured. Add API credentials or skip Last.fm features.", action:"setup_lastfm", pills:[lf.session_user ? ("Logged in " + String(lf.session_user)) : (lf.api_configured ? "API set" : (skipped.lastfm === "skipped" ? "Skipped" : "Optional"))]});
-        if(!lf.api_configured) items.push({kind:"libinfo_action", label:"Skip Last.fm", action:"setup_skip_lastfm", pills:[skipped.lastfm === "skipped" ? "Skipped" : "Optional"]});
         const yt = (services && services.youtube) || {};
-        items.push({kind:"libinfo_action", label:"YouTube", sub_label:"Skipping keeps browsing/streaming where supported, but local YouTube downloads may be limited.", action:"setup_youtube", pills:[yt.status === "skipped" ? "Skipped" : "Optional"]});
-        items.push({kind:"libinfo_action", label:"Skip YouTube downloads", action:"setup_skip_youtube", pills:[skipped.youtube === "skipped" ? "Skipped" : "Optional"]});
-        items.push({kind:"libinfo_action", label:"Service Status", action:"service_status"});
-        items.push({kind:"libinfo_action", label:"Finish setup", sub_label: status.required_complete ? "Confirm setup completion." : "Add a library folder or skip local library first.", action:"setup_finish", pills:[status.required_complete ? "Ready" : {text:"Required", tone:"warn"}]});
+        if(setupPage === "overview"){
+          items.push({kind:"libinfo_action", label:"Library", sub_label:"Local folders or an explicit skip", action:"setup_page:library", pills:[setupRequiredPill(status, skipped)]});
+          items.push({kind:"libinfo_action", label:"Tools", sub_label:"ffmpeg and ffprobe detection", action:"setup_page:tools", pills:[ffmpeg.ok && ffprobe.ok ? "Detected" : "Review"]});
+          items.push({kind:"libinfo_action", label:"Services", sub_label:"Downloads, debrid, Soulseek, Last.fm, and YouTube", action:"setup_page:services", pills:["Optional"]});
+          items.push({kind:"libinfo_action", label:"Finish", sub_label: status.required_complete ? "Confirm setup completion." : "Add a library folder or skip local library first.", action:"setup_page:finish", pills:[status.required_complete ? "Ready" : {text:"Required", tone:"warn"}]});
+        }else if(setupPage === "library"){
+          items.push({kind:"info", label:"Required setup", sub_label:"Add a local library folder, or explicitly finish without one and rely on Services/Search later."});
+          items.push({kind:"libinfo_action", label:"Library folders", sub_label: status.library_folder_count ? (String(status.library_folder_count) + " configured") : "Local browsing, artwork palettes, precomputed analysis, and playback history stay empty until a folder is added.", action:"setup_library", pills:[setupRequiredPill(status, skipped)]});
+          items.push({kind:"libinfo_action", label:"Skip local library", sub_label:"Finish without local folders. You can add folders later in Library settings.", action:"setup_skip_library", pills:[skipped.library === "skipped" ? "Skipped" : "Optional"]});
+        }else if(setupPage === "tools"){
+          items.push({kind:"info", label:"Optional tools", sub_label:"Skipping these keeps the app usable, but limits metadata, thumbnails, transcoding, and compatibility conversion."});
+          items.push({kind:"libinfo_action", label:"ffmpeg", sub_label:ffmpeg.ok ? ("Detected: " + String(ffmpeg.found || "")) : "ffmpeg was not found. Set the ffmpeg path in Playback settings.", action:"setup_ffmpeg", pills:[ffmpeg.ok ? "Detected" : (skipped.ffmpeg === "skipped" ? "Skipped" : "Missing")]});
+          if(!ffmpeg.ok) items.push({kind:"libinfo_action", label:"Skip ffmpeg", sub_label:"Transcoding, compatibility conversion, thumbnails, and some precompute may be limited.", action:"setup_skip_ffmpeg", pills:[skipped.ffmpeg === "skipped" ? "Skipped" : "Optional"]});
+          items.push({kind:"libinfo_action", label:"ffprobe", sub_label:ffprobe.ok ? ("Detected: " + String(ffprobe.found || "")) : String(ffprobe.install_hint || "Set the ffprobe path in Playback settings."), action:"setup_ffprobe", pills:[ffprobe.ok ? "Detected" : (skipped.ffprobe === "skipped" ? "Skipped" : "Missing")]});
+          if(!ffprobe.ok) items.push({kind:"libinfo_action", label:"Skip ffprobe", sub_label:"Metadata extraction, technical labels, thumbnails, and some visualizer precompute may be limited.", action:"setup_skip_ffprobe", pills:[skipped.ffprobe === "skipped" ? "Skipped" : "Optional"]});
+        }else if(setupPage === "services"){
+          items.push({kind:"info", label:"Optional services", sub_label:"Every service can be skipped and configured later."});
+          items.push({kind:"libinfo_action", label:"Download paths", sub_label:"Set Real Debrid, Soulseek, and YouTube download folders.", action:"setup_downloads"});
+          items.push({kind:"libinfo_action", label:"Real Debrid", sub_label:"Skipping disables debrid streaming, torrent lookup/download actions, and debrid backed playback until a token is added.", action:"setup_real_debrid", pills:[rd.configured ? "Configured" : (skipped.real_debrid === "skipped" ? "Skipped" : "Optional")]});
+          if(!rd.configured) items.push({kind:"libinfo_action", label:"Skip Real Debrid", action:"setup_skip_real_debrid", pills:[skipped.real_debrid === "skipped" ? "Skipped" : "Optional"]});
+          items.push({kind:"libinfo_action", label:"Soulseek", sub_label:"Skipping disables Soulseek search and downloads until credentials and ports are configured.", action:"setup_soulseek", pills:[slsk.connected ? "Connected" : (slsk.configured ? "Configured" : (skipped.soulseek === "skipped" ? "Skipped" : "Optional"))]});
+          if(!slsk.configured) items.push({kind:"libinfo_action", label:"Skip Soulseek", action:"setup_skip_soulseek", pills:[skipped.soulseek === "skipped" ? "Skipped" : "Optional"]});
+          items.push({kind:"libinfo_action", label:"Last.fm", sub_label:lf.api_configured ? "Skipping disables scrobbling, loved track sync, and Last.fm metadata actions until configured." : "Last.fm is not configured. Add API credentials or skip Last.fm features.", action:"setup_lastfm", pills:[lf.session_user ? ("Logged in " + String(lf.session_user)) : (lf.api_configured ? "API set" : (skipped.lastfm === "skipped" ? "Skipped" : "Optional"))]});
+          if(!lf.api_configured) items.push({kind:"libinfo_action", label:"Skip Last.fm", action:"setup_skip_lastfm", pills:[skipped.lastfm === "skipped" ? "Skipped" : "Optional"]});
+          items.push({kind:"libinfo_action", label:"YouTube", sub_label:"Skipping keeps browsing/streaming where supported, but local YouTube downloads may be limited.", action:"setup_youtube", pills:[yt.status === "skipped" ? "Skipped" : "Optional"]});
+          items.push({kind:"libinfo_action", label:"Skip YouTube downloads", action:"setup_skip_youtube", pills:[skipped.youtube === "skipped" ? "Skipped" : "Optional"]});
+          items.push({kind:"libinfo_action", label:"Service Status", action:"service_status"});
+        }else{
+          items.push({kind:"libinfo_action", label:"Library", action:"setup_page:library", pills:[setupRequiredPill(status, skipped)]});
+          items.push({kind:"libinfo_action", label:"Service Status", action:"service_status"});
+          items.push({kind:"libinfo_action", label:"Finish setup", sub_label: status.required_complete ? "Confirm setup completion." : "Add a library folder or skip local library first.", action:"setup_finish", pills:[status.required_complete ? "Ready" : {text:"Required", tone:"warn"}]});
+        }
         resetList(items);
       }
     }, !!push);
@@ -1454,10 +1467,75 @@ async function libDoSearch(engine, q){
     ];
   }
 
+  const TEXT_MODE_ORDER = ["black", "white", "engraved", "contrast", "transparent"];
+  const ANIMATION_FPS_ORDER = [30, 60, 120];
+  const TEXT_MODE_LABELS = {
+    black:"Black",
+    white:"White",
+    engraved:"Engraved",
+    contrast:"Contrast",
+    transparent:"Transparent"
+  };
+
+  function textModeLabel(value){
+    return TEXT_MODE_LABELS[normalizeTextMode(value)] || "Transparent";
+  }
+
+  function textModeRows(){
+    const modes = cloneTextModes(uiSettings.textModes);
+    return [
+      {key:"wheelLabels", label:"Wheel labels"},
+      {key:"pathPill", label:"Path pill"},
+      {key:"rows", label:"Rows"},
+      {key:"rowPills", label:"Row pills"},
+      {key:"selectedRow", label:"Selected row"},
+      {key:"selectedRowPills", label:"Selected row pills"}
+    ].map((row)=>({
+      kind:"libui_action",
+      label:row.label,
+      sub_label:"Text color mode",
+      action:"cycle_text_mode:" + row.key,
+      pills:[textModeLabel(modes[row.key])],
+      forceTwoLine:true,
+      settingRow:true
+    })).concat([{
+      kind:"libui_action",
+      label:"Text transparency",
+      sub_label:"Opacity used by transparent text mode",
+      action:"set_text_transparency",
+      pills:[String(Math.round(normalizeTextTransparency(uiSettings.textTransparency) * 100)) + "%"],
+      forceTwoLine:true,
+      settingRow:true
+    }]);
+  }
+
+  function animationRows(){
+    const fps = cloneAnimationFps(uiSettings.animationFps);
+    return [
+      {key:"selectedRow", label:"Selected row animations"},
+      {key:"wheelTilt", label:"Wheel tilt animations"},
+      {key:"libraryList", label:"Library list moving animation"},
+      {key:"nowPlayingPill", label:"Now Playing pill animations"},
+      {key:"albumArtTransition", label:"Album art transition animation"},
+      {key:"pageTransition", label:"Page transition animation"},
+      {key:"pathPill", label:"Path pill animations"}
+    ].map((row)=>({
+      kind:"libui_action",
+      label:row.label,
+      sub_label:"Animation frame cap",
+      action:"cycle_animation_fps:" + row.key,
+      pills:[String(normalizeAnimationFps(fps[row.key])) + " FPS"],
+      forceTwoLine:true,
+      settingRow:true
+    }));
+  }
+
   function advancedCategoryLabels(){
     return {
       glass:"Glass",
+      text:"Text",
       ui:"Visualizer",
+      animations:"Animations",
       search:"Search",
       downloads:"Downloads",
       services:"Services",
@@ -1473,13 +1551,14 @@ async function libDoSearch(engine, q){
       GLASS_ELEMENT_KEYS.forEach((key)=>{
         items.push({kind:"libui_action", label:glassElementLabel(key), sub_label:"Liquid Glass element controls", action:"glass_section:" + key, pills:glassElementSummary(key), forceTwoLine:true, settingRow:true});
       });
-      items.push({kind:"libui_action", label:"Commit glass styling defaults", sub_label:"Writes current glass tuning into the code defaults", action:"commit_glass_defaults", pills:["Writes code"], forceTwoLine:true, settingRow:true});
       return items;
     }
     if(cat === "ui"){
       return uiTuningRows().map((row)=>({kind:"libui_action", label:row.label, sub_label:"Visualizer tuning", action:row.action, pills:[String(row.value)], forceTwoLine:true, settingRow:true}))
         .concat(settingRowsForCategory("advanced").filter((row)=> row && String(row.key || "").indexOf("TASKS_") === 0).map(settingRowToListItem));
     }
+    if(cat === "text") return textModeRows();
+    if(cat === "animations") return animationRows();
     if(cat === "system"){
       const systemKeys = new Set(["PORT", "ENABLE_MCP", "MCP_TOKEN", "MCP_PROTOCOL_VERSION", "MCP_SEARCH_RESULT_LIMIT", "MCP_SSE_KEEPALIVE_SECONDS", "MCP_SESSION_TTL_SECONDS", "CACHE_DIR_NAME", "STREAM_PROXY_ALLOWED_HOST_SUFFIXES", "REQUEST_TIMEOUT_SECONDS", "POLL_INTERVAL_SECONDS"]);
       return settingRowsForCategory("advanced").filter((row)=> row && systemKeys.has(String(row.key || ""))).map(settingRowToListItem);
@@ -1520,13 +1599,16 @@ async function libDoSearch(engine, q){
         libControlsHide();
         await settingsLoad();
         const labels = advancedCategoryLabels();
-        const items = ["glass", "ui", "search", "downloads", "services", "playback", "system"].map((key)=>({
+        const items = [
+          {kind:"libui_action", label:"Commit advanced settings", sub_label:"Writes local advanced UI defaults into the app defaults", action:"commit_advanced_defaults", pills:["Writes code"], forceTwoLine:true, settingRow:true},
+          {kind:"libui_action", label:"Performance overlay button", sub_label:"Show the compact performance toggle button", action:"toggle_performance_overlay_button", pills:[uiSettings.performanceOverlayButton ? "On" : "Off"], forceTwoLine:true, settingRow:true}
+        ].concat(["glass", "text", "ui", "animations", "search", "downloads", "services", "playback", "system"].map((key)=>({
           kind:"libui_action",
           label:labels[key],
           sub_label:"Advanced " + String(labels[key] || key).toLowerCase() + " settings",
           action:"advanced_category:" + key,
           pills:[String(advancedRowsForCategory(key).length)]
-        }));
+        })));
         resetList(items);
       }
     }, push);
@@ -1578,6 +1660,10 @@ async function libDoSearch(engine, q){
   }
 
   async function handleLibInfoAction(action){
+    if(String(action || "").indexOf("setup_page:") === 0){
+      await viewSetupWizardPage(String(action).split(":")[1] || "overview", true);
+      return true;
+    }
     switch(action){
       case "lastfm_login":
         await startLastfmLoginFlow();
@@ -1613,9 +1699,6 @@ async function libDoSearch(engine, q){
         return true;
       case "binds_menu":
         await viewLibBinds(true);
-        return true;
-      case "performance_panel":
-        await viewPerformancePanel(true);
         return true;
       case "setup_wizard":
         await viewSetupWizard(true);
@@ -1999,9 +2082,18 @@ async function libDoSearch(engine, q){
       }, true);
       return true;
     };
-    const commitGlassDefaults = async ()=>{
+    const commitAdvancedDefaults = async ()=>{
       try{
-        const res = await apiPost("/api/ui/glass_defaults/commit", {liquidGlassElements: cloneGlassElementSettings(uiSettings.liquidGlassElements)});
+        uiSettings.textModes = cloneTextModes(uiSettings.textModes);
+        uiSettings.animationFps = cloneAnimationFps(uiSettings.animationFps);
+        uiSettings.textTransparency = normalizeTextTransparency(uiSettings.textTransparency);
+        saveUiSettings();
+        const res = await apiPost("/api/ui/advanced_defaults/commit", {
+          uiSettings: uiSettings,
+          liquidGlassElements: cloneGlassElementSettings(uiSettings.liquidGlassElements),
+          appSettings: state.appSettings || {},
+          startupSettings: state.startupSettings || {}
+        });
         const js = res && res.json ? res.json : {};
         if(!res || !res.ok || !js.ok) throw new Error((js && js.error) ? js.error : "Failed to write defaults");
         try{
@@ -2020,8 +2112,40 @@ async function libDoSearch(engine, q){
       await viewLibAdvancedSettings(false);
       return true;
     };
+    const returnAdvancedCategory = async (category)=>{
+      try{
+        saveUiSettings();
+        if(typeof applyUiTuningCss === "function") applyUiTuningCss();
+        if(typeof scheduleLiquidGlassRender === "function") scheduleLiquidGlassRender();
+        if(typeof updateGlassTextUnderColors === "function") updateGlassTextUnderColors();
+        if(typeof updateVisualizerState === "function") updateVisualizerState();
+        if(typeof scheduleVisualizerFrame === "function") scheduleVisualizerFrame(0);
+      }catch(e){}
+      await viewLibAdvancedCategory(category, false);
+      return true;
+    };
     switch(action){
       default:
+        if(String(action || "").indexOf("cycle_text_mode:") === 0){
+          const key = String(action).split(":")[1] || "";
+          const modes = cloneTextModes(uiSettings.textModes);
+          if(!Object.prototype.hasOwnProperty.call(modes, key)) return false;
+          const current = normalizeTextMode(modes[key]);
+          const idx = Math.max(0, TEXT_MODE_ORDER.indexOf(current));
+          modes[key] = TEXT_MODE_ORDER[(idx + 1) % TEXT_MODE_ORDER.length];
+          uiSettings.textModes = cloneTextModes(modes);
+          return await returnAdvancedCategory("text");
+        }
+        if(String(action || "").indexOf("cycle_animation_fps:") === 0){
+          const key = String(action).split(":")[1] || "";
+          const fps = cloneAnimationFps(uiSettings.animationFps);
+          if(!Object.prototype.hasOwnProperty.call(fps, key)) return false;
+          const current = normalizeAnimationFps(fps[key]);
+          const idx = Math.max(0, ANIMATION_FPS_ORDER.indexOf(current));
+          fps[key] = ANIMATION_FPS_ORDER[(idx + 1) % ANIMATION_FPS_ORDER.length];
+          uiSettings.animationFps = cloneAnimationFps(fps);
+          return await returnAdvancedCategory("animations");
+        }
         if(String(action || "").indexOf("glass_section:") === 0){
           await viewGlassElementSettings(String(action).split(":")[1] || "", true);
           return true;
@@ -2069,8 +2193,34 @@ async function libDoSearch(engine, q){
         cycleVisualizerFpsLock();
         await viewLibUiSettings(false);
         return true;
-      case "commit_glass_defaults":
-        return await commitGlassDefaults();
+      case "commit_advanced_defaults":
+        return await commitAdvancedDefaults();
+      case "toggle_performance_overlay_button":
+        uiSettings.performanceOverlayButton = !uiSettings.performanceOverlayButton;
+        saveUiSettings();
+        if(window.DebriPod && DebriPod.performanceOverlay && DebriPod.performanceOverlay.refresh){
+          DebriPod.performanceOverlay.refresh();
+          setTimeout(()=>{ try{ DebriPod.performanceOverlay.refresh(); }catch(e){} }, 0);
+        }
+        await viewLibAdvancedSettings(false);
+        return true;
+      case "set_text_transparency":
+        await viewRangeEditor({
+          label:"Text transparency",
+          current:normalizeTextTransparency(uiSettings.textTransparency),
+          meta:{min:0, max:1, step:0.01},
+          onCommit: async function(value){
+            uiSettings.textTransparency = normalizeTextTransparency(value);
+            saveUiSettings();
+            if(typeof applyUiTuningCss === "function") applyUiTuningCss();
+            if(typeof scheduleLiquidGlassRender === "function") scheduleLiquidGlassRender();
+            if(typeof updateGlassTextUnderColors === "function") updateGlassTextUnderColors();
+          },
+          onReturn: async function(){
+            await viewLibAdvancedCategory("text", false);
+          }
+        }, true);
+        return true;
       case "set_center_bounce_amount":
         return await setNumber("centerBounceAmount", "Center bounce amount", 0, 0.3);
       case "set_center_bounce_duration":

@@ -2,6 +2,8 @@ from __future__ import annotations
 
 import ipaddress
 import json
+import pprint
+import re
 import base64
 import zlib
 import secrets
@@ -1664,10 +1666,204 @@ def _coerce_glass_defaults(raw: Any) -> dict[str, Any]:
     return out
 
 
-@app.route("/api/ui/glass_defaults/commit", methods=["POST"])
-def api_ui_glass_defaults_commit():
+def _coerce_advanced_ui_defaults(raw: Any, glass: dict[str, Any]) -> dict[str, Any]:
+    source = raw if isinstance(raw, dict) else {}
+
+    def clamp_num(key: str, fallback: float, min_value: float, max_value: float) -> float:
+        try:
+            value = float(source.get(key, fallback))
+        except Exception:
+            value = fallback
+        return round(max(min_value, min(max_value, value)), 4)
+
+    text_defaults = {
+        "wheelLabels": "transparent",
+        "pathPill": "transparent",
+        "rows": "transparent",
+        "rowPills": "transparent",
+        "selectedRow": "contrast",
+        "selectedRowPills": "contrast",
+    }
+    text_modes_raw = source.get("textModes") if isinstance(source.get("textModes"), dict) else {}
+    text_modes = {}
+    for key, fallback in text_defaults.items():
+        value = str(text_modes_raw.get(key, fallback)).strip().lower()
+        text_modes[key] = value if value in {"black", "white", "engraved", "contrast", "transparent"} else fallback
+
+    fps_defaults = {
+        "selectedRow": 60,
+        "wheelTilt": 60,
+        "libraryList": 60,
+        "nowPlayingPill": 60,
+        "albumArtTransition": 60,
+        "pageTransition": 60,
+        "pathPill": 60,
+    }
+    fps_raw = source.get("animationFps") if isinstance(source.get("animationFps"), dict) else {}
+    animation_fps = {}
+    for key, fallback in fps_defaults.items():
+        try:
+            value = int(fps_raw.get(key, fallback))
+        except Exception:
+            value = fallback
+        animation_fps[key] = value if value in {30, 60, 120} else fallback
+
+    preset = str(source.get("visualizerPreset") or "album").strip().lower()
+    if preset not in {"album", "aurora", "ember", "prism", "sonar", "cascade", "nova", "lattice"}:
+        preset = "album"
+    strength = str(source.get("visualizerStrength") or "high").strip().lower()
+    if strength not in {"low", "medium", "high"}:
+        strength = "high"
+    try:
+        fps_lock = int(source.get("visualizerFpsLock", 60))
+    except Exception:
+        fps_lock = 60
+    if fps_lock not in {30, 60, 120}:
+        fps_lock = 60
+
+    return {
+        "visualizer": bool(source.get("visualizer", True)),
+        "visualizerStrength": strength,
+        "visualizerPreset": preset,
+        "visualizerFpsLock": fps_lock,
+        "textModes": text_modes,
+        "textTransparency": clamp_num("textTransparency", 0.68, 0.0, 1.0),
+        "animationFps": animation_fps,
+        "performanceOverlayButton": bool(source.get("performanceOverlayButton", False)),
+        "performanceOverlayText": bool(source.get("performanceOverlayText", False)),
+        "liquidGlassElements": "__LIQUID_GLASS_DEFAULTS__",
+        "centerBounceAmount": clamp_num("centerBounceAmount", 0.075, 0.0, 0.3),
+        "centerBounceDuration": clamp_num("centerBounceDuration", 240.0, 0.0, 1000.0),
+        "centerBounceOvershoot": clamp_num("centerBounceOvershoot", 0.9, 0.0, 1.4),
+        "wheelClickTiltAmount": clamp_num("wheelClickTiltAmount", 0.5, 0.0, 1.0),
+        "wheelTiltRampDuration": clamp_num("wheelTiltRampDuration", 90.0, 0.0, 1000.0),
+        "wheelTiltReleaseDuration": clamp_num("wheelTiltReleaseDuration", 360.0, 0.0, 1200.0),
+        "infoPillDarkMultiplier": clamp_num("infoPillDarkMultiplier", 1.0, 0.0, 4.0),
+        "infoPillLightMultiplier": clamp_num("infoPillLightMultiplier", 1.0, 0.0, 4.0),
+    }
+
+
+def _replace_js_const_object(text: str, const_name: str, replacement: str) -> str:
+    needle = f"  const {const_name} = "
+    start = text.find(needle)
+    if start < 0:
+        raise ValueError(f"{const_name} not found")
+    brace_start = text.find("{", start)
+    if brace_start < 0:
+        raise ValueError(f"{const_name} opening brace not found")
+    depth = 0
+    in_string: str | None = None
+    escaped = False
+    for idx in range(brace_start, len(text)):
+        ch = text[idx]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == in_string:
+                in_string = None
+            continue
+        if ch in {"'", '"', "`"}:
+            in_string = ch
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                semi = text.find(";", idx)
+                if semi < 0:
+                    raise ValueError(f"{const_name} semicolon not found")
+                return text[:start] + f"  const {const_name} = {replacement};" + text[semi + 1 :]
+    raise ValueError(f"{const_name} closing brace not found")
+
+
+def _advanced_ui_defaults_js(defaults: dict[str, Any]) -> str:
+    json_text = json.dumps(defaults, indent=4)
+    json_text = json_text.replace('"__LIQUID_GLASS_DEFAULTS__"', "cloneGlassElementSettings(DEFAULT_LIQUID_GLASS_ELEMENT_SETTINGS)")
+    return json_text.replace("\n", "\n  ")
+
+
+def _replace_py_const_object(text: str, name: str, replacement: str) -> str:
+    start = text.find(name)
+    if start < 0:
+        raise ValueError(f"{name} not found")
+    eq = text.find("=", start)
+    brace_start = text.find("{", eq)
+    if eq < 0 or brace_start < 0:
+        raise ValueError(f"{name} opening brace not found")
+    depth = 0
+    in_string: str | None = None
+    escaped = False
+    for idx in range(brace_start, len(text)):
+        ch = text[idx]
+        if in_string:
+          if escaped:
+              escaped = False
+          elif ch == "\\":
+              escaped = True
+          elif ch == in_string:
+              in_string = None
+          continue
+        if ch in {"'", '"'}:
+            in_string = ch
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[:brace_start] + replacement + text[idx + 1 :]
+    raise ValueError(f"{name} closing brace not found")
+
+
+def _coerce_app_default_settings(raw: Any) -> dict[str, Any]:
+    defaults = default_app_settings()
+    source = raw if isinstance(raw, dict) else {}
+    skip = set(SECRET_SETTING_KEYS) | {"LIBRARY_FOLDERS", "SETUP_SKIPPED_SERVICES"}
+    for key, value in source.items():
+        key_upper = str(key).upper()
+        if key_upper not in APP_SETTING_KEYS or key_upper in skip:
+            continue
+        try:
+            defaults[key_upper] = _coerce_config_value(key_upper, value)
+        except Exception:
+            pass
+    return defaults
+
+
+def _commit_app_defaults(settings: dict[str, Any]) -> None:
+    path = Path(__file__).resolve().parent / "settings.py"
+    text = path.read_text(encoding="utf-8")
+    rendered = pprint.pformat(settings, width=120, sort_dicts=False)
+    text = _replace_py_const_object(text, "DEFAULT_APP_SETTINGS", rendered)
+    path.write_text(text, encoding="utf-8")
+
+
+def _commit_startup_defaults(startup: Any) -> None:
+    if not isinstance(startup, dict):
+        return
+    path = Path(__file__).resolve().parent / "config.py"
+    text = path.read_text(encoding="utf-8")
+    if "PORT" in startup:
+        try:
+            port = max(1, min(65535, int(startup.get("PORT"))))
+            text = re.sub(r'("PORT":\s*)[^,\n]+', r"\g<1>" + str(port), text, count=1)
+        except Exception:
+            pass
+    if "ENABLE_MCP" in startup:
+        enabled = "True" if bool(startup.get("ENABLE_MCP")) else "False"
+        text = re.sub(r'("ENABLE_MCP":\s*)[^,\n]+', r"\g<1>" + enabled, text, count=1)
+    path.write_text(text, encoding="utf-8")
+
+
+@app.route("/api/ui/advanced_defaults/commit", methods=["POST"])
+def api_ui_advanced_defaults_commit():
     data = request.get_json(silent=True) or {}
     glass = _coerce_glass_defaults(data.get("liquidGlassElements"))
+    defaults = _coerce_advanced_ui_defaults(data.get("uiSettings"), glass)
+    app_defaults = _coerce_app_default_settings(data.get("appSettings"))
     path = Path(__file__).resolve().parent / "static" / "js" / "ui-settings.js"
     text = path.read_text(encoding="utf-8")
     start = "  // GLASS_DEFAULTS_BEGIN"
@@ -1677,8 +1873,15 @@ def api_ui_glass_defaults_commit():
     block = start + "\n  const DEFAULT_LIQUID_GLASS_ELEMENT_SETTINGS = " + json.dumps(glass, indent=2).replace("\n", "\n  ") + ";\n" + end
     before, rest = text.split(start, 1)
     _, after = rest.split(end, 1)
-    path.write_text(before + block + after, encoding="utf-8")
-    return jsonify({"ok": True})
+    text = before + block + after
+    try:
+        text = _replace_js_const_object(text, "DEFAULT_UI_SETTINGS", _advanced_ui_defaults_js(defaults))
+    except ValueError as exc:
+        return jsonify({"ok": False, "error": str(exc)}), 500
+    path.write_text(text, encoding="utf-8")
+    _commit_app_defaults(app_defaults)
+    _commit_startup_defaults(data.get("startupSettings"))
+    return jsonify({"ok": True, "skipped_secret_defaults": sorted(SECRET_SETTING_KEYS)})
 
 
 @app.route("/api/library/building", methods=["GET"])
