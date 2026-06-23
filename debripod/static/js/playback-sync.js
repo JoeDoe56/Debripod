@@ -167,10 +167,31 @@
     const fadeToken = npPageFadeToken;
 
     if(on){
+      const alreadyActive = !!(
+        nowPlaying &&
+        nowPlaying.style.display === "block" &&
+        nowPlaying.classList.contains("npPageActive")
+      );
+      try{ if(typeof hideTransientListGlass === "function") hideTransientListGlass("now playing active"); }catch(e){}
       try{ libList.classList.add("npUnderlay"); }catch(e){}
       layoutNowPlayingToLibList();
       nowPlaying.style.display = "block";
       try{ setHeader(); }catch(e){}
+      if(alreadyActive){
+        updateVisualizerState();
+        try{
+          if(window.DebriPod && DebriPod.albumArtTexture && DebriPod.albumArtTexture.renderToCanvas){
+            DebriPod.albumArtTexture.renderToCanvas(npArt);
+          }
+        }catch(e){}
+        try{ recaptureLiquidGlassElement(npArt); }catch(e){}
+        try{ scheduleNpOverlayGlassRender(); }catch(e){}
+        try{ scheduleLiquidGlassRender(); }catch(e){}
+        try{ npPillActivity(false); }catch(e){}
+        cancelSeekMode();
+        showProgressBar();
+        return;
+      }
       try{ nowPlaying.classList.remove("npPageActive"); }catch(e){}
       updateVisualizerState();
       try{

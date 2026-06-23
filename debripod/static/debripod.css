@@ -26,6 +26,16 @@
       --dp-glass-list-engrave-b: rgba(120,190,255,.78);
       --dp-glass-selected-text: #ffffff;
       --dp-glass-selected-pill-text: #ffffff;
+      --dp-text-wheel-labels: rgba(255,255,255,.68);
+      --dp-text-path-pill: rgba(255,255,255,.68);
+      --dp-text-rows: rgba(255,255,255,.68);
+      --dp-text-row-pills: rgba(255,255,255,.68);
+      --dp-text-selected-row: var(--lib-selected-contrast);
+      --dp-text-selected-row-pills: var(--lib-selected-pill-contrast);
+      --dp-text-transparent-alpha: .68;
+      --dp-selected-pill-edge-room: 44px;
+      --dp-selected-foreground-base-pct: 0%;
+      --dp-selected-foreground-target-pct: 100%;
       --lib-selected-contrast: var(--dp-glass-selected-text);
       --lib-selected-pill-contrast: var(--dp-glass-selected-pill-text);
       --lib-selected-pill-edge: rgba(255,255,255,.72);
@@ -243,7 +253,12 @@
       z-index: 10 !important;
       pointer-events: none !important;
     }
-    .liquidGlassCanvasNpOverlay{ position: absolute !important; z-index: 1 !important; }
+    .liquidGlassCanvasNpOverlay{
+      position: fixed !important;
+      inset: 0 !important;
+      z-index: 75 !important;
+      pointer-events: none !important;
+    }
     .liquidGlassCanvasLibList{ position: absolute !important; z-index: 1 !important; }
     .liquidGlassCanvasLibSelection{ position: absolute !important; z-index: 2 !important; }
     .liquidGlassCanvasLibPills{ position: absolute !important; z-index: 2 !important; }
@@ -497,7 +512,7 @@
       min-width:0;
       max-width:100%;
       white-space:nowrap;
-      color: var(--dp-glass-list-text);
+      color: var(--dp-text-path-pill);
       text-shadow: none;
     }
     .pathPill.pathPillHidden{
@@ -764,7 +779,7 @@
       border-radius: 999px;
       border: 0;
       background: transparent;
-      color: var(--dp-glass-selected-pill-text);
+      color: var(--dp-text-row-pills);
       font-size: 11px;
       line-height: 1;
       white-space:nowrap;
@@ -813,7 +828,7 @@
       padding: 0 8px;
       font-size: 11px;
       line-height: 18px;
-      color: var(--dp-glass-selected-pill-text);
+      color: var(--dp-text-row-pills);
     }
     .ipodPill.rangeValueEditing{
       min-width: 86px;
@@ -832,24 +847,18 @@
     .ipodPill.ok{
       border-color: transparent;
       background: transparent;
-      color: var(--dp-glass-selected-pill-text);
+      color: var(--dp-text-row-pills);
     }
     .ipodPill.warn{
       border-color: transparent;
       background: transparent;
-      color: var(--dp-glass-selected-pill-text);
+      color: var(--dp-text-row-pills);
     }
     .ipodPill.ok .ipodPillText{
-      color: color-mix(in srgb, var(--dp-glass-selected-pill-text) 88%, rgb(120,255,170) 12%);
+      color: color-mix(in srgb, var(--dp-text-row-pills) 88%, rgb(120,255,170) 12%);
     }
     .ipodPill.warn .ipodPillText{
-      color: color-mix(in srgb, var(--dp-glass-selected-pill-text) 86%, rgb(255,214,120) 14%);
-    }
-    .dpGlassModeClear .ipodPill.ok .ipodPillText,
-    .dpGlassModeClear .ipodPill.warn .ipodPillText,
-    html.dpGlassModeClear .ipodPill.ok .ipodPillText,
-    html.dpGlassModeClear .ipodPill.warn .ipodPillText{
-      color: transparent;
+      color: color-mix(in srgb, var(--dp-text-row-pills) 86%, rgb(255,214,120) 14%);
     }
     .ipodItem{
       display:flex;
@@ -862,8 +871,8 @@
       inset:0;
       z-index:80;
       list-style:none;
-      padding:var(--screenFrame);
-      scroll-padding:var(--screenFrame);
+      padding: calc(var(--screenFrame) + var(--dp-selected-pill-edge-room)) var(--screenFrame);
+      scroll-padding: calc(var(--screenFrame) + var(--dp-selected-pill-edge-room)) var(--screenFrame);
       margin: 0;
       overflow:auto;
       border-radius: var(--screenRadius);
@@ -896,6 +905,15 @@
       display:block;
       flex:0 0 auto;
       width:100%;
+      padding:0;
+      margin:0;
+      border:0;
+      pointer-events:none;
+    }
+    .ipodListEndSpacer{
+      display:block;
+      width:100%;
+      height: calc(var(--dp-selected-pill-edge-room) + 56px);
       padding:0;
       margin:0;
       border:0;
@@ -942,6 +960,11 @@
     /* Keep lib list border visible under Now Playing */
     #libList.npUnderlay{pointer-events:none; background: transparent; border-color: transparent; -webkit-backdrop-filter: none !important; backdrop-filter: none !important; box-shadow: none !important;}
     #libList.npUnderlay .ipodItem{opacity:0;}
+    .ipodList.pageFadeHidden .ipodPill,
+    #libList.npUnderlay .ipodPill,
+    .ipodPill[data-liquid-clipped]{
+      visibility: hidden !important;
+    }
     .ipodItem{
       padding: 11px 12px;
       border-bottom: 0;
@@ -965,15 +988,27 @@
       transition: background .45s ease, outline-color .45s ease, box-shadow .45s ease;
     }
     .ipodItem.sel .glassText{
-      color: var(--lib-selected-contrast, var(--dp-glass-selected-text));
+      color: color-mix(in srgb, var(--dp-text-rows) var(--dp-selected-foreground-base-pct), var(--dp-text-selected-row) var(--dp-selected-foreground-target-pct));
+    }
+    .ipodItem.sel [data-selected-row-text]{
+      transform: scale(var(--dp-selected-foreground-scale, 1));
+      transform-origin: left center;
+      z-index: 4;
+      position: relative;
+      transition: none;
     }
     .ipodItem.sel .ipodPillText{
-      color: var(--lib-selected-pill-contrast, var(--dp-glass-selected-pill-text));
+      color: color-mix(in srgb, var(--dp-text-row-pills) var(--dp-selected-foreground-base-pct), var(--dp-text-selected-row-pills) var(--dp-selected-foreground-target-pct));
     }
     .ipodItem.sel .ipodPill{
-      color: var(--lib-selected-pill-contrast, var(--dp-glass-selected-pill-text));
+      color: color-mix(in srgb, var(--dp-text-row-pills) var(--dp-selected-foreground-base-pct), var(--dp-text-selected-row-pills) var(--dp-selected-foreground-target-pct));
       --dp-engrave-under-a: var(--lib-selected-pill-edge);
       --dp-engrave-under-b: var(--lib-selected-pill-contrast);
+      transform: scale(var(--dp-selected-pill-scale, 1));
+      transform-origin: center;
+      padding-left: var(--dp-selected-pill-pad-x, 8px);
+      padding-right: var(--dp-selected-pill-pad-x, 8px);
+      z-index: 4;
     }
     #libList.dpGlassModeLight .ipodItem.sel{
       background: transparent;
@@ -1091,7 +1126,7 @@
       position:relative;
       display:inline-block;
       line-height:inherit;
-      color: var(--dp-glass-list-text);
+      color: var(--dp-text-rows);
       --dp-engrave-under-a: var(--theme-visualizer-a);
       --dp-engrave-under-b: var(--theme-visualizer-b);
       --dp-engrave-under-c: var(--theme-visualizer-c);
@@ -1128,32 +1163,38 @@
       --dp-glass-selected-text: #ffffff;
       --dp-glass-selected-pill-text: #ffffff;
     }
-    .dpGlassModeClear .glassText,
-    html.dpGlassModeClear .glassText{
+    html[data-text-mode-rows="engraved"] #libList .glassText,
+    html[data-text-mode-path-pill="engraved"] .pathPillText,
+    html[data-text-mode-wheel-labels="engraved"] .wheelLabel .glassText{
       color: rgba(255,255,255,0.035);
     }
-    .dpGlassModeClear .glassText::before,
-    .dpGlassModeClear .glassText::after,
-    html.dpGlassModeClear .glassText::before,
-    html.dpGlassModeClear .glassText::after{
+    html[data-text-mode-rows="engraved"] #libList .glassText::before,
+    html[data-text-mode-rows="engraved"] #libList .glassText::after,
+    html[data-text-mode-path-pill="engraved"] .pathPillText::before,
+    html[data-text-mode-path-pill="engraved"] .pathPillText::after,
+    html[data-text-mode-wheel-labels="engraved"] .wheelLabel .glassText::before,
+    html[data-text-mode-wheel-labels="engraved"] .wheelLabel .glassText::after{
       content: attr(data-text);
     }
-    .dpGlassModeClear .glassText::before,
-    html.dpGlassModeClear .glassText::before{
+    html[data-text-mode-rows="engraved"] #libList .glassText::before,
+    html[data-text-mode-path-pill="engraved"] .pathPillText::before,
+    html[data-text-mode-wheel-labels="engraved"] .wheelLabel .glassText::before{
       color: color-mix(in srgb, var(--dp-engrave-under-a) 74%, var(--dp-glass-list-engrave-a));
       transform: translate(-0.08px, -0.08px);
       opacity: .92;
       mix-blend-mode: screen;
     }
-    .dpGlassModeClear .glassText::after,
-    html.dpGlassModeClear .glassText::after{
+    html[data-text-mode-rows="engraved"] #libList .glassText::after,
+    html[data-text-mode-path-pill="engraved"] .pathPillText::after,
+    html[data-text-mode-wheel-labels="engraved"] .wheelLabel .glassText::after{
       color: color-mix(in srgb, var(--dp-engrave-under-b) 72%, var(--dp-engrave-under-c));
       transform: translate(0.08px, 0.08px);
       opacity: .72;
       mix-blend-mode: plus-lighter;
     }
-    .dpGlassModeClear .glassText .artistStrong,
-    html.dpGlassModeClear .glassText .artistStrong{
+    html[data-text-mode-rows="engraved"] #libList .glassText .artistStrong,
+    html[data-text-mode-path-pill="engraved"] .pathPillText .artistStrong,
+    html[data-text-mode-wheel-labels="engraved"] .wheelLabel .glassText .artistStrong{
       color: inherit;
     }
     .glassGlyph{
@@ -1161,7 +1202,7 @@
       display:inline-grid;
       width:18px;
       height:18px;
-      color: var(--dp-glass-list-text);
+      color: var(--dp-text-wheel-labels);
       --dp-engrave-under-a: var(--theme-visualizer-a);
       --dp-engrave-under-b: var(--theme-visualizer-b);
       --dp-engrave-under-c: var(--theme-visualizer-c);
@@ -1195,41 +1236,28 @@
       display:none;
       pointer-events:none;
     }
-    .dpGlassModeClear .glassGlyph,
-    html.dpGlassModeClear .glassGlyph{
+    html[data-text-mode-wheel-labels="engraved"] .glassGlyph{
       color: rgba(255,255,255,0.035);
     }
-    .dpGlassModeClear .glassGlyph svg:nth-child(2),
-    .dpGlassModeClear .glassGlyph svg:nth-child(3),
-    .dpGlassModeClear .glassGlyph img:nth-child(2),
-    .dpGlassModeClear .glassGlyph img:nth-child(3),
-    .dpGlassModeClear .glassGlyph .wheelSvgIcon:nth-child(2),
-    .dpGlassModeClear .glassGlyph .wheelSvgIcon:nth-child(3),
-    html.dpGlassModeClear .glassGlyph svg:nth-child(2),
-    html.dpGlassModeClear .glassGlyph svg:nth-child(3),
-    html.dpGlassModeClear .glassGlyph img:nth-child(2),
-    html.dpGlassModeClear .glassGlyph img:nth-child(3),
-    html.dpGlassModeClear .glassGlyph .wheelSvgIcon:nth-child(2),
-    html.dpGlassModeClear .glassGlyph .wheelSvgIcon:nth-child(3){
+    html[data-text-mode-wheel-labels="engraved"] .glassGlyph svg:nth-child(2),
+    html[data-text-mode-wheel-labels="engraved"] .glassGlyph svg:nth-child(3),
+    html[data-text-mode-wheel-labels="engraved"] .glassGlyph img:nth-child(2),
+    html[data-text-mode-wheel-labels="engraved"] .glassGlyph img:nth-child(3),
+    html[data-text-mode-wheel-labels="engraved"] .glassGlyph .wheelSvgIcon:nth-child(2),
+    html[data-text-mode-wheel-labels="engraved"] .glassGlyph .wheelSvgIcon:nth-child(3){
       display:block;
     }
-    .dpGlassModeClear .glassGlyph svg:nth-child(2),
-    .dpGlassModeClear .glassGlyph img:nth-child(2),
-    .dpGlassModeClear .glassGlyph .wheelSvgIcon:nth-child(2),
-    html.dpGlassModeClear .glassGlyph svg:nth-child(2),
-    html.dpGlassModeClear .glassGlyph img:nth-child(2),
-    html.dpGlassModeClear .glassGlyph .wheelSvgIcon:nth-child(2){
+    html[data-text-mode-wheel-labels="engraved"] .glassGlyph svg:nth-child(2),
+    html[data-text-mode-wheel-labels="engraved"] .glassGlyph img:nth-child(2),
+    html[data-text-mode-wheel-labels="engraved"] .glassGlyph .wheelSvgIcon:nth-child(2){
       color: color-mix(in srgb, var(--dp-engrave-under-a, var(--theme-visualizer-a)) 74%, var(--dp-glass-list-engrave-a));
       opacity:.92;
       transform: translate(-0.08px, -0.08px);
       mix-blend-mode: screen;
     }
-    .dpGlassModeClear .glassGlyph svg:nth-child(3),
-    .dpGlassModeClear .glassGlyph img:nth-child(3),
-    .dpGlassModeClear .glassGlyph .wheelSvgIcon:nth-child(3),
-    html.dpGlassModeClear .glassGlyph svg:nth-child(3),
-    html.dpGlassModeClear .glassGlyph img:nth-child(3),
-    html.dpGlassModeClear .glassGlyph .wheelSvgIcon:nth-child(3){
+    html[data-text-mode-wheel-labels="engraved"] .glassGlyph svg:nth-child(3),
+    html[data-text-mode-wheel-labels="engraved"] .glassGlyph img:nth-child(3),
+    html[data-text-mode-wheel-labels="engraved"] .glassGlyph .wheelSvgIcon:nth-child(3){
       color: color-mix(in srgb, var(--dp-engrave-under-b, var(--theme-visualizer-b)) 72%, var(--dp-engrave-under-c, var(--theme-visualizer-c)));
       opacity:.72;
       transform: translate(0.08px, 0.08px);
@@ -1239,12 +1267,8 @@
       font-size: 14px;
       letter-spacing: .9px;
       font-weight: 800;
-      color: var(--dp-glass-list-text);
+      color: var(--dp-text-wheel-labels);
       line-height: 1;
-    }
-    .dpGlassModeClear .wheelLabel .menuWord.glassText,
-    html.dpGlassModeClear .wheelLabel .menuWord.glassText{
-      color: rgba(255,255,255,0.035);
     }
 
       .wheelLabel .wheelSvgIcon{
@@ -1324,6 +1348,37 @@
     .dpSettingModal button[data-primary="true"]{
       background:#8e8e93;
       color:#050506;
+    }
+
+    .dpPerfButton{
+      position:fixed;
+      z-index:1000;
+      width:34px;
+      height:34px;
+      border:1px solid rgba(255,255,255,.28);
+      border-radius:999px;
+      background:rgba(0,0,0,.36);
+      color:#fff;
+      font:700 13px/1 var(--uiFont);
+      -webkit-backdrop-filter: blur(14px);
+      backdrop-filter: blur(14px);
+      cursor:pointer;
+      touch-action:manipulation;
+    }
+    .dpPerfButton[hidden],
+    .dpPerfOverlay[hidden]{
+      display:none !important;
+    }
+    .dpPerfOverlay{
+      position:fixed;
+      z-index:999;
+      pointer-events:none;
+      white-space:pre-wrap;
+      color:#fff;
+      font:11px/1.28 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      text-shadow:0 1px 2px rgba(0,0,0,.8);
+      max-height:min(46vh, 260px);
+      overflow:hidden;
     }
 
     .wheelLabel.top,.wheelLabel.wlTop{left:50%; top:18px; transform: translateX(-50%) translateZ(1px);}
@@ -1416,11 +1471,19 @@
   transition: opacity .22s ease, transform .22s ease, visibility 0s linear 0s;
   will-change: opacity, transform;
 }
+.npOverlayGlassHost{
+  position:absolute;
+  inset:0;
+  z-index:1;
+  border-radius:inherit;
+  overflow:hidden;
+  pointer-events:none;
+}
 .npOverlayGlass{
   position:absolute;
   inset:0;
   border-radius: inherit;
-  z-index:0;
+  z-index:1;
   pointer-events:none;
   overflow:hidden;
   border:0;
@@ -1428,9 +1491,16 @@
   box-shadow: none;
   opacity:1;
 }
+.npOverlayContent{
+  position:relative;
+  z-index:3;
+  width:100%;
+  border-radius:inherit;
+  pointer-events:auto;
+}
 .npOverlaySurface{
   position:relative;
-  z-index:30;
+  z-index:3;
   width:100%;
   min-height:0;
   box-sizing:border-box;

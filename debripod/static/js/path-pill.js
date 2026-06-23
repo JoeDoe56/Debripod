@@ -281,10 +281,18 @@
       animatePathPillGlassTransition._token = token;
       const started = performance.now();
       let didRefresh = false;
-      const tick = ()=>{
+      let lastTick = 0;
+      const tick = (now)=>{
         try{
           if(animatePathPillGlassTransition._token !== token) return;
-          const elapsed = performance.now() - started;
+          const frameNow = Number(now || performance.now());
+          const interval = (typeof animationFrameIntervalMs === "function") ? animationFrameIntervalMs("pathPill") : (1000 / 60);
+          if(lastTick && frameNow - lastTick < interval - 1){
+            requestAnimationFrame(tick);
+            return;
+          }
+          lastTick = frameNow;
+          const elapsed = frameNow - started;
           forcePathPillGlassRender(reason || "path pill transition", !didRefresh);
           didRefresh = true;
           if(elapsed < dur) requestAnimationFrame(tick);

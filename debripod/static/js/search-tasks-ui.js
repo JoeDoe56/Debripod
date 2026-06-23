@@ -620,12 +620,12 @@
     }, push);
   }
 
-async function viewRecently(push){
+async function viewHistory(push){
     showNowPlaying(false);
     await syncPlaybackFromServer();
     await setView({
-      kind: "recently",
-      label: "Recently Played",
+      kind: "history",
+      label: "History",
       root: null,
       load: async function(){
         let rec = [];
@@ -634,9 +634,6 @@ async function viewRecently(push){
           rec = (js && Array.isArray(js.recent)) ? js.recent : [];
         }catch(e){ rec = []; }
         const items = [];
-        if(state.history.length){
-          items.push({kind:"up", label:".."});
-        }
         for(const r of rec){
           if(!r || !r.root_id || !r.rel) continue;
           const media = (r.media || "").toLowerCase();
@@ -663,7 +660,7 @@ async function viewRecently(push){
           if(extText) pills.push(extText);
           if(r.quality) pills.push(String(r.quality));
           items.push({
-            kind: "recent_item",
+            kind: "history_item",
             label: label || "item",
             pills: pills,
             media: media,
@@ -683,10 +680,84 @@ async function viewRecently(push){
             playlist: (r.playlist || null)
           });
         }
-        if(items.length === (state.history.length ? 1 : 0)){
-          items.push({kind:"info", label:"No recently played items yet"});
+        if(items.length === 0){
+          items.push({kind:"info", label:"No history yet"});
         }
         resetList(items);
+      }
+    }, !!push);
+  }
+
+  function queueItemLabel(item, index){
+    try{
+      const metaTitle = item.title || item.name || item.label || "";
+      const base = String(metaTitle || item.rel || "").split("/").slice(-1)[0] || ("Item " + String(index + 1));
+      return base;
+    }catch(e){
+      return "Item " + String(index + 1);
+    }
+  }
+
+  function buildPlaybackQueueItems(){
+    const items = [];
+    try{
+      if(typeof isSearchStreamActive === "function" && isSearchStreamActive()){
+        const q = Array.isArray(state.streamQueue) ? state.streamQueue : [];
+        const cur = Math.max(0, Math.min(q.length - 1, Number(state.streamQueueIndex || 0)));
+        q.forEach((item, index)=>{
+          const pills = [item.media === "video" ? "video" : "audio"];
+          if(index === cur) pills.unshift("Now");
+          if(item.quality) pills.push(String(item.quality));
+          items.push({kind:"queue_item", label:queueItemLabel(item, index), pills:pills, queueKind:"stream", queueIndex:index, media:item.media || "audio", queueItem:item});
+        });
+        return items;
+      }
+    }catch(e){}
+
+    try{
+      if(isVideoActive() && Array.isArray(state.videoPlaylist) && state.videoPlaylist.length){
+        const cur = Math.max(0, Math.min(state.videoPlaylist.length - 1, Number(state.videoIndex || 0)));
+        state.videoPlaylist.forEach((item, index)=>{
+          items.push({kind:"queue_item", label:queueItemLabel(item, index), pills:index === cur ? ["Now", "video"] : ["video"], queueKind:"video", queueIndex:index, media:"video", queueItem:item});
+        });
+        return items;
+      }
+    }catch(e){}
+
+    try{
+      const pl = Array.isArray(state.playlist) ? state.playlist : [];
+      if(state.shuffleEnabled && Array.isArray(state.playOrder) && state.playOrder.length && pl.length){
+        const curOrder = Math.max(0, Math.min(state.playOrder.length - 1, Number(state.orderPos || 0)));
+        state.playOrder.forEach((playlistIndex, orderIndex)=>{
+          const item = pl[playlistIndex];
+          if(!item) return;
+          items.push({kind:"queue_item", label:queueItemLabel(item, orderIndex), pills:orderIndex === curOrder ? ["Now", "Shuffle"] : ["Shuffle"], queueKind:"shuffle", queueIndex:playlistIndex, queueOrderPos:orderIndex, media:"audio", queueItem:item});
+        });
+        return items;
+      }
+      if(pl.length){
+        const cur = Math.max(0, Math.min(pl.length - 1, Number(state.playIndex || 0)));
+        pl.forEach((item, index)=>{
+          items.push({kind:"queue_item", label:queueItemLabel(item, index), pills:index === cur ? ["Now", "audio"] : ["audio"], queueKind:"audio", queueIndex:index, media:"audio", queueItem:item});
+        });
+      }
+    }catch(e){}
+    return items;
+  }
+
+  async function viewPlaybackQueue(push){
+    showNowPlaying(false);
+    await setView({
+      kind:"playback_queue",
+      label:"Queue",
+      root:null,
+      load: async function(){
+        const rows = [];
+        rows.push.apply(rows, buildPlaybackQueueItems());
+        if(rows.length === 0){
+          rows.push({kind:"info", label:"Queue is empty"});
+        }
+        resetList(rows);
       }
     }, !!push);
   }

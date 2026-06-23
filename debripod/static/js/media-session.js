@@ -216,7 +216,7 @@
     }
   }
 
-  // Server-side playback sync (Now Playing + Recently Played)
+  // Server-side playback sync (Now Playing + History)
   async function playbackPost(payload){
     try{
       await fetch("/api/playback/update", {

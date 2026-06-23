@@ -30,18 +30,113 @@
     return el;
   }
 
+  const dpRowHeightCache = new Map();
+  const dpViewRowMetrics = new Map();
+
+  function rowHeightViewKey(){
+    try{
+      const cur = state && state.current ? state.current : {};
+      return [cur.kind || "", cur.root && cur.root.id || cur.root_id || "", cur.level || "", cur.value || "", cur.rel || "", state && state.items ? state.items.length : 0].join("|");
+    }catch(e){
+      return "default";
+    }
+  }
+
+  function rowViewMetrics(){
+    const key = rowHeightViewKey();
+    let entry = dpViewRowMetrics.get(key);
+    if(!entry){
+      entry = {byIndex: new Map(), fallback: 56};
+      dpViewRowMetrics.set(key, entry);
+    }
+    while(dpViewRowMetrics.size > 24){
+      const first = dpViewRowMetrics.keys().next();
+      if(first.done) break;
+      dpViewRowMetrics.delete(first.value);
+    }
+    return entry;
+  }
+
+  function rowHeightCacheKey(item){
+    try{
+      const cur = state && state.current ? state.current : {};
+      const viewKey = [cur.kind || "", cur.root && cur.root.id || cur.root_id || "", cur.level || "", cur.value || "", cur.rel || ""].join("|");
+      const itemKey = [item && item.kind || "", item && item.media || "", item && item.forceTwoLine ? "two" : "", item && item.settingRow ? "setting" : "", item && item.sub_label ? "sub" : "", Array.isArray(item && item.pills) ? item.pills.length : 0].join("|");
+      return viewKey + "::" + itemKey;
+    }catch(e){
+      return "default";
+    }
+  }
+
+  function cachedItemHeight(item){
+    try{
+      const metrics = rowViewMetrics();
+      if(metrics && metrics._lookupIndex != null){
+        const byIndex = metrics.byIndex.get(metrics._lookupIndex);
+        if(byIndex && byIndex > 0) return byIndex;
+      }
+      const cached = dpRowHeightCache.get(rowHeightCacheKey(item));
+      if(cached && cached > 0) return cached;
+      if(metrics && metrics.fallback) return Math.max(estimatedItemHeight(item), metrics.fallback);
+    }catch(e){}
+    return estimatedItemHeight(item);
+  }
+
+  function virtualHeightForIndex(index){
+    try{
+      const metrics = rowViewMetrics();
+      metrics._lookupIndex = index;
+      const h = cachedItemHeight(state.items[index]);
+      metrics._lookupIndex = null;
+      return h;
+    }catch(e){
+      return estimatedItemHeight(state.items[index]);
+    }
+  }
+
+  function measureRenderedRowHeights(){
+    try{
+      if(!libList || !state || !Array.isArray(state.items)) return;
+      const metrics = rowViewMetrics();
+      let total = 0;
+      let count = 0;
+      libList.querySelectorAll(".ipodItem[data-index]").forEach((row)=>{
+        const idx = Number(row.dataset.index);
+        if(!Number.isFinite(idx) || !state.items[idx]) return;
+        const h = row.getBoundingClientRect ? row.getBoundingClientRect().height : row.offsetHeight;
+        if(h > 0){
+          const safeH = Math.max(24, h);
+          dpRowHeightCache.set(rowHeightCacheKey(state.items[idx]), safeH);
+          metrics.byIndex.set(idx, safeH);
+          total += safeH;
+          count += 1;
+        }
+      });
+      if(count){
+        metrics.fallback = Math.max(metrics.fallback || 0, Math.ceil(total / count));
+      }
+      while(dpRowHeightCache.size > 600){
+        const first = dpRowHeightCache.keys().next();
+        if(first.done) break;
+        dpRowHeightCache.delete(first.value);
+      }
+    }catch(e){}
+  }
+
   function ensureLibItemVisible(el){
     try{
       if(!libList || !el) return;
       const cs = window.getComputedStyle ? window.getComputedStyle(libList) : null;
       const padTop = cs ? (parseFloat(cs.paddingTop || "0") || 0) : 0;
       const padBottom = cs ? (parseFloat(cs.paddingBottom || "0") || 0) : padTop;
+      const safeTop = padTop;
+      const safeBottom = padBottom;
       const top = el.offsetTop;
       const bottom = top + el.offsetHeight;
-      const viewTop = libList.scrollTop + padTop;
-      const viewBottom = libList.scrollTop + libList.clientHeight - padBottom;
-      if(top < viewTop) animateLibListScrollTo(Math.max(0, top - padTop));
-      else if(bottom > viewBottom) animateLibListScrollTo(Math.max(0, bottom + padBottom - libList.clientHeight));
+      const viewTop = libList.scrollTop + safeTop;
+      const viewBottom = libList.scrollTop + libList.clientHeight - safeBottom;
+      if(top < viewTop) animateLibListScrollTo(Math.max(0, top - safeTop));
+      else if(bottom > viewBottom) animateLibListScrollTo(Math.max(0, bottom + safeBottom - libList.clientHeight));
     }catch(e){}
   }
 
@@ -60,9 +155,17 @@
       const delta = target - start;
       const started = performance.now();
       const duration = Math.min(180, Math.max(80, Math.abs(delta) * 1.15));
+      let lastTick = 0;
       const tick = (now)=>{
         try{
-          const t = Math.max(0, Math.min(1, (Number(now || performance.now()) - started) / duration));
+          const frameNow = Number(now || performance.now());
+          const interval = (typeof animationFrameIntervalMs === "function") ? animationFrameIntervalMs("libraryList") : (1000 / 60);
+          if(lastTick && frameNow - lastTick < interval - 1){
+            libList._dpScrollAnimFrame = requestAnimationFrame(tick);
+            return;
+          }
+          lastTick = frameNow;
+          const t = Math.max(0, Math.min(1, (frameNow - started) / duration));
           const eased = 1 - Math.pow(1 - t, 3);
           libList.scrollTop = start + delta * eased;
           if(typeof invalidateLibPillGlass === "function") invalidateLibPillGlass("smooth scroll");
@@ -81,8 +184,10 @@
       if(!item) return 44;
       if(item.kind === "smart_playlist_rules_text") return 236;
       if(item.kind === "range_editor_input" || item.kind === "range_editor_slider") return 76;
+      if(item.sub_label) return 68;
       if(item.forceTwoLine || item.settingRow || item.kind === "setting_value" || item.kind === "settings_library_folder" || item.kind === "settings_library_mode_choice" || item.kind === "settings_library_remove") return 76;
       if(item.kind === "libsearch_result" || item.kind === "libsearch_file" || item.kind === "libtask_file") return 76;
+      if(item.kind === "song" || item.kind === "track" || item.kind === "file" || item.kind === "liked_song" || item.media === "audio") return item.pills && item.pills.length > 2 ? 64 : 56;
     }catch(e){}
     return 44;
   }
@@ -90,6 +195,7 @@
   function canVirtualizeList(){
     try{
       if(!libList || !state || !Array.isArray(state.items)) return false;
+      return false;
       if(state.items.length < 220) return false;
       return !state.items.some((item)=> item && (
         item.kind === "range_editor_input" ||
@@ -112,7 +218,7 @@
     const heights = [];
     let total = 0;
     for(let i = 0; i < count; i++){
-      const h = estimatedItemHeight(state.items[i]);
+      const h = virtualHeightForIndex(i);
       heights.push(h);
       total += h;
     }
@@ -146,11 +252,36 @@
     layer.appendChild(spacer);
   }
 
+  function appendListEndSpacer(layer){
+    try{
+      const spacer = document.createElement("li");
+      spacer.className = "ipodListEndSpacer";
+      spacer.setAttribute("aria-hidden", "true");
+      layer.appendChild(spacer);
+    }catch(e){}
+  }
+
+  function syncSelectedRowMarkers(row, selected){
+    try{
+      if(!row) return;
+      row.classList.toggle("sel", !!selected);
+      if(selected) row.setAttribute("data-selected-row", "");
+      else row.removeAttribute("data-selected-row");
+      row.querySelectorAll("[data-selected-row-text],[data-selected-row-pill-text]").forEach((el)=>{
+        el.removeAttribute("data-selected-row-text");
+        el.removeAttribute("data-selected-row-pill-text");
+      });
+      if(!selected) return;
+      row.querySelectorAll(".ipodLabel, .ipodSubLabel").forEach((el)=> el.setAttribute("data-selected-row-text", ""));
+      row.querySelectorAll(".ipodPillText").forEach((el)=> el.setAttribute("data-selected-row-pill-text", ""));
+    }catch(e){}
+  }
+
   function virtualOffsetForIndex(index){
     try{
       const n = Math.max(0, Math.min((state.items.length || 1) - 1, Number(index || 0)));
       let y = 0;
-      for(let i = 0; i < n; i++) y += estimatedItemHeight(state.items[i]);
+      for(let i = 0; i < n; i++) y += virtualHeightForIndex(i);
       return y;
     }catch(e){
       return 0;
@@ -160,11 +291,9 @@
   function renderList(){
     const prevScroll = (libList ? libList.scrollTop : 0);
     let editInputToFocus = null;
+    try{ if(typeof hideTransientListGlass === "function") hideTransientListGlass("before list render"); }catch(e){}
     libList.innerHTML = "";
-    const itemsLayer = document.createElement("div");
-    itemsLayer.className = "ipodListItemsLayer";
-    itemsLayer.setAttribute("role", "presentation");
-    libList.appendChild(itemsLayer);
+    const itemsLayer = document.createDocumentFragment();
     const virtual = listVirtualWindow();
     if(libList) libList._dpVirtualized = !!virtual.enabled;
     appendVirtualSpacer(itemsLayer, virtual.top, "top");
@@ -184,6 +313,7 @@
       );
       const twoLine = (settingsTall || it.kind === "libsearch_result" || it.kind === "libsearch_file" || it.kind === "libtask_file");
       li.className = "ipodItem" + (isSel ? " sel" : "") + (it.kind === "info" ? " info" : "") + (it.kind === "random" ? " random" : "") + (twoLine ? " twoLine" : "") + (settingsTall ? " settingRow" : "");
+      if(isSel) li.setAttribute("data-selected-row", "");
 
       if(it.kind === "range_editor_input"){
         const editing = !!((state.inlineRangeEditor && state.inlineRangeEditor.rangeKeyboardOpen) || (state.current && state.current.kind === "range_editor" && state.current.rangeKeyboardOpen));
@@ -232,6 +362,7 @@
           fill.className = "pillBarFill";
           fill.style.width = (Math.max(0, Math.min(1, Number(it.bar || 0))) * 100).toFixed(1) + "%";
           const txt = makeGlassPillText(String(it.value == null ? "" : it.value), "pillBarText");
+          if(isSel) txt.setAttribute("data-selected-row-pill-text", "");
           bar.appendChild(fill);
           bar.appendChild(txt);
           wrap.appendChild(bar);
@@ -276,6 +407,7 @@
         fill.className = "pillBarFill";
         fill.style.width = (Math.max(0, Math.min(1, Number(it.bar || 0))) * 100).toFixed(1) + "%";
         const txt = makeGlassPillText(String(Math.round(Math.max(0, Math.min(1, Number(it.bar || 0))) * 100)) + "%", "pillBarText");
+        if(isSel) txt.setAttribute("data-selected-row-pill-text", "");
         sp.appendChild(fill);
         sp.appendChild(txt);
         wrap.appendChild(sp);
@@ -557,10 +689,12 @@
         setGlassText(labelSpan, it.label || "");
       }
       labelWrap.appendChild(labelSpan);
+      if(isSel) labelSpan.setAttribute("data-selected-row-text", "");
       if(it && it.sub_label){
         const sub = document.createElement("span");
         sub.className = "ipodSubLabel hScrollText";
         setGlassText(sub, String(it.sub_label || ""));
+        if(isSel) sub.setAttribute("data-selected-row-text", "");
         labelWrap.appendChild(sub);
       }
       li.appendChild(labelWrap);
@@ -655,11 +789,16 @@
             fill.className = "pillBarFill";
             fill.style.width = (Math.max(0, Math.min(1, Number(p.bar))) * 100).toFixed(1) + "%";
             const txt = makeGlassPillText(p.text || "", "pillBarText");
+            if(isSel) txt.setAttribute("data-selected-row-pill-text", "");
             sp.appendChild(fill);
             sp.appendChild(txt);
           }else{
             sp.className = "ipodPill" + toneCls;
             prepareGlassPill(sp, p.text || "");
+            if(isSel){
+              const txt = sp.querySelector(".ipodPillText");
+              if(txt) txt.setAttribute("data-selected-row-pill-text", "");
+            }
           }
           if(p._selectPill){
             sp.addEventListener("click", (ev)=>{
@@ -730,6 +869,9 @@
       li.appendChild(emptyText);
       itemsLayer.appendChild(li);
     }
+    appendListEndSpacer(itemsLayer);
+    libList.appendChild(itemsLayer);
+    measureRenderedRowHeights();
 
     // restore scroll position first, then ensure selection is visible without jumping to top
     try{
@@ -901,9 +1043,11 @@ function vibeTick(){
       if(!libList) return;
       const oldEl = libList.querySelector('.ipodItem[data-index="' + prev + '"]');
       const newEl = libList.querySelector('.ipodItem[data-index="' + state.sel + '"]');
-      if(oldEl) oldEl.classList.remove("sel");
+      if(oldEl) syncSelectedRowMarkers(oldEl, false);
       if(newEl){
-        newEl.classList.add("sel");
+        syncSelectedRowMarkers(newEl, true);
+        if(typeof updateLibSelectionGlass === "function") updateLibSelectionGlass("selection target");
+        requestAnimationFrame(()=>{ try{ updateLibSelectionGlass("selection target settled"); }catch(e){} });
         ensureLibItemVisible(newEl);
       }else if(libList._dpVirtualized){
         libList.scrollTop = Math.max(0, virtualOffsetForIndex(state.sel) - Math.max(32, (libList.clientHeight || 320) * 0.35));
@@ -1007,6 +1151,7 @@ function vibeTick(){
     let fadeTimer = 0;
     let faded = false;
     try{
+      try{ if(typeof hideTransientListGlass === "function") hideTransientListGlass("page transition"); }catch(e){}
       if(libList){
         fadeTimer = setTimeout(()=>{
           faded = true;

@@ -53,8 +53,11 @@
                 <img id="npArtLiquidSource" class="npArtLiquidSource" alt="" crossorigin="anonymous" data-liquid-ignore>
 
                 <div class="npOverlayPill" id="npOverlayPill">
-                  <div class="npOverlayGlass liquidGlass" aria-hidden="true"></div>
-                  <div class="npOverlaySurface" id="npOverlaySurface" data-liquid-ignore>
+                  <div class="npOverlayGlassHost" id="npOverlayGlassHost" aria-hidden="true">
+                    <div class="npOverlayGlass liquidGlass" aria-hidden="true"></div>
+                  </div>
+                  <div class="npOverlayContent" id="npOverlayContent" data-liquid-ignore>
+                  <div class="npOverlaySurface" id="npOverlaySurface">
                     <div class="npTitle" id="npTitle"></div>
                     <div class="npSub" id="npSub"></div>
 
@@ -74,6 +77,7 @@
                       <div class="npTechInline" id="npTech"></div>
                       <div id="npDur">0:00</div>
                     </div>
+                  </div>
                   </div>
                 </div>
 
@@ -145,6 +149,7 @@
 <script src="{{ url_for('static', filename='js/library-browser.js') }}?v={{ asset_v }}"></script>
 <script src="{{ url_for('static', filename='js/wheel-controls.js') }}?v={{ asset_v }}"></script>
 <script src="{{ url_for('static', filename='js/client-sync.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/performance-overlay.js') }}?v={{ asset_v }}"></script>
 <script src="{{ url_for('static', filename='debripod.js') }}?v={{ asset_v }}"></script>
 </body>
 </html>

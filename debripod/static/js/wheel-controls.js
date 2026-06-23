@@ -21,9 +21,7 @@
       }
     });
   }
-btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
-    triggerWheelClickTilt("top");
-    vibeTick();
+  function menuButtonPress(){
     if(state.current && state.current.kind === "np_playlist_add") return;
     if(nowPlaying.style.display === "block") hideNpPillImmediate("menu button");
     if(nowPlaying.style.display === "block" && seekMode && !isVideoActive() && lastfmIsEnabled()){
@@ -32,7 +30,7 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
       return;
     }
     goBack();
-  });
+  }
 
   function playButtonPress(){
     if(state.current && state.current.kind === "np_playlist_add") return;
@@ -100,14 +98,6 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
     }catch(e){}
   }
 
-  btnPlay.addEventListener("pointerdown", ()=> triggerWheelClickTilt("bottom"), {passive:true});
-  btnRev.addEventListener("pointerdown", ()=> triggerWheelClickTilt("left"), {passive:true});
-  btnFwd.addEventListener("pointerdown", ()=> triggerWheelClickTilt("right"), {passive:true});
-  btnMenu.addEventListener("pointerdown", ()=> triggerWheelClickTilt("top"), {passive:true});
-  btnPlay.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return; triggerWheelClickTilt("bottom"); vibeTick(); if(nowPlaying.style.display === "block") npPillActivity(false); playButtonPress(); });
-  btnRev.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return; triggerWheelClickTilt("left"); vibeTick(); if(nowPlaying.style.display === "block") npPillActivity(false); revButtonPress(); });
-  btnFwd.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return; triggerWheelClickTilt("right"); vibeTick(); if(nowPlaying.style.display === "block") npPillActivity(false); fwdButtonPress(); });
-
   function centerPress(){
     if(nowPlaying.style.display === "block"){
       if(seekMode){
@@ -131,8 +121,83 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
   btnCenter.addEventListener("animationend", (ev)=>{
     try{ if(ev.animationName === "wheelCenterPulse") btnCenter.classList.remove("centerPulse"); }catch(e){}
   });
-  btnCenter.addEventListener("pointerdown", ()=>{ pulseWheelCenter(); triggerWheelClickTilt("center"); }, {passive:true});
-  btnCenter.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return; pulseWheelCenter(); triggerWheelClickTilt("center"); vibeTick(); if(nowPlaying.style.display === "block") npPillActivity(false); centerPress(); });
+
+  function performWheelButtonTap(zone, pressFn, options){
+    triggerWheelClickTilt(zone);
+    if(options && options.pulse) pulseWheelCenter();
+    vibeTick();
+    if(nowPlaying.style.display === "block" && !(options && options.skipNpPill)) npPillActivity(false);
+    pressFn();
+  }
+
+  function bindWheelButton(el, zone, pressFn, longFn, options){
+    if(!el) return;
+    let active = null;
+    const clear = ()=>{
+      if(active && active.timer) clearTimeout(active.timer);
+      active = null;
+    };
+    el.addEventListener("pointerdown", (ev)=>{
+      try{ ev.preventDefault(); ev.stopPropagation(); }catch(e){}
+      if(active) clear();
+      const startX = ev.clientX;
+      const startY = ev.clientY;
+      active = {id:ev.pointerId, long:false, moved:false, timer:0, x:startX, y:startY};
+      try{ el.setPointerCapture(ev.pointerId); }catch(e){}
+      triggerWheelClickTilt(zone);
+      if(options && options.pulse) pulseWheelCenter();
+      startWheelRotationPointer(ev, true);
+      active.timer = setTimeout(()=>{
+        if(!active || active.moved) return;
+        active.long = true;
+        suppressWheelClicks(700);
+        vibeTick();
+        try{
+          const result = longFn && longFn();
+          if(result && typeof result.catch === "function") result.catch(()=>{});
+        }catch(e){}
+      }, 320);
+    }, {passive:false});
+    el.addEventListener("pointermove", (ev)=>{
+      if(!active || active.id !== ev.pointerId) return;
+      const dist = Math.hypot((ev.clientX || 0) - active.x, (ev.clientY || 0) - active.y);
+      if(dist > 10){
+        active.moved = true;
+        if(active.timer){
+          clearTimeout(active.timer);
+          active.timer = 0;
+        }
+        moveWheelRotationPointer(ev);
+      }
+      try{ ev.preventDefault(); ev.stopPropagation(); }catch(e){}
+    }, {passive:false});
+    const finish = (ev)=>{
+      if(active && active.id === ev.pointerId){
+        try{ ev.preventDefault(); ev.stopPropagation(); }catch(e){}
+        const shouldTap = !active.long && !active.moved;
+        const wasDrag = active.moved;
+        clear();
+        suppressWheelClicks(500);
+        if(wasDrag) wheelPointerEnd();
+        if(shouldTap) performWheelButtonTap(zone, pressFn, options);
+      }
+    };
+    el.addEventListener("pointerup", finish, {passive:false});
+    el.addEventListener("pointercancel", (ev)=>{ try{ ev.stopPropagation(); }catch(e){} clear(); wheelPointerEnd(); }, {passive:false});
+    el.addEventListener("click", (ev)=>{
+      if(isWheelClickSuppressed()){
+        try{ ev.preventDefault(); ev.stopPropagation(); }catch(e){}
+        return;
+      }
+      performWheelButtonTap(zone, pressFn, options);
+    });
+  }
+
+  bindWheelButton(btnMenu, "top", menuButtonPress, ()=>{ if(typeof openNowFolder === "function") return openNowFolder(); }, {skipNpPill:true});
+  bindWheelButton(btnRev, "left", revButtonPress, ()=>{ if(typeof viewHistory === "function") return viewHistory(true); });
+  bindWheelButton(btnFwd, "right", fwdButtonPress, ()=>{ if(typeof viewPlaybackQueue === "function") return viewPlaybackQueue(true); });
+  bindWheelButton(btnPlay, "bottom", playButtonPress, null);
+  bindWheelButton(btnCenter, "center", centerPress, null, {pulse:true});
 
   updateWheelLabels();
 
@@ -174,28 +239,19 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
     return d;
   }
 
-  wheel.addEventListener("pointerdown", (ev)=>{
+  function startWheelRotationPointer(ev, downOnButton){
     wheelPointerDown = true;
     dragging = false;
-    wheelDownOnButton = false;
-    try{
-      if(ev.target === btnCenter) wheelDownOnButton = true;
-      else if(ev.target && ev.target.closest && ev.target.closest(".wheelBtn")) wheelDownOnButton = true;
-    }catch(e){
-      wheelDownOnButton = false;
-    }
+    wheelDownOnButton = !!downOnButton;
     wheelStartX = ev.clientX;
     wheelStartY = ev.clientY;
     wheelPointerRect = wheel.getBoundingClientRect();
     lastAngle = angleFromEvent(ev);
     accum = 0;
     cacheWheelGlassTiltRect();
+  }
 
-    // Avoid capturing immediately so taps on buttons stay reliable.
-    // If the user drags, we will capture on move after a small threshold.
-  }, {passive:false});
-
-  wheel.addEventListener("pointermove", (ev)=>{
+  function moveWheelRotationPointer(ev){
     if(!wheelPointerDown) return;
     const events = (typeof ev.getCoalescedEvents === "function") ? ev.getCoalescedEvents() : null;
     const moveEvents = (events && events.length) ? events : [ev];
@@ -260,6 +316,24 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
     }else{
       try{ if(typeof setLibSelectionStretch === "function") setLibSelectionStretch(accum / step); }catch(e){}
     }
+  }
+
+  wheel.addEventListener("pointerdown", (ev)=>{
+    let downOnButton = false;
+    try{
+      if(ev.target === btnCenter) downOnButton = true;
+      else if(ev.target && ev.target.closest && ev.target.closest(".wheelBtn")) downOnButton = true;
+    }catch(e){
+      downOnButton = false;
+    }
+    startWheelRotationPointer(ev, downOnButton);
+
+    // Avoid capturing immediately so taps on buttons stay reliable.
+    // If the user drags, we will capture on move after a small threshold.
+  }, {passive:false});
+
+  wheel.addEventListener("pointermove", (ev)=>{
+    moveWheelRotationPointer(ev);
   }, {passive:false});
 
   function wheelPointerEnd(){
@@ -331,8 +405,7 @@ btnMenu.addEventListener("click", ()=>{ if(isWheelClickSuppressed()) return;
     // w = top, a = left, s = middle, space = bottom, d = right
     if(k === "w" || k === "W"){
       ev.preventDefault();
-      if(state.current && state.current.kind === "np_playlist_add") return;
-      goBack();
+      menuButtonPress();
     }else if(k === "a" || k === "A"){
       ev.preventDefault();
       revButtonPress();

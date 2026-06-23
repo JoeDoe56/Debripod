@@ -1,9 +1,64 @@
   function applyUiTuningCss(){
     try{
-      const root = document.documentElement;
-      root.style.setProperty("--centerBounceScale", String(1 + clampNumber(uiSettings.centerBounceAmount, DEFAULT_UI_SETTINGS.centerBounceAmount, 0, 0.3)));
-      root.style.setProperty("--centerBounceDuration", String(clampNumber(uiSettings.centerBounceDuration, DEFAULT_UI_SETTINGS.centerBounceDuration, 0, 1000)) + "ms");
-      root.style.setProperty("--centerBounceOvershoot", String(clampNumber(uiSettings.centerBounceOvershoot, DEFAULT_UI_SETTINGS.centerBounceOvershoot, 0, 1.4)));
+      const doc = document.documentElement;
+      doc.style.setProperty("--centerBounceScale", String(1 + clampNumber(uiSettings.centerBounceAmount, DEFAULT_UI_SETTINGS.centerBounceAmount, 0, 0.3)));
+      doc.style.setProperty("--centerBounceDuration", String(clampNumber(uiSettings.centerBounceDuration, DEFAULT_UI_SETTINGS.centerBounceDuration, 0, 1000)) + "ms");
+      doc.style.setProperty("--centerBounceOvershoot", String(clampNumber(uiSettings.centerBounceOvershoot, DEFAULT_UI_SETTINGS.centerBounceOvershoot, 0, 1.4)));
+      applyTextModeClasses();
+      applyAnimationTimingCss();
+    }catch(e){}
+  }
+
+  function textModeColor(mode, group){
+    const alpha = normalizeTextTransparency(uiSettings.textTransparency);
+    const key = normalizeTextMode(mode);
+    if(key === "black") return "rgba(0,0,0,0.92)";
+    if(key === "white") return "rgba(255,255,255,0.92)";
+    if(key === "contrast"){
+      if(group === "selectedRowPills") return "var(--lib-selected-pill-contrast)";
+      if(group === "selectedRow") return "var(--lib-selected-contrast)";
+      return "var(--text)";
+    }
+    if(key === "engraved") return "rgba(255,255,255,0.035)";
+    if(group === "selectedRowPills") return "rgba(255,255,255," + alpha.toFixed(3) + ")";
+    if(group === "selectedRow") return "rgba(255,255,255," + alpha.toFixed(3) + ")";
+    if(group === "rowPills" || group === "pathPill" || group === "wheelLabels") return "rgba(255,255,255," + alpha.toFixed(3) + ")";
+    return "rgba(255,255,255," + alpha.toFixed(3) + ")";
+  }
+
+  function applyTextModeClasses(){
+    try{
+      uiSettings.textModes = cloneTextModes(uiSettings.textModes);
+      uiSettings.textTransparency = normalizeTextTransparency(uiSettings.textTransparency);
+      const modes = uiSettings.textModes;
+      const doc = document.documentElement;
+      doc.style.setProperty("--dp-text-wheel-labels", textModeColor(modes.wheelLabels, "wheelLabels"));
+      doc.style.setProperty("--dp-text-path-pill", textModeColor(modes.pathPill, "pathPill"));
+      doc.style.setProperty("--dp-text-rows", textModeColor(modes.rows, "rows"));
+      doc.style.setProperty("--dp-text-row-pills", textModeColor(modes.rowPills, "rowPills"));
+      doc.style.setProperty("--dp-text-selected-row", textModeColor(modes.selectedRow, "selectedRow"));
+      doc.style.setProperty("--dp-text-selected-row-pills", textModeColor(modes.selectedRowPills, "selectedRowPills"));
+      doc.style.setProperty("--dp-text-transparent-alpha", uiSettings.textTransparency.toFixed(3));
+      Object.keys(modes).forEach((key)=> doc.setAttribute("data-text-mode-" + key.replace(/[A-Z]/g, m=> "-" + m.toLowerCase()), modes[key]));
+    }catch(e){}
+  }
+
+  function animationFrameIntervalMs(key){
+    try{
+      uiSettings.animationFps = cloneAnimationFps(uiSettings.animationFps);
+      return 1000 / normalizeAnimationFps(uiSettings.animationFps && uiSettings.animationFps[key]);
+    }catch(e){
+      return 1000 / 60;
+    }
+  }
+
+  function applyAnimationTimingCss(){
+    try{
+      uiSettings.animationFps = cloneAnimationFps(uiSettings.animationFps);
+      const doc = document.documentElement;
+      Object.keys(uiSettings.animationFps).forEach((key)=>{
+        doc.style.setProperty("--dp-" + key.replace(/[A-Z]/g, m=> "-" + m.toLowerCase()) + "-frame-ms", animationFrameIntervalMs(key).toFixed(3) + "ms");
+      });
     }catch(e){}
   }
   applyUiTuningCss();
@@ -241,9 +296,13 @@
           }
           positionLibSelectionLiquidCanvas();
         }else if(key === "npOverlay"){
-          const pillHost = document.getElementById("npOverlayPill");
-          if(pillHost && renderer.canvas.parentNode !== pillHost){
-            pillHost.insertBefore(renderer.canvas, pillHost.firstChild);
+          if(renderer.canvas.parentNode !== wrap){
+            const afterBg = document.getElementById("visualizerBg");
+            if(afterBg && afterBg.parentNode === wrap && afterBg.nextSibling){
+              wrap.insertBefore(renderer.canvas, afterBg.nextSibling);
+            }else{
+              wrap.insertBefore(renderer.canvas, wrap.firstChild);
+            }
           }
           positionNpOverlayLiquidCanvas();
         }else if(renderer.canvas.parentNode !== wrap){
@@ -255,7 +314,7 @@
           }
         }
         renderer.canvas.style.pointerEvents = "none";
-        renderer.canvas.style.setProperty("z-index", (key === "libPills" || key === "libSelection") ? "2" : (key === "libList" ? "1" : (key === "npOverlay" ? "1" : (key === "wheel" ? "10" : "65"))), "important");
+        renderer.canvas.style.setProperty("z-index", (key === "libPills" || key === "libSelection") ? "2" : (key === "libList" ? "1" : (key === "npOverlay" ? "75" : (key === "wheel" ? "10" : "65"))), "important");
       });
       debugLiquidGlassRenderers("mount");
     }catch(e){}
@@ -339,7 +398,7 @@
         if(rect && rect.width > 0 && rect.height > 0 && glassCanvas.width > 0 && glassCanvas.height > 0){
           const updated = renderer.updateTextureFromCanvas(glassCanvas, {
             reason: reason || "rendered album art glass source",
-            allowDark: false,
+            allowDark: true,
             sourceRect: {
               left: rect.left || 0,
               top: rect.top || 0,
@@ -362,7 +421,7 @@
         if(rect && rect.width > 0 && rect.height > 0){
           const updated = renderer.updateTextureFromCanvas(artEl, {
             reason: reason || "visible album art canvas fallback",
-            allowDark: false,
+            allowDark: true,
             sourceRect: {
               left: rect.left || 0,
               top: rect.top || 0,
@@ -403,6 +462,17 @@
         }else{
           refreshLiquidGlassSource(renderer, reason || "album art image fallback");
         }
+        return;
+      }
+      if(renderer.updateTextureFromSolidColor){
+        renderer.updateTextureFromSolidColor(8, 8, [5, 5, 7, 255], {reason: reason || "album art fallback", allowDark: true});
+        debugNpOverlaySource("solid fallback", renderer, {
+          reason: reason || "",
+          glassCanvasWidth: glassCanvas ? glassCanvas.width || 0 : 0,
+          glassCanvasHeight: glassCanvas ? glassCanvas.height || 0 : 0,
+          artRect: artEl ? (function(){ const r = artEl.getBoundingClientRect(); return {left:r.left || 0, top:r.top || 0, width:r.width || 0, height:r.height || 0}; })() : null,
+          updateReturned: true
+        });
         return;
       }
       debugNpOverlaySource("skipped keep previous", renderer, {
@@ -477,10 +547,24 @@
       const token = ((animateNpOverlayGlassTransition._token || 0) + 1);
       animateNpOverlayGlassTransition._token = token;
       const started = performance.now();
-      const tick = ()=>{
+      let lastTick = 0;
+      const tick = (frameState)=>{
         try{
           if(animateNpOverlayGlassTransition._token !== token) return;
-          const elapsed = performance.now() - started;
+          const now = (frameState && frameState.timestamp) || performance.now();
+          const interval = animationFrameIntervalMs("nowPlayingPill");
+          if(lastTick && now - lastTick < interval - 1){
+            const scheduler = frameScheduler();
+            if(scheduler && scheduler.request){
+              scheduler.request("np-overlay-transition", tick);
+              scheduler.mark({refreshSources:true, metrics:true, render:true, keepAlive:true});
+            }else{
+              requestAnimationFrame(tick);
+            }
+            return;
+          }
+          lastTick = now;
+          const elapsed = now - started;
           forceNpOverlayGlassRender(reason || "np overlay transition", true);
           if(elapsed < dur){
             const scheduler = frameScheduler();
@@ -665,8 +749,13 @@
     targetRadius: 999,
     targetOpacity: 0,
     stretch: 0,
+    targetStretch: 0,
     direction: 0,
+    targetDirection: 0,
+    foregroundProgress: 0,
+    targetForegroundProgress: 0,
     raf: 0,
+    lastStepTs: 0,
     initialized: false
   };
 
@@ -675,22 +764,32 @@
       const el = document.getElementById("libListSelectedGlass");
       if(!el) return;
       const stretchPx = Math.abs(listSelectionMotion.stretch || 0) * Math.min(18, Math.max(8, listSelectionMotion.currentHeight * 0.24));
+      const horizontalInset = Math.min(Math.max(0, listSelectionMotion.currentWidth * 0.18), stretchPx * 0.14);
       const direction = listSelectionMotion.direction || 0;
       const renderY = listSelectionMotion.currentY + (direction < 0 ? -stretchPx : 0);
       const renderHeight = Math.max(0, listSelectionMotion.currentHeight + stretchPx);
-      el.style.transform = "translate3d(" + listSelectionMotion.currentX.toFixed(3) + "px," + renderY.toFixed(3) + "px,0)";
-      el.style.width = Math.max(0, listSelectionMotion.currentWidth).toFixed(3) + "px";
+      const renderX = listSelectionMotion.currentX + horizontalInset;
+      const renderWidth = Math.max(12, listSelectionMotion.currentWidth - (horizontalInset * 2));
+      el.style.transform = "translate3d(" + renderX.toFixed(3) + "px," + renderY.toFixed(3) + "px,0)";
+      el.style.width = renderWidth.toFixed(3) + "px";
       el.style.height = renderHeight.toFixed(3) + "px";
       el.style.borderRadius = Math.max(0, listSelectionMotion.currentRadius).toFixed(3) + "px";
       el.style.opacity = listSelectionMotion.currentOpacity.toFixed(3);
       el.classList.toggle("isVisible", listSelectionMotion.currentOpacity > 0.01);
-      document.documentElement.style.setProperty("--dp-selected-x", listSelectionMotion.currentX.toFixed(3) + "px");
+      document.documentElement.style.setProperty("--dp-selected-x", renderX.toFixed(3) + "px");
       document.documentElement.style.setProperty("--dp-selected-y", listSelectionMotion.currentY.toFixed(3) + "px");
-      document.documentElement.style.setProperty("--dp-selected-w", Math.max(0, listSelectionMotion.currentWidth).toFixed(3) + "px");
+      document.documentElement.style.setProperty("--dp-selected-w", renderWidth.toFixed(3) + "px");
       document.documentElement.style.setProperty("--dp-selected-h", renderHeight.toFixed(3) + "px");
       document.documentElement.style.setProperty("--dp-selected-radius", Math.max(0, listSelectionMotion.currentRadius).toFixed(3) + "px");
       document.documentElement.style.setProperty("--dp-selected-stretch", String(listSelectionMotion.stretch || 0));
       document.documentElement.style.setProperty("--dp-selected-opacity", listSelectionMotion.currentOpacity.toFixed(3));
+      const fg = Math.max(0, Math.min(1, listSelectionMotion.foregroundProgress || 0));
+      document.documentElement.style.setProperty("--dp-selected-foreground-progress", fg.toFixed(3));
+      document.documentElement.style.setProperty("--dp-selected-foreground-base-pct", ((1 - fg) * 100).toFixed(2) + "%");
+      document.documentElement.style.setProperty("--dp-selected-foreground-target-pct", (fg * 100).toFixed(2) + "%");
+      document.documentElement.style.setProperty("--dp-selected-foreground-scale", (1 + fg * 0.035).toFixed(4));
+      document.documentElement.style.setProperty("--dp-selected-pill-scale", (1 + fg * 0.025).toFixed(4));
+      document.documentElement.style.setProperty("--dp-selected-pill-pad-x", Math.max(4, 8 - fg * 2).toFixed(3) + "px");
       const renderer = liquidGlassRendererByKey("libSelection");
       if(renderer){
         renderer._metricsDirty = true;
@@ -703,9 +802,16 @@
     }catch(e){}
   }
 
-  function stepLibSelectionMotion(){
+  function stepLibSelectionMotion(frameState){
     listSelectionMotion.raf = 0;
     try{
+      const now = (frameState && frameState.timestamp) || (performance && performance.now ? performance.now() : Date.now());
+      const interval = animationFrameIntervalMs("selectedRow");
+      if(listSelectionMotion.lastStepTs && now - listSelectionMotion.lastStepTs < interval - 1){
+        scheduleLibSelectionMotion();
+        return;
+      }
+      listSelectionMotion.lastStepTs = now;
       const stiffness = 0.34;
       listSelectionMotion.currentX += (listSelectionMotion.targetX - listSelectionMotion.currentX) * stiffness;
       listSelectionMotion.currentY += (listSelectionMotion.targetY - listSelectionMotion.currentY) * stiffness;
@@ -713,13 +819,20 @@
       listSelectionMotion.currentHeight += (listSelectionMotion.targetHeight - listSelectionMotion.currentHeight) * stiffness;
       listSelectionMotion.currentRadius += (listSelectionMotion.targetRadius - listSelectionMotion.currentRadius) * stiffness;
       listSelectionMotion.currentOpacity += (listSelectionMotion.targetOpacity - listSelectionMotion.currentOpacity) * 0.42;
+      listSelectionMotion.stretch += ((listSelectionMotion.targetStretch || 0) - (listSelectionMotion.stretch || 0)) * 0.28;
+      if(Math.abs((listSelectionMotion.targetStretch || 0) - (listSelectionMotion.stretch || 0)) < 0.006) listSelectionMotion.stretch = listSelectionMotion.targetStretch || 0;
+      listSelectionMotion.direction = listSelectionMotion.targetDirection || listSelectionMotion.direction || 0;
+      if(Math.abs(listSelectionMotion.stretch) < 0.006 && !listSelectionMotion.targetStretch) listSelectionMotion.direction = 0;
+      listSelectionMotion.foregroundProgress += ((listSelectionMotion.targetForegroundProgress || 0) - (listSelectionMotion.foregroundProgress || 0)) * stiffness;
       const done = (
         Math.abs(listSelectionMotion.targetX - listSelectionMotion.currentX) < 0.08 &&
         Math.abs(listSelectionMotion.targetY - listSelectionMotion.currentY) < 0.08 &&
         Math.abs(listSelectionMotion.targetWidth - listSelectionMotion.currentWidth) < 0.08 &&
         Math.abs(listSelectionMotion.targetHeight - listSelectionMotion.currentHeight) < 0.08 &&
         Math.abs(listSelectionMotion.targetRadius - listSelectionMotion.currentRadius) < 0.08 &&
-        Math.abs(listSelectionMotion.targetOpacity - listSelectionMotion.currentOpacity) < 0.01
+        Math.abs(listSelectionMotion.targetOpacity - listSelectionMotion.currentOpacity) < 0.01 &&
+        Math.abs((listSelectionMotion.targetStretch || 0) - (listSelectionMotion.stretch || 0)) < 0.01 &&
+        Math.abs((listSelectionMotion.targetForegroundProgress || 0) - (listSelectionMotion.foregroundProgress || 0)) < 0.01
       );
       if(done){
         listSelectionMotion.currentX = listSelectionMotion.targetX;
@@ -728,6 +841,8 @@
         listSelectionMotion.currentHeight = listSelectionMotion.targetHeight;
         listSelectionMotion.currentRadius = listSelectionMotion.targetRadius;
         listSelectionMotion.currentOpacity = listSelectionMotion.targetOpacity;
+        listSelectionMotion.stretch = listSelectionMotion.targetStretch || 0;
+        listSelectionMotion.foregroundProgress = listSelectionMotion.targetForegroundProgress || 0;
       }
       applyLibSelectionMotion();
       if(!done){
@@ -765,6 +880,7 @@
       listSelectionMotion.targetHeight = height;
       listSelectionMotion.targetRadius = radius;
       listSelectionMotion.targetOpacity = opacity;
+      listSelectionMotion.targetForegroundProgress = opacity > 0.5 ? 1 : 0;
       if(!listSelectionMotion.initialized){
         listSelectionMotion.currentX = x;
         listSelectionMotion.currentY = y;
@@ -772,6 +888,7 @@
         listSelectionMotion.currentHeight = height;
         listSelectionMotion.currentRadius = radius;
         listSelectionMotion.currentOpacity = opacity;
+        listSelectionMotion.foregroundProgress = listSelectionMotion.targetForegroundProgress;
         listSelectionMotion.initialized = true;
         applyLibSelectionMotion();
         return;
@@ -784,9 +901,9 @@
     try{
       const n = Number(progress || 0);
       const clamped = Math.max(-1, Math.min(1, Number.isFinite(n) ? n : 0));
-      listSelectionMotion.stretch = Math.abs(clamped);
-      listSelectionMotion.direction = clamped === 0 ? 0 : (clamped > 0 ? 1 : -1);
-      applyLibSelectionMotion();
+      listSelectionMotion.targetStretch = Math.abs(clamped);
+      listSelectionMotion.targetDirection = clamped === 0 ? 0 : (clamped > 0 ? 1 : -1);
+      scheduleLibSelectionMotion();
     }catch(e){}
   }
 
@@ -795,7 +912,18 @@
       const el = document.getElementById("libListSelectedGlass");
       const list = document.getElementById("libList");
       if(!el || !list) return;
+      if(list.classList && list.classList.contains("npUnderlay")){
+        setLibSelectionTarget(listSelectionMotion.targetX, listSelectionMotion.targetY, listSelectionMotion.targetWidth, listSelectionMotion.targetHeight, listSelectionMotion.targetRadius, 0);
+        const renderer = liquidGlassRendererByKey("libSelection");
+        if(renderer){
+          if(renderer.setVisible) renderer.setVisible(false);
+          if(renderer.canvas) renderer.canvas.style.visibility = "hidden";
+        }
+        return;
+      }
       const settings = glassElementSettings("selectedRow");
+      const selectionRenderer = liquidGlassRendererByKey("libSelection");
+      if(selectionRenderer && selectionRenderer.canvas) selectionRenderer.canvas.style.visibility = "";
       applyGlassModeClass(el, settings.glassTint);
       const row = list.querySelector(".ipodItem.sel");
       const inner = selectedListInnerRect();
@@ -806,17 +934,17 @@
       const rowRect = row.getBoundingClientRect();
       const left = Math.max(rowRect.left, inner.left);
       const right = Math.min(rowRect.right, inner.right);
-      const top = Math.max(rowRect.top, inner.top);
-      const bottom = Math.min(rowRect.bottom, inner.bottom);
-      if(right <= left || bottom <= top){
+      const visibleTop = Math.max(rowRect.top, inner.top);
+      const visibleBottom = Math.min(rowRect.bottom, inner.bottom);
+      if(right <= left || visibleBottom <= visibleTop){
         setLibSelectionTarget(listSelectionMotion.targetX, listSelectionMotion.targetY, listSelectionMotion.targetWidth, listSelectionMotion.targetHeight, listSelectionMotion.targetRadius, 0);
         return;
       }
       const host = document.getElementById("ipodScreen");
       const hostRect = host ? host.getBoundingClientRect() : {left:0, top:0};
-      const targetHeight = bottom - top;
+      const targetHeight = Math.max(1, rowRect.height || (visibleBottom - visibleTop));
       const radius = targetHeight > 58 ? 16 : 999;
-      setLibSelectionTarget(left - hostRect.left, top - hostRect.top, right - left, targetHeight, radius, 1);
+      setLibSelectionTarget(left - hostRect.left, rowRect.top - hostRect.top, right - left, targetHeight, radius, 1);
       const renderer = liquidGlassRendererByKey("libSelection");
       if(renderer){
         renderer._metricsDirty = true;
@@ -843,15 +971,79 @@
     }catch(e){}
   }
 
+  function hideTransientListGlass(reason){
+    try{
+      setLibSelectionTarget(listSelectionMotion.targetX, listSelectionMotion.targetY, listSelectionMotion.targetWidth, listSelectionMotion.targetHeight, listSelectionMotion.targetRadius, 0);
+      const selectionRenderer = liquidGlassRendererByKey("libSelection");
+      if(selectionRenderer){
+        if(selectionRenderer.setVisible) selectionRenderer.setVisible(false);
+        if(selectionRenderer.canvas) selectionRenderer.canvas.style.visibility = "hidden";
+      }
+      const pillsRenderer = liquidGlassRendererByKey("libPills");
+      if(pillsRenderer){
+        if(pillsRenderer.setVisible) pillsRenderer.setVisible(false);
+        if(pillsRenderer.canvas) pillsRenderer.canvas.style.visibility = "hidden";
+        pillsRenderer._metricsDirty = true;
+        pillsRenderer._snapshotRectPx = null;
+        if(pillsRenderer.lenses) pillsRenderer.lenses.forEach((lens)=>{ try{ lens.rectPx = null; }catch(e){} });
+      }
+      document.querySelectorAll(".ipodPill[data-liquid-row-pill]").forEach((el)=>{ try{ el.setAttribute("data-liquid-clipped", ""); }catch(e){} });
+      markFrameWork({metrics:true, render:true, textContrast:true});
+    }catch(e){}
+  }
+
   function positionNpOverlayLiquidCanvas(){
-    positionViewportCanvasInsideHost(liquidGlassRendererByKey("npOverlay"), document.getElementById("npOverlayPill"), 1);
+    try{
+      const renderer = liquidGlassRendererByKey("npOverlay");
+      const canvas = renderer && renderer.canvas;
+      if(!canvas) return;
+      canvas.style.position = "fixed";
+      canvas.style.setProperty("position", "fixed", "important");
+      canvas.style.setProperty("inset", "0", "important");
+      canvas.style.setProperty("left", "0", "important");
+      canvas.style.setProperty("top", "0", "important");
+      canvas.style.right = "0";
+      canvas.style.bottom = "0";
+      canvas.style.setProperty("width", (window.innerWidth || canvas.width || 1) + "px", "important");
+      canvas.style.setProperty("height", (window.innerHeight || canvas.height || 1) + "px", "important");
+      canvas.style.setProperty("pointer-events", "none", "important");
+      canvas.style.setProperty("z-index", "75", "important");
+      canvas.style.visibility = "";
+    }catch(e){}
   }
 
   function refreshLibPillGlassLenses(reason){
     try{
       if(typeof window.liquidGL !== "function") return;
+      const list = document.getElementById("libList");
+      const renderer = liquidGlassRendererByKey("libPills");
+      if(list && list.classList && list.classList.contains("npUnderlay")){
+        if(renderer){
+          if(renderer.setVisible) renderer.setVisible(false);
+          if(renderer.canvas) renderer.canvas.style.visibility = "hidden";
+        }
+        document.querySelectorAll(".ipodPill[data-liquid-row-pill]").forEach((el)=>{ try{ el.setAttribute("data-liquid-clipped", ""); el.style.visibility = "hidden"; }catch(e){} });
+        return;
+      }
+      if(renderer && renderer.canvas) renderer.canvas.style.visibility = "";
+      let safeTop = -Infinity;
+      let safeBottom = Infinity;
+      if(list){
+        const rect = list.getBoundingClientRect();
+        const frame = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--screenFrame") || "14") || 14;
+        safeTop = rect.top + frame;
+        safeBottom = rect.bottom - frame;
+      }
+      document.querySelectorAll(".ipodPill[data-liquid-row-pill]").forEach((el)=>{
+        try{
+          const rect = el.getBoundingClientRect();
+          const clipped = rect.top < safeTop || rect.bottom > safeBottom;
+          el.toggleAttribute("data-liquid-clipped", clipped);
+          el.style.visibility = clipped ? "hidden" : "";
+        }catch(e){}
+      });
       window.liquidGL(Object.assign({}, liquidGlassElementOptions("listPills"), {
-        target: ".ipodPill.liquidGlass[data-liquid-row-pill]",
+        target: ".ipodPill.liquidGlass[data-liquid-row-pill]:not([data-liquid-clipped])",
         rendererKey: "libPills",
         sourceType: "visualizerWebgl",
         sourceElement: "#visualizerBg",
@@ -995,7 +1187,7 @@
         sourceElement: "#visualizerBg"
       }));
       window.liquidGL(Object.assign({}, liquidGlassElementOptions("listPills"), {
-        target: ".ipodPill.liquidGlass[data-liquid-row-pill]",
+        target: ".ipodPill.liquidGlass[data-liquid-row-pill]:not([data-liquid-clipped])",
         rendererKey: "libPills",
         sourceType: "visualizerWebgl",
         sourceElement: "#visualizerBg",
@@ -1075,9 +1267,23 @@
     }catch(e){}
   }
 
-  function wheelTiltEaseStep(){
+  function wheelTiltEaseStep(frameState){
     wheelTiltAnimFrame = 0;
     try{
+      const now = (frameState && frameState.timestamp) || (performance && performance.now ? performance.now() : Date.now());
+      const interval = animationFrameIntervalMs("wheelTilt");
+      if(wheelTiltEaseStep._last && now - wheelTiltEaseStep._last < interval - 1){
+        const scheduler = frameScheduler();
+        if(scheduler && scheduler.request){
+          wheelTiltAnimFrame = -1;
+          scheduler.request("wheel-tilt", wheelTiltEaseStep);
+          scheduler.mark({metrics:true, render:true, keepAlive:true});
+        }else{
+          wheelTiltAnimFrame = requestAnimationFrame(wheelTiltEaseStep);
+        }
+        return;
+      }
+      wheelTiltEaseStep._last = now;
       const dx = wheelTiltTargetX - wheelTiltRenderX;
       const dy = wheelTiltTargetY - wheelTiltRenderY;
       const dur = Math.max(1, Number(wheelTiltAnimUntil || 90));
