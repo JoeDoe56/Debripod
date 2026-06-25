@@ -400,6 +400,17 @@
     }catch(e){}
   }
 
+  function npOverlayAlbumArtSourceProvider(){
+    try{
+      const artTexture = root.albumArtTexture;
+      return artTexture && typeof artTexture.sourceForLiquidGL === "function"
+        ? artTexture.sourceForLiquidGL()
+        : null;
+    }catch(e){
+      return null;
+    }
+  }
+
   function refreshNpOverlayGlassSource(reason){
     try{
       const renderer = liquidGlassRendererByKey("npOverlay");
@@ -432,6 +443,27 @@
         }catch(e){}
         return !!updated;
       };
+      if(renderer.sourceType === "albumArtTransition"){
+        const updated = renderer.refreshSourceTexture ? renderer.refreshSourceTexture(reason || "album art transition provider") : false;
+        if(updated){
+          renderer._npOverlaySourceKey = renderer._albumSourceKey || sourceKey || "";
+          renderer._npOverlayFrameId = renderer._albumFrameId || frameId || 0;
+          renderer._npOverlayLastUploadedMix = renderer._albumMix || 0;
+          renderer._npOverlayLastUploadedTransitioning = renderer._albumTransitioning === true;
+        }
+        debugNpOverlaySource(updated ? "album art transition provider" : "album art transition provider unavailable", renderer, {
+          reason: reason || "",
+          sourceType: renderer.sourceType || "",
+          sourceKey: renderer._albumSourceKey || "",
+          frameId: renderer._albumFrameId || 0,
+          uploadedCurrentSrc: renderer._albumUploadedCurrentSrc || "",
+          uploadedNextSrc: renderer._albumUploadedNextSrc || "",
+          mix: renderer._albumMix || 0,
+          transitioning: renderer._albumTransitioning === true,
+          updateReturned: !!updated
+        });
+        return markSourceReady(updated) || npOverlayHasSourceTexture(renderer);
+      }
       const npOverlayHasCurrentFrameTexture = ()=>{
         if(!npOverlayHasSourceTexture(renderer)) return false;
         if(artTransition) return !!frameId && renderer._npOverlayFrameId === frameId;
@@ -548,11 +580,12 @@
       let renderer = liquidGlassRendererByKey("npOverlay");
       const target = document.querySelector(".npOverlayGlass.liquidGlass");
       const hasTarget = !!(renderer && renderer.lenses && renderer.lenses.some((lens)=> lens && lens.el === target));
-      if(!renderer || !hasTarget || (renderer.lenses && renderer.lenses.length !== 1)){
+      const needsAlbumTransitionSource = !!(renderer && renderer.sourceType !== "albumArtTransition");
+      if(!renderer || !hasTarget || needsAlbumTransitionSource || (renderer.lenses && renderer.lenses.length !== 1)){
         window.liquidGL(Object.assign({}, liquidGlassElementOptions("nowPlayingPill"), {
           target: ".npOverlayGlass.liquidGlass",
-          sourceType: "albumArtCanvasOrImage",
-          sourceElement: "#npArtGlassSource",
+          sourceType: "albumArtTransition",
+          sourceProvider: npOverlayAlbumArtSourceProvider,
           sourceCssElement: "#npArt",
           rendererKey: "npOverlay",
           syncTargets: true
@@ -1370,6 +1403,13 @@
           row.textureWidth = renderer.textureWidth || 0;
           row.textureHeight = renderer.textureHeight || 0;
           row.sourceType = renderer.sourceType || "";
+          row.sourceKey = renderer._albumSourceKey || renderer._npOverlaySourceKey || "";
+          row.frameId = renderer._albumFrameId || renderer._npOverlayFrameId || 0;
+          row.uploadedCurrentSrc = renderer._albumUploadedCurrentSrc || "";
+          row.uploadedNextSrc = renderer._albumUploadedNextSrc || "";
+          row.mix = renderer._albumMix || 0;
+          row.transitioning = renderer._albumTransitioning === true;
+          row.renderCount = renderer._renderCount || renderer.renderCount || 0;
           row._npOverlaySourceKey = renderer._npOverlaySourceKey || "";
           row._npOverlayFrameId = renderer._npOverlayFrameId || 0;
           row.activeAlbumArtFrameId = activeFrame && activeFrame.frameId ? activeFrame.frameId : 0;
@@ -1435,8 +1475,8 @@
       liquidWheelLenses = wheelGlassInstances.filter(inst => inst && inst.el);
       window.liquidGL(Object.assign({}, liquidGlassElementOptions("nowPlayingPill"), {
         target: ".npOverlayGlass.liquidGlass",
-        sourceType: "albumArtCanvasOrImage",
-        sourceElement: "#npArtGlassSource",
+        sourceType: "albumArtTransition",
+        sourceProvider: npOverlayAlbumArtSourceProvider,
         sourceCssElement: "#npArt",
         rendererKey: "npOverlay"
       }));
