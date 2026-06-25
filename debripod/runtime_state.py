@@ -74,7 +74,8 @@ from .media_types import (
     VIDEO_EXTS,
 )
 from .paths import art_cache_dir, cache_dir, configure_paths, transcode_cache_dir
-from .Routes.icons import ASSET_VERSION, ICON_VERSION, register_icon_routes
+from .Routes import icons as icons_module
+from .Routes.icons import register_icon_routes
 from .Routes.lastfm import register_lastfm_routes
 from .Routes.shell import register_shell_routes
 from .Routes.tasks import register_task_routes
@@ -188,6 +189,18 @@ from .playback.probe import configure_probe, ffprobe_json, run_cmd
 # =========================
 VERSION_INFO = app_version_info()
 VERSION = app_version()
+
+
+def _commit_cache_version() -> str:
+    full = str(VERSION_INFO.get("full_commit") or "").strip()
+    short = str(VERSION_INFO.get("short_commit") or "").strip()
+    return full or short or str(VERSION or "dev")
+
+
+ASSET_VERSION = _commit_cache_version()
+ICON_VERSION = ASSET_VERSION
+icons_module.configure_asset_versions(asset_version=ASSET_VERSION, icon_version=ICON_VERSION)
+VERSION_INFO.update({"asset_version": ASSET_VERSION, "icon_version": ICON_VERSION})
 
 HOST = "127.0.0.1"
 
