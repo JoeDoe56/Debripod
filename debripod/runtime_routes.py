@@ -2022,6 +2022,7 @@ def api_client_state():
         "app_version": str(VERSION_INFO.get("display_version") or VERSION),
         "short_commit": str(VERSION_INFO.get("short_commit") or ""),
         "asset_version": str(ASSET_VERSION),
+        "icon_version": str(ICON_VERSION),
         "settings_version": abs(hash(json.dumps(masked_settings(settings), sort_keys=True, default=str))) % 1000000007,
         "library_versions": library_root_versions(),
         "search_history_version": int(max([float(x.get("ts") or 0) for x in search_history_items] + [0])),
@@ -2060,6 +2061,7 @@ def api_performance():
             "short_commit": str(VERSION_INFO.get("short_commit") or ""),
             "dirty": bool(VERSION_INFO.get("dirty")),
             "asset_version": str(ASSET_VERSION),
+            "icon_version": str(ICON_VERSION),
         },
         "server_time": time.time(),
     })
@@ -2101,6 +2103,7 @@ def api_sync():
         "server_version": int(time.time()),
         "user": username,
         "asset_version": str(ASSET_VERSION),
+        "icon_version": str(ICON_VERSION),
         "roots": root_payload,
         "library_versions": library_root_versions(),
         "library_changes": library_changes,
