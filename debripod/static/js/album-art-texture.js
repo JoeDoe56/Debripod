@@ -17,6 +17,7 @@
   let ready = false;
   let animFrame = 0;
   let glassState = null;
+  let frameSeq = 0;
   let lastRenderedFrame = null;
   const vsSource = "attribute vec2 p; varying vec2 uv; void main(){ uv=(p+1.0)*0.5; gl_Position=vec4(p,0.0,1.0); }";
   const fsSource = "precision mediump float; uniform sampler2D currentTex; uniform sampler2D nextTex; uniform float mixNext; uniform vec2 canvasSize; uniform vec2 currentSize; uniform vec2 nextSize; varying vec2 uv; vec2 coverUv(vec2 v, vec2 imageSize){ float ca=canvasSize.x/max(1.0,canvasSize.y); float ia=imageSize.x/max(1.0,imageSize.y); vec2 outUv=v; if(ca>ia){ outUv.y=(v.y-0.5)*ca/ia+0.5; }else{ outUv.x=(v.x-0.5)*ia/ca+0.5; } return vec2(outUv.x, 1.0-outUv.y); } void main(){ vec4 a=texture2D(currentTex,coverUv(uv,currentSize)); vec4 b=texture2D(nextTex,coverUv(uv,nextSize)); gl_FragColor=mix(a,b,mixNext); }";
@@ -288,6 +289,7 @@
     }
     const activeNextSrc = nextSrc && nextImage ? nextSrc : "";
     return {
+      frameId: ++frameSeq,
       currentSrc,
       nextSrc: activeNextSrc,
       currentImage,
@@ -296,12 +298,12 @@
       nextImageSize,
       mix: activeNextSrc ? mix : 0,
       sourceKey: activeNextSrc || currentSrc || "",
+      transitioning: !!activeNextSrc,
       renderedAt: performance.now ? performance.now() : Date.now()
     };
   }
 
   function refreshNpOverlayFromAlbumArtFrame(reason){
-    try{ renderGlassSourceCanvas(); }catch(e){}
     try{
       if(typeof forceNpOverlayGlassRender === "function") forceNpOverlayGlassRender(reason || "album art frame", true);
       else if(typeof scheduleNpOverlayGlassRender === "function") scheduleNpOverlayGlassRender();
@@ -414,23 +416,33 @@
     return outputCanvas;
   }
 
+  function renderFrameToCanvas(outputCanvas, referenceEl, frame){
+    if(!outputCanvas) return null;
+    if(!glassState || glassState.canvas !== outputCanvas){
+      glassState = createRenderState(outputCanvas);
+    }
+    const selectedFrame = frame || lastRenderedFrame || currentFrameState(false);
+    const rendered = renderStateToCanvas(glassState, outputCanvas, referenceEl || document.getElementById("npArt"), selectedFrame);
+    return rendered ? selectedFrame : null;
+  }
+
   function renderGlassSourceCanvas(){
     const visible = document.getElementById("npArt");
     const glass = document.getElementById("npArtGlassSource");
     if(!glass || !visible || !ready || !currentSrc || !currentImage) return null;
-    if(!glassState || glassState.canvas !== glass){
-      glassState = createRenderState(glass);
-    }
     const now = performance.now ? performance.now() : Date.now();
     const frame = lastRenderedFrame && (now - lastRenderedFrame.renderedAt) < 150 ? lastRenderedFrame : currentFrameState(false);
-    return renderStateToCanvas(glassState, glass, visible, frame);
+    return renderFrameToCanvas(glass, visible, frame) ? glass : null;
   }
 
   root.albumArtTexture = {
     setSource,
     currentSource: function(){ return nextSrc || currentSrc || ""; },
-    activeSourceKey: function(){ const frame = currentFrameState(false); return frame ? frame.sourceKey : ""; },
+    activeSourceKey: function(){ return (lastRenderedFrame && lastRenderedFrame.sourceKey) || nextSrc || currentSrc || ""; },
+    currentFrame: function(){ return lastRenderedFrame || currentFrameState(false); },
+    lastRenderedFrame: function(){ return lastRenderedFrame; },
     renderToCanvas,
+    renderFrameToCanvas,
     renderGlassSourceCanvas,
     renderFromElements: function(){ return renderToCanvas(document.getElementById("npArt")); },
     sourceCanvas: function(){ return ready ? canvas : null; },
