@@ -689,6 +689,11 @@
         return;
       }
       const opacity = npOverlayPillRenderOpacity();
+      if(sourceReady && renderer.canvas){
+        renderer.canvas.style.opacity = String(opacity);
+        renderer.canvas.style.visibility = "";
+        renderer.canvas.style.display = "";
+      }
       if(renderer.lenses && renderer.lenses.length){
         renderer.lenses.forEach((lens)=>{
           try{ lens._revealProgress = opacity; }catch(e){}
@@ -1405,6 +1410,8 @@
           row.sourceType = renderer.sourceType || "";
           row.sourceKey = renderer._albumSourceKey || renderer._npOverlaySourceKey || "";
           row.frameId = renderer._albumFrameId || renderer._npOverlayFrameId || 0;
+          row.sourceReady = npOverlayHasSourceTexture(renderer);
+          row.pendingRevealCount = renderer._pendingReveal ? renderer._pendingReveal.length || 0 : 0;
           row.uploadedCurrentSrc = renderer._albumUploadedCurrentSrc || "";
           row.uploadedNextSrc = renderer._albumUploadedNextSrc || "";
           row.mix = renderer._albumMix || 0;
@@ -1419,7 +1426,10 @@
           row.lastUploadedTransitioning = renderer._npOverlayLastUploadedTransitioning === true;
           row.lastSourceUploadReason = renderer._npOverlayLastSourceUploadReason || "";
           row.lastSourceUploadSuccess = renderer._npOverlayLastSourceUploadSuccess === true;
-          row.canvasVisibility = canvasStyle ? {display:canvasStyle.display, visibility:canvasStyle.visibility, opacity:canvasStyle.opacity} : null;
+          row.canvasOpacity = canvasStyle ? canvasStyle.opacity : "";
+          row.canvasDisplay = canvasStyle ? canvasStyle.display : "";
+          row.canvasVisibility = canvasStyle ? canvasStyle.visibility : "";
+          row.canvasStyle = canvasStyle ? {display:canvasStyle.display, visibility:canvasStyle.visibility, opacity:canvasStyle.opacity} : null;
           row.targetRects = targetRects;
         }
         out.push(row);
