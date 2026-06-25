@@ -406,28 +406,41 @@
       if(!renderer) return false;
       const artEl = document.getElementById("npArt");
       const sourceImg = document.getElementById("npArtLiquidSource");
-      const artTransition = !!(root.albumArtTexture && root.albumArtTexture.hasTransition && root.albumArtTexture.hasTransition());
+      const artTexture = root.albumArtTexture;
+      const frame = artTexture && artTexture.currentFrame ? artTexture.currentFrame() : null;
+      const artTransition = !!(frame && frame.transitioning);
+      const frameId = frame && frame.frameId ? frame.frameId : 0;
       let sourceKey = "";
       try{
-        const currentSrc = root.albumArtTexture && root.albumArtTexture.activeSourceKey ? root.albumArtTexture.activeSourceKey() : (root.albumArtTexture && root.albumArtTexture.currentSource ? root.albumArtTexture.currentSource() : "");
+        const currentSrc = frame && frame.sourceKey ? frame.sourceKey : (artTexture && artTexture.activeSourceKey ? artTexture.activeSourceKey() : (artTexture && artTexture.currentSource ? artTexture.currentSource() : ""));
         sourceKey = typeof nowPlayingArtCompareKey === "function"
           ? nowPlayingArtCompareKey(currentSrc || (sourceImg && (sourceImg.currentSrc || sourceImg.src)) || "")
           : String(currentSrc || (sourceImg && (sourceImg.currentSrc || sourceImg.src)) || "");
       }catch(e){
         sourceKey = "";
       }
-      const sourceMatches = !sourceKey || renderer._npOverlaySourceKey === sourceKey;
       const markSourceReady = (updated)=>{
         try{
-          if(updated && sourceKey) renderer._npOverlaySourceKey = sourceKey;
-          else if(!updated && artTransition && sourceKey && renderer._npOverlaySourceKey === sourceKey) renderer._npOverlaySourceKey = "";
+          if(updated){
+            if(sourceKey) renderer._npOverlaySourceKey = sourceKey;
+            if(frameId) renderer._npOverlayFrameId = frameId;
+            renderer._npOverlayLastUploadedMix = frame ? frame.mix : 0;
+            renderer._npOverlayLastUploadedTransitioning = !!artTransition;
+          }
           renderer._npOverlayLastSourceUploadReason = reason || "";
           renderer._npOverlayLastSourceUploadSuccess = !!updated;
         }catch(e){}
         return !!updated;
       };
-      const hasMatchingTexture = ()=> !artTransition && npOverlayHasSourceTexture(renderer) && sourceMatches;
-      const glassCanvas = root.albumArtTexture && root.albumArtTexture.renderGlassSourceCanvas ? root.albumArtTexture.renderGlassSourceCanvas() : null;
+      const npOverlayHasCurrentFrameTexture = ()=>{
+        if(!npOverlayHasSourceTexture(renderer)) return false;
+        if(artTransition) return !!frameId && renderer._npOverlayFrameId === frameId;
+        if(sourceKey) return renderer._npOverlaySourceKey === sourceKey;
+        return false;
+      };
+      const glassCanvas = artTexture && artTexture.renderFrameToCanvas
+        ? (artTexture.renderFrameToCanvas(document.getElementById("npArtGlassSource"), artEl, frame) ? document.getElementById("npArtGlassSource") : null)
+        : (artTexture && artTexture.renderGlassSourceCanvas ? artTexture.renderGlassSourceCanvas() : null);
       if(renderer && artEl && glassCanvas && renderer.updateTextureFromCanvas){
         const rect = artEl.getBoundingClientRect();
         if(rect && rect.width > 0 && rect.height > 0 && glassCanvas.width > 0 && glassCanvas.height > 0){
@@ -446,9 +459,12 @@
             glassCanvasWidth: glassCanvas.width || 0,
             glassCanvasHeight: glassCanvas.height || 0,
             artRect: {left: rect.left || 0, top: rect.top || 0, width: rect.width || 0, height: rect.height || 0},
-            updateReturned: !!updated
+            updateReturned: !!updated,
+            frameId: frameId,
+            mix: frame ? frame.mix : 0,
+            transitioning: artTransition
           });
-          if(markSourceReady(updated) || hasMatchingTexture()) return true;
+          if(markSourceReady(updated) || npOverlayHasCurrentFrameTexture()) return true;
           if(artTransition) return false;
         }
       }
@@ -457,6 +473,8 @@
           reason: reason || "",
           sourceKey: sourceKey || "",
           currentRendererSourceKey: renderer._npOverlaySourceKey || "",
+          frameId: frameId,
+          currentRendererFrameId: renderer._npOverlayFrameId || 0,
           updateReturned: false
         });
         markSourceReady(false);
@@ -482,7 +500,7 @@
             artRect: {left: rect.left || 0, top: rect.top || 0, width: rect.width || 0, height: rect.height || 0},
             updateReturned: !!updated
           });
-          if(markSourceReady(updated) || hasMatchingTexture()) return true;
+          if(markSourceReady(updated) || npOverlayHasCurrentFrameTexture()) return true;
         }
       }
       if(sourceImg && sourceImg.complete && sourceImg.naturalWidth && sourceImg.naturalHeight){
@@ -509,7 +527,7 @@
           refreshLiquidGlassSource(renderer, reason || "album art image fallback");
           updated = npOverlayHasSourceTexture(renderer);
         }
-        return markSourceReady(updated) || hasMatchingTexture();
+        return markSourceReady(updated) || npOverlayHasCurrentFrameTexture();
       }
       debugNpOverlaySource("skipped keep previous", renderer, {
         reason: reason || "",
@@ -518,7 +536,7 @@
         artRect: artEl ? (function(){ const r = artEl.getBoundingClientRect(); return {left:r.left || 0, top:r.top || 0, width:r.width || 0, height:r.height || 0}; })() : null,
         updateReturned: false
       });
-      return hasMatchingTexture();
+      return npOverlayHasCurrentFrameTexture();
     }catch(e){
       return false;
     }
@@ -623,8 +641,20 @@
           }catch(e){}
         });
       }
-      const sourceReady = refreshSource === false ? npOverlayHasSourceTexture(renderer) : refreshNpOverlayGlassSource(reason || "np overlay render");
-      const artTransition = !!(root.albumArtTexture && root.albumArtTexture.hasTransition && root.albumArtTexture.hasTransition());
+      const artFrame = root.albumArtTexture && root.albumArtTexture.currentFrame ? root.albumArtTexture.currentFrame() : null;
+      const artTransition = !!(artFrame && artFrame.transitioning);
+      const sourceReady = refreshSource === false
+        ? (!artTransition && npOverlayHasSourceTexture(renderer))
+        : refreshNpOverlayGlassSource(reason || "np overlay render");
+      if(artTransition && !sourceReady){
+        scheduleNpOverlayWarmupRetry(reason || "np overlay transition source pending", warmupAttempt || 0);
+        debugNpOverlaySource("transition render skipped", renderer, {
+          reason: reason || "",
+          frameId: artFrame && artFrame.frameId ? artFrame.frameId : 0,
+          rendererFrameId: renderer._npOverlayFrameId || 0
+        });
+        return;
+      }
       const opacity = npOverlayPillRenderOpacity();
       if(renderer.lenses && renderer.lenses.length){
         renderer.lenses.forEach((lens)=>{
@@ -1336,12 +1366,17 @@
           canvas_opacity:renderer.canvas && window.getComputedStyle ? window.getComputedStyle(renderer.canvas).opacity : ""
         };
         if(key === "npOverlay"){
+          const activeFrame = root.albumArtTexture && root.albumArtTexture.currentFrame ? root.albumArtTexture.currentFrame() : null;
           row.textureWidth = renderer.textureWidth || 0;
           row.textureHeight = renderer.textureHeight || 0;
           row.sourceType = renderer.sourceType || "";
           row._npOverlaySourceKey = renderer._npOverlaySourceKey || "";
+          row._npOverlayFrameId = renderer._npOverlayFrameId || 0;
+          row.activeAlbumArtFrameId = activeFrame && activeFrame.frameId ? activeFrame.frameId : 0;
           row.activeAlbumArtSourceKey = root.albumArtTexture && root.albumArtTexture.activeSourceKey ? root.albumArtTexture.activeSourceKey() : "";
-          row.albumArtTransitionActive = !!(root.albumArtTexture && root.albumArtTexture.hasTransition && root.albumArtTexture.hasTransition());
+          row.albumArtTransitionActive = !!(activeFrame && activeFrame.transitioning);
+          row.lastUploadedMix = renderer._npOverlayLastUploadedMix || 0;
+          row.lastUploadedTransitioning = renderer._npOverlayLastUploadedTransitioning === true;
           row.lastSourceUploadReason = renderer._npOverlayLastSourceUploadReason || "";
           row.lastSourceUploadSuccess = renderer._npOverlayLastSourceUploadSuccess === true;
           row.canvasVisibility = canvasStyle ? {display:canvasStyle.display, visibility:canvasStyle.visibility, opacity:canvasStyle.opacity} : null;

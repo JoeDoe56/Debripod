@@ -18,7 +18,12 @@ function setNowPlayingArtSrc(src, opts){
     if(artChanged){
       try{
         const renderer = typeof liquidGlassRendererByKey === "function" ? liquidGlassRendererByKey("npOverlay") : null;
-        if(renderer) renderer._npOverlaySourceKey = "";
+        if(renderer){
+          renderer._npOverlaySourceKey = "";
+          renderer._npOverlayFrameId = 0;
+          renderer._npOverlayLastUploadedMix = 0;
+          renderer._npOverlayLastUploadedTransitioning = false;
+        }
       }catch(e){}
     }
     const sourceImg = document.getElementById("npArtLiquidSource");
