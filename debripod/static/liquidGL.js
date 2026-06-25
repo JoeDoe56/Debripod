@@ -275,6 +275,7 @@
       this._albumSourceRect = null;
       this._albumSourceSize = { width: 1, height: 1 };
       this._debugCanaryTexture = null;
+      this._npOverlayHiddenSkipSince = 0;
       this.renderCount = 0;
       this.visible = true;
       this._adaptiveQuality = 1;
@@ -496,14 +497,12 @@
           } else {
             outUv.x = (sourceUV.x - 0.5) * ia / ca + 0.5;
           }
-          return vec2(outUv.x, 1.0 - outUv.y);
+          return clamp(vec2(outUv.x, 1.0 - outUv.y), vec2(0.0), vec2(1.0));
         }
 
         vec4 sampleAlbumArtSource(vec2 sourceUV) {
           vec2 curUV = albumCoverUVFromSourceUV(sourceUV, u_albumSourceSize, u_albumCurrentSize);
           vec2 nextUV = albumCoverUVFromSourceUV(sourceUV, u_albumSourceSize, u_albumNextSize);
-          curUV = clamp(curUV, vec2(0.0), vec2(1.0));
-          nextUV = clamp(nextUV, vec2(0.0), vec2(1.0));
           vec4 cur = texture2D(u_albumCurrentTex, curUV);
           vec4 next = texture2D(u_albumNextTex, nextUV);
           vec4 col = mix(cur, next, clamp(u_albumMix, 0.0, 1.0));
@@ -521,8 +520,12 @@
         }
 
         void main(){
+          vec2 localUV = (v_uv - 0.5) / u_magnify + 0.5;
+          vec2 flippedUV = vec2(localUV.x, 1.0 - localUV.y);
+          vec2 mapped = u_bounds.xy + flippedUV * u_bounds.zw;
+
           if (u_debugAlbumSourceFlat) {
-            vec4 albumCol = sampleAlbumArtSource(v_uv);
+            vec4 albumCol = sampleAlbumArtSource(mapped);
             if (albumCol.a < 0.01) {
               albumCol = vec4(1.0, 0.0, 1.0, 1.0);
             }
@@ -547,9 +550,6 @@
           float tiltRefractionScale = 0.05;
           vec2 tiltOffset = vec2(tan(radians(u_tiltY)), -tan(radians(u_tiltX))) * tiltRefractionScale;
 
-          vec2 localUV = (v_uv - 0.5) / u_magnify + 0.5;
-          vec2 flippedUV = vec2(localUV.x, 1.0 - localUV.y);
-          vec2 mapped = u_bounds.xy + flippedUV * u_bounds.zw;
           vec2 refracted = mapped + offset - tiltOffset;
 
           float oob = max(max(-refracted.x, refracted.x - 1.0), max(-refracted.y, refracted.y - 1.0));
@@ -866,6 +866,43 @@
       }, details || {}));
     }
 
+    _isNpOverlayIntentionallyHidden(lens) {
+      try {
+        let node = lens && lens.el ? lens.el : null;
+        while (node && node !== document.body) {
+          const style = window.getComputedStyle(node);
+          if (
+            Number(style.opacity || 1) <= 0.01 ||
+            (node.classList &&
+              (node.classList.contains("npPillHidden") ||
+                node.classList.contains("npPillSwapHidden")))
+          ) {
+            return true;
+          }
+          node = node.parentElement;
+        }
+      } catch (e) {}
+      return false;
+    }
+
+    _debugNpOverlayLensHidden(lens) {
+      if (this.rendererKey !== "npOverlay" || !this._npOverlayDebugEnabled()) return;
+      if (this._isNpOverlayIntentionallyHidden(lens)) {
+        this._npOverlayHiddenSkipSince = 0;
+        return;
+      }
+      const now = performance && performance.now ? performance.now() : Date.now();
+      if (!this._npOverlayHiddenSkipSince) {
+        this._npOverlayHiddenSkipSince = now;
+        return;
+      }
+      if (now - this._npOverlayHiddenSkipSince < 250) return;
+      this._npOverlayHiddenSkipSince = now;
+      this._debugNpOverlaySkip("lens skipped: not visible", {
+        lensClassName: lens && lens.el ? lens.el.className : ""
+      });
+    }
+
     _forceNpGlassCanary() {
       try {
         return this.rendererKey === "npOverlay" && (
@@ -1041,6 +1078,15 @@
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        if (this._npOverlayDebugEnabled()) {
+          liquidGLLog("log", "liquidGL: npOverlay album image uploaded", {
+            rendererKey: this.rendererKey,
+            complete: image.complete === true,
+            naturalWidth: image.naturalWidth || 0,
+            naturalHeight: image.naturalHeight || 0,
+            currentSrc: image.currentSrc || image.src || ""
+          });
+        }
       } catch (e) {
         liquidGLLog("warn", "liquidGL: Album art transition texture upload failed.", {
           rendererKey: this.rendererKey,
@@ -1476,11 +1522,10 @@
 
       this.lenses.forEach((lens) => {
         if (this._lensVisible(lens)) {
+          this._npOverlayHiddenSkipSince = 0;
           this._renderLens(lens);
         } else {
-          this._debugNpOverlaySkip("lens skipped: not visible", {
-            lensClassName: lens && lens.el ? lens.el.className : ""
-          });
+          this._debugNpOverlayLensHidden(lens);
         }
       });
 
