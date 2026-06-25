@@ -5,11 +5,12 @@ import math
 import struct
 import threading
 import zlib
+from collections import Counter
 from typing import Dict, List, Optional, Tuple
 
 from ..paths import art_cache_dir
 from ..playback.probe import ffprobe_json, run_cmd
-from ..utils import is_audio, sha1_text
+from ..utils import is_audio, is_video, sha1_text
 from .library_db import load_metadata, load_palette, load_visualizer_analysis, save_metadata, save_palette, save_visualizer_analysis, file_identity
 
 _ffmpeg_path = "ffmpeg"
@@ -28,11 +29,12 @@ def _ffmpeg_path_value() -> str:
 META_CACHE: Dict[str, Tuple[float, dict]] = {}
 META_LOCK = threading.Lock()
 ANALYSIS_LOCK = threading.BoundedSemaphore(1)
-PALETTE_ALGORITHM_VERSION = 1
+PALETTE_ALGORITHM_VERSION = 3
+PALETTE_COLOR_COUNT = 16
 ANALYSIS_RATE_HZ = 30
 ANALYSIS_SAMPLE_RATE_HZ = 8820
 ANALYSIS_BANDS = [60, 120, 250, 500, 1000, 2000, 3600]
-DECODER_SETTINGS_HASH = sha1_text(f"pcm_s16le_mono_{ANALYSIS_SAMPLE_RATE_HZ}_goertzel_v1")
+DECODER_SETTINGS_HASH = sha1_text(f"pcm_s16le_mono_{ANALYSIS_SAMPLE_RATE_HZ}_goertzel_video_exact_stride_v3_palette16")
 
 
 
@@ -379,8 +381,30 @@ def _best_contrast(bg: tuple[int, int, int], palette: list[tuple[int, int, int]]
     return best, best_score
 
 
+def _palette_distance(a: tuple[int, int, int], b: tuple[int, int, int]) -> float:
+    dr = float(a[0] - b[0])
+    dg = float(a[1] - b[1])
+    db = float(a[2] - b[2])
+    return math.sqrt(dr * dr + dg * dg + db * db)
+
+
+def _distinct_palette(colors: list[tuple[int, int, int]], limit: int = PALETTE_COLOR_COUNT) -> list[tuple[int, int, int]]:
+    if not colors:
+        return []
+    selected: list[tuple[int, int, int]] = []
+    for min_distance in (38.0, 30.0, 22.0, 14.0, 0.0):
+        for color in colors:
+            if color in selected:
+                continue
+            if all(_palette_distance(color, existing) >= min_distance for existing in selected):
+                selected.append(color)
+                if len(selected) >= limit:
+                    return selected
+    return selected[:limit]
+
+
 def _palette_object(colors: list[tuple[int, int, int]]) -> dict:
-    palette = colors[:8] or [(10, 132, 255), (94, 92, 230), (255, 69, 58), (48, 209, 88)]
+    palette = _distinct_palette(colors, PALETTE_COLOR_COUNT) or [(10, 132, 255), (94, 92, 230), (255, 69, 58), (48, 209, 88)]
     role_names = ["low", "lowHigh", "lowMid", "mid", "upperMid", "highLow", "high"]
     roles = {}
     for idx, name in enumerate(role_names):
@@ -414,28 +438,28 @@ def _extract_palette_from_image(path: str) -> Optional[dict]:
         return None
     try:
         with Image.open(path) as img:
-            img = img.convert("RGB")
-            img.thumbnail((96, 96))
-            buckets: dict[tuple[int, int, int], tuple[float, tuple[int, int, int]]] = {}
-            for r, g, b in img.getdata():
+            img = img.convert("RGBA")
+            counts: Counter[tuple[int, int, int]] = Counter()
+            for r, g, b, a in img.getdata():
+                if a < 24:
+                    continue
+                counts[(int(r), int(g), int(b))] += 1
+            if not counts:
+                return None
+            total = float(sum(counts.values()) or 1)
+
+            def score(item: tuple[tuple[int, int, int], int]) -> tuple[float, int]:
+                (r, g, b), freq = item
                 mx = max(r, g, b)
                 mn = min(r, g, b)
                 sat = ((mx - mn) / mx) if mx else 0.0
                 lum = (r * 0.299 + g * 0.587 + b * 0.114) / 255.0
-                colorful = sat >= 0.18 and 0.08 <= lum <= 0.92
-                score = (2.2 if colorful else 0.25) * (sat + 0.15) * (1 - abs(lum - 0.5) * 0.78)
-                key = (r >> 3, g >> 3, b >> 3)
-                old = buckets.get(key)
-                if old is None or score > old[0]:
-                    buckets[key] = (score, (r, g, b))
-            candidates = [item[1] for item in sorted(buckets.values(), key=lambda x: x[0], reverse=True)]
-            selected: list[tuple[int, int, int]] = []
-            for color in candidates:
-                if all(sum((color[i] - prev[i]) ** 2 for i in range(3)) ** 0.5 >= 58 for prev in selected):
-                    selected.append(color)
-                    if len(selected) >= 8:
-                        break
-            return _palette_object(selected)
+                colorfulness = sat * (1.0 - abs(lum - 0.5) * 0.72)
+                freq_score = math.log1p(freq) / math.log1p(total)
+                return (freq_score * 1.55 + colorfulness * 1.15, freq)
+
+            ranked = [rgb for rgb, _freq in sorted(counts.items(), key=score, reverse=True)]
+            return _palette_object(ranked)
     except Exception:
         return None
 
@@ -476,6 +500,87 @@ def warm_audio_analysis(abs_path: str, *, root_id: str = "", rel: str = "", medi
             ANALYSIS_LOCK.release()
         except Exception:
             pass
+
+
+def _decode_audio_feature_blob(abs_path: str) -> tuple[bytes, int]:
+    import subprocess
+
+    frame_samples = max(1, int(ANALYSIS_SAMPLE_RATE_HZ / ANALYSIS_RATE_HZ))
+    frame_bytes = frame_samples * 2
+    args = [
+        _ffmpeg_path_value(),
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        abs_path,
+        "-vn",
+        "-ac",
+        "1",
+        "-ar",
+        str(ANALYSIS_SAMPLE_RATE_HZ),
+        "-f",
+        "s16le",
+        "pipe:1",
+    ]
+    blob = bytearray()
+    energy_avg = 0.0
+    frame_count = 0
+    try:
+        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except Exception:
+        return b"", 0
+    try:
+        assert proc.stdout is not None
+        while True:
+            chunk = proc.stdout.read(frame_bytes)
+            if not chunk or len(chunk) < frame_bytes:
+                break
+            samples = struct.unpack("<" + "h" * frame_samples, chunk)
+            floats = [s / 32768.0 for s in samples]
+            rms = math.sqrt(sum(s * s for s in floats) / len(floats))
+            energy = max(0.0, min(1.0, rms * 3.2))
+            energy_avg = energy if not energy_avg else (energy_avg * 0.965 + energy * 0.035)
+            beat = max(0.0, min(1.0, (energy - max(0.06, energy_avg * 1.28)) * 3.0))
+            frame_values = []
+            for freq in ANALYSIS_BANDS:
+                coeff = 2.0 * math.cos(2.0 * math.pi * freq / ANALYSIS_SAMPLE_RATE_HZ)
+                q0 = q1 = q2 = 0.0
+                for sample in floats:
+                    q0 = coeff * q1 - q2 + sample
+                    q2 = q1
+                    q1 = q0
+                power = q1 * q1 + q2 * q2 - coeff * q1 * q2
+                value = max(0.0, min(1.0, math.sqrt(max(0.0, power)) / len(floats) * 10.0))
+                frame_values.append(int(round(value * 255)))
+            blob.extend(max(0, min(255, v)) for v in frame_values)
+            blob.append(int(round(energy * 255)))
+            blob.append(int(round(beat * 255)))
+            frame_count += 1
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    finally:
+        try:
+            proc.stdout.close() if proc.stdout else None
+        except Exception:
+            pass
+    return bytes(blob), frame_count
+
+
+def _compress_analysis_blob(raw_blob: bytes) -> tuple[bytes, str]:
+    stored_blob = raw_blob
+    compression = "none"
+    try:
+        compressed = zlib.compress(raw_blob, level=3)
+        if len(compressed) < len(raw_blob) * 0.96:
+            stored_blob = compressed
+            compression = "zlib"
+    except Exception:
+        stored_blob = raw_blob
+        compression = "none"
+    return stored_blob, compression
 
 
 def _compute_audio_analysis(abs_path: str, key: str, *, root_id: str, rel: str, media_id: str, duration: Optional[float]) -> Optional[dict]:
@@ -572,5 +677,189 @@ def _compute_audio_analysis(abs_path: str, key: str, *, root_id: str, rel: str, 
         compression=compression,
         decoder_settings_hash=DECODER_SETTINGS_HASH,
         metadata={"frame_stride": len(ANALYSIS_BANDS) + 2, "raw_bytes": len(raw_blob), "stored_bytes": len(stored_blob), "fields": ["band0", "band1", "band2", "band3", "band4", "band5", "band6", "energy", "beat"]},
+    )
+    return load_visualizer_analysis(key)
+
+
+def warm_video_analysis(abs_path: str, *, root_id: str = "", rel: str = "", media_id: str = "", duration: Optional[float] = None) -> Optional[dict]:
+    if not is_video(abs_path):
+        return None
+    key = _analysis_key(abs_path)
+    cached = load_visualizer_analysis(key)
+    cached_meta = cached.get("metadata") if isinstance(cached, dict) else {}
+    if cached and not (isinstance(cached_meta, dict) and cached_meta.get("video_palette_pending")):
+        return cached
+    if not ANALYSIS_LOCK.acquire(blocking=False):
+        return None
+    try:
+        return _compute_video_analysis(abs_path, key, root_id=root_id, rel=rel, media_id=media_id, duration=duration)
+    finally:
+        try:
+            ANALYSIS_LOCK.release()
+        except Exception:
+            pass
+
+
+def _video_stream_dimensions(abs_path: str) -> tuple[int, int, Optional[float]]:
+    try:
+        js = ffprobe_json(abs_path) or {}
+        fmt = js.get("format") if isinstance(js.get("format"), dict) else {}
+        duration = None
+        try:
+            duration = float(fmt.get("duration")) if fmt.get("duration") is not None else None
+        except Exception:
+            duration = None
+        for stream in js.get("streams") or []:
+            if not isinstance(stream, dict) or str(stream.get("codec_type") or "").lower() != "video":
+                continue
+            w = int(float(stream.get("width") or 0))
+            h = int(float(stream.get("height") or 0))
+            if w > 0 and h > 0:
+                return w, h, duration
+    except Exception:
+        pass
+    return 0, 0, None
+
+
+def _extract_video_palette_frames(abs_path: str) -> tuple[list[list[object]], int, int]:
+    import subprocess
+
+    width, height, _duration = _video_stream_dimensions(abs_path)
+    if width <= 0 or height <= 0:
+        return [], 0, 0
+    frame_bytes = width * height * 3
+    pixel_count = width * height
+    stride = max(1, int(math.sqrt(max(1, pixel_count) / 96.0)))
+    args = [
+        _ffmpeg_path_value(),
+        "-hide_banner",
+        "-loglevel",
+        "error",
+        "-i",
+        abs_path,
+        "-an",
+        "-vf",
+        f"fps={ANALYSIS_RATE_HZ},format=rgb24",
+        "-f",
+        "rawvideo",
+        "pipe:1",
+    ]
+    frames: list[list[object]] = []
+    frame_index = 0
+    try:
+        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
+    except Exception:
+        return [], stride, 0
+    try:
+        assert proc.stdout is not None
+        while True:
+            chunk = proc.stdout.read(frame_bytes)
+            if not chunk or len(chunk) < frame_bytes:
+                break
+            counts: Counter[tuple[int, int, int]] = Counter()
+            start = (frame_index % stride) * 3
+            step = stride * 3
+            for off in range(start, len(chunk) - 2, step):
+                counts[(chunk[off], chunk[off + 1], chunk[off + 2])] += 1
+            if counts:
+                ranked = [rgb for rgb, _freq in counts.most_common()]
+                colors = [_hex(rgb) for rgb in _distinct_palette(ranked, PALETTE_COLOR_COUNT)]
+                frames.append([frame_index, colors])
+            frame_index += 1
+        try:
+            proc.kill()
+        except Exception:
+            pass
+    finally:
+        try:
+            proc.stdout.close() if proc.stdout else None
+        except Exception:
+            pass
+    return frames, stride, frame_index
+
+
+def _idle_video_feature_blob(frame_count: int) -> bytes:
+    count = max(1, int(frame_count or 0))
+    frame = bytes([0, 0, 0, 0, 0, 0, 0, 18, 0])
+    return frame * count
+
+
+def _compute_video_analysis(abs_path: str, key: str, *, root_id: str, rel: str, media_id: str, duration: Optional[float]) -> Optional[dict]:
+    raw_blob, audio_frames = _decode_audio_feature_blob(abs_path)
+    _, _, probed_duration = _video_stream_dimensions(abs_path)
+    duration_value = duration if duration is not None else probed_duration
+    if audio_frames > 0 and raw_blob:
+        stored_blob, compression = _compress_analysis_blob(raw_blob)
+        save_visualizer_analysis(
+            key,
+            media_id=media_id,
+            root_id=root_id,
+            rel=rel,
+            abs_path=abs_path,
+            duration=duration_value,
+            analysis_rate_hz=ANALYSIS_RATE_HZ,
+            band_count=len(ANALYSIS_BANDS),
+            frame_count=audio_frames,
+            feature_blob=stored_blob,
+            compression=compression,
+            decoder_settings_hash=DECODER_SETTINGS_HASH,
+            metadata={
+                "media_kind": "video",
+                "frame_stride": len(ANALYSIS_BANDS) + 2,
+                "raw_bytes": len(raw_blob),
+                "stored_bytes": len(stored_blob),
+                "fields": ["band0", "band1", "band2", "band3", "band4", "band5", "band6", "energy", "beat"],
+                "video_palette_frame_stride": 0,
+                "video_palette_encoding": "frame-indexed-exact-hex-v1",
+                "video_palette_colors_per_frame": PALETTE_COLOR_COUNT,
+                "video_palette_frames": [],
+                "video_palette_pending": True,
+                "palette_source": "server",
+                "audio_source": "decoded",
+            },
+        )
+
+    palette_frames, palette_stride, decoded_video_frames = _extract_video_palette_frames(abs_path)
+    frame_count = audio_frames
+    if frame_count <= 0:
+        if decoded_video_frames > 0:
+            frame_count = decoded_video_frames
+        elif duration_value and duration_value > 0:
+            frame_count = max(1, int(float(duration_value) * ANALYSIS_RATE_HZ))
+        raw_blob = _idle_video_feature_blob(frame_count)
+    if frame_count <= 0 or not raw_blob:
+        return None
+    stored_blob, compression = _compress_analysis_blob(raw_blob)
+    # Video palette metadata format:
+    # video_palette_frames is [[frame_index, ["#rrggbb", ...]], ...].
+    # Each hex color is an exact RGB triple observed in that decoded frame.
+    # frame_stride is the deterministic pixel sampling stride over raw rgb24 frames.
+    metadata = {
+        "media_kind": "video",
+        "frame_stride": len(ANALYSIS_BANDS) + 2,
+        "raw_bytes": len(raw_blob),
+        "stored_bytes": len(stored_blob),
+        "fields": ["band0", "band1", "band2", "band3", "band4", "band5", "band6", "energy", "beat"],
+        "video_palette_frame_stride": palette_stride,
+        "video_palette_encoding": "frame-indexed-exact-hex-v1",
+        "video_palette_colors_per_frame": PALETTE_COLOR_COUNT,
+        "video_palette_frames": palette_frames,
+        "palette_source": "server",
+        "audio_source": "decoded" if audio_frames > 0 else "idle",
+    }
+    save_visualizer_analysis(
+        key,
+        media_id=media_id,
+        root_id=root_id,
+        rel=rel,
+        abs_path=abs_path,
+        duration=duration_value,
+        analysis_rate_hz=ANALYSIS_RATE_HZ,
+        band_count=len(ANALYSIS_BANDS),
+        frame_count=frame_count,
+        feature_blob=stored_blob,
+        compression=compression,
+        decoder_settings_hash=DECODER_SETTINGS_HASH,
+        metadata=metadata,
     )
     return load_visualizer_analysis(key)

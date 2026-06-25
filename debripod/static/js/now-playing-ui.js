@@ -12,6 +12,15 @@ function setNowPlayingArtSrc(src, opts){
   try{
     if(!npArt) return;
     const v = nowPlayingArtSrcValue(src);
+    const prevKey = nowPlayingArtCompareKey(currentNowPlayingArtSrc());
+    const nextKey = nowPlayingArtCompareKey(v);
+    const artChanged = prevKey !== nextKey;
+    if(artChanged){
+      try{
+        const renderer = typeof liquidGlassRendererByKey === "function" ? liquidGlassRendererByKey("npOverlay") : null;
+        if(renderer) renderer._npOverlaySourceKey = "";
+      }catch(e){}
+    }
     const sourceImg = document.getElementById("npArtLiquidSource");
     if(sourceImg && !sourceImg.__npLiquidSourceBound){
       sourceImg.__npLiquidSourceBound = true;
@@ -44,7 +53,18 @@ function setNowPlayingArtSrc(src, opts){
     if(window.DebriPod && DebriPod.albumArtTexture && DebriPod.albumArtTexture.setSource){
       DebriPod.albumArtTexture.setSource(v, opts || {});
     }
+    try{
+      if(window.DebriPod && DebriPod.albumArtTexture && DebriPod.albumArtTexture.renderGlassSourceCanvas){
+        DebriPod.albumArtTexture.renderGlassSourceCanvas();
+      }
+    }catch(e){}
     recaptureLiquidGlassElement(npArt);
+    if(artChanged){
+      try{
+        if(typeof forceNpOverlayGlassRender === "function") forceNpOverlayGlassRender("np art changed", true);
+        else if(typeof scheduleNpOverlayGlassRender === "function") scheduleNpOverlayGlassRender();
+      }catch(e){}
+    }
   }catch(e){}
 }
 
@@ -74,6 +94,29 @@ function setNowPlayingOverlayText(meta, fallbackLabel){
   scheduleLiquidGlassRender();
 }
 
+function refreshNowPlayingSurfaceAfterDisplay(reason){
+  try{
+    if(!nowPlaying || nowPlaying.style.display !== "block") return;
+    const run = ()=>{
+      try{
+        if(window.DebriPod && DebriPod.albumArtTexture){
+          if(DebriPod.albumArtTexture.renderToCanvas) DebriPod.albumArtTexture.renderToCanvas(npArt);
+          if(DebriPod.albumArtTexture.renderGlassSourceCanvas) DebriPod.albumArtTexture.renderGlassSourceCanvas();
+        }
+      }catch(e){}
+      try{ recaptureLiquidGlassElement(npArt); }catch(e){}
+      try{
+        if(typeof forceNpOverlayGlassRender === "function") forceNpOverlayGlassRender(reason || "np display refresh", true);
+        else if(typeof scheduleNpOverlayGlassRender === "function") scheduleNpOverlayGlassRender();
+      }catch(e){}
+      try{ scheduleLiquidGlassRender(); }catch(e){}
+    };
+    requestAnimationFrame(()=> requestAnimationFrame(run));
+    setTimeout(run, 90);
+    setTimeout(run, 240);
+  }catch(e){}
+}
+
 function isNpPillShown(){
   try{
     return !!(npOverlayPill && npPillVisible && !npOverlayPill.classList.contains("npPillHidden"));
@@ -90,7 +133,7 @@ async function updateNowPlayingDisplay(meta, fallbackLabel, opts){
   var currentArtKey = nowPlayingArtCompareKey(currentArt);
   var nextArtKey = nowPlayingArtCompareKey(nextArt);
   var animateArt = !!(options.animateArt && npArt && currentArtKey && nextArtKey && currentArtKey !== nextArtKey);
-  var animatePill = !!(options.animatePill && isNpPillShown());
+  var animatePill = false;
   sampleThemeFromArt(nextArt);
   var swapMs = 220;
 
@@ -122,6 +165,7 @@ async function updateNowPlayingDisplay(meta, fallbackLabel, opts){
   }else{
     setNowPlayingOverlayText(m, fallbackLabel);
   }
+  refreshNowPlayingSurfaceAfterDisplay("np display updated");
 }
 
 function showNpPill(pinned, reason){

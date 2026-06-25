@@ -4,15 +4,19 @@ import os
 import re
 import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Optional, Tuple
 
-from .metadata import file_meta_cached, warm_art_palette, warm_audio_analysis
+from .metadata import file_meta_cached, warm_art_palette, warm_audio_analysis, warm_video_analysis
 from .library_db import clear_library_cache, load_index_snapshot, load_library_facets, root_manifest, root_version, root_versions, save_index_snapshot
 from .roots import root_by_id
 from ..media_types import AUDIO_EXTS, VIDEO_EXTS
 from ..utils import sha1_text
 
 _cache_dir_name_provider = lambda: "_debripod_cache"
+_ENRICH_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="debripod-enrich")
+_ENRICH_LOCK = threading.Lock()
+_ENRICH_QUEUED: set[str] = set()
 
 
 def configure_library_index(*, cache_dir_name_provider) -> None:
@@ -23,11 +27,52 @@ def configure_library_index(*, cache_dir_name_provider) -> None:
 def _cache_dir_name() -> str:
     return str(_cache_dir_name_provider() or "_debripod_cache")
 
-def build_index_for_root(root_abs: str) -> dict:
+
+def _queue_video_enrichment(abs_path: str, root_id: str, rel: str, media_id: str, duration) -> None:
+    key = f"video:{root_id}:{rel}"
+    with _ENRICH_LOCK:
+        if key in _ENRICH_QUEUED:
+            return
+        _ENRICH_QUEUED.add(key)
+
+    def run() -> None:
+        try:
+            try:
+                warm_art_palette(abs_path, root_id=root_id, rel=rel)
+            except Exception:
+                pass
+            try:
+                warm_video_analysis(abs_path, root_id=root_id, rel=rel, media_id=media_id, duration=duration)
+            except Exception:
+                pass
+        finally:
+            with _ENRICH_LOCK:
+                _ENRICH_QUEUED.discard(key)
+
+    try:
+        _ENRICH_EXECUTOR.submit(run)
+    except Exception:
+        with _ENRICH_LOCK:
+            _ENRICH_QUEUED.discard(key)
+
+def build_index_for_root(root_abs: str, *, full_video_sync: bool = False, progress=None) -> dict:
     tracks = []
     videos = []
     folder_entries = []
     root_id_for_items = sha1_text(os.path.abspath(root_abs))
+    total_playable = 0
+    processed_playable = 0
+    if progress:
+        try:
+            for base, dirs, files in os.walk(root_abs):
+                dirs[:] = [d for d in dirs if not d.startswith(".") and d != _cache_dir_name()]
+                total_playable += sum(1 for fn in files if os.path.splitext(fn)[1].lower() in AUDIO_EXTS or os.path.splitext(fn)[1].lower() in VIDEO_EXTS)
+        except Exception:
+            total_playable = 0
+        try:
+            progress(0, max(1, total_playable), "scan")
+        except Exception:
+            pass
     for base, dirs, files in os.walk(root_abs):
         dirs[:] = [d for d in dirs if not d.startswith(".") and d != _cache_dir_name()]
         rel_dir = os.path.relpath(base, root_abs).replace("\\", "/")
@@ -51,9 +96,33 @@ def build_index_for_root(root_abs: str) -> dict:
             ext = os.path.splitext(fn)[1].lower()
             abs_p = os.path.join(base, fn)
             rel = os.path.relpath(abs_p, root_abs).replace("\\", "/")
+            if progress:
+                try:
+                    progress(processed_playable, max(1, total_playable), "metadata")
+                except Exception:
+                    pass
             if ext in VIDEO_EXTS:
                 meta = file_meta_cached(abs_p)
-                videos.append({"rel": rel, "name": fn, "title": meta.get("title") or fn})
+                duration = meta.get("duration")
+                media_id = f"{root_id_for_items}:{rel}"
+                videos.append({"rel": rel, "name": fn, "title": meta.get("title") or fn, "duration": duration})
+                if full_video_sync:
+                    try:
+                        warm_art_palette(abs_p, root_id=root_id_for_items, rel=rel)
+                    except Exception:
+                        pass
+                    try:
+                        warm_video_analysis(abs_p, root_id=root_id_for_items, rel=rel, media_id=media_id, duration=duration)
+                    except Exception:
+                        pass
+                else:
+                    _queue_video_enrichment(abs_p, root_id_for_items, rel, media_id, duration)
+                processed_playable += 1
+                if progress:
+                    try:
+                        progress(processed_playable, max(1, total_playable), "video analysis")
+                    except Exception:
+                        pass
                 continue
 
             meta = file_meta_cached(abs_p)
@@ -92,6 +161,12 @@ def build_index_for_root(root_abs: str) -> dict:
                 warm_audio_analysis(abs_p, root_id=root_id_for_items, rel=rel, media_id=media_id, duration=duration)
             except Exception:
                 pass
+            processed_playable += 1
+            if progress:
+                try:
+                    progress(processed_playable, max(1, total_playable), "audio analysis")
+                except Exception:
+                    pass
     return {"tracks": tracks, "videos": videos, "folder_entries": folder_entries}
 
 

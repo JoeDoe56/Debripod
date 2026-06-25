@@ -10,6 +10,7 @@ import secrets
 import socket
 import time
 import concurrent.futures
+import threading
 from pathlib import Path
 from urllib.parse import unquote
 
@@ -24,6 +25,8 @@ from .factory import DeferredApp
 from .auth import register_auth
 from .config import _coerce_config_value, ensure_startup_security_config, save_config
 from .Library.library_db import load_folder_entries, load_palette, load_palette_for_media, load_visualizer_analysis_for_media, save_folder_entries, save_palette
+from .Library.index import build_index_for_root, set_index_cache
+from .Library.metadata import file_meta_cached, warm_video_analysis
 from .Tasks.manager import task_belongs_to_owner
 from .runtime_state import *
 from .runtime_downloads import *
@@ -37,6 +40,20 @@ _ACTIVE_SETTINGS_USERNAME = ""
 _ACTIVE_SETTINGS_SIGNATURE: tuple[int, int] = (0, 0)
 _ACTIVE_SETTINGS_DATA: dict[str, Any] = {}
 _RECENT_API_TIMINGS: list[dict[str, Any]] = []
+_ANALYSIS_WARM_LOCK = threading.Lock()
+_ANALYSIS_WARMING: set[str] = set()
+_FULL_REINDEX_LOCK = threading.Lock()
+_FULL_REINDEX_STATUS: dict[str, Any] = {
+    "running": False,
+    "percent": 0,
+    "phase": "idle",
+    "root": "",
+    "processed_roots": 0,
+    "total_roots": 0,
+    "started_at": 0.0,
+    "finished_at": 0.0,
+    "error": "",
+}
 
 
 from .runtime_route_state import *
@@ -1341,8 +1358,62 @@ def api_library_config():
 
 @app.route("/api/library/reindex", methods=["POST"])
 def api_library_reindex():
-    clear_index_cache()
-    return jsonify({"ok": True})
+    def snapshot() -> dict[str, Any]:
+        with _FULL_REINDEX_LOCK:
+            return dict(_FULL_REINDEX_STATUS)
+
+    with _FULL_REINDEX_LOCK:
+        if _FULL_REINDEX_STATUS.get("running"):
+            return jsonify({"ok": True, "status": dict(_FULL_REINDEX_STATUS)})
+        _FULL_REINDEX_STATUS.update(
+            {
+                "running": True,
+                "percent": 0,
+                "phase": "starting",
+                "root": "",
+                "processed_roots": 0,
+                "total_roots": 0,
+                "started_at": time.time(),
+                "finished_at": 0.0,
+                "error": "",
+            }
+        )
+
+    def set_status(**updates: Any) -> None:
+        with _FULL_REINDEX_LOCK:
+            _FULL_REINDEX_STATUS.update(updates)
+
+    def run_full_reindex() -> None:
+        try:
+            root_rows = [(rid, name, os.path.abspath(path), mode) for rid, name, path, mode in roots()]
+            total_roots = max(1, len(root_rows))
+            set_status(total_roots=len(root_rows), phase="clearing cache", percent=1)
+            clear_index_cache()
+            for idx, (rid, name, root_abs, mode) in enumerate(root_rows):
+                base = (idx / total_roots) * 100.0
+                span = 100.0 / total_roots
+                set_status(processed_roots=idx, root=name or rid, phase="scan", percent=int(base))
+
+                def progress(done: int, total: int, phase: str) -> None:
+                    pct = base + span * 0.92 * (max(0, min(done, total)) / max(1, total))
+                    set_status(root=name or rid, phase=phase, percent=int(max(0, min(99, pct))))
+
+                data = build_index_for_root(root_abs, full_video_sync=True, progress=progress)
+                set_status(root=name or rid, phase="saving index", percent=int(max(0, min(99, base + span * 0.96))))
+                set_index_cache(rid, data)
+                set_status(processed_roots=idx + 1, root=name or rid, phase="root complete", percent=int(max(0, min(99, base + span))))
+            set_status(running=False, phase="complete", percent=100, root="", processed_roots=len(root_rows), finished_at=time.time())
+        except Exception as exc:
+            set_status(running=False, phase="error", error=str(exc), finished_at=time.time())
+
+    threading.Thread(target=run_full_reindex, daemon=True).start()
+    return jsonify({"ok": True, "status": snapshot()})
+
+
+@app.route("/api/library/reindex/status", methods=["GET"])
+def api_library_reindex_status():
+    with _FULL_REINDEX_LOCK:
+        return jsonify({"ok": True, "status": dict(_FULL_REINDEX_STATUS)})
 
 
 @app.route("/api/settings", methods=["GET"])
@@ -2081,8 +2152,45 @@ def api_library_analysis():
     if not r:
         abort(404)
     analysis = load_visualizer_analysis_for_media(root_id, rel)
+    def start_video_analysis_warm() -> bool:
+        try:
+            _, _, root_abs, _mode = r
+            abs_path = safe_path_join(root_abs, rel)
+            if not os.path.isfile(abs_path) or not is_video(abs_path):
+                return False
+            warm_key = f"{root_id}:{rel}"
+            with _ANALYSIS_WARM_LOCK:
+                if warm_key in _ANALYSIS_WARMING:
+                    return True
+                _ANALYSIS_WARMING.add(warm_key)
+            def warm_missing_video_analysis() -> None:
+                try:
+                    meta = file_meta_cached(abs_path)
+                    warm_video_analysis(
+                        abs_path,
+                        root_id=root_id,
+                        rel=rel,
+                        media_id=f"{root_id}:{rel}",
+                        duration=meta.get("duration") if isinstance(meta, dict) else None,
+                    )
+                except Exception:
+                    pass
+                finally:
+                    with _ANALYSIS_WARM_LOCK:
+                        _ANALYSIS_WARMING.discard(warm_key)
+            threading.Thread(target=warm_missing_video_analysis, daemon=True).start()
+            return True
+        except Exception:
+            return False
+    try:
+        meta = analysis.get("metadata") if isinstance(analysis, dict) else {}
+        if isinstance(meta, dict) and meta.get("video_palette_pending"):
+            start_video_analysis_warm()
+    except Exception:
+        pass
     if not analysis:
-        return jsonify({"ok": True, "analysis": None, "stale": True})
+        warming = start_video_analysis_warm()
+        return jsonify({"ok": True, "analysis": None, "stale": True, "warming": bool(warming)})
     blob = analysis.pop("feature_blob", b"")
     storage_compression = str(analysis.get("compression") or "none")
     if storage_compression == "zlib":

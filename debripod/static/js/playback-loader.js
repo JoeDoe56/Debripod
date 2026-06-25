@@ -170,6 +170,13 @@ function waitForMediaReady(el, timeoutMs){
 }
 
 async function loadPlaybackIntoElement(el, rootId, rel, kind){
+  try{
+    if(window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.isServerUnavailable && DebriPod.clientSync.isServerUnavailable()){
+      throw new Error(DebriPod.clientSync.serverRequiredMessage ? DebriPod.clientSync.serverRequiredMessage("Playback") : "Playback requires the local DebriPod server.");
+    }
+  }catch(e){
+    if(e && e.message) throw e;
+  }
   var src = playbackSourceUrl(rootId, rel);
   if(playbackUsesHls()){
     await loadHlsIntoElement(el, src, kind);

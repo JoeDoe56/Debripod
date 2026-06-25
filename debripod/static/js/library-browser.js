@@ -324,6 +324,7 @@ async function goBack(){
     saveResumeNowPlaying();
 
     await updateNowPlayingDisplay(meta, item.label || "Video", {animateArt: true, animatePill: true});
+    if(forceShow) showNowPlaying(true);
     updateMediaSession({title: meta.title || item.label || "Video", artist: meta.artist || "", album: meta.album || "", art: meta.art || ""});
     try{ syncMediaSessionControls(); }catch(e){}
 
@@ -376,6 +377,7 @@ async function goBack(){
       const meta = Object.assign({}, state.nowMeta || {}, {streamed: !!item.streamed, source: item.source || "", ext: item.ext || "", quality: item.quality || ""});
       try{ loadVisualizerAnalysisForTrack(rootId, rel, "audio", {streamed: !!item.streamed}); }catch(err){}
       await updateNowPlayingDisplay(meta, item.label || "Track", {animateArt: false, animatePill: false});
+      if(forceShow) showNowPlaying(true);
       updateMediaSession({title: meta.title, artist: meta.artist, album: meta.album, art: meta.art});
       try{ syncMediaSessionControls(); }catch(e){}
       lastfmOnTrack(meta);
@@ -492,6 +494,7 @@ async function goBack(){
     });
 
     await updateNowPlayingDisplay(meta, item.label || "Track", {animateArt: true, animatePill: true});
+    if(forceShow) showNowPlaying(true);
     updateMediaSession({title: meta.title, artist: meta.artist, album: meta.album, art: meta.art});
     try{ syncMediaSessionControls(); }catch(e){}
     lastfmOnTrack(meta);

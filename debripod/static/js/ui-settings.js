@@ -123,7 +123,7 @@
     visualizer: true,
     visualizerStrength: "high",
     visualizerPreset: "album",
-    visualizerFpsLock: 60,
+    visualizerFpsLock: 30,
     textModes: Object.assign({}, DEFAULT_TEXT_MODES),
     textTransparency: 0.68,
     animationFps: Object.assign({}, DEFAULT_ANIMATION_FPS),

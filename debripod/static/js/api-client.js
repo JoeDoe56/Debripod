@@ -162,6 +162,12 @@
   }
 
   async function apiPost(url, payload, options){
+    try{
+      if(root.clientSync && root.clientSync.isServerUnavailable && root.clientSync.isServerUnavailable()){
+        const msg = root.clientSync.serverRequiredMessage ? root.clientSync.serverRequiredMessage("This action") : "This action requires the local DebriPod server.";
+        return {ok:false, status:0, json:{ok:false, error:msg, offline:true}};
+      }
+    }catch(e){}
     const opts = Object.assign({
       method:"POST",
       headers: {"Content-Type":"application/json"},

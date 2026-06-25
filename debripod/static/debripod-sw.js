@@ -43,6 +43,19 @@ function isShellAsset(url){
   return url.pathname.startsWith("/static/");
 }
 
+function matchShellAsset(request){
+  return caches.match(request).then((cached)=>{
+    if(cached) return cached;
+    try{
+      const url = new URL(request.url);
+      if(isShellAsset(url)){
+        return caches.match(request, {ignoreSearch:true});
+      }
+    }catch(e){}
+    return null;
+  });
+}
+
 self.addEventListener("install", (event)=>{
   event.waitUntil(
     caches.open(DP_CACHE)
@@ -112,7 +125,7 @@ self.addEventListener("fetch", (event)=>{
 
   if(isShellAsset(url)){
     event.respondWith(
-      caches.match(request)
+      matchShellAsset(request)
         .then((cached)=> cached || fetch(request).then((response)=>{
           if(response && response.ok){
             const copy = response.clone();
