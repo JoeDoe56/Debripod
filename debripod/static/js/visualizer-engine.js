@@ -32,6 +32,7 @@ var defaultVisualizerPalette = [
   {r:255,g:69,b:58},
   {r:48,g:209,b:88}
 ];
+var MAX_VISUALIZER_PALETTE_COLORS = 16;
 var visualizerPaletteCache = new Map();
 var visualizerPalette = defaultVisualizerPalette.slice();
 var visualizerTargetPalette = defaultVisualizerPalette.slice();
@@ -66,6 +67,9 @@ var visualizerCopyProgram = null;
 var visualizerBuffer = null;
 var visualizerTexture = null;
 var visualizerFramebuffer = null;
+var visualizerUniforms = null;
+var visualizerBandUniformData = new Float32Array(7);
+var visualizerPaletteUniformData = new Float32Array(MAX_VISUALIZER_PALETTE_COLORS * 3);
 var visualizerWebglUnavailable = false;
 var visualizerVideoSampleCanvas = null;
 var visualizerVideoSampleCtx = null;
@@ -73,6 +77,9 @@ var visualizerVideoSampleLastTs = 0;
 var visualizerArtBounds = null;
 var visualizerArtBoundsLastTs = 0;
 var visualizerAnalysisNonce = 0;
+var visualizerAnalysisRetryTimer = 0;
+var visualizerVideoPaletteFrame = -1;
+var visualizerVideoPaletteKey = "";
 var visualizerAnalysisState = {
   key: "",
   loaded: false,
@@ -85,13 +92,16 @@ var visualizerAnalysisState = {
   bytes: null,
   rootId: "",
   rel: "",
-  source: ""
+  source: "",
+  mediaKind: "",
+  videoPaletteFrames: null,
+  videoPalettePending: false
 };
 
 var VISUALIZER_STRENGTHS = {
-  low: {dpr: 0.62, interval: 33, bassFields: 1, midFields: 1, trebleFields: 1, speed: 0.58, alpha: 0.42, bright: 0.72, coverage: 0.72, density: 0.08},
-  medium: {dpr: 0.86, interval: 17, bassFields: 2, midFields: 2, trebleFields: 2, speed: 0.82, alpha: 0.72, bright: 0.98, coverage: 1.05, density: 0.45},
-  high: {dpr: 1.12, interval: 8, bassFields: 5, midFields: 5, trebleFields: 5, speed: 1.08, alpha: 1.08, bright: 1.34, coverage: 1.46, density: 1.0}
+  low: {dpr: 0.62, interval: 33, bassFields: 1, midFields: 1, trebleFields: 1, speed: 0.52, alpha: 0.28, bright: 0.52, coverage: 0.62, density: 0.04},
+  medium: {dpr: 0.74, interval: 25, bassFields: 1, midFields: 2, trebleFields: 2, speed: 0.66, alpha: 0.48, bright: 0.74, coverage: 0.82, density: 0.22},
+  high: {dpr: 0.86, interval: 17, bassFields: 2, midFields: 2, trebleFields: 2, speed: 0.82, alpha: 0.72, bright: 0.98, coverage: 1.05, density: 0.45}
 };
 
 function visualizerStrengthConfigFor(name){
@@ -238,6 +248,10 @@ function resetVisualizerTempo(){
 
 function resetVisualizerAnalysis(reason){
   visualizerAnalysisNonce += 1;
+  try{ if(visualizerAnalysisRetryTimer) clearTimeout(visualizerAnalysisRetryTimer); }catch(e){}
+  visualizerAnalysisRetryTimer = 0;
+  visualizerVideoPaletteFrame = -1;
+  visualizerVideoPaletteKey = "";
   visualizerAnalysisState = {
     key: "",
     loaded: false,
@@ -250,8 +264,32 @@ function resetVisualizerAnalysis(reason){
     bytes: null,
     rootId: "",
     rel: "",
-    source: String(reason || "")
+    source: String(reason || ""),
+    mediaKind: "",
+    videoPaletteFrames: null,
+    videoPalettePending: false
   };
+}
+
+function currentVisualizerMediaKind(){
+  try{
+    return state && state.now && state.now.media ? String(state.now.media || "").toLowerCase() : "";
+  }catch(e){
+    return "";
+  }
+}
+
+function scheduleVisualizerAnalysisRetry(rootId, rel, mediaKind, attempt){
+  try{
+    if(String(mediaKind || "").toLowerCase() !== "video") return;
+    if(visualizerAnalysisRetryTimer) return;
+    const nextAttempt = Math.max(1, Number(attempt || 0) + 1);
+    if(nextAttempt > 12) return;
+    visualizerAnalysisRetryTimer = setTimeout(()=>{
+      visualizerAnalysisRetryTimer = 0;
+      loadVisualizerAnalysisForTrack(rootId, rel, mediaKind, {retryAttempt: nextAttempt});
+    }, Math.min(15000, 1800 + nextAttempt * 900));
+  }catch(e){}
 }
 
 function bytesFromBase64(value){
@@ -299,10 +337,20 @@ function applyVisualizerAnalysis(rootId, rel, analysis, nonce){
       bytes: bytes,
       rootId: String(rootId || ""),
       rel: String(rel || ""),
-      source: "sqlite"
+      source: "sqlite",
+      mediaKind: String(metadata.media_kind || ""),
+      videoPaletteFrames: Array.isArray(metadata.video_palette_frames) ? metadata.video_palette_frames : null,
+      videoPalettePending: !!metadata.video_palette_pending
     };
+    try{ if(visualizerAnalysisRetryTimer) clearTimeout(visualizerAnalysisRetryTimer); }catch(e){}
+    visualizerAnalysisRetryTimer = 0;
+    visualizerVideoPaletteFrame = -1;
+    visualizerVideoPaletteKey = "";
     resetVisualizerTempo();
     scheduleVisualizerFrame(0);
+    if(visualizerAnalysisState.mediaKind === "video" && visualizerAnalysisState.videoPalettePending){
+      scheduleVisualizerAnalysisRetry(rootId, rel, "video", 0);
+    }
   }catch(e){
     visualizerAnalysisState.loading = false;
     visualizerAnalysisState.loaded = false;
@@ -312,15 +360,18 @@ function applyVisualizerAnalysis(rootId, rel, analysis, nonce){
 function loadVisualizerAnalysisForTrack(rootId, rel, mediaKind, options){
   try{
     const opts = options || {};
+    try{ if(visualizerAnalysisRetryTimer && !opts.retryAttempt) clearTimeout(visualizerAnalysisRetryTimer); }catch(e){}
+    if(!opts.retryAttempt) visualizerAnalysisRetryTimer = 0;
     const media = String(mediaKind || "audio").toLowerCase();
     const rid = String(rootId || "");
     const rp = String(rel || "");
-    if(media !== "audio" || opts.streamed || !rid || !rp || typeof apiGet !== "function"){
-      resetVisualizerAnalysis(media === "audio" ? "uncached audio" : media);
+    if(opts.streamed || !rid || !rp || typeof apiGet !== "function"){
+      resetVisualizerAnalysis(opts.streamed ? "streamed idle" : "uncached idle");
+      visualizerAnalysisState.mediaKind = media;
       return;
     }
     const key = rid + "\n" + rp;
-    if(visualizerAnalysisState.key === key && (visualizerAnalysisState.loaded || visualizerAnalysisState.loading)) return;
+    if(visualizerAnalysisState.key === key && (visualizerAnalysisState.loaded || visualizerAnalysisState.loading) && !(opts.retryAttempt && visualizerAnalysisState.videoPalettePending)) return;
     const nonce = ++visualizerAnalysisNonce;
     visualizerAnalysisState = Object.assign({}, visualizerAnalysisState, {
       key: key,
@@ -339,7 +390,9 @@ function loadVisualizerAnalysisForTrack(rootId, rel, mediaKind, options){
             visualizerAnalysisState.loading = false;
             visualizerAnalysisState.loaded = false;
             visualizerAnalysisState.stale = true;
-            visualizerAnalysisState.source = "live";
+            visualizerAnalysisState.source = media === "video" ? "idle" : "live";
+            visualizerAnalysisState.mediaKind = media;
+            scheduleVisualizerAnalysisRetry(rid, rp, media, opts.retryAttempt || 0);
             return;
           }
           applyVisualizerAnalysis(rid, rp, res.analysis, nonce);
@@ -350,11 +403,46 @@ function loadVisualizerAnalysisForTrack(rootId, rel, mediaKind, options){
         visualizerAnalysisState.loading = false;
         visualizerAnalysisState.loaded = false;
         visualizerAnalysisState.stale = true;
-        visualizerAnalysisState.source = "live";
+        visualizerAnalysisState.source = media === "video" ? "idle" : "live";
+        visualizerAnalysisState.mediaKind = media;
+        scheduleVisualizerAnalysisRetry(rid, rp, media, opts.retryAttempt || 0);
       });
   }catch(e){
     resetVisualizerAnalysis("analysis error");
   }
+}
+
+function applyCachedVideoPaletteForFrame(analysis, frameIndex){
+  try{
+    const frames = analysis && Array.isArray(analysis.videoPaletteFrames) ? analysis.videoPaletteFrames : null;
+    if(!frames || !frames.length) return;
+    const idx = Math.max(0, Math.floor(Number(frameIndex || 0)));
+    const key = String(analysis.key || "") + ":" + idx;
+    if(key === visualizerVideoPaletteKey) return;
+    let lo = 0;
+    let hi = frames.length - 1;
+    let best = frames[0];
+    while(lo <= hi){
+      const mid = (lo + hi) >> 1;
+      const row = frames[mid] || [];
+      const fi = Number(row[0] || 0);
+      if(fi <= idx){
+        best = row;
+        lo = mid + 1;
+      }else{
+        hi = mid - 1;
+      }
+    }
+    const bestFrame = Number(best && best[0]);
+    if(bestFrame === visualizerVideoPaletteFrame) return;
+    const hexColors = best && Array.isArray(best[1]) ? best[1] : [];
+    const colors = hexColors.map(c=>rgbFromHex(c, null)).filter(Boolean);
+    if(!colors.length) return;
+    visualizerVideoPaletteFrame = bestFrame;
+    visualizerVideoPaletteKey = key;
+    setVisualizerPalette(colors);
+    visualizerPalette = visualizerTargetPalette.map(c=>({r:c.r, g:c.g, b:c.b}));
+  }catch(e){}
 }
 
 function sampleCachedVisualizerAnalysis(el){
@@ -386,6 +474,9 @@ function sampleCachedVisualizerAnalysis(el){
     const p1 = Number(bytes[off1 + beatIdx] || 0) / 255;
     const energy = e0 + (e1 - e0) * frac;
     const beat = p0 + (p1 - p0) * frac;
+    if(String(analysis.mediaKind || "").toLowerCase() === "video"){
+      applyCachedVideoPaletteForFrame(analysis, i0);
+    }
     return {
       bands: bands,
       bass: clamp01((bands[0] + bands[1]) * 0.5),
@@ -432,6 +523,31 @@ function linkVisualizerProgram(gl, vsSource, fsSource){
   return program;
 }
 
+function cacheVisualizerUniforms(gl, program, copyProgram){
+  visualizerUniforms = {
+    canvasSize: gl.getUniformLocation(program, "canvasSize"),
+    time: gl.getUniformLocation(program, "time"),
+    playbackTime: gl.getUniformLocation(program, "playbackTime"),
+    presetIndex: gl.getUniformLocation(program, "presetIndex"),
+    energy: gl.getUniformLocation(program, "energy"),
+    bass: gl.getUniformLocation(program, "bass"),
+    mid: gl.getUniformLocation(program, "mid"),
+    treble: gl.getUniformLocation(program, "treble"),
+    beat: gl.getUniformLocation(program, "beat"),
+    activeAmount: gl.getUniformLocation(program, "activeAmount"),
+    idleAmount: gl.getUniformLocation(program, "idleAmount"),
+    alphaScale: gl.getUniformLocation(program, "alphaScale"),
+    brightScale: gl.getUniformLocation(program, "brightScale"),
+    coverage: gl.getUniformLocation(program, "coverage"),
+    densityScale: gl.getUniformLocation(program, "densityScale"),
+    anchor: gl.getUniformLocation(program, "anchor"),
+    bands: gl.getUniformLocation(program, "bands[0]"),
+    palette: gl.getUniformLocation(program, "palette[0]"),
+    paletteCount: gl.getUniformLocation(program, "paletteCount"),
+    copyTex: gl.getUniformLocation(copyProgram, "tex")
+  };
+}
+
 function ensureVisualizerWebGL(){
   if(visualizerWebglUnavailable) return false;
   try{
@@ -464,23 +580,27 @@ function ensureVisualizerWebGL(){
       "uniform float densityScale;",
       "uniform vec4 anchor;",
       "uniform float bands[7];",
-      "uniform vec3 palette0;",
-      "uniform vec3 palette1;",
-      "uniform vec3 palette2;",
-      "uniform vec3 palette3;",
-      "uniform vec3 palette4;",
-      "uniform vec3 palette5;",
-      "uniform vec3 palette6;",
-      "uniform vec3 palette7;",
+      "uniform vec3 palette[16];",
+      "uniform float paletteCount;",
       "vec3 pal(float i){",
-      "  if(i < 0.5) return palette0;",
-      "  if(i < 1.5) return palette1;",
-      "  if(i < 2.5) return palette2;",
-      "  if(i < 3.5) return palette3;",
-      "  if(i < 4.5) return palette4;",
-      "  if(i < 5.5) return palette5;",
-      "  if(i < 6.5) return palette6;",
-      "  return palette7;",
+      "  float n = max(1.0, paletteCount);",
+      "  float x = mod(i, n);",
+      "  if(x < 0.5) return palette[0];",
+      "  if(x < 1.5) return palette[1];",
+      "  if(x < 2.5) return palette[2];",
+      "  if(x < 3.5) return palette[3];",
+      "  if(x < 4.5) return palette[4];",
+      "  if(x < 5.5) return palette[5];",
+      "  if(x < 6.5) return palette[6];",
+      "  if(x < 7.5) return palette[7];",
+      "  if(x < 8.5) return palette[8];",
+      "  if(x < 9.5) return palette[9];",
+      "  if(x < 10.5) return palette[10];",
+      "  if(x < 11.5) return palette[11];",
+      "  if(x < 12.5) return palette[12];",
+      "  if(x < 13.5) return palette[13];",
+      "  if(x < 14.5) return palette[14];",
+      "  return palette[15];",
       "}",
       "float band(float i){",
       "  if(i < 0.5) return bands[0];",
@@ -496,17 +616,33 @@ function ensureVisualizerWebGL(){
       "  float rr = max(0.0008, r * r);",
       "  return exp(-dot(d,d) / rr);",
       "}",
-      "vec2 orbit(float idx, float level, float t, float style){",
-      "  float a = idx * 2.399963 + t * (0.18 + idx * 0.017) + sin(t * 0.11 + idx) * 0.24;",
-      "  float ring = 0.38 + fract(idx * 0.37) * 0.56 + level * 0.11 + beat * 0.035;",
-      "  if(style > 0.5 && style < 1.5){ a = idx * 1.37 + sin(t * 0.19 + idx) * 0.8; ring = 0.50 + fract(idx * 0.29) * 0.72; }",
-      "  else if(style > 1.5 && style < 2.5){ a = 1.5707 + (idx - 5.5) * 0.18 + sin(t * 0.42 + idx) * 0.28; ring = 0.35 + fract(idx * 0.23) * 0.78; }",
-      "  else if(style > 2.5 && style < 3.5){ a = idx * 1.11 + t * (0.28 + idx * 0.018); ring = 0.56 + sin(idx * 1.9) * 0.32; }",
-      "  else if(style > 3.5 && style < 4.5){ a = idx * 6.28318 / 14.0; ring = 0.22 + fract(t * 0.08 + idx * 0.071) * 1.08; }",
-      "  else if(style > 4.5 && style < 5.5){ a = 0.32 + idx * 0.52; ring = fract(t * (0.05 + idx * 0.006) + idx * 0.17) * 1.35; }",
-      "  else if(style > 5.5 && style < 6.5){ a = idx * 6.28318 / 14.0 + t * 0.34; ring = 0.18 + fract(t * 0.14 + idx * 0.071) * 0.86 + beat * 0.14; }",
-      "  else if(style > 6.5){ a = idx * 0.785 + sin(t * 0.18 + idx) * 0.15; ring = 0.34 + fract(idx * 0.43) * 0.84; }",
-      "  return vec2(cos(a), sin(a)) * ring;",
+      "vec2 blobMotion(float idx, float level, float t, float style){",
+      "  float a = idx * 2.399963 + t * (0.22 + idx * 0.011 + treble * 0.12);",
+      "  float r = 0.34 + fract(idx * 0.381) * 0.78 + bass * 0.08 + beat * 0.10;",
+      "  vec2 o = vec2(cos(a), sin(a)) * r;",
+      "  if(style > 0.5 && style < 1.5){",
+      "    float curtain = sin(t * (0.16 + mid * 0.16) + idx * 0.83);",
+      "    o = vec2(sin(idx * 1.27 + t * (0.10 + treble * 0.10)) * (0.92 + level * 0.28), curtain * (0.38 + mid * 0.22) + (fract(idx * 0.17) - 0.5) * 0.56);",
+      "  }else if(style > 1.5 && style < 2.5){",
+      "    float rise = fract(idx * 0.137 + t * (0.055 + mid * 0.035));",
+      "    o = vec2(sin(idx * 1.91 + t * 0.20) * (0.24 + treble * 0.22), -0.90 + rise * 1.92 + bass * 0.16);",
+      "  }else if(style > 2.5 && style < 3.5){",
+      "    float drift = t * (0.19 + treble * 0.18);",
+      "    o = vec2(sin(idx * 1.11 + drift) * (0.58 + level * 0.44), cos(idx * 1.47 - drift * 0.73) * (0.42 + mid * 0.24));",
+      "  }else if(style > 3.5 && style < 4.5){",
+      "    float pulse = sin(t * (0.42 + bass * 0.30) - idx * 0.31) * 0.5 + 0.5;",
+      "    o = vec2(cos(a + pulse * 0.9), sin(a * 0.74 - pulse)) * (0.18 + pulse * 0.92 + beat * 0.18);",
+      "  }else if(style > 4.5 && style < 5.5){",
+      "    float fall = fract(idx * 0.119 + t * (0.065 + mid * 0.055));",
+      "    o = vec2((fract(idx * 0.271) - 0.5) * 1.85 + sin(t * 0.13 + idx) * 0.16, 1.05 - fall * 2.10 + treble * 0.08);",
+      "  }else if(style > 5.5 && style < 6.5){",
+      "    float bloom = 0.22 + energy * 0.52 + beat * 0.48;",
+      "    o = vec2(cos(a * 1.13 + sin(t * 0.21 + idx)), sin(a * 0.91)) * (bloom + fract(idx * 0.23) * 0.62);",
+      "  }else if(style > 6.5){",
+      "    float weave = sin(t * 0.18 + idx * 0.77);",
+      "    o = vec2(sin(idx * 0.97 + weave) * (0.74 + mid * 0.22), cos(idx * 1.33 - weave) * (0.54 + treble * 0.18));",
+      "  }",
+      "  return o;",
       "}",
       "void main(){",
       "  vec2 p = uv;",
@@ -517,80 +653,34 @@ function ensureVisualizerWebGL(){
       "  float style = presetIndex;",
       "  float t = time + playbackTime * 0.08;",
       "  vec3 color = vec3(0.0);",
-      "  float opacity = 0.0;",
-      "  float high = treble;",
-      "  float baseStyle = style < 0.5 ? 1.0 : 0.0;",
-      "  for(int i=0; i<28; i++){",
+      "  for(int i=0; i<40; i++){",
       "    float fi = float(i);",
       "    float bi = mod(fi, 7.0);",
       "    float level = band(bi);",
-      "    float extra = fi < 14.0 ? 1.0 : densityScale;",
-      "    vec2 o = orbit(fi, level, t, style);",
+      "    float layer = step(20.0, fi);",
+      "    float extra = mix(1.0, densityScale, layer);",
+      "    vec2 o = blobMotion(fi, level, t, style);",
       "    vec2 c = center + vec2(o.x * scale.x / aspect.x, o.y * scale.y);",
       "    float lowTone = 1.0 - clamp(bi / 6.0, 0.0, 1.0);",
       "    float highTone = clamp(bi / 6.0, 0.0, 1.0);",
-      "    float radius = (0.10 + lowTone * 0.18 + highTone * 0.032 + level * 0.08 + beat * 0.025) * coverage * mix(1.0, 0.58, step(14.0, fi));",
+      "    float radius = (0.09 + lowTone * 0.15 + highTone * 0.055 + level * 0.10 + beat * 0.055) * coverage * mix(1.05, 0.55, layer);",
       "    float f = field(p * aspect, c * aspect, radius);",
-      "    float a = (0.028 + level * 0.15 + energy * 0.045 + beat * (0.018 + lowTone * 0.035)) * alphaScale * extra * baseStyle;",
-      "    float br = (0.46 + highTone * 0.78 + level * 0.22) * brightScale;",
-      "    color += pal(bi) * br * f * a;",
-      "    opacity += f * a;",
+      "    float shimmer = 0.82 + highTone * treble * 0.42 + lowTone * bass * 0.24;",
+      "    float a = (0.022 + level * 0.105 + energy * 0.035 + beat * (0.018 + lowTone * 0.035)) * alphaScale * extra;",
+      "    float br = (0.50 + highTone * 0.38 + level * 0.18) * brightScale * shimmer;",
+      "    float colorWalk = fi + bi * 2.0 + t * (0.42 + treble * 0.70) + style * 1.7;",
+      "    color += pal(colorWalk) * br * f * a;",
       "  }",
-      "  float ribbon = 0.0;",
-      "  ribbon += exp(-abs((p.y - 0.50) + sin(p.x * 5.2 + t * 0.38) * 0.09) * 20.0) * mid;",
-      "  ribbon += exp(-abs((p.y - 0.32) + sin(p.x * 4.0 - t * 0.31) * 0.07) * 24.0) * treble;",
-      "  if(style > 0.5 && style < 1.5){",
-      "    float aurora = 0.0;",
-      "    aurora += exp(-abs(p.y - (0.28 + sin(p.x * 4.2 + t * 0.72) * 0.12)) * 17.0);",
-      "    aurora += exp(-abs(p.y - (0.58 + sin(p.x * 5.7 - t * 0.48) * 0.15)) * 14.0);",
-      "    float shimmer = 0.65 + 0.35 * sin((p.x + p.y) * 18.0 + t * (1.8 + treble));",
-      "    color += (palette1 * 0.78 + palette2 * 0.42 + palette5 * 0.18) * aurora * shimmer * alphaScale * (0.16 + mid * 0.34 + energy * 0.12);",
-      "    opacity += aurora * alphaScale * 0.18;",
-      "  }else if(style > 1.5 && style < 2.5){",
-      "    float d = distance((p - center) * aspect, vec2(0.0));",
-      "    float ember = exp(-d * 4.2) * (0.50 + bass * 1.7 + beat * 1.2);",
-      "    float sparks = pow(fract(sin(dot(floor(p * canvasSize / 18.0), vec2(12.7, 81.3))) * 43758.5), 18.0) * (0.18 + treble);",
-      "    float rise = smoothstep(1.0, 0.0, p.y) * (0.7 + 0.3 * sin(p.x * 12.0 + t));",
-      "    color += (palette2 * 0.95 + palette3 * 0.48) * ember * rise * alphaScale * (0.22 + bass * 0.18 + beat * 0.24);",
-      "    color += palette6 * sparks * alphaScale * (0.26 + treble * 0.22);",
-      "    opacity += (ember * 0.16 + sparks * 0.18) * alphaScale;",
-      "  }else if(style > 2.5 && style < 3.5){",
-      "    vec2 q = abs(fract((p + vec2(t * 0.035, -t * 0.021)) * vec2(6.0, 4.0)) - 0.5);",
-      "    float prism = smoothstep(0.035, 0.0, min(q.x, q.y));",
-      "    prism += smoothstep(0.025, 0.0, abs((p.x + p.y) - (0.55 + sin(t * 0.3) * 0.2)));",
-      "    float split = 0.55 + 0.45 * sin((p.x - p.y) * 24.0 + t * (1.2 + treble));",
-      "    color += (palette0 * 0.45 + palette4 * 0.70 + palette6 * 0.50) * prism * split * alphaScale * (0.18 + energy * 0.24 + treble * 0.18);",
-      "    opacity += prism * alphaScale * 0.16;",
-      "  }else if(style > 3.5 && style < 4.5){",
-      "    float d = distance((p - center) * aspect, vec2(0.0));",
-      "    float rings = 0.0;",
-      "    rings += smoothstep(0.035, 0.0, abs(fract(d * 7.0 - t * 0.34 - beat * 0.22) - 0.5));",
-      "    color += (palette0 * 0.46 + palette5 * 0.72 + palette7 * 0.22) * rings * alphaScale * (0.18 + bass * 0.34 + beat * 0.28);",
-      "    opacity += rings * alphaScale * 0.18;",
-      "  }else if(style > 4.5 && style < 5.5){",
-      "    float lanes = 0.0;",
-      "    lanes += smoothstep(0.06, 0.0, abs(fract(p.y * 7.0 + t * 0.17) - 0.5)) * (0.3 + mid);",
-      "    lanes += smoothstep(0.04, 0.0, abs(fract(p.x * 4.0 - t * 0.11) - 0.5)) * (0.2 + treble);",
-      "    float pour = smoothstep(0.0, 0.85, p.y) * (0.65 + 0.35 * sin(p.x * 20.0 + t * 1.6));",
-      "    color += (palette3 * 0.72 + palette1 * 0.40 + palette5 * 0.22) * lanes * pour * alphaScale * (0.18 + mid * 0.26 + treble * 0.16);",
-      "    opacity += lanes * alphaScale * 0.15;",
-      "  }else if(style > 5.5 && style < 6.5){",
-      "    float d = distance((p - center) * aspect, vec2(0.0));",
-      "    float nova = exp(-d * 2.8) * (0.25 + energy * 1.2) + smoothstep(0.025, 0.0, abs(fract(atan(p.y-center.y, (p.x-center.x)*aspect.x) * 7.0 + t * 0.45) - 0.5)) * smoothstep(0.85, 0.05, d);",
-      "    color += (palette0 * 0.60 + palette2 * 0.78 + palette7 * 0.38) * nova * alphaScale * (0.20 + energy * 0.30 + beat * 0.32);",
-      "    opacity += nova * alphaScale * 0.17;",
-      "  }else if(style > 6.5){",
-      "    vec2 grid = abs(fract((p + vec2(sin(t*.08), cos(t*.07)) * 0.04) * vec2(8.0, 8.0)) - 0.5);",
-      "    float lattice = smoothstep(0.032, 0.0, min(grid.x, grid.y));",
-      "    float cells = 0.35 + 0.65 * (band(0.0) + band(2.0) + band(4.0) + band(6.0)) * 0.25;",
-      "    color += (palette4 * 0.68 + palette6 * 0.58 + palette1 * 0.18) * lattice * cells * alphaScale * (0.13 + high * 0.22 + mid * 0.10);",
-      "    opacity += lattice * alphaScale * 0.14;",
-      "  }else{",
-      "    color += (palette1 * 0.48 + palette3 * 0.32) * ribbon * alphaScale * 0.12;",
-      "    opacity += ribbon * alphaScale * 0.08;",
-      "  }",
+      "  vec2 dirA = vec2(cos(style * 0.79 + 0.4), sin(style * 0.61 + 1.1));",
+      "  vec2 dirB = vec2(cos(style * 1.13 + 2.2), sin(style * 0.97 + 0.2));",
+      "  float softA = 0.5 + 0.5 * sin(dot((p - center) * aspect, dirA) * (2.1 + style * 0.18) + t * (0.34 + bass * 0.30));",
+      "  float softB = 0.5 + 0.5 * sin(dot((p - center) * aspect, dirB) * (3.0 + style * 0.14) - t * (0.28 + treble * 0.36));",
+      "  float reach = smoothstep(1.28, 0.05, length(vec2((p.x - center.x) * aspect.x / max(scale.x, 0.001), (p.y - center.y) / max(scale.y, 0.001))));",
+      "  vec3 sweepA = mix(pal(style * 2.0 + t * 0.32), pal(style * 2.0 + 8.0 + t * 0.27), softA);",
+      "  vec3 sweepB = mix(pal(style * 3.0 + 4.0 - t * 0.19), pal(style * 3.0 + 12.0 + t * 0.23), softB);",
+      "  color += mix(sweepA, sweepB, 0.45 + 0.35 * mid) * reach * alphaScale * brightScale * (0.012 + energy * 0.018 + beat * 0.010);",
       "  float v = smoothstep(0.92, 0.18, distance(p, vec2(0.5)));",
-      "  vec3 outColor = color * mix(0.36, 1.0, v);",
+      "  vec3 outColor = color * mix(0.38, 0.90, v);",
       "  outColor = mix(vec3(0.0), outColor, max(activeAmount, idleAmount));",
       "  gl_FragColor = vec4(outColor, 1.0);",
       "}"
@@ -607,6 +697,7 @@ function ensureVisualizerWebGL(){
       visualizerWebglUnavailable = true;
       return false;
     }
+    cacheVisualizerUniforms(visualizerGl, visualizerProgram, visualizerCopyProgram);
     visualizerBuffer = visualizerGl.createBuffer();
     visualizerGl.bindBuffer(visualizerGl.ARRAY_BUFFER, visualizerBuffer);
     visualizerGl.bufferData(visualizerGl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), visualizerGl.STATIC_DRAW);
@@ -669,27 +760,12 @@ function currentVisualizerPlaybackTime(){
 }
 
 function visualizerAnchorForSurface(){
-  try{
-    const now = performance.now();
-    if(visualizerArtBounds && now - visualizerArtBoundsLastTs < 750) return visualizerArtBounds;
-    const artEl = (isVideoActive && isVideoActive() && npVideo) ? npVideo : document.getElementById("npArt");
-    if(artEl && artEl.getBoundingClientRect){
-      const rect = artEl.getBoundingClientRect();
-      const vw = Math.max(1, window.innerWidth || 1);
-      const vh = Math.max(1, window.innerHeight || 1);
-      if(rect.width > 0 && rect.height > 0){
-        visualizerArtBounds = {
-          cx: clamp01((rect.left + rect.width * 0.5) / vw),
-          cy: clamp01((rect.top + rect.height * 0.5) / vh),
-          rx: clamp01(Math.max(rect.width / vw, 0.18)),
-          ry: clamp01(Math.max(rect.height / vh, 0.18))
-        };
-        visualizerArtBoundsLastTs = now;
-        return visualizerArtBounds;
-      }
-    }
-  }catch(e){}
-  return {cx:0.5, cy:0.5, rx:0.36, ry:0.36};
+  const vw = Math.max(1, window.innerWidth || 1);
+  const vh = Math.max(1, window.innerHeight || 1);
+  const portrait = vh > vw;
+  return portrait
+    ? {cx:0.5, cy:0.43, rx:0.58, ry:0.48}
+    : {cx:0.5, cy:0.50, rx:0.46, ry:0.62};
 }
 
 function setVisualizerAttribute(program){
@@ -703,11 +779,16 @@ function setVisualizerAttribute(program){
 function setPaletteUniforms(program){
   try{
     const gl = visualizerGl;
-    for(let i = 0; i < 8; i++){
+    const count = Math.max(1, Math.min(MAX_VISUALIZER_PALETTE_COLORS, visualizerPalette.length || 0));
+    for(let i = 0; i < MAX_VISUALIZER_PALETTE_COLORS; i++){
       const rgb = visualizerPalette[i % visualizerPalette.length] || defaultVisualizerPalette[i % defaultVisualizerPalette.length];
-      const loc = gl.getUniformLocation(program, "palette" + i);
-      if(loc) gl.uniform3f(loc, clampByte(rgb.r) / 255, clampByte(rgb.g) / 255, clampByte(rgb.b) / 255);
+      const off = i * 3;
+      visualizerPaletteUniformData[off] = clampByte(rgb.r) / 255;
+      visualizerPaletteUniformData[off + 1] = clampByte(rgb.g) / 255;
+      visualizerPaletteUniformData[off + 2] = clampByte(rgb.b) / 255;
     }
+    if(visualizerUniforms && visualizerUniforms.palette) gl.uniform3fv(visualizerUniforms.palette, visualizerPaletteUniformData);
+    if(visualizerUniforms && visualizerUniforms.paletteCount) gl.uniform1f(visualizerUniforms.paletteCount, count);
   }catch(e){}
 }
 
@@ -738,7 +819,7 @@ function renderVisualizerWebGL(ts){
     const nowTs = Number(ts || performance.now() || 0);
     const drawActive = visualizerActive || visualizerResidualVisible(nowTs);
     const activeAmount = drawActive ? 1 : 0;
-    const idleAmount = visualizerEnabled && !drawActive ? 0.34 : 0;
+    const idleAmount = visualizerEnabled && !drawActive ? 1 : 0;
     const anchor = visualizerAnchorForSurface();
     blendVisualizerPalette();
 
@@ -749,23 +830,25 @@ function renderVisualizerWebGL(ts){
     gl.useProgram(visualizerProgram);
     setVisualizerAttribute(visualizerProgram);
     setPaletteUniforms(visualizerProgram);
-    gl.uniform2f(gl.getUniformLocation(visualizerProgram, "canvasSize"), visualizerCanvasW, visualizerCanvasH);
-    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "time"), visualizerMotionTime(nowTs) * Number(cfg.speed || 1));
-    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "playbackTime"), currentVisualizerPlaybackTime());
-    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "presetIndex"), visualizerPresetIndex());
-    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "energy"), activeAmount ? clamp01(visualizerEnergy) : 0);
-    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "bass"), activeAmount ? clamp01(visualizerBass) : 0);
-    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "mid"), activeAmount ? clamp01(visualizerMid) : 0);
-    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "treble"), activeAmount ? clamp01(visualizerTreble) : 0);
-    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "beat"), activeAmount ? clamp01(visualizerBeatPulse) : 0);
-    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "activeAmount"), activeAmount);
-    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "idleAmount"), idleAmount);
-    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "alphaScale"), Number(cfg.alpha || 0.68));
-    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "brightScale"), Number(cfg.bright || 1));
-    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "coverage"), Number(cfg.coverage || 1));
-    gl.uniform1f(gl.getUniformLocation(visualizerProgram, "densityScale"), Number(cfg.density || 0));
-    gl.uniform4f(gl.getUniformLocation(visualizerProgram, "anchor"), anchor.cx, anchor.cy, anchor.rx, anchor.ry);
-    gl.uniform1fv(gl.getUniformLocation(visualizerProgram, "bands[0]"), new Float32Array((visualizerBands || []).slice(0, 7).map((v)=> activeAmount ? clamp01(v) : 0)));
+    const u = visualizerUniforms || {};
+    gl.uniform2f(u.canvasSize, visualizerCanvasW, visualizerCanvasH);
+    gl.uniform1f(u.time, visualizerMotionTime(nowTs) * Number(cfg.speed || 1));
+    gl.uniform1f(u.playbackTime, currentVisualizerPlaybackTime());
+    gl.uniform1f(u.presetIndex, visualizerPresetIndex());
+    gl.uniform1f(u.energy, activeAmount ? clamp01(visualizerEnergy) : 0);
+    gl.uniform1f(u.bass, activeAmount ? clamp01(visualizerBass) : 0);
+    gl.uniform1f(u.mid, activeAmount ? clamp01(visualizerMid) : 0);
+    gl.uniform1f(u.treble, activeAmount ? clamp01(visualizerTreble) : 0);
+    gl.uniform1f(u.beat, activeAmount ? clamp01(visualizerBeatPulse) : 0);
+    gl.uniform1f(u.activeAmount, activeAmount);
+    gl.uniform1f(u.idleAmount, idleAmount);
+    gl.uniform1f(u.alphaScale, Number(cfg.alpha || 0.68));
+    gl.uniform1f(u.brightScale, Number(cfg.bright || 1));
+    gl.uniform1f(u.coverage, Number(cfg.coverage || 1));
+    gl.uniform1f(u.densityScale, Number(cfg.density || 0));
+    gl.uniform4f(u.anchor, anchor.cx, anchor.cy, anchor.rx, anchor.ry);
+    for(let i = 0; i < 7; i++) visualizerBandUniformData[i] = activeAmount ? clamp01((visualizerBands || [])[i] || 0) : 0;
+    gl.uniform1fv(u.bands, visualizerBandUniformData);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
 
     gl.bindFramebuffer(gl.FRAMEBUFFER, null);
@@ -776,9 +859,8 @@ function renderVisualizerWebGL(ts){
     setVisualizerAttribute(visualizerCopyProgram);
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, visualizerTexture);
-    gl.uniform1i(gl.getUniformLocation(visualizerCopyProgram, "tex"), 0);
+    gl.uniform1i((visualizerUniforms || {}).copyTex, 0);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
-    try{ gl.flush(); }catch(e){}
     return true;
   }catch(e){
     return false;
@@ -822,7 +904,8 @@ function currentVisualizerFrameState(ts){
     paletteRoles: currentVisualizerPalette,
     roleWeights: roleWeightsForSelectedText(),
     selectedTextContrastMix: selectedTextContrastMix,
-    analysisSource: visualizerAnalysisState && visualizerAnalysisState.loaded ? "sqlite" : "live"
+    analysisSource: visualizerAnalysisState && visualizerAnalysisState.loaded ? "sqlite" : (visualizerAnalysisState && visualizerAnalysisState.source ? visualizerAnalysisState.source : "live"),
+    videoPaletteFrames: visualizerAnalysisState && visualizerAnalysisState.videoPaletteFrames ? visualizerAnalysisState.videoPaletteFrames : null
   };
 }
 
@@ -869,7 +952,8 @@ function visualizerFrame(ts){
     visualizerLastFrameTs = nowTs;
     const el = currentVisualizerMediaElement();
     const cachedFeatures = visualizerEnabled && visualizerActive && !document.hidden ? sampleCachedVisualizerAnalysis(el) : null;
-    const canAnalyze = !!(!cachedFeatures && visualizerEnabled && visualizerActive && !document.hidden && el && ensureVisualizerAudioGraphFor(el) && visualizerAnalyser && visualizerData);
+    const mediaKind = currentVisualizerMediaKind();
+    const canAnalyze = !!(mediaKind !== "video" && !cachedFeatures && visualizerEnabled && visualizerActive && !document.hidden && el && ensureVisualizerAudioGraphFor(el) && visualizerAnalyser && visualizerData);
     let nextBass = 0;
     let nextMid = 0;
     let nextTreble = 0;
@@ -946,7 +1030,6 @@ function visualizerFrame(ts){
       updateVisualizerTempo(nowTs, nextBands[0] || nextBass, nextEnergy);
     }
     try{ if(state) state.visualizerBpm = Math.round(visualizerBpm); }catch(e){}
-    sampleLiveVideoPalette(nowTs);
     renderVisualizerWebGL(nowTs);
     applySelectedTextContrast();
     refreshLiquidGlassVisualizerSources("visualizer frame");
@@ -1380,18 +1463,27 @@ function applySelectedTextContrast(){
       g: selectedPillContrastRgb.g + (next.g - selectedPillContrastRgb.g) * 0.20,
       b: selectedPillContrastRgb.b + (next.b - selectedPillContrastRgb.b) * 0.20
     };
-    list.style.setProperty("--lib-selected-contrast", rgbToHex(selectedContrastRgb));
-    list.style.setProperty("--lib-selected-pill-contrast", rgbToHex(selectedPillContrastRgb));
-    list.style.setProperty("--lib-selected-pill-edge", paletteObj.ui && paletteObj.ui.selectedPillEdge ? paletteObj.ui.selectedPillEdge : rgbToHex(selectedPillContrastRgb));
+    const rootEl = document.documentElement;
+    const contrast = rgbToHex(selectedContrastRgb);
+    const pillContrast = rgbToHex(selectedPillContrastRgb);
+    const pillEdge = paletteObj.ui && paletteObj.ui.selectedPillEdge ? paletteObj.ui.selectedPillEdge : rgbToHex(selectedPillContrastRgb);
+    rootEl.style.setProperty("--lib-selected-contrast", contrast);
+    rootEl.style.setProperty("--lib-selected-pill-contrast", pillContrast);
+    rootEl.style.setProperty("--lib-selected-pill-edge", pillEdge);
+    list.style.setProperty("--lib-selected-contrast", contrast);
+    list.style.setProperty("--lib-selected-pill-contrast", pillContrast);
+    list.style.setProperty("--lib-selected-pill-edge", pillEdge);
   }catch(e){}
 }
 
 function setVisualizerPalette(palette){
-  var colors = (Array.isArray(palette) && palette.length ? palette : defaultVisualizerPalette)
+  var paletteObj = (palette && typeof palette === "object" && !Array.isArray(palette)) ? palette : null;
+  var sourceColors = paletteObj ? colorsFromPaletteObject(paletteObj) : palette;
+  var colors = (Array.isArray(sourceColors) && sourceColors.length ? sourceColors : defaultVisualizerPalette)
     .map(c=>({r:clampByte(c.r), g:clampByte(c.g), b:clampByte(c.b)}))
-    .slice(0, 8);
+    .slice(0, MAX_VISUALIZER_PALETTE_COLORS);
   visualizerTargetPalette = colors.length ? colors : defaultVisualizerPalette.slice();
-  currentVisualizerPalette = buildVisualizerPaletteObject(visualizerTargetPalette);
+  currentVisualizerPalette = paletteObj || buildVisualizerPaletteObject(visualizerTargetPalette);
   var rootTheme = themeFromBase(visualizerTargetPalette[0] || defaultVisualizerPalette[0]);
   if(visualizerTargetPalette.length >= 3){
     rootTheme.visualizerA = rgbaFrom(visualizerTargetPalette[0], .46);
@@ -1429,7 +1521,8 @@ function cycleVisualizerPreset(){
 
 function cacheVisualizerPalette(key, palette, paletteObj){
   try{
-    visualizerPaletteCache.set(key, palette);
+    const colors = paletteObj ? colorsFromPaletteObject(paletteObj) : palette;
+    visualizerPaletteCache.set(key, colors || palette || defaultVisualizerPalette);
     if(paletteObj && typeof paletteObj === "object") currentVisualizerPalette = paletteObj;
     if(key && currentVisualizerPalette) saveVisualizerPaletteLocal(key, currentVisualizerPalette);
     while(visualizerPaletteCache.size > 48){
@@ -1507,14 +1600,8 @@ function loadVisualizerPaletteLocal(key, nonce){
 
 function persistVisualizerPalette(key, sourceIdentity){
   try{
-    if(!key || !currentVisualizerPalette || typeof apiPost !== "function") return;
+    if(!key || !currentVisualizerPalette) return;
     saveVisualizerPaletteLocal(key, currentVisualizerPalette);
-    apiPost("/api/library/palette", {
-      key: key,
-      source_kind: "art",
-      source_identity: String(sourceIdentity || key),
-      palette: currentVisualizerPalette
-    }).catch(()=>{});
   }catch(e){}
 }
 
@@ -1527,7 +1614,11 @@ function loadPersistedVisualizerPalette(key, sourceIdentity, nonce){
           if(nonce !== visualizerSampleNonce) return;
           const paletteObj = res && res.palette;
           const colors = colorsFromPaletteObject(paletteObj);
-          if(!colors || !paletteObj) return;
+          if(!colors || !paletteObj){
+            if(!visualizerPaletteCache.has(key)) setVisualizerPalette(defaultVisualizerPalette);
+            updateVisualizerState();
+            return;
+          }
           cacheVisualizerPalette(key, colors, paletteObj);
           setVisualizerPalette(colors);
           currentVisualizerPalette = paletteObj;
@@ -1535,85 +1626,18 @@ function loadPersistedVisualizerPalette(key, sourceIdentity, nonce){
           updateVisualizerState();
         }catch(e){}
       })
-      .catch(()=>{});
+      .catch(()=>{
+        try{
+          if(nonce === visualizerSampleNonce && !visualizerPaletteCache.has(key)){
+            setVisualizerPalette(defaultVisualizerPalette);
+            updateVisualizerState();
+          }
+        }catch(e){}
+      });
     return true;
   }catch(e){
     return false;
   }
-}
-
-function distinctPaletteFromImageData(data){
-  var buckets = new Map();
-  for(let i = 0; i < data.length; i += 4){
-    const a = Number(data[i + 3] || 0);
-    if(a < 24) continue;
-    const rr = Number(data[i] || 0);
-    const gg = Number(data[i + 1] || 0);
-    const bb = Number(data[i + 2] || 0);
-    const rgb = {r:rr, g:gg, b:bb};
-    const sat = rgbSaturation(rgb);
-    const lum = rgbLuma(rgb);
-    const colorful = sat >= .18 && lum >= .08 && lum <= .92;
-    const key2 = (rr >> 3) + "," + (gg >> 3) + "," + (bb >> 3);
-    const prev = buckets.get(key2);
-    const score = (colorful ? 2.2 : .25) * (sat + .15) * (1 - Math.abs(lum - .50) * .78);
-    if(!prev || score > prev.score){
-      buckets.set(key2, {rgb:rgb, score:score, colorful:colorful});
-    }
-  }
-  var candidates = Array.from(buckets.values())
-    .sort((a,b)=> b.score - a.score)
-    .map(x=>x.rgb);
-  var selected = [];
-  var saturated = candidates.filter(c=> rgbSaturation(c) >= .18 && rgbLuma(c) >= .08 && rgbLuma(c) <= .92);
-  var pool = saturated.length ? saturated : candidates;
-  var minDist = saturated.length ? 58 : 34;
-  for(const color of pool){
-    if(selected.every(prev=> rgbDistance(prev, color) >= minDist)){
-      selected.push(color);
-      if(selected.length >= 8) break;
-    }
-  }
-  while(selected.length < Math.min(4, pool.length)){
-    const next = pool.find(c=> selected.indexOf(c) < 0);
-    if(!next) break;
-    selected.push(next);
-  }
-  return selected;
-}
-
-function sampleLiveVideoPalette(ts){
-  try{
-    if(!visualizerEnabled || !visualizerActive || document.hidden) return;
-    if(!isVideoActive || !isVideoActive() || !npVideo || npVideo.paused || npVideo.readyState < 2) return;
-    const interval = visualizerStrength === "high" ? 1400 : (visualizerStrength === "low" ? 3200 : 2200);
-    const nowTs = Number(ts || performance.now() || 0);
-    if(visualizerVideoSampleLastTs && nowTs - visualizerVideoSampleLastTs < interval) return;
-    visualizerVideoSampleLastTs = nowTs;
-
-    if(!visualizerVideoSampleCanvas){
-      visualizerVideoSampleCanvas = document.createElement("canvas");
-      visualizerVideoSampleCtx = visualizerVideoSampleCanvas.getContext("2d", {willReadFrequently:true});
-    }
-    if(!visualizerVideoSampleCtx) return;
-    const vw = Number(npVideo.videoWidth || 0);
-    const vh = Number(npVideo.videoHeight || 0);
-    if(!(vw > 0) || !(vh > 0)) return;
-    const sampleW = visualizerStrength === "high" ? 42 : (visualizerStrength === "low" ? 24 : 32);
-    const sampleH = Math.max(12, Math.round(sampleW * Math.min(1.4, vh / vw)));
-    if(visualizerVideoSampleCanvas.width !== sampleW || visualizerVideoSampleCanvas.height !== sampleH){
-      visualizerVideoSampleCanvas.width = sampleW;
-      visualizerVideoSampleCanvas.height = sampleH;
-    }
-    visualizerVideoSampleCtx.clearRect(0, 0, sampleW, sampleH);
-    visualizerVideoSampleCtx.drawImage(npVideo, 0, 0, sampleW, sampleH);
-    const data = visualizerVideoSampleCtx.getImageData(0, 0, sampleW, sampleH).data;
-    const palette = distinctPaletteFromImageData(data);
-    if(palette && palette.length){
-      setVisualizerPalette(palette);
-      persistVisualizerPalette("video:" + nowPlayingArtCompareKey(String(npVideo.currentSrc || npVideo.src || "")), String(npVideo.currentSrc || npVideo.src || ""));
-    }
-  }catch(e){}
 }
 
 function sampleThemeFromArt(src){
@@ -1633,42 +1657,12 @@ function sampleThemeFromArt(src){
     return;
   }
   var myNonce = ++visualizerSampleNonce;
-  loadVisualizerPaletteLocal(key, myNonce);
-  loadPersistedVisualizerPalette(key, art, myNonce);
-  var img = new Image();
-  img.decoding = "async";
-  try{
-    const u = new URL(art, window.location.href);
-    if(u.origin === window.location.origin) img.crossOrigin = "anonymous";
-  }catch(e){}
-  img.onload = ()=>{
-    if(myNonce !== visualizerSampleNonce) return;
-    try{
-      const w = Math.max(12, Math.min(56, img.naturalWidth || 32));
-      const h = Math.max(12, Math.min(56, img.naturalHeight || 32));
-      const canvas = document.createElement("canvas");
-      canvas.width = w;
-      canvas.height = h;
-      const ctx = canvas.getContext("2d", {willReadFrequently:true});
-      if(!ctx) throw new Error("no canvas context");
-      ctx.drawImage(img, 0, 0, w, h);
-      const data = ctx.getImageData(0, 0, w, h).data;
-      const selected = distinctPaletteFromImageData(data);
-      if(!selected.length) throw new Error("empty sample");
-      cacheVisualizerPalette(key, selected);
-      setVisualizerPalette(selected);
-      persistVisualizerPalette(key, art);
-    }catch(err){
-      setVisualizerPalette(defaultVisualizerPalette);
-    }
-    updateVisualizerState();
-  };
-  img.onerror = ()=>{
-    if(myNonce !== visualizerSampleNonce) return;
+  const loadedLocal = loadVisualizerPaletteLocal(key, myNonce);
+  const requested = loadPersistedVisualizerPalette(key, art, myNonce);
+  if(!loadedLocal && !requested){
     setVisualizerPalette(defaultVisualizerPalette);
     updateVisualizerState();
-  };
-  img.src = art;
+  }
 }
 
 function nowPlayingArtSrcValue(src){

@@ -21,14 +21,26 @@
     }catch(e){}
     try{
       if(window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.awaitReady){
-        restoredFromLocal = !!(await Promise.race([
-          DebriPod.clientSync.awaitReady(),
-          new Promise(resolve=> setTimeout(()=> resolve(false), 160))
-        ]));
+        restoredFromLocal = !!(await DebriPod.clientSync.awaitReady());
       }
     }catch(e){}
     if(!restoredFromLocal){
-      await showRoots();
+      try{
+        if(window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.restoreCachedView){
+          restoredFromLocal = !!(await DebriPod.clientSync.restoreCachedView({kind:"roots"}));
+        }
+      }catch(e){}
+    }
+    if(!restoredFromLocal){
+      try{
+        await showRoots();
+      }catch(e){
+        const msg = (window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.serverRequiredMessage)
+          ? DebriPod.clientSync.serverRequiredMessage("Library browsing")
+          : "Library browsing requires the local DebriPod server.";
+        state.current = state.rootView || rootViewObj();
+        resetList([{kind:"info", label:msg}]);
+      }
     }
     await maybeOpenFromUrl();
     try{ await maybeStartSetupWizard(); }catch(e){}

@@ -1056,6 +1056,7 @@ function vibeTick(){
       }
       refreshSelectedHScrollText();
       if(typeof invalidateLibPillGlass === "function") invalidateLibPillGlass("selection");
+      if(typeof applySelectedTextContrast === "function") applySelectedTextContrast();
       if(typeof updateGlassTextUnderColors === "function") updateGlassTextUnderColors();
     }catch(e){
       renderList();
@@ -1131,11 +1132,17 @@ function vibeTick(){
 
     setHeader();
     renderList();
+    try{ if(typeof applySelectedTextContrast === "function") applySelectedTextContrast(); }catch(e){}
 
     if(restoreScroll != null && libList){
       const top = Math.max(0, restoreScroll);
       requestAnimationFrame(()=>{ try{ libList.scrollTop = top; }catch(e){} });
     }
+    try{
+      if(window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.saveRenderedViewSnapshot){
+        DebriPod.clientSync.saveRenderedViewSnapshot(arr);
+      }
+    }catch(e){}
   }
 
   function snapshotListState(){

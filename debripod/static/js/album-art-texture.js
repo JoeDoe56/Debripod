@@ -268,9 +268,17 @@
       }
       ready = true;
       renderToCanvas(outputCanvas);
-      try{ if(typeof scheduleNpOverlayGlassRender === "function") scheduleNpOverlayGlassRender(); }catch(e){}
+      refreshNpOverlayFromAlbumArtFrame("album art source loaded");
       if(animate) animateTransition(outputCanvas);
     });
+  }
+
+  function refreshNpOverlayFromAlbumArtFrame(reason){
+    try{ renderGlassSourceCanvas(); }catch(e){}
+    try{
+      if(typeof forceNpOverlayGlassRender === "function") forceNpOverlayGlassRender(reason || "album art frame", true);
+      else if(typeof scheduleNpOverlayGlassRender === "function") scheduleNpOverlayGlassRender();
+    }catch(e){}
   }
 
   function animateTransition(outputCanvas){
@@ -285,7 +293,7 @@
       }
       lastTick = now;
       renderToCanvas(outputCanvas);
-      try{ if(typeof scheduleNpOverlayGlassRender === "function") scheduleNpOverlayGlassRender(); }catch(e){}
+      refreshNpOverlayFromAlbumArtFrame("album art transition frame");
       if(nextSrc){
         requestTransitionFrame(tick);
       }

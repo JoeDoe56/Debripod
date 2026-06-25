@@ -1074,6 +1074,11 @@ async function libTasksPollTick(){
   var vk = (state.current && state.current.kind) ? state.current.kind : "";
   if(vk !== "libtasks" && vk !== "libtask") return;
   try{
+    if(window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.isServerUnavailable && DebriPod.clientSync.isServerUnavailable()){
+      return;
+    }
+  }catch(e){}
+  try{
     const js = await apiGet("/api/tasks");
     const tasks = (js && js.tasks) ? js.tasks : [];
     const signature = JSON.stringify(tasks.map(t=>({
@@ -1138,6 +1143,14 @@ async function libDoSearch(engine, q){
       libSetStatus("Enter a query", "warn");
       return;
     }
+    try{
+      if(window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.isServerUnavailable && DebriPod.clientSync.isServerUnavailable()){
+        libSetStatus(DebriPod.clientSync.serverRequiredMessage ? DebriPod.clientSync.serverRequiredMessage("Search") : "Search requires the local DebriPod server.", "warn");
+        if(state.libSearch) state.libSearch.searching = false;
+        libRefreshList(true);
+        return;
+      }
+    }catch(e){}
     const useEngine = String(engine || "combined").toLowerCase() || "combined";
     state.libSearch.q = qq;
     state.libSearch.engine = useEngine;
@@ -1561,7 +1574,19 @@ async function libDoSearch(engine, q){
     if(cat === "animations") return animationRows();
     if(cat === "system"){
       const systemKeys = new Set(["PORT", "ENABLE_MCP", "MCP_TOKEN", "MCP_PROTOCOL_VERSION", "MCP_SEARCH_RESULT_LIMIT", "MCP_SSE_KEEPALIVE_SECONDS", "MCP_SESSION_TTL_SECONDS", "CACHE_DIR_NAME", "STREAM_PROXY_ALLOWED_HOST_SUFFIXES", "REQUEST_TIMEOUT_SECONDS", "POLL_INTERVAL_SECONDS"]);
-      return settingRowsForCategory("advanced").filter((row)=> row && systemKeys.has(String(row.key || ""))).map(settingRowToListItem);
+      const reindex = state.fullReindexStatus || {};
+      const pct = Math.max(0, Math.min(100, Number(reindex.percent || 0)));
+      const reindexPill = reindex.running ? (String(Math.round(pct)) + "%") : (reindex.error ? {text:"Error", tone:"warn"} : (pct >= 100 ? "Complete" : "Idle"));
+      const reindexRow = {
+        kind:"libui_action",
+        label:"Full reindex",
+        sub_label:reindex.running ? ("Running " + String(reindex.phase || "index") + (reindex.root ? (" for " + reindex.root) : "")) : "Rebuilds all library folders, artwork palettes, audio analysis, video analysis, and client sync data",
+        action:"full_reindex",
+        pills:[reindexPill],
+        forceTwoLine:true,
+        settingRow:true
+      };
+      return [reindexRow].concat(settingRowsForCategory("advanced").filter((row)=> row && systemKeys.has(String(row.key || ""))).map(settingRowToListItem));
     }
     return settingRowsForCategory("advanced").filter((row)=>{
       const key = String((row && row.key) || "");
@@ -1625,11 +1650,62 @@ async function libDoSearch(engine, q){
       load: async function(){
         libControlsHide();
         await settingsLoad();
+        if(cat === "system"){
+          try{
+            const js = await apiGet("/api/library/reindex/status", {networkOnly:true, cache:"no-store"});
+            state.fullReindexStatus = (js && js.status) ? js.status : {};
+          }catch(e){}
+          scheduleFullReindexPoll();
+        }
         const items = advancedRowsForCategory(cat);
         if(!items.length) items.push({kind:"info", label:"No advanced settings"});
         resetList(items);
       }
     }, push);
+  }
+
+  var fullReindexPollTimer = 0;
+  async function refreshFullReindexStatus(){
+    try{
+      const js = await apiGet("/api/library/reindex/status", {networkOnly:true, cache:"no-store"});
+      state.fullReindexStatus = (js && js.status) ? js.status : {};
+      if(state.current && state.current.kind === "libadvancedcategory" && state.current.advancedCategory === "system"){
+        const prevSel = state.sel;
+        const prevScroll = libList ? libList.scrollTop : 0;
+        resetList(advancedRowsForCategory("system"));
+        state.sel = Math.max(0, Math.min((state.items || []).length - 1, prevSel));
+        renderList();
+        try{ if(libList) libList.scrollTop = prevScroll; }catch(e){}
+      }
+      scheduleFullReindexPoll();
+    }catch(e){
+      scheduleFullReindexPoll();
+    }
+  }
+
+  function scheduleFullReindexPoll(){
+    try{
+      if(fullReindexPollTimer) clearTimeout(fullReindexPollTimer);
+      const s = state.fullReindexStatus || {};
+      if(s.running || (state.current && state.current.kind === "libadvancedcategory" && state.current.advancedCategory === "system")){
+        fullReindexPollTimer = setTimeout(()=>{ refreshFullReindexStatus(); }, s.running ? 1500 : 8000);
+      }
+    }catch(e){}
+  }
+
+  async function startFullReindex(){
+    try{
+      const res = await apiPost("/api/library/reindex", {});
+      const js = res && res.json ? res.json : {};
+      if(!res || !res.ok || !js.ok) throw new Error((js && js.error) ? js.error : "Failed to start full reindex");
+      state.fullReindexStatus = js.status || {running:true, percent:0, phase:"starting"};
+      await viewLibAdvancedCategory("system", false);
+      scheduleFullReindexPoll();
+      return true;
+    }catch(e){
+      alert(String(e && e.message ? e.message : e));
+      return true;
+    }
   }
 
 
@@ -1766,6 +1842,13 @@ async function libDoSearch(engine, q){
 
   async function libSearchCombinedProgressive(qq, searchToken){
     const url = "/api/libsearch/combined?q=" + encodeURIComponent(qq) + "&stream=1";
+    try{
+      if(window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.isServerUnavailable && DebriPod.clientSync.isServerUnavailable()){
+        throw new Error(DebriPod.clientSync.serverRequiredMessage ? DebriPod.clientSync.serverRequiredMessage("Search") : "Search requires the local DebriPod server.");
+      }
+    }catch(e){
+      if(e && e.message) throw e;
+    }
     const started = (performance && performance.now) ? performance.now() : Date.now();
     const res = await fetch(url, {cache:"no-store"});
     try{
@@ -2152,6 +2235,7 @@ async function libDoSearch(engine, q){
         }
         if(String(action || "").indexOf("advanced_category:") === 0){
           await viewLibAdvancedCategory(String(action).split(":")[1] || "system", true);
+          if(String(action).split(":")[1] === "system") refreshFullReindexStatus();
           return true;
         }
         if(String(action || "").indexOf("toggle_glass_specular:") === 0){
@@ -2204,6 +2288,8 @@ async function libDoSearch(engine, q){
         }
         await viewLibAdvancedSettings(false);
         return true;
+      case "full_reindex":
+        return await startFullReindex();
       case "set_text_transparency":
         await viewRangeEditor({
           label:"Text transparency",

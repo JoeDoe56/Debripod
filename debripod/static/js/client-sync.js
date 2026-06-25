@@ -1,7 +1,7 @@
 (function(){
   const root = window.DebriPod = window.DebriPod || {};
   const DB_NAME = "debripod-client-mirror";
-  const DB_VERSION = 1;
+  const DB_VERSION = 2;
   const SAFE_GET_PREFIXES = [
     "/api/library/config",
     "/api/library/browse",
@@ -22,6 +22,7 @@
     "/api/playback/snapshot"
   ];
   const SEARCH_TTL_MS = 1000 * 60 * 60 * 6;
+  const OFFLINE_POLL_PAUSE_MS = 1000 * 60 * 30;
   let dbPromise = null;
   let started = false;
   let timer = 0;
@@ -48,6 +49,12 @@
         if(!db.objectStoreNames.contains("search")) db.createObjectStore("search", {keyPath:"key"});
         if(!db.objectStoreNames.contains("playback")) db.createObjectStore("playback", {keyPath:"key"});
         if(!db.objectStoreNames.contains("artwork")) db.createObjectStore("artwork", {keyPath:"key"});
+        if(!db.objectStoreNames.contains("roots")) db.createObjectStore("roots", {keyPath:"key"});
+        if(!db.objectStoreNames.contains("library_items")) db.createObjectStore("library_items", {keyPath:"key"});
+        if(!db.objectStoreNames.contains("folder_entries")) db.createObjectStore("folder_entries", {keyPath:"key"});
+        if(!db.objectStoreNames.contains("metadata_views")) db.createObjectStore("metadata_views", {keyPath:"key"});
+        if(!db.objectStoreNames.contains("view_snapshots")) db.createObjectStore("view_snapshots", {keyPath:"key"});
+        if(!db.objectStoreNames.contains("playback_recent")) db.createObjectStore("playback_recent", {keyPath:"key"});
       };
       req.onsuccess = ()=>resolve(req.result || null);
       req.onerror = ()=>resolve(null);
@@ -81,6 +88,26 @@
     return path.indexOf("/api/libsearch/") === 0 || path.indexOf("/api/search_history") === 0;
   }
 
+  function normalizeRel(rel){
+    return String(rel || "").replace(/\\/g, "/").replace(/^\/+|\/+$/g, "");
+  }
+
+  function scopedKey(){
+    return scope + "::scope";
+  }
+
+  function rootItemKey(rootId, rel){
+    return scope + "::item::" + String(rootId || "") + "::" + normalizeRel(rel);
+  }
+
+  function folderKey(rootId, rel){
+    return scope + "::folder::" + String(rootId || "") + "::" + normalizeRel(rel);
+  }
+
+  function metadataKey(rootId, level, value){
+    return scope + "::metadata::" + String(rootId || "") + "::" + String(level || "") + "::" + String(value || "");
+  }
+
   async function put(store, value){
     const db = await openDb();
     if(!db || !value || !value.key) return false;
@@ -104,6 +131,28 @@
         req.onsuccess = ()=>resolve(req.result || null);
         req.onerror = ()=>resolve(null);
       }catch(e){ resolve(null); }
+    });
+  }
+
+  async function getAllByPrefix(store, prefix){
+    const db = await openDb();
+    if(!db) return [];
+    return new Promise((resolve)=>{
+      const out = [];
+      try{
+        const tx = db.transaction(store, "readonly");
+        const os = tx.objectStore(store);
+        const req = os.openCursor();
+        req.onsuccess = ()=>{
+          const cur = req.result;
+          if(cur){
+            if(String(cur.key || "").indexOf(prefix) === 0) out.push(cur.value);
+            cur.continue();
+          }
+        };
+        tx.oncomplete = ()=>resolve(out);
+        tx.onerror = ()=>resolve(out);
+      }catch(e){ resolve(out); }
     });
   }
 
@@ -142,6 +191,26 @@
   async function maybeStoreApiGet(url, payload){
     if(!isSafeGet(url) || !payload || typeof payload !== "object") return false;
     if(payload.stale === true || payload.building === true) return false;
+    try{
+      const u = new URL(url, location.href);
+      if(u.pathname === "/api/library/browse"){
+        const rootId = u.searchParams.get("root_id") || "";
+        const rel = normalizeRel(u.searchParams.get("rel") || "");
+        if(rootId && Array.isArray(payload.entries)){
+          await put("folder_entries", {key:folderKey(rootId, rel), rootId:rootId, rel:rel, entries:sanitizeItem(payload.entries, 0), version:payload.version || 0, savedAt:Date.now()});
+        }
+      }else if(u.pathname === "/api/library/metadata"){
+        const rootId = u.searchParams.get("root_id") || "";
+        const level = u.searchParams.get("level") || "";
+        const value = u.searchParams.get("value") || "";
+        if(rootId && level){
+          await put("metadata_views", {key:metadataKey(rootId, level, value), rootId:rootId, level:level, value:value, payload:sanitizeItem(payload, 0), savedAt:Date.now()});
+        }
+      }else if(u.pathname === "/api/playback/snapshot"){
+        const recent = Array.isArray(payload.recent) ? payload.recent : [];
+        await put("playback_recent", {key:scopedKey(), scope:scope, playback:{recent:recent, now:payload.now || null}, savedAt:Date.now()});
+      }
+    }catch(e){}
     return put("api", {
       key: apiKey(url),
       scope: scope,
@@ -166,6 +235,12 @@
         deleteByPrefix("search", prev + "::");
         deleteByPrefix("playback", prev + "::");
         deleteByPrefix("artwork", prev + "::");
+        deleteByPrefix("roots", prev + "::");
+        deleteByPrefix("library_items", prev + "::");
+        deleteByPrefix("folder_entries", prev + "::");
+        deleteByPrefix("metadata_views", prev + "::");
+        deleteByPrefix("view_snapshots", prev + "::");
+        deleteByPrefix("playback_recent", prev + "::");
       }else if(old && old !== scope && old.indexOf("anonymous@") === 0){
         deleteByPrefix("api", old + "::");
       }
@@ -179,6 +254,15 @@
       document.documentElement.classList.toggle("serverUnavailable", !online);
     }catch(e){}
     if(!online) showOfflineStateIfEmpty();
+  }
+
+  function serverRequiredMessage(featureName){
+    const name = String(featureName || "This feature");
+    return name + " requires the local DebriPod server. Reconnect to the server and try again.";
+  }
+
+  function isServerUnavailable(){
+    return !online;
   }
 
   function showOfflineStateIfEmpty(){
@@ -220,6 +304,21 @@
     }catch(e){
       return scope + "::view::unknown";
     }
+  }
+
+  function descriptorForCurrent(cur){
+    cur = cur || {};
+    return {
+      kind: cur.kind || "",
+      label: cur.label || "",
+      rootId: cur.root && cur.root.id ? String(cur.root.id) : String(cur.rootId || ""),
+      rootName: cur.root && cur.root.name ? String(cur.root.name) : String(cur.rootName || ""),
+      rootMode: cur.root && cur.root.mode ? String(cur.root.mode) : String(cur.rootMode || ""),
+      rel: normalizeRel(cur.rel || ""),
+      level: cur.level || "",
+      value: cur.value || "",
+      playlistRel: cur.playlistRel || ""
+    };
   }
 
   function sanitizeRoot(value){
@@ -300,40 +399,172 @@
         playlistRel: cur.playlistRel || "",
         load: restoreLoadForCurrent(cur)
       };
-      state.items = rec.items;
       state.sel = Math.max(0, Math.min(rec.items.length - 1, Number(rec.sel || 0)));
-      if(typeof setHeader === "function") setHeader();
+      if(typeof resetList === "function") resetList(rec.items);
+      state.sel = Math.max(0, Math.min((state.items || rec.items).length - 1, Number(rec.sel || 0)));
       if(typeof renderList === "function") renderList();
-      if(libList) libList.scrollTop = Number(rec.scrollTop || 0);
+      if(libList) requestAnimationFrame(()=>{ try{ libList.scrollTop = Number(rec.scrollTop || 0); }catch(e){} });
       return true;
     }catch(e){
       return false;
     }
   }
 
-  async function saveCurrentViewState(){
+  async function saveRenderedViewSnapshot(renderedItems){
     try{
       if(!state || !state.current) return;
-      const current = {
-        kind: state.current.kind || "",
-        label: state.current.label || "",
-        rootId: state.current.root && state.current.root.id ? String(state.current.root.id) : "",
-        rootName: state.current.root && state.current.root.name ? String(state.current.root.name) : "",
-        rootMode: state.current.root && state.current.root.mode ? String(state.current.root.mode) : "",
-        rel: state.current.rel || "",
-        level: state.current.level || "",
-        value: state.current.value || "",
-        playlistRel: state.current.playlistRel || ""
+      const current = descriptorForCurrent(state.current);
+      const items = sanitizeItem(Array.isArray(renderedItems) ? renderedItems : (state.items || []), 0) || [];
+      const rootVersion = current.rootId && stateSummary && stateSummary.library_versions ? Number(stateSummary.library_versions[current.rootId] || 0) : 0;
+      const rec = {
+        key: viewKeyForDescriptor(current),
+        current: current,
+        descriptor: current,
+        items: items,
+        sel: Number(state.sel || 0),
+        scrollTop: libList ? Number(libList.scrollTop || 0) : 0,
+        rootId: current.rootId,
+        label: current.label || "",
+        savedAt: Date.now(),
+        rootVersion: rootVersion,
+        assetVersion: String(window.DEBRIPOD_ASSET_VERSION || "")
       };
-      await put("kv", {key:scope + "::last-view", value:{current:current, sel:Number(state.sel || 0), scrollTop:libList ? Number(libList.scrollTop || 0) : 0}, savedAt:Date.now()});
+      await put("kv", {key:scope + "::last-view", value:rec, savedAt:rec.savedAt});
+      await put("view_snapshots", rec);
+      await put("views", rec);
     }catch(e){}
   }
 
+  async function saveCurrentViewState(){
+    return saveRenderedViewSnapshot(state && state.items ? state.items : []);
+  }
+
   async function restoreCurrentViewState(){
-    return false;
+    try{
+      const last = await get("kv", scope + "::last-view");
+      return applyViewRecord(last && last.value ? last.value : null);
+    }catch(e){
+      return false;
+    }
+  }
+
+  function rootsToItems(roots){
+    const list = [{kind:"libsearch_entry", label:"Search"}, {kind:"libtasks_entry", label:"Tasks"}];
+    (Array.isArray(roots) ? roots : []).forEach((r)=>{
+      list.push({kind:"root", label:r.name || r.id || "Library", root:r});
+    });
+    try{
+      const recent = state && (state.now || state.serverNow);
+      if(recent) list.push({kind:"nowplaying", label:"Now Playing"});
+    }catch(e){}
+    list.push({kind:"libinfo_entry", label:"Info"});
+    return list;
+  }
+
+  async function restoreRootsView(){
+    const rec = await get("roots", scopedKey()) || await get("kv", scope + "::roots");
+    const roots = rec && (rec.roots || rec.value);
+    if(!Array.isArray(roots) || !roots.length) return false;
+    try{
+      if(!state.rootView && typeof rootViewObj === "function") state.rootView = rootViewObj();
+      state.current = state.rootView || {kind:"roots", label:"", load:function(){ if(typeof showRoots === "function") return showRoots(false); }};
+      resetList(rootsToItems(roots));
+      return true;
+    }catch(e){ return false; }
+  }
+
+  function itemsFromFolderEntries(root, rel, entries, includeUp){
+    const items = [];
+    if(includeUp) items.push({kind:"up", label:".."});
+    (Array.isArray(entries) ? entries : []).forEach((e)=>{
+      if(!e || typeof e !== "object") return;
+      if(e.type === "dir"){
+        items.push({kind:"dir", label:e.name || String(e.rel || "").split("/").pop(), rel:normalizeRel(e.rel || ""), root:root});
+      }else if(e.type === "file"){
+        const media = String(e.media || "");
+        const pills = media ? [media] : [];
+        items.push({kind:"file", label:e.name || String(e.rel || "").split("/").pop(), rel:normalizeRel(e.rel || ""), root:root, media:media, pills:pills});
+      }
+    });
+    return items;
+  }
+
+  async function synthesizeFolderEntries(root, rel){
+    const rootId = root && root.id ? String(root.id) : "";
+    const prefix = scope + "::item::" + rootId + "::";
+    const rows = await getAllByPrefix("library_items", prefix);
+    const base = normalizeRel(rel);
+    const dirs = new Map();
+    const files = [];
+    rows.forEach((rec)=>{
+      const item = rec && rec.item ? rec.item : rec;
+      if(!item || item.deleted) return;
+      const rp = normalizeRel(item.rel || item.rel_path || "");
+      if(!rp) return;
+      if(base && rp.indexOf(base + "/") !== 0) return;
+      const rest = base ? rp.slice(base.length + 1) : rp;
+      if(!rest || rest.indexOf("/") < 0){
+        files.push({type:"file", name:rest || rp.split("/").pop(), rel:rp, media:item.media || item.kind || ""});
+        return;
+      }
+      const first = rest.split("/")[0];
+      const drel = base ? (base + "/" + first) : first;
+      if(!dirs.has(drel)) dirs.set(drel, {type:"dir", name:first, rel:drel});
+    });
+    const entries = Array.from(dirs.values()).sort((a,b)=>String(a.name).localeCompare(String(b.name)));
+    files.sort((a,b)=>String(a.name).localeCompare(String(b.name)));
+    return entries.concat(files);
   }
 
   async function restoreCachedView(desc){
+    try{
+      const d = desc || {};
+      const kind = String(d.kind || "");
+      const snap = await get("view_snapshots", viewKeyForDescriptor(d));
+      if(snap && applyViewRecord(snap)) return true;
+      if(kind === "roots") return restoreRootsView();
+      const rootObj = sanitizeRoot(d.root || {id:d.rootId || "", name:d.rootName || "", mode:d.rootMode || ""}) || (d.root || null);
+      const rootId = rootObj && rootObj.id ? String(rootObj.id) : "";
+      if(kind === "folder" && rootId){
+        const rel = normalizeRel(d.rel || "");
+        const api = await cachedApiGet("/api/library/browse?root_id=" + encodeURIComponent(rootId) + "&rel=" + encodeURIComponent(rel));
+        const entries = (api && Array.isArray(api.entries)) ? api.entries : (((await get("folder_entries", folderKey(rootId, rel))) || {}).entries || await synthesizeFolderEntries(rootObj, rel));
+        if(entries && entries.length){
+          state.current = Object.assign({}, d, {kind:"folder", root:rootObj, rel:rel, load:restoreLoadForCurrent({kind:"folder", rootId:rootId, rootName:rootObj.name || "", rootMode:rootObj.mode || "", rel:rel, label:d.label || ""})});
+          resetList(itemsFromFolderEntries(rootObj, rel, entries, !!((state.history && state.history.length) || rel)));
+          return true;
+        }
+      }
+      if((kind === "metatop" || kind === "metalist") && rootId){
+        const level = kind === "metatop" ? "top" : String(d.level || "");
+        const value = kind === "metatop" ? "" : String(d.value || "");
+        const apiUrl = "/api/library/metadata?root_id=" + encodeURIComponent(rootId) + "&level=" + encodeURIComponent(level) + (value ? "&value=" + encodeURIComponent(value) : "");
+        const api = await cachedApiGet(apiUrl) || (((await get("metadata_views", metadataKey(rootId, level, value))) || {}).payload);
+        if(api){
+          state.current = Object.assign({}, d, {kind:kind, root:rootObj, level:d.level || "", value:d.value || "", load:restoreLoadForCurrent({kind:kind, rootId:rootId, rootName:rootObj.name || "", rootMode:rootObj.mode || "", level:d.level || "", value:d.value || "", label:d.label || ""})});
+          if(kind === "metatop"){
+            resetList((api.categories || []).map(c=>({kind:"metacat", label:c.label, cat:c.key, root:rootObj, badge:api.building ? "indexing" : ""})));
+          }else{
+            const items = [];
+            (api.items || []).forEach((it)=>{
+              if(it && it.kind === "info") items.push({kind:"info", label:it.label || ""});
+              else items.push(Object.assign({}, it, {root:rootObj}));
+            });
+            resetList(items);
+          }
+          return true;
+        }
+      }
+      if(kind === "history" || kind === "playback_queue"){
+        const recent = await get("playback_recent", scopedKey()) || await get("playback", scope + "::recent");
+        const payload = recent && (recent.playback || recent.value || recent);
+        if(payload && Array.isArray(payload.recent)){
+          state.current = Object.assign({}, d, {kind:kind});
+          resetList(payload.recent.map((it)=>({kind:"history_item", label:it.label || it.title || it.rel || "Recent", rootId:it.root_id || it.rootId || "", rel:it.rel || "", media:it.media || "audio", nav:it.nav || null})));
+          return true;
+        }
+      }
+    }catch(e){}
     return false;
   }
 
@@ -344,6 +575,7 @@
       const last = await get("kv", scope + "::last-view");
       const cur = last && last.value && last.value.current ? last.value.current : null;
       if(!cur || !cur.kind) return false;
+      if(await restoreCachedView(cur)) return true;
       const rootObj = sanitizeRoot({id: cur.rootId || "", name: cur.rootName || "", mode: cur.rootMode || ""}) || {id: String(cur.rootId || "")};
       if(cur.kind === "folder" && typeof viewFolder === "function"){
         await viewFolder(rootObj, cur.rel || "", cur.label || "", false);
@@ -395,9 +627,31 @@
       const js = await apiGet("/api/sync?since=" + encodeURIComponent(JSON.stringify(since)), {skipMirror:true});
       if(!js || !js.ok) return;
       await put("kv", {key:scope + "::sync", value:js, savedAt:Date.now()});
-      if(Array.isArray(js.roots)) await put("kv", {key:scope + "::roots", value:js.roots, savedAt:Date.now()});
+      if(Array.isArray(js.roots)){
+        await put("kv", {key:scope + "::roots", value:js.roots, savedAt:Date.now()});
+        await put("roots", {key:scopedKey(), scope:scope, roots:js.roots, savedAt:Date.now()});
+      }
+      if(js.library_versions) await put("kv", {key:scope + "::library_versions", value:js.library_versions, savedAt:Date.now()});
+      if(Array.isArray(js.library_changes)){
+        for(const item of js.library_changes){
+          if(item && item.root_id && item.rel){
+            await put("library_items", {key:rootItemKey(item.root_id, item.rel), rootId:String(item.root_id), rel:normalizeRel(item.rel), item:sanitizeItem(item, 0), savedAt:Date.now()});
+          }
+        }
+      }
+      if(Array.isArray(js.deleted)){
+        for(const item of js.deleted){
+          if(item && item.root_id && item.rel){
+            await put("library_items", {key:rootItemKey(item.root_id, item.rel), rootId:String(item.root_id), rel:normalizeRel(item.rel), item:Object.assign({}, sanitizeItem(item, 0), {deleted:true}), savedAt:Date.now()});
+          }
+        }
+      }
       if(Array.isArray(js.search_history)) await put("search", {key:scope + "::history", value:js.search_history, savedAt:Date.now()});
-      if(js.playback) await put("playback", {key:scope + "::recent", value:js.playback, savedAt:Date.now()});
+      if(js.settings) await put("kv", {key:scope + "::settings", value:sanitizeItem(js.settings, 0), savedAt:Date.now()});
+      if(js.playback){
+        await put("playback", {key:scope + "::recent", value:js.playback, savedAt:Date.now()});
+        await put("playback_recent", {key:scopedKey(), scope:scope, playback:js.playback, savedAt:Date.now()});
+      }
     }catch(e){}
   }
 
@@ -493,7 +747,7 @@
 
   function schedule(){
     if(timer || !started) return;
-    timer = setTimeout(tick, document.hidden ? 120000 : 60000);
+    timer = setTimeout(tick, !online ? OFFLINE_POLL_PAUSE_MS : (document.hidden ? 120000 : 60000));
   }
 
   function registerServiceWorker(){
@@ -524,8 +778,16 @@
   try{
     document.addEventListener("visibilitychange", ()=>{
       if(!document.hidden && started){
+        if(!online) return;
         if(timer) clearTimeout(timer);
         timer = setTimeout(tick, 1500);
+      }
+    });
+    window.addEventListener("online", ()=>{
+      setOnline(true);
+      if(started){
+        if(timer) clearTimeout(timer);
+        timer = setTimeout(tick, 400);
       }
     });
     window.addEventListener("beforeunload", ()=>{ saveCurrentViewState(); });
@@ -541,7 +803,10 @@
     restoreCachedView,
     restoreStartupViewState,
     saveCurrentViewState,
+    saveRenderedViewSnapshot,
     isSafeGet,
+    serverRequiredMessage,
+    isServerUnavailable,
     restoredStartup: function(){ return startupRestored; },
     getStateSummary: function(){ return stateSummary; }
   };

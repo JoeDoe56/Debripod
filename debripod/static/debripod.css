@@ -254,9 +254,9 @@
       pointer-events: none !important;
     }
     .liquidGlassCanvasNpOverlay{
-      position: fixed !important;
-      inset: 0 !important;
-      z-index: 75 !important;
+      position: absolute !important;
+      inset: auto !important;
+      z-index: 1 !important;
       pointer-events: none !important;
     }
     .liquidGlassCanvasLibList{ position: absolute !important; z-index: 1 !important; }
@@ -1459,7 +1459,7 @@
   left: 12px;
   right: 12px;
   bottom: 12px;
-  z-index: 80;
+  z-index: 160;
   border-radius: 20px;
   border: 0;
   background: transparent;
@@ -1493,14 +1493,16 @@
 }
 .npOverlayContent{
   position:relative;
-  z-index:3;
+  z-index:30;
   width:100%;
   border-radius:inherit;
   pointer-events:auto;
+  opacity:1;
+  visibility:visible;
 }
 .npOverlaySurface{
   position:relative;
-  z-index:3;
+  z-index:31;
   width:100%;
   min-height:0;
   box-sizing:border-box;
@@ -1508,6 +1510,8 @@
   padding: 8px 10px 8px;
   min-width:0;
   pointer-events:auto;
+  opacity:1;
+  visibility:visible;
 }
 .npOverlayPill.npPillHidden{
   opacity: 0;

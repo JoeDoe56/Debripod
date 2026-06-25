@@ -12,7 +12,7 @@ from typing import Any, Iterator, Optional
 from ..paths import cache_dir
 
 SCHEMA_VERSION = 2
-ANALYSIS_ALGORITHM_VERSION = 1
+ANALYSIS_ALGORITHM_VERSION = 2
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 
 _DB_LOCK = threading.RLock()
@@ -754,10 +754,10 @@ def save_index_snapshot(root_id: str, root_abs: str, data: dict, *, mode: str = 
                 (root_id, rel, version, _path_mtime_ns(abs_dir), now, json.dumps(entries, ensure_ascii=False, sort_keys=True)),
             )
         conn.execute("DELETE FROM folder_entries WHERE root_id = ? AND root_version < ?", (root_id, version))
-        active_audio_identity = {
+        active_media_identity = {
             rel: (size, mtime_ns)
             for rel, (_abs_path, media_type, size, mtime_ns) in next_items.items()
-            if media_type == "audio"
+            if media_type in ("audio", "video")
         }
         rows = conn.execute(
             "SELECT analysis_key, rel, size, mtime_ns, algorithm_version FROM visualizer_analysis WHERE root_id = ?",
@@ -765,7 +765,7 @@ def save_index_snapshot(root_id: str, root_abs: str, data: dict, *, mode: str = 
         ).fetchall()
         for row in rows:
             rel = str(row["rel"] or "")
-            ident = active_audio_identity.get(rel)
+            ident = active_media_identity.get(rel)
             stale = (
                 ident is None
                 or int(row["size"] or 0) != int(ident[0] or 0)
@@ -1045,6 +1045,10 @@ def load_palette_for_media(root_id: str, rel: str) -> Optional[dict]:
 
 def save_palette(cache_key: str, palette: dict, *, source_kind: str = "", source_identity: str = "", root_id: str = "", rel: str = "") -> None:
     payload = json.dumps(palette if isinstance(palette, dict) else {}, ensure_ascii=False, sort_keys=True)
+    try:
+        palette_version = int(palette.get("version") if isinstance(palette, dict) else SCHEMA_VERSION)
+    except Exception:
+        palette_version = SCHEMA_VERSION
     with library_db() as conn:
         conn.execute(
             """
@@ -1059,7 +1063,7 @@ def save_palette(cache_key: str, palette: dict, *, source_kind: str = "", source
               saved_at=excluded.saved_at,
               palette_json=excluded.palette_json
             """,
-            (str(cache_key or ""), str(root_id or ""), str(rel or ""), str(source_kind or ""), str(source_identity or ""), SCHEMA_VERSION, time.time(), payload),
+            (str(cache_key or ""), str(root_id or ""), str(rel or ""), str(source_kind or ""), str(source_identity or ""), palette_version, time.time(), payload),
         )
 
 
@@ -1115,7 +1119,7 @@ def load_visualizer_analysis_for_media(root_id: str, rel: str) -> Optional[dict[
             WHERE va.root_id = ?
               AND va.rel = ?
               AND va.algorithm_version = ?
-              AND mf.media_type = 'audio'
+              AND mf.media_type IN ('audio', 'video')
             ORDER BY va.saved_at DESC
             LIMIT 1
             """,

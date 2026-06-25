@@ -170,6 +170,19 @@
   function rendererTargetVisible(renderer){
     try{
       if(!renderer || !renderer.lenses || !renderer.lenses.length || document.hidden) return false;
+      if((renderer.rendererKey || "") === "npOverlay"){
+        const pill = document.getElementById("npOverlayPill");
+        const opacity = pill && window.getComputedStyle ? Number(window.getComputedStyle(pill).opacity || 1) : 1;
+        const hiddenDone = pill && pill.classList && pill.classList.contains("npPillHidden") && (!Number.isFinite(opacity) || opacity <= 0.01);
+        if(hiddenDone) return false;
+        return renderer.lenses.some((lens)=>{
+          if(!lens || !lens.el || !lens.el.isConnected) return false;
+          const style = window.getComputedStyle ? window.getComputedStyle(lens.el) : null;
+          if(style && style.display === "none") return false;
+          const rect = lens.el.getBoundingClientRect();
+          return rect.width > 0 && rect.height > 0;
+        });
+      }
       return renderer.lenses.some((lens)=>{
         if(!lens || !lens.el || !lens.el.isConnected) return false;
         const style = window.getComputedStyle ? window.getComputedStyle(lens.el) : null;
@@ -296,13 +309,11 @@
           }
           positionLibSelectionLiquidCanvas();
         }else if(key === "npOverlay"){
-          if(renderer.canvas.parentNode !== wrap){
-            const afterBg = document.getElementById("visualizerBg");
-            if(afterBg && afterBg.parentNode === wrap && afterBg.nextSibling){
-              wrap.insertBefore(renderer.canvas, afterBg.nextSibling);
-            }else{
-              wrap.insertBefore(renderer.canvas, wrap.firstChild);
-            }
+          const glassHost = document.getElementById("npOverlayGlassHost");
+          if(glassHost && renderer.canvas.parentNode !== glassHost){
+            glassHost.insertBefore(renderer.canvas, glassHost.firstChild);
+          }else if(!glassHost && renderer.canvas.parentNode !== wrap){
+            wrap.insertBefore(renderer.canvas, wrap.firstChild);
           }
           positionNpOverlayLiquidCanvas();
         }else if(renderer.canvas.parentNode !== wrap){
@@ -314,7 +325,7 @@
           }
         }
         renderer.canvas.style.pointerEvents = "none";
-        renderer.canvas.style.setProperty("z-index", (key === "libPills" || key === "libSelection") ? "2" : (key === "libList" ? "1" : (key === "npOverlay" ? "75" : (key === "wheel" ? "10" : "65"))), "important");
+        renderer.canvas.style.setProperty("z-index", (key === "libPills" || key === "libSelection") ? "2" : (key === "libList" ? "1" : (key === "npOverlay" ? "1" : (key === "wheel" ? "10" : "65"))), "important");
       });
       debugLiquidGlassRenderers("mount");
     }catch(e){}
@@ -390,8 +401,26 @@
   function refreshNpOverlayGlassSource(reason){
     try{
       const renderer = liquidGlassRendererByKey("npOverlay");
-      if(!renderer) return;
+      if(!renderer) return false;
       const artEl = document.getElementById("npArt");
+      const sourceImg = document.getElementById("npArtLiquidSource");
+      let sourceKey = "";
+      try{
+        const currentSrc = root.albumArtTexture && root.albumArtTexture.currentSource ? root.albumArtTexture.currentSource() : "";
+        sourceKey = typeof nowPlayingArtCompareKey === "function"
+          ? nowPlayingArtCompareKey(currentSrc || (sourceImg && (sourceImg.currentSrc || sourceImg.src)) || "")
+          : String(currentSrc || (sourceImg && (sourceImg.currentSrc || sourceImg.src)) || "");
+      }catch(e){
+        sourceKey = "";
+      }
+      const sourceMatches = !sourceKey || renderer._npOverlaySourceKey === sourceKey;
+      const markSourceReady = (updated)=>{
+        try{
+          if(updated && sourceKey) renderer._npOverlaySourceKey = sourceKey;
+        }catch(e){}
+        return !!updated;
+      };
+      const hasMatchingTexture = ()=> npOverlayHasSourceTexture(renderer) && sourceMatches;
       const glassCanvas = root.albumArtTexture && root.albumArtTexture.renderGlassSourceCanvas ? root.albumArtTexture.renderGlassSourceCanvas() : null;
       if(renderer && artEl && glassCanvas && renderer.updateTextureFromCanvas){
         const rect = artEl.getBoundingClientRect();
@@ -413,7 +442,7 @@
             artRect: {left: rect.left || 0, top: rect.top || 0, width: rect.width || 0, height: rect.height || 0},
             updateReturned: !!updated
           });
-          if(updated || renderer.texture || renderer._sourceTextureReady) return;
+          if(markSourceReady(updated) || hasMatchingTexture()) return true;
         }
       }
       if(artEl && artEl instanceof HTMLCanvasElement && artEl.width > 0 && artEl.height > 0 && renderer.updateTextureFromCanvas){
@@ -436,14 +465,14 @@
             artRect: {left: rect.left || 0, top: rect.top || 0, width: rect.width || 0, height: rect.height || 0},
             updateReturned: !!updated
           });
-          if(updated || renderer.texture || renderer._sourceTextureReady) return;
+          if(markSourceReady(updated) || hasMatchingTexture()) return true;
         }
       }
-      const sourceImg = document.getElementById("npArtLiquidSource");
       if(sourceImg && sourceImg.complete && sourceImg.naturalWidth && sourceImg.naturalHeight){
+        let updated = false;
         if(renderer.updateTextureFromImage){
           const rect = artEl ? artEl.getBoundingClientRect() : null;
-          const updated = renderer.updateTextureFromImage(sourceImg, {
+          updated = !!renderer.updateTextureFromImage(sourceImg, {
             reason: reason || "album art image fallback",
             sourceRect: {
               left: (rect && rect.left) || 0,
@@ -461,19 +490,9 @@
           });
         }else{
           refreshLiquidGlassSource(renderer, reason || "album art image fallback");
+          updated = npOverlayHasSourceTexture(renderer);
         }
-        return;
-      }
-      if(renderer.updateTextureFromSolidColor){
-        renderer.updateTextureFromSolidColor(8, 8, [5, 5, 7, 255], {reason: reason || "album art fallback", allowDark: true});
-        debugNpOverlaySource("solid fallback", renderer, {
-          reason: reason || "",
-          glassCanvasWidth: glassCanvas ? glassCanvas.width || 0 : 0,
-          glassCanvasHeight: glassCanvas ? glassCanvas.height || 0 : 0,
-          artRect: artEl ? (function(){ const r = artEl.getBoundingClientRect(); return {left:r.left || 0, top:r.top || 0, width:r.width || 0, height:r.height || 0}; })() : null,
-          updateReturned: true
-        });
-        return;
+        return markSourceReady(updated) || hasMatchingTexture();
       }
       debugNpOverlaySource("skipped keep previous", renderer, {
         reason: reason || "",
@@ -482,8 +501,40 @@
         artRect: artEl ? (function(){ const r = artEl.getBoundingClientRect(); return {left:r.left || 0, top:r.top || 0, width:r.width || 0, height:r.height || 0}; })() : null,
         updateReturned: false
       });
-      return;
-    }catch(e){}
+      return hasMatchingTexture();
+    }catch(e){
+      return false;
+    }
+  }
+
+  function ensureNpOverlayRendererTarget(reason){
+    try{
+      if(typeof window.liquidGL !== "function") return liquidGlassRendererByKey("npOverlay");
+      let renderer = liquidGlassRendererByKey("npOverlay");
+      const target = document.querySelector(".npOverlayGlass.liquidGlass");
+      const hasTarget = !!(renderer && renderer.lenses && renderer.lenses.some((lens)=> lens && lens.el === target));
+      if(!renderer || !hasTarget || (renderer.lenses && renderer.lenses.length !== 1)){
+        window.liquidGL(Object.assign({}, liquidGlassElementOptions("nowPlayingPill"), {
+          target: ".npOverlayGlass.liquidGlass",
+          sourceType: "albumArtCanvasOrImage",
+          sourceElement: "#npArtGlassSource",
+          sourceCssElement: "#npArt",
+          rendererKey: "npOverlay",
+          syncTargets: true
+        }));
+        mountLiquidCanvas();
+        renderer = liquidGlassRendererByKey("npOverlay");
+      }
+      if(renderer && renderer.canvas){
+        const glassHost = document.getElementById("npOverlayGlassHost");
+        if(glassHost && renderer.canvas.parentNode !== glassHost) mountLiquidCanvas();
+        renderer.canvas.style.display = "";
+        renderer.canvas.style.visibility = "";
+      }
+      return renderer;
+    }catch(e){
+      return liquidGlassRendererByKey("npOverlay");
+    }
   }
 
   function applyNpOverlayGlassTuning(renderer){
@@ -509,9 +560,38 @@
     }
   }
 
-  function forceNpOverlayGlassRender(reason, refreshSource){
+  function npOverlayHasSourceTexture(renderer){
     try{
-      const renderer = liquidGlassRendererByKey("npOverlay");
+      return !!(renderer && (renderer.texture || renderer._sourceTextureReady) && (renderer.textureWidth || 0) > 0 && (renderer.textureHeight || 0) > 0);
+    }catch(e){
+      return false;
+    }
+  }
+
+  function clearNpOverlayWarmupRetry(){
+    try{
+      if(clearNpOverlayWarmupRetry._timer) clearTimeout(clearNpOverlayWarmupRetry._timer);
+    }catch(e){}
+    clearNpOverlayWarmupRetry._timer = 0;
+  }
+
+  function scheduleNpOverlayWarmupRetry(reason, attempt){
+    try{
+      const nextAttempt = Math.max(0, Number(attempt || 0));
+      if(nextAttempt >= 8 || clearNpOverlayWarmupRetry._timer) return;
+      if(!npOverlayPill || npOverlayPill.classList.contains("npPillHidden")) return;
+      const delays = [40, 80, 140, 220, 360, 520, 800, 1200];
+      clearNpOverlayWarmupRetry._timer = setTimeout(()=>{
+        clearNpOverlayWarmupRetry._timer = 0;
+        forceNpOverlayGlassRender((reason || "np overlay warmup") + " retry", true, nextAttempt + 1);
+      }, delays[nextAttempt] || 1200);
+    }catch(e){}
+  }
+
+  function forceNpOverlayGlassRender(reason, refreshSource, warmupAttempt){
+    try{
+      try{ if(!liquidGlassReady && typeof window.liquidGL === "function") initLiquidGlass(); }catch(e){}
+      const renderer = ensureNpOverlayRendererTarget(reason || "np overlay render");
       if(!renderer) return;
       positionNpOverlayLiquidCanvas();
       applyNpOverlayGlassTuning(renderer);
@@ -526,7 +606,7 @@
           }catch(e){}
         });
       }
-      if(refreshSource !== false) refreshNpOverlayGlassSource(reason || "np overlay render");
+      const sourceReady = refreshSource === false ? npOverlayHasSourceTexture(renderer) : refreshNpOverlayGlassSource(reason || "np overlay render");
       const opacity = npOverlayPillRenderOpacity();
       if(renderer.lenses && renderer.lenses.length){
         renderer.lenses.forEach((lens)=>{
@@ -535,6 +615,8 @@
       }
       if(renderer.render) renderer.render(currentVisualizerFrameState());
       if(renderer.canvas) renderer.canvas.style.opacity = String(opacity);
+      if(sourceReady || npOverlayHasSourceTexture(renderer)) clearNpOverlayWarmupRetry();
+      else scheduleNpOverlayWarmupRetry(reason || "np overlay render", warmupAttempt || 0);
       debugLiquidGlassRenderers(reason || "np overlay render");
     }catch(e){}
   }
@@ -997,17 +1079,19 @@
       const renderer = liquidGlassRendererByKey("npOverlay");
       const canvas = renderer && renderer.canvas;
       if(!canvas) return;
-      canvas.style.position = "fixed";
-      canvas.style.setProperty("position", "fixed", "important");
-      canvas.style.setProperty("inset", "0", "important");
-      canvas.style.setProperty("left", "0", "important");
-      canvas.style.setProperty("top", "0", "important");
-      canvas.style.right = "0";
-      canvas.style.bottom = "0";
+      const host = document.getElementById("npOverlayGlassHost");
+      const rect = host && host.getBoundingClientRect ? host.getBoundingClientRect() : {left:0, top:0};
+      canvas.style.position = "absolute";
+      canvas.style.setProperty("position", "absolute", "important");
+      canvas.style.setProperty("inset", "auto", "important");
+      canvas.style.setProperty("left", (-(rect.left || 0)).toFixed(3) + "px", "important");
+      canvas.style.setProperty("top", (-(rect.top || 0)).toFixed(3) + "px", "important");
+      canvas.style.right = "auto";
+      canvas.style.bottom = "auto";
       canvas.style.setProperty("width", (window.innerWidth || canvas.width || 1) + "px", "important");
       canvas.style.setProperty("height", (window.innerHeight || canvas.height || 1) + "px", "important");
       canvas.style.setProperty("pointer-events", "none", "important");
-      canvas.style.setProperty("z-index", "75", "important");
+      canvas.style.setProperty("z-index", "1", "important");
       canvas.style.visibility = "";
     }catch(e){}
   }
@@ -1109,14 +1193,30 @@
         const key = renderer.rendererKey || "default";
         const settingsKey = key === "libList" ? "libraryList" : (key === "libSelection" ? "selectedRow" : (key === "libPills" ? "listPills" : (key === "npOverlay" ? "nowPlayingPill" : (key === "wheel" ? "wheel" : "pathPill"))));
         const settings = glassElementSettings(settingsKey) || {};
-        out.push({
+        const canvasStyle = renderer.canvas && window.getComputedStyle ? window.getComputedStyle(renderer.canvas) : null;
+        const targetRects = (renderer.lenses || []).map((lens)=>{
+          try{
+            const r = lens && lens.el ? lens.el.getBoundingClientRect() : null;
+            return r ? {left:r.left, top:r.top, width:r.width, height:r.height} : null;
+          }catch(e){ return null; }
+        }).filter(Boolean);
+        const row = {
           key:key,
           visible:rendererTargetVisible(renderer),
           resolution:Number(settings.resolution || renderer.resolution || 0),
           texture:String(renderer.textureWidth || 0) + "x" + String(renderer.textureHeight || 0),
           lens_count:renderer.lenses ? renderer.lenses.length : 0,
+          lensCount:renderer.lenses ? renderer.lenses.length : 0,
           canvas_opacity:renderer.canvas && window.getComputedStyle ? window.getComputedStyle(renderer.canvas).opacity : ""
-        });
+        };
+        if(key === "npOverlay"){
+          row.textureWidth = renderer.textureWidth || 0;
+          row.textureHeight = renderer.textureHeight || 0;
+          row.sourceType = renderer.sourceType || "";
+          row.canvasVisibility = canvasStyle ? {display:canvasStyle.display, visibility:canvasStyle.visibility, opacity:canvasStyle.opacity} : null;
+          row.targetRects = targetRects;
+        }
+        out.push(row);
       });
     }catch(e){}
     return out;
