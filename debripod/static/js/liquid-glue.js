@@ -395,7 +395,8 @@
         textureWidth: renderer ? renderer.textureWidth || 0 : 0,
         textureHeight: renderer ? renderer.textureHeight || 0 : 0,
         sourceCssRect: renderer && renderer._sourceCssRect ? renderer._sourceCssRect : null,
-        lenses: lenses
+        lenses: lenses,
+        rendererState: renderer && renderer.debugState ? renderer.debugState() : null
       }, details || {}));
     }catch(e){}
   }
@@ -445,13 +446,26 @@
       };
       if(renderer.sourceType === "albumArtTransition"){
         const updated = renderer.refreshSourceTexture ? renderer.refreshSourceTexture(reason || "album art transition provider") : false;
-        if(updated){
-          renderer._npOverlaySourceKey = renderer._albumSourceKey || sourceKey || "";
-          renderer._npOverlayFrameId = renderer._albumFrameId || frameId || 0;
-          renderer._npOverlayLastUploadedMix = renderer._albumMix || 0;
-          renderer._npOverlayLastUploadedTransitioning = renderer._albumTransitioning === true;
+        if(!updated){
+          debugNpOverlaySource("album art transition provider unavailable", renderer, {
+            reason: reason || "",
+            sourceType: renderer.sourceType || "",
+            sourceKey: renderer._albumSourceKey || "",
+            frameId: renderer._albumFrameId || 0,
+            uploadedCurrentSrc: renderer._albumUploadedCurrentSrc || "",
+            uploadedNextSrc: renderer._albumUploadedNextSrc || "",
+            mix: renderer._albumMix || 0,
+            transitioning: renderer._albumTransitioning === true,
+            updateReturned: false
+          });
+          markSourceReady(false);
+          return false;
         }
-        debugNpOverlaySource(updated ? "album art transition provider" : "album art transition provider unavailable", renderer, {
+        renderer._npOverlaySourceKey = renderer._albumSourceKey || sourceKey || "";
+        renderer._npOverlayFrameId = renderer._albumFrameId || frameId || 0;
+        renderer._npOverlayLastUploadedMix = renderer._albumMix || 0;
+        renderer._npOverlayLastUploadedTransitioning = renderer._albumTransitioning === true;
+        debugNpOverlaySource("album art transition provider", renderer, {
           reason: reason || "",
           sourceType: renderer.sourceType || "",
           sourceKey: renderer._albumSourceKey || "",
@@ -460,9 +474,10 @@
           uploadedNextSrc: renderer._albumUploadedNextSrc || "",
           mix: renderer._albumMix || 0,
           transitioning: renderer._albumTransitioning === true,
-          updateReturned: !!updated
+          updateReturned: true
         });
-        return markSourceReady(updated) || npOverlayHasSourceTexture(renderer);
+        markSourceReady(true);
+        return true;
       }
       const npOverlayHasCurrentFrameTexture = ()=>{
         if(!npOverlayHasSourceTexture(renderer)) return false;

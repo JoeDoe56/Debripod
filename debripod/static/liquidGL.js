@@ -272,6 +272,8 @@
       this._albumFrameId = 0;
       this._albumSourceKey = "";
       this._albumRenderedAt = 0;
+      this._albumSourceRect = null;
+      this._debugCanaryTexture = null;
       this.renderCount = 0;
       this.visible = true;
       this._adaptiveQuality = 1;
@@ -480,25 +482,36 @@
           return 1.0 - smoothstep(-1.25, 1.25, innerD);
         }
 
-        vec2 albumCoverUV(vec2 uv, vec2 imageSize) {
-          vec2 sourceSize = max(u_textureResolution, vec2(1.0));
+        vec2 albumCoverUVFromSourceUV(vec2 sourceUV, vec2 sourceSize, vec2 imageSize) {
+          vec2 safeSourceSize = max(sourceSize, vec2(1.0));
           vec2 safeImageSize = max(imageSize, vec2(1.0));
-          float ca = sourceSize.x / sourceSize.y;
+          float ca = safeSourceSize.x / safeSourceSize.y;
           float ia = safeImageSize.x / safeImageSize.y;
-          vec2 outUv = uv;
+          vec2 outUv = sourceUV;
           if (ca > ia) {
-            outUv.y = (uv.y - 0.5) * ca / ia + 0.5;
+            outUv.y = (sourceUV.y - 0.5) * ca / ia + 0.5;
           } else {
-            outUv.x = (uv.x - 0.5) * ia / ca + 0.5;
+            outUv.x = (sourceUV.x - 0.5) * ia / ca + 0.5;
           }
           return vec2(outUv.x, 1.0 - outUv.y);
         }
 
+        vec4 sampleAlbumArtSource(vec2 sourceUV) {
+          vec2 sourceSize = max(u_textureResolution, vec2(1.0));
+          vec2 curUV = albumCoverUVFromSourceUV(sourceUV, sourceSize, u_albumCurrentSize);
+          vec2 nextUV = albumCoverUVFromSourceUV(sourceUV, sourceSize, u_albumNextSize);
+          vec4 cur = texture2D(u_albumCurrentTex, curUV);
+          vec4 next = texture2D(u_albumNextTex, nextUV);
+          vec4 col = mix(cur, next, clamp(u_albumMix, 0.0, 1.0));
+          if (col.a < 0.01) {
+            col.a = 1.0;
+          }
+          return col;
+        }
+
         vec4 sampleLiquidSource(vec2 uv) {
           if (u_useAlbumTransitionSource) {
-            vec4 cur = texture2D(u_albumCurrentTex, albumCoverUV(uv, u_albumCurrentSize));
-            vec4 next = texture2D(u_albumNextTex, albumCoverUV(uv, u_albumNextSize));
-            return mix(cur, next, clamp(u_albumMix, 0.0, 1.0));
+            return sampleAlbumArtSource(uv);
           }
           return texture2D(u_tex, uv);
         }
@@ -775,6 +788,94 @@
       return source ? (source.videoHeight || source.naturalHeight || source.height || 0) : 0;
     }
 
+    debugState() {
+      return {
+        rendererKey: this.rendererKey,
+        sourceType: this.sourceType,
+        visible: this.visible,
+        canvasOpacity: this.canvas ? this.canvas.style.opacity : "",
+        canvasDisplay: this.canvas ? this.canvas.style.display : "",
+        canvasVisibility: this.canvas ? this.canvas.style.visibility : "",
+        canvasWidth: this.canvas ? this.canvas.width : 0,
+        canvasHeight: this.canvas ? this.canvas.height : 0,
+        lensCount: this.lenses ? this.lenses.length : 0,
+        lensRects: (this.lenses || []).map((ln) => ln && ln.rectPx ? {
+          left: ln.rectPx.left,
+          top: ln.rectPx.top,
+          width: ln.rectPx.width,
+          height: ln.rectPx.height
+        } : null),
+        hasTexture: !!this.texture,
+        textureWidth: this.textureWidth || 0,
+        textureHeight: this.textureHeight || 0,
+        sourceReady: !!this._sourceTextureReady,
+        albumCurrentTexture: !!this._albumCurrentTexture,
+        albumNextTexture: !!this._albumNextTexture,
+        albumUploadedCurrentSrc: this._albumUploadedCurrentSrc || "",
+        albumUploadedNextSrc: this._albumUploadedNextSrc || "",
+        albumMix: this._albumMix || 0,
+        albumTransitioning: this._albumTransitioning === true,
+        albumFrameId: this._albumFrameId || 0,
+        albumSourceKey: this._albumSourceKey || "",
+        sourceCssRect: this._sourceCssRect || null,
+        albumSourceRect: this._albumSourceRect || null,
+        pendingRevealCount: this._pendingReveal ? this._pendingReveal.length || 0 : 0,
+        renderCount: this.renderCount || 0
+      };
+    }
+
+    _npOverlayDebugEnabled() {
+      try {
+        return this.rendererKey === "npOverlay" && (
+          window.DEBRIPOD_UI_DEBUG === true ||
+          window.DEBRIPOD_NP_OVERLAY_DEBUG === true ||
+          (localStorage.getItem("debripod_ui_debug") || "") === "1" ||
+          (localStorage.getItem("debripod_np_overlay_debug") || "") === "1"
+        );
+      } catch (e) {
+        return false;
+      }
+    }
+
+    _debugNpOverlaySkip(reason, details = {}) {
+      if (!this._npOverlayDebugEnabled()) return;
+      liquidGLLog("warn", "liquidGL: npOverlay render diagnostic", Object.assign({
+        reason,
+        rendererState: this.debugState ? this.debugState() : null
+      }, details || {}));
+    }
+
+    _forceNpGlassCanary() {
+      try {
+        return this.rendererKey === "npOverlay" && (
+          window.DEBRIPOD_FORCE_NP_GLASS_CANARY === true ||
+          (localStorage.getItem("debripod_force_np_glass_canary") || "") === "1"
+        );
+      } catch (e) {
+        return false;
+      }
+    }
+
+    _ensureDebugCanaryTexture() {
+      if (this._debugCanaryTexture) return this._debugCanaryTexture;
+      const gl = this.gl;
+      const tex = gl.createTexture();
+      if (!tex) return null;
+      const pixels = new Uint8Array([
+        255, 64, 64, 255, 255, 220, 80, 255,
+        80, 180, 255, 255, 255, 255, 255, 255
+      ]);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 2, 2, 0, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      this._debugCanaryTexture = tex;
+      return tex;
+    }
+
     refreshSourceTexture(reason = "") {
       const source = this._resolveSourceElement();
       if (this.sourceType === "albumArtTransition") {
@@ -891,6 +992,7 @@
     }
 
     _refreshAlbumArtTransitionSource(reason = "") {
+      this._sourceTextureReady = false;
       const provider = typeof this.sourceProvider === "function"
         ? this.sourceProvider
         : (window.DebriPod && window.DebriPod.albumArtTexture && typeof window.DebriPod.albumArtTexture.sourceForLiquidGL === "function"
@@ -898,6 +1000,11 @@
           : null);
       const adapter = provider ? provider() : null;
       if (!adapter || !adapter.ready || !adapter.currentImage) return false;
+      const sourceRect = this._resolveSourceCssRect ? this._resolveSourceCssRect() : null;
+      if (!sourceRect || !(sourceRect.width > 0) || !(sourceRect.height > 0)) {
+        liquidGLLog("warn", "liquidGL: npOverlay albumArtTransition source rect missing", this.debugState ? this.debugState() : {});
+        return false;
+      }
 
       const currentSrc = String(adapter.currentSrc || adapter.sourceKey || "");
       const nextSrc = String(adapter.nextSrc || "");
@@ -921,8 +1028,6 @@
       }
 
       this.texture = this._albumCurrentTexture;
-      this._sourceTextureReady = true;
-      this._sourceIsSolidFallback = false;
       this._sourceOwnsTexture = false;
       this._albumCurrentSize = this._albumImageSize(adapter.currentImage, adapter.currentImageSize);
       this._albumNextSize = this._albumImageSize(adapter.nextImage || adapter.currentImage, adapter.nextImageSize || adapter.currentImageSize);
@@ -931,10 +1036,22 @@
       this._albumFrameId = Number(adapter.frameId || 0) || 0;
       this._albumSourceKey = String(adapter.sourceKey || currentSrc || "");
       this._albumRenderedAt = Number(adapter.renderedAt || 0) || 0;
-      const sourceRect = this._resolveSourceCssRect ? this._resolveSourceCssRect() : null;
       this._sourceCssRect = sourceRect;
-      this.textureWidth = Math.max(1, sourceRect ? Math.round(sourceRect.width || 1) : this._albumCurrentSize.width || 1);
-      this.textureHeight = Math.max(1, sourceRect ? Math.round(sourceRect.height || 1) : this._albumCurrentSize.height || 1);
+      this._albumSourceRect = sourceRect;
+      this.textureWidth = Math.max(1, Math.round(sourceRect.width || 1));
+      this.textureHeight = Math.max(1, Math.round(sourceRect.height || 1));
+      const drawable =
+        !!this._albumCurrentTexture &&
+        !!this.texture &&
+        (this.textureWidth || 0) > 0 &&
+        (this.textureHeight || 0) > 0 &&
+        this._sourceCssRect &&
+        (this._sourceCssRect.width || 0) > 0 &&
+        (this._sourceCssRect.height || 0) > 0;
+      if (!drawable) {
+        liquidGLLog("warn", "liquidGL: npOverlay albumArtTransition source not drawable", this.debugState ? this.debugState() : {});
+        return false;
+      }
       this._markSourceReadyAfterUpload(reason || "album art transition provider");
       return true;
     }
@@ -1229,11 +1346,28 @@
     render(frameState) {
       const gl = this.gl;
       if (!this.visible || document.hidden) {
+        if (!this.visible) this._debugNpOverlaySkip("render skipped: renderer not visible");
         this.clear();
         return;
       }
       if (!this.texture) this.refreshSourceTexture("render fallback");
-      if (!this.texture) return;
+      if (!this.texture && this._forceNpGlassCanary()) {
+        const canary = this._ensureDebugCanaryTexture();
+        if (canary) {
+          this.texture = canary;
+          this.textureWidth = 2;
+          this.textureHeight = 2;
+          this._sourceTextureReady = true;
+        }
+      }
+      if (!this.texture) {
+        this._debugNpOverlaySkip("render skipped: missing texture");
+        return;
+      }
+      if (this.sourceType === "albumArtTransition" && !this._albumCurrentTexture && !this._forceNpGlassCanary()) {
+        this._debugNpOverlaySkip("render skipped: albumArtTransition missing current texture");
+        return;
+      }
       if (frameState) this._externalFrameState = frameState;
       const fs = this._externalFrameState || {};
       this._adaptiveQuality = Math.max(0.45, Math.min(1, Number(fs.qualityBias || 1)));
@@ -1279,7 +1413,13 @@
       }
 
       this.lenses.forEach((lens) => {
-        if (this._lensVisible(lens)) this._renderLens(lens);
+        if (this._lensVisible(lens)) {
+          this._renderLens(lens);
+        } else {
+          this._debugNpOverlaySkip("lens skipped: not visible", {
+            lensClassName: lens && lens.el ? lens.el.className : ""
+          });
+        }
       });
 
       this.lenses.forEach((ln) => {
@@ -1358,9 +1498,37 @@
     _renderLens(lens) {
       const gl = this.gl;
       const rect = lens.rectPx;
-      if (!rect) return;
-      if (!this.texture || !this.textureWidth || !this.textureHeight) return;
-      if (!(rect.width > 0) || !(rect.height > 0)) return;
+      const forceCanary = this._forceNpGlassCanary();
+      if (forceCanary && !this.texture) {
+        const canary = this._ensureDebugCanaryTexture();
+        if (canary) {
+          this.texture = canary;
+          this.textureWidth = 2;
+          this.textureHeight = 2;
+        }
+      }
+      if (!rect) {
+        this._debugNpOverlaySkip("_renderLens skipped: missing rect");
+        return;
+      }
+      if ((!this.texture || !this.textureWidth || !this.textureHeight) && !forceCanary) {
+        this._debugNpOverlaySkip("_renderLens skipped: missing texture dimensions");
+        return;
+      }
+      if (!(rect.width > 0) || !(rect.height > 0)) {
+        this._debugNpOverlaySkip("_renderLens skipped: zero lens rect", { rect });
+        return;
+      }
+      if (this.sourceType === "albumArtTransition" && !forceCanary) {
+        if (!this._albumCurrentTexture) {
+          this._debugNpOverlaySkip("_renderLens skipped: albumArtTransition missing current texture");
+          return;
+        }
+        if (!this._sourceCssRect || !(this._sourceCssRect.width > 0) || !(this._sourceCssRect.height > 0)) {
+          this._debugNpOverlaySkip("_renderLens skipped: albumArtTransition missing source rect");
+          return;
+        }
+      }
 
       const dpr = this._dpr || Math.min(2, window.devicePixelRatio || 1);
 
@@ -1385,8 +1553,8 @@
       let topUV = 0;
       let wUV = 1;
       let hUV = 1;
-      if (this._sourceCssRect || (this.sourceType !== "albumArtCanvasOrImage" && this.sourceType !== "liveVideoFrame")) {
-        const srcRect = this._sourceCssRect || { left: 0, top: 0, width: window.innerWidth || 1, height: window.innerHeight || 1 };
+      if (this._sourceCssRect || forceCanary || (this.sourceType !== "albumArtCanvasOrImage" && this.sourceType !== "liveVideoFrame")) {
+        const srcRect = this._sourceCssRect || (forceCanary ? rect : { left: 0, top: 0, width: window.innerWidth || 1, height: window.innerHeight || 1 });
         leftUV = (rect.left - srcRect.left) / Math.max(1, srcRect.width);
         topUV = (rect.top - srcRect.top) / Math.max(1, srcRect.height);
         wUV = rect.width / Math.max(1, srcRect.width);
@@ -1404,6 +1572,14 @@
         leftUV >= 1.02 ||
         topUV >= 1.02
       ) {
+        this._debugNpOverlaySkip("_renderLens skipped: invalid bounds", {
+          leftUV,
+          topUV,
+          wUV,
+          hUV,
+          rect,
+          sourceCssRect: this._sourceCssRect || null
+        });
         return;
       }
       gl.uniform4f(this.u.bounds, leftUV, topUV, wUV, hUV);
@@ -1448,6 +1624,17 @@
       gl.uniform1i(this.u.glassMode, lens.glassModeIndex || 0);
       gl.uniform1f(this.u.glassDarkAmount, Number.isFinite(Number(lens.options.glassDarkAmount)) ? Number(lens.options.glassDarkAmount) : 0.18);
       gl.uniform1f(this.u.glassLightAmount, Number.isFinite(Number(lens.options.glassLightAmount)) ? Number(lens.options.glassLightAmount) : 0.18);
+
+      if (forceCanary) {
+        const canary = this._ensureDebugCanaryTexture();
+        if (canary) {
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, canary);
+          gl.uniform1i(this.u.tex, 0);
+          gl.uniform2f(this.u.textureResolution, 2, 2);
+          if (this.u.useAlbumTransitionSource) gl.uniform1i(this.u.useAlbumTransitionSource, 0);
+        }
+      }
 
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
