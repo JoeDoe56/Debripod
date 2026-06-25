@@ -935,6 +935,7 @@
       this._sourceCssRect = sourceRect;
       this.textureWidth = Math.max(1, sourceRect ? Math.round(sourceRect.width || 1) : this._albumCurrentSize.width || 1);
       this.textureHeight = Math.max(1, sourceRect ? Math.round(sourceRect.height || 1) : this._albumCurrentSize.height || 1);
+      this._markSourceReadyAfterUpload(reason || "album art transition provider");
       return true;
     }
 
@@ -996,6 +997,36 @@
       return this._uploadTextureSource(srcCanvas, this._sourceWidth(srcCanvas), this._sourceHeight(srcCanvas), reason, {});
     }
 
+    _markSourceReadyAfterUpload(reason = "", options = {}) {
+      this._sourceTextureReady = true;
+      this._sourceIsSolidFallback = options.solidFallback === true;
+
+      if (this.canvas) {
+        this.canvas.style.opacity = "1";
+        this.canvas.style.visibility = "";
+        this.canvas.style.display = "";
+      }
+
+      if (this._pendingReveal && this._pendingReveal.length) {
+        this._pendingReveal.forEach((ln) => {
+          try {
+            if (ln && ln._reveal) ln._reveal();
+          } catch (e) {}
+        });
+        this._pendingReveal.length = 0;
+      }
+
+      if (this.lenses && this.lenses.length) {
+        this.lenses.forEach((ln) => {
+          try {
+            if (ln && ln.el && !ln._initCalled && ln._TriggerInit) ln._TriggerInit();
+          } catch (e) {}
+        });
+      }
+
+      this._metricsDirty = true;
+    }
+
     _uploadTextureSource(source, width, height, reason = "", options = {}) {
       if (!source || !(width > 0) || !(height > 0)) return false;
       const gl = this.gl;
@@ -1052,12 +1083,11 @@
         return false;
       }
 
-      this._sourceTextureReady = true;
-      this._sourceIsSolidFallback = options.solidFallback === true;
       this.staticSnapshotCanvas = source instanceof HTMLCanvasElement ? source : null;
       this.textureWidth = width;
       this.textureHeight = height;
       this.scaleFactor = Number(options.scaleFactor) || 1;
+      this._markSourceReadyAfterUpload(reason, { solidFallback: options.solidFallback === true });
       if (textureSizeChanged && this._dynMeta && this._dynamicNodes) {
         this._dynamicNodes.forEach((node) => {
           const meta = this._dynMeta.get(node.el);
@@ -1074,11 +1104,6 @@
         canvasClassName: this.canvas.className,
         canvasZIndex: window.getComputedStyle(this.canvas).zIndex
       });
-
-      if (this._pendingReveal.length) {
-        this._pendingReveal.forEach((ln) => ln._reveal());
-        this._pendingReveal.length = 0;
-      }
 
       return true;
     }
@@ -1175,7 +1200,13 @@
     setVisible(on) {
       const next = !!on;
       if (this.visible === next) {
-        if (!next) this.clear();
+        if (!next) {
+          this.clear();
+        } else if (this.canvas) {
+          this.canvas.style.opacity = "1";
+          this.canvas.style.visibility = "";
+          this.canvas.style.display = "";
+        }
         return;
       }
       this.visible = next;
@@ -1186,7 +1217,11 @@
         this.clear();
         return;
       }
-      if (this.canvas) this.canvas.style.opacity = "1";
+      if (this.canvas) {
+        this.canvas.style.opacity = "1";
+        this.canvas.style.visibility = "";
+        this.canvas.style.display = "";
+      }
       this._metricsDirty = true;
     }
 
