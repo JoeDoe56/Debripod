@@ -919,9 +919,15 @@
             libList._dpVirtualFrame = requestAnimationFrame(()=>{
               libList._dpVirtualFrame = 0;
               try{ renderList(); }catch(e){}
+              try{ if(typeof reconcileLibPillGlassTargets === "function") reconcileLibPillGlassTargets("virtual scroll render"); }catch(e){}
             });
           }
           if(typeof invalidateLibPillGlass === "function") invalidateLibPillGlass("list scroll");
+          if(libList._dpLiquidPillScrollTimer) clearTimeout(libList._dpLiquidPillScrollTimer);
+          libList._dpLiquidPillScrollTimer = setTimeout(()=>{
+            libList._dpLiquidPillScrollTimer = 0;
+            try{ if(typeof reconcileLibPillGlassTargets === "function") reconcileLibPillGlassTargets("list scroll settled"); }catch(e){}
+          }, 90);
           if(typeof scheduleLiquidGlassRender === "function") scheduleLiquidGlassRender();
         }catch(e){}
       }, {passive:true});
@@ -1055,7 +1061,7 @@ function vibeTick(){
         return;
       }
       refreshSelectedHScrollText();
-      if(typeof invalidateLibPillGlass === "function") invalidateLibPillGlass("selection");
+      if(typeof reconcileLibPillGlassTargets === "function") reconcileLibPillGlassTargets("selection");
       if(typeof applySelectedTextContrast === "function") applySelectedTextContrast();
       if(typeof updateGlassTextUnderColors === "function") updateGlassTextUnderColors();
     }catch(e){

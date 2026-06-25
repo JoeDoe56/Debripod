@@ -648,6 +648,10 @@
       }
       if(Array.isArray(js.search_history)) await put("search", {key:scope + "::history", value:js.search_history, savedAt:Date.now()});
       if(js.settings) await put("kv", {key:scope + "::settings", value:sanitizeItem(js.settings, 0), savedAt:Date.now()});
+      if(js.advanced_ui_defaults && window.DebriPod && DebriPod.uiSettings && DebriPod.uiSettings.applyServerAdvancedDefaults){
+        DebriPod.uiSettings.applyServerAdvancedDefaults(js.advanced_ui_defaults);
+        try{ if(window.uiSettings !== undefined) window.uiSettings = DebriPod.uiSettings.settings; }catch(e){}
+      }
       if(js.playback){
         await put("playback", {key:scope + "::recent", value:js.playback, savedAt:Date.now()});
         await put("playback_recent", {key:scopedKey(), scope:scope, playback:js.playback, savedAt:Date.now()});

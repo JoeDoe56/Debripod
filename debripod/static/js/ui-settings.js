@@ -47,8 +47,8 @@
     },
     "nowPlayingPill": {
       "label": "Now playing pill",
-      "mode": "clear",
-      "glassTint": 1.0,
+      "mode": "dark",
+      "glassTint": 0.75,
       "resolution": 1.0,
       "refraction": 0.047,
       "bevelDepth": 0.136,
@@ -75,8 +75,8 @@
     },
     "selectedRow": {
       "label": "Selected row",
-      "mode": "light",
-      "glassTint": 1.05,
+      "mode": "clear",
+      "glassTint": 1.0,
       "resolution": 0.25,
       "refraction": 0.25,
       "bevelDepth": 0.01,
@@ -119,25 +119,41 @@
     lattice: {label: "Lattice", style: "lattice", motion: 0.88, layers: 10, flow: 0.72, bassResponse: 0.82, midResponse: 1.02, trebleResponse: 1.18, beatResponse: 0.74}
   };
   const VISUALIZER_BAND_LABELS = ["low low", "low high", "low mids", "mids", "upper mids", "high low", "high high"];
+  let serverAdvancedUiDefaults = {};
   const DEFAULT_UI_SETTINGS = {
-    visualizer: true,
-    visualizerStrength: "high",
-    visualizerPreset: "album",
-    visualizerFpsLock: 30,
-    textModes: Object.assign({}, DEFAULT_TEXT_MODES),
-    textTransparency: 0.68,
-    animationFps: Object.assign({}, DEFAULT_ANIMATION_FPS),
-    performanceOverlayButton: false,
-    performanceOverlayText: false,
-    liquidGlassElements: cloneGlassElementSettings(DEFAULT_LIQUID_GLASS_ELEMENT_SETTINGS),
-    centerBounceAmount: 0.075,
-    centerBounceDuration: 240,
-    centerBounceOvershoot: 0.9,
-    wheelClickTiltAmount: 0.5,
-    wheelTiltRampDuration: 90,
-    wheelTiltReleaseDuration: 360,
-    infoPillDarkMultiplier: 1,
-    infoPillLightMultiplier: 1
+      "visualizer": true,
+      "visualizerStrength": "high",
+      "visualizerPreset": "album",
+      "visualizerFpsLock": 30,
+      "textModes": {
+          "wheelLabels": "transparent",
+          "pathPill": "transparent",
+          "rows": "transparent",
+          "rowPills": "transparent",
+          "selectedRow": "contrast",
+          "selectedRowPills": "contrast"
+      },
+      "textTransparency": 0.68,
+      "animationFps": {
+          "selectedRow": 60,
+          "wheelTilt": 60,
+          "libraryList": 60,
+          "nowPlayingPill": 60,
+          "albumArtTransition": 60,
+          "pageTransition": 60,
+          "pathPill": 60
+      },
+      "performanceOverlayButton": true,
+      "performanceOverlayText": false,
+      "liquidGlassElements": cloneGlassElementSettings(DEFAULT_LIQUID_GLASS_ELEMENT_SETTINGS),
+      "centerBounceAmount": 0.075,
+      "centerBounceDuration": 240.0,
+      "centerBounceOvershoot": 0.9,
+      "wheelClickTiltAmount": 0.5,
+      "wheelTiltRampDuration": 90.0,
+      "wheelTiltReleaseDuration": 360.0,
+      "infoPillDarkMultiplier": 1.0,
+      "infoPillLightMultiplier": 1.0
   };
 
   function clampNumber(value, fallback, min, max){
@@ -244,31 +260,38 @@
     return out;
   }
 
+  function applyUiSettingsObject(out, saved){
+    if(!out || !saved || typeof saved !== "object") return out;
+    if(Object.prototype.hasOwnProperty.call(saved, "visualizer")) out.visualizer = !!saved.visualizer;
+    if(saved.visualizerStrength != null) out.visualizerStrength = normalizeVisualizerStrength(saved.visualizerStrength);
+    if(saved.visualizerPreset != null) out.visualizerPreset = normalizeVisualizerPreset(saved.visualizerPreset);
+    if(saved.visualizerFpsLock != null) out.visualizerFpsLock = normalizeVisualizerFpsLock(saved.visualizerFpsLock);
+    if(saved.textModes != null) out.textModes = cloneTextModes(saved.textModes);
+    if(saved.textTransparency != null) out.textTransparency = normalizeTextTransparency(saved.textTransparency);
+    if(saved.animationFps != null) out.animationFps = cloneAnimationFps(saved.animationFps);
+    if(saved.performanceOverlayButton != null) out.performanceOverlayButton = !!saved.performanceOverlayButton;
+    if(saved.performanceOverlayText != null) out.performanceOverlayText = !!saved.performanceOverlayText;
+    if(saved.liquidGlassElements != null) out.liquidGlassElements = cloneGlassElementSettings(saved.liquidGlassElements);
+    if(saved.centerBounceAmount != null) out.centerBounceAmount = clampNumber(saved.centerBounceAmount, out.centerBounceAmount, 0, 0.3);
+    if(saved.centerBounceDuration != null) out.centerBounceDuration = clampNumber(saved.centerBounceDuration, out.centerBounceDuration, 0, 1000);
+    if(saved.centerBounceOvershoot != null) out.centerBounceOvershoot = clampNumber(saved.centerBounceOvershoot, out.centerBounceOvershoot, 0, 1.4);
+    if(saved.wheelClickTiltAmount != null) out.wheelClickTiltAmount = clampNumber(saved.wheelClickTiltAmount, out.wheelClickTiltAmount, 0, 1);
+    if(saved.wheelTiltRampDuration != null) out.wheelTiltRampDuration = clampNumber(saved.wheelTiltRampDuration, out.wheelTiltRampDuration, 0, 1000);
+    if(saved.wheelTiltReleaseDuration != null) out.wheelTiltReleaseDuration = clampNumber(saved.wheelTiltReleaseDuration, out.wheelTiltReleaseDuration, 0, 1200);
+    if(saved.infoPillDarkMultiplier != null) out.infoPillDarkMultiplier = clampNumber(saved.infoPillDarkMultiplier, out.infoPillDarkMultiplier, 0, 4);
+    if(saved.infoPillLightMultiplier != null) out.infoPillLightMultiplier = clampNumber(saved.infoPillLightMultiplier, out.infoPillLightMultiplier, 0, 4);
+    return out;
+  }
+
   function loadUiSettings(){
     const out = Object.assign({}, DEFAULT_UI_SETTINGS);
+    applyUiSettingsObject(out, serverAdvancedUiDefaults);
     try{
       const raw = localStorage.getItem(UI_SETTINGS_KEY) || "";
       if(raw){
         const saved = JSON.parse(raw);
         if(saved && typeof saved === "object"){
-          if(Object.prototype.hasOwnProperty.call(saved, "visualizer")) out.visualizer = !!saved.visualizer;
-          if(saved.visualizerStrength != null) out.visualizerStrength = normalizeVisualizerStrength(saved.visualizerStrength);
-          if(saved.visualizerPreset != null) out.visualizerPreset = normalizeVisualizerPreset(saved.visualizerPreset);
-          if(saved.visualizerFpsLock != null) out.visualizerFpsLock = normalizeVisualizerFpsLock(saved.visualizerFpsLock);
-          out.textModes = cloneTextModes(saved.textModes);
-          out.textTransparency = normalizeTextTransparency(saved.textTransparency);
-          out.animationFps = cloneAnimationFps(saved.animationFps);
-          if(saved.performanceOverlayButton != null) out.performanceOverlayButton = !!saved.performanceOverlayButton;
-          if(saved.performanceOverlayText != null) out.performanceOverlayText = !!saved.performanceOverlayText;
-          out.liquidGlassElements = cloneGlassElementSettings(saved.liquidGlassElements);
-          out.centerBounceAmount = clampNumber(saved.centerBounceAmount, out.centerBounceAmount, 0, 0.3);
-          out.centerBounceDuration = clampNumber(saved.centerBounceDuration, out.centerBounceDuration, 0, 1000);
-          out.centerBounceOvershoot = clampNumber(saved.centerBounceOvershoot, out.centerBounceOvershoot, 0, 1.4);
-          out.wheelClickTiltAmount = clampNumber(saved.wheelClickTiltAmount, out.wheelClickTiltAmount, 0, 1);
-          out.wheelTiltRampDuration = clampNumber(saved.wheelTiltRampDuration, out.wheelTiltRampDuration, 0, 1000);
-          out.wheelTiltReleaseDuration = clampNumber(saved.wheelTiltReleaseDuration, out.wheelTiltReleaseDuration, 0, 1200);
-          out.infoPillDarkMultiplier = clampNumber(saved.infoPillDarkMultiplier, out.infoPillDarkMultiplier, 0, 4);
-          out.infoPillLightMultiplier = clampNumber(saved.infoPillLightMultiplier, out.infoPillLightMultiplier, 0, 4);
+          applyUiSettingsObject(out, saved);
           return out;
         }
       }
@@ -311,6 +334,15 @@
     try{ uiSettings.liquidGlassElements = cloneGlassElementSettings(uiSettings.liquidGlassElements); }catch(e){}
   }
 
+  function applyServerAdvancedDefaults(defaults){
+    serverAdvancedUiDefaults = defaults && typeof defaults === "object" ? defaults : {};
+    if(root.uiSettings){
+      root.uiSettings.serverAdvancedUiDefaults = serverAdvancedUiDefaults;
+      root.uiSettings.settings = loadUiSettings();
+    }
+    return root.uiSettings ? root.uiSettings.settings : loadUiSettings();
+  }
+
   root.uiSettings = {
     DEFAULT_UI_SETTINGS,
     DEFAULT_TEXT_MODES,
@@ -334,6 +366,9 @@
     liquidGlassTintMode,
     liquidGlassModeToTint,
     cloneGlassElementSettings,
+    applyUiSettingsObject,
+    applyServerAdvancedDefaults,
+    serverAdvancedUiDefaults,
     loadUiSettings,
     saveUiSettings,
     settings: loadUiSettings()

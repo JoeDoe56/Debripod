@@ -944,7 +944,7 @@
       height:0;
       z-index:70;
       pointer-events:none;
-      border-radius:14px;
+      border-radius:var(--dp-selected-radius, 14px);
       opacity:0;
       background:transparent;
       border:0;
@@ -961,8 +961,7 @@
     #libList.npUnderlay{pointer-events:none; background: transparent; border-color: transparent; -webkit-backdrop-filter: none !important; backdrop-filter: none !important; box-shadow: none !important;}
     #libList.npUnderlay .ipodItem{opacity:0;}
     .ipodList.pageFadeHidden .ipodPill,
-    #libList.npUnderlay .ipodPill,
-    .ipodPill[data-liquid-clipped]{
+    #libList.npUnderlay .ipodPill{
       visibility: hidden !important;
     }
     .ipodItem{

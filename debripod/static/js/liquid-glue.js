@@ -173,7 +173,9 @@
       if((renderer.rendererKey || "") === "npOverlay"){
         const pill = document.getElementById("npOverlayPill");
         const opacity = pill && window.getComputedStyle ? Number(window.getComputedStyle(pill).opacity || 1) : 1;
-        const hiddenDone = pill && pill.classList && pill.classList.contains("npPillHidden") && (!Number.isFinite(opacity) || opacity <= 0.01);
+        const artTransition = !!(root.albumArtTexture && root.albumArtTexture.hasTransition && root.albumArtTexture.hasTransition());
+        const hiddenClass = pill && pill.classList && (pill.classList.contains("npPillHidden") || pill.classList.contains("npPillSwapHidden"));
+        const hiddenDone = hiddenClass && (!Number.isFinite(opacity) || opacity <= 0.01) && !artTransition;
         if(hiddenDone) return false;
         return renderer.lenses.some((lens)=>{
           if(!lens || !lens.el || !lens.el.isConnected) return false;
@@ -404,9 +406,10 @@
       if(!renderer) return false;
       const artEl = document.getElementById("npArt");
       const sourceImg = document.getElementById("npArtLiquidSource");
+      const artTransition = !!(root.albumArtTexture && root.albumArtTexture.hasTransition && root.albumArtTexture.hasTransition());
       let sourceKey = "";
       try{
-        const currentSrc = root.albumArtTexture && root.albumArtTexture.currentSource ? root.albumArtTexture.currentSource() : "";
+        const currentSrc = root.albumArtTexture && root.albumArtTexture.activeSourceKey ? root.albumArtTexture.activeSourceKey() : (root.albumArtTexture && root.albumArtTexture.currentSource ? root.albumArtTexture.currentSource() : "");
         sourceKey = typeof nowPlayingArtCompareKey === "function"
           ? nowPlayingArtCompareKey(currentSrc || (sourceImg && (sourceImg.currentSrc || sourceImg.src)) || "")
           : String(currentSrc || (sourceImg && (sourceImg.currentSrc || sourceImg.src)) || "");
@@ -417,10 +420,13 @@
       const markSourceReady = (updated)=>{
         try{
           if(updated && sourceKey) renderer._npOverlaySourceKey = sourceKey;
+          else if(!updated && artTransition && sourceKey && renderer._npOverlaySourceKey === sourceKey) renderer._npOverlaySourceKey = "";
+          renderer._npOverlayLastSourceUploadReason = reason || "";
+          renderer._npOverlayLastSourceUploadSuccess = !!updated;
         }catch(e){}
         return !!updated;
       };
-      const hasMatchingTexture = ()=> npOverlayHasSourceTexture(renderer) && sourceMatches;
+      const hasMatchingTexture = ()=> !artTransition && npOverlayHasSourceTexture(renderer) && sourceMatches;
       const glassCanvas = root.albumArtTexture && root.albumArtTexture.renderGlassSourceCanvas ? root.albumArtTexture.renderGlassSourceCanvas() : null;
       if(renderer && artEl && glassCanvas && renderer.updateTextureFromCanvas){
         const rect = artEl.getBoundingClientRect();
@@ -443,7 +449,18 @@
             updateReturned: !!updated
           });
           if(markSourceReady(updated) || hasMatchingTexture()) return true;
+          if(artTransition) return false;
         }
+      }
+      if(artTransition){
+        debugNpOverlaySource("transition upload required", renderer, {
+          reason: reason || "",
+          sourceKey: sourceKey || "",
+          currentRendererSourceKey: renderer._npOverlaySourceKey || "",
+          updateReturned: false
+        });
+        markSourceReady(false);
+        return false;
       }
       if(artEl && artEl instanceof HTMLCanvasElement && artEl.width > 0 && artEl.height > 0 && renderer.updateTextureFromCanvas){
         const rect = artEl.getBoundingClientRect();
@@ -607,6 +624,7 @@
         });
       }
       const sourceReady = refreshSource === false ? npOverlayHasSourceTexture(renderer) : refreshNpOverlayGlassSource(reason || "np overlay render");
+      const artTransition = !!(root.albumArtTexture && root.albumArtTexture.hasTransition && root.albumArtTexture.hasTransition());
       const opacity = npOverlayPillRenderOpacity();
       if(renderer.lenses && renderer.lenses.length){
         renderer.lenses.forEach((lens)=>{
@@ -615,7 +633,7 @@
       }
       if(renderer.render) renderer.render(currentVisualizerFrameState());
       if(renderer.canvas) renderer.canvas.style.opacity = String(opacity);
-      if(sourceReady || npOverlayHasSourceTexture(renderer)) clearNpOverlayWarmupRetry();
+      if(sourceReady || (!artTransition && npOverlayHasSourceTexture(renderer))) clearNpOverlayWarmupRetry();
       else scheduleNpOverlayWarmupRetry(reason || "np overlay render", warmupAttempt || 0);
       debugLiquidGlassRenderers(reason || "np overlay render");
     }catch(e){}
@@ -817,6 +835,167 @@
     }
   }
 
+  function nowPlayingSurfaceVisible(){
+    try{
+      const list = document.getElementById("libList");
+      if(list && list.classList && list.classList.contains("npUnderlay")) return true;
+      const np = document.getElementById("nowPlaying");
+      if(!np) return false;
+      const style = window.getComputedStyle ? window.getComputedStyle(np) : null;
+      return np.classList.contains("npPageActive") || (style && style.display !== "none" && Number(style.opacity || 1) > 0.01);
+    }catch(e){
+      return false;
+    }
+  }
+
+  function disposeRendererLenses(renderer){
+    try{
+      if(!renderer || !renderer.lenses) return;
+      renderer.lenses.forEach((lens)=>{
+        try{ if(lens && lens.destroy) lens.destroy(); }catch(e){}
+      });
+      renderer.lenses = [];
+      renderer._metricsDirty = true;
+      renderer._snapshotRectPx = null;
+      renderer._sourceCssRect = null;
+      renderer._dpLiquidTargetIds = [];
+      if(renderer.setVisible) renderer.setVisible(false);
+      else if(renderer.clear) renderer.clear();
+      if(renderer.canvas){
+        renderer.canvas.style.visibility = "hidden";
+        renderer.canvas.style.opacity = "0";
+      }
+    }catch(e){}
+  }
+
+  function destroyLibPillGlassLenses(reason){
+    try{
+      disposeRendererLenses(liquidGlassRendererByKey("libPills"));
+      document.querySelectorAll(".ipodPill[data-liquid-row-pill]").forEach((el)=>{
+        try{
+          el.removeAttribute("data-liquid-pill-id");
+          el.style.visibility = "";
+        }catch(e){}
+      });
+      markFrameWork({metrics:true, render:true});
+      debugLiquidGlassRenderers(reason || "destroy lib pills");
+    }catch(e){}
+  }
+
+  function destroyLibSelectionGlass(reason){
+    try{
+      setLibSelectionTarget(listSelectionMotion.targetX, listSelectionMotion.targetY, listSelectionMotion.targetWidth, listSelectionMotion.targetHeight, listSelectionMotion.targetRadius, 0);
+      disposeRendererLenses(liquidGlassRendererByKey("libSelection"));
+      markFrameWork({metrics:true, render:true});
+      debugLiquidGlassRenderers(reason || "destroy lib selection");
+    }catch(e){}
+  }
+
+  function destroyTransientListGlass(reason){
+    destroyLibSelectionGlass(reason || "destroy transient list glass");
+    destroyLibPillGlassLenses(reason || "destroy transient list glass");
+  }
+
+  function stableRowPillId(row, pill, index){
+    try{
+      const rowIndex = row && row.dataset ? String(row.dataset.index || "") : "";
+      const item = window.state && state.items ? state.items[Number(rowIndex)] : null;
+      const current = window.state && state.current ? state.current : {};
+      const viewId = [
+        current.kind || "",
+        current.root && current.root.id || current.root_id || "",
+        current.rel || "",
+        current.level || "",
+        current.value || "",
+        current.label || ""
+      ].join("|");
+      const itemId = item && (item.key || item.rel || item.value || item.label || item.kind) || rowIndex;
+      return [viewId, itemId, rowIndex, index || 0].join("::");
+    }catch(e){
+      return "pill::" + String(index || 0);
+    }
+  }
+
+  function computeEligibleRowPillElements(){
+    const out = [];
+    try{
+      const list = document.getElementById("libList");
+      if(!list || nowPlayingSurfaceVisible()) return out;
+      const inner = selectedListInnerRect();
+      if(!inner) return out;
+      const pills = Array.from(list.querySelectorAll(".ipodPill[data-liquid-row-pill]"));
+      pills.forEach((pill)=>{
+        try{
+          if(!pill || !pill.isConnected) return;
+          const row = pill.closest(".ipodItem");
+          if(!row || !row.isConnected || !list.contains(row)) return;
+          const rowRect = row.getBoundingClientRect();
+          if(rowRect.width <= 0 || rowRect.height <= 0) return;
+          if(rowRect.top < inner.top || rowRect.bottom > inner.bottom) return;
+          if(rowRect.right <= inner.left || rowRect.left >= inner.right) return;
+          pill.style.visibility = "";
+          const rowPills = Array.from(row.querySelectorAll(".ipodPill[data-liquid-row-pill]"));
+          pill.setAttribute("data-liquid-pill-id", stableRowPillId(row, pill, rowPills.indexOf(pill)));
+          out.push(pill);
+        }catch(e){}
+      });
+    }catch(e){}
+    return out;
+  }
+
+  function reconcileLibPillGlassTargets(reason){
+    try{
+      if(typeof window.liquidGL !== "function") return;
+      if(nowPlayingSurfaceVisible()){
+        destroyLibPillGlassLenses(reason || "now playing visible");
+        return;
+      }
+      const renderer = liquidGlassRendererByKey("libPills");
+      const elements = computeEligibleRowPillElements();
+      const nextIds = elements.map((el)=> String(el.getAttribute("data-liquid-pill-id") || ""));
+      const currentIds = renderer && Array.isArray(renderer._dpLiquidTargetIds) ? renderer._dpLiquidTargetIds : [];
+      const same = currentIds.length === nextIds.length && currentIds.every((id, idx)=> id === nextIds[idx]);
+      if(renderer && same){
+        if(renderer.canvas) renderer.canvas.style.visibility = "";
+        renderer._metricsDirty = true;
+        renderer._snapshotRectPx = null;
+        if(renderer.lenses){
+          renderer.lenses.forEach((lens)=>{ try{ lens.rectPx = null; }catch(e){} });
+        }
+        if(renderer.setVisible) renderer.setVisible(elements.length > 0);
+        if(renderer.render) renderer.render(currentVisualizerFrameState());
+        return;
+      }
+      const options = Object.assign({}, liquidGlassElementOptions("listPills"), {
+        target: ".ipodPill.liquidGlass[data-liquid-row-pill][data-liquid-pill-id]",
+        rendererKey: "libPills",
+        sourceType: "visualizerWebgl",
+        sourceElement: "#visualizerBg",
+        clipTarget: "#libList",
+        clipToPaddingBox: true,
+        syncTargets: true
+      });
+      let nextRenderer = renderer;
+      if(nextRenderer && nextRenderer.syncLenses){
+        nextRenderer.syncLenses(elements, options);
+      }else{
+        window.liquidGL(options);
+        nextRenderer = liquidGlassRendererByKey("libPills");
+      }
+      if(nextRenderer){
+        nextRenderer._dpLiquidTargetIds = nextIds;
+        nextRenderer._metricsDirty = true;
+        nextRenderer._snapshotRectPx = null;
+        if(nextRenderer.canvas) nextRenderer.canvas.style.visibility = elements.length ? "" : "hidden";
+        if(nextRenderer.setVisible) nextRenderer.setVisible(elements.length > 0);
+      }
+      applyElementGlassModeClasses();
+      mountLiquidCanvas();
+      refreshLiquidGlassVisualizerSources(reason || "lib pills");
+      invalidateLibPillGlass(reason || "lib pills");
+    }catch(e){}
+  }
+
   var listSelectionMotion = {
     currentX: 0,
     currentY: 0,
@@ -995,16 +1174,22 @@
       const list = document.getElementById("libList");
       if(!el || !list) return;
       if(list.classList && list.classList.contains("npUnderlay")){
-        setLibSelectionTarget(listSelectionMotion.targetX, listSelectionMotion.targetY, listSelectionMotion.targetWidth, listSelectionMotion.targetHeight, listSelectionMotion.targetRadius, 0);
-        const renderer = liquidGlassRendererByKey("libSelection");
-        if(renderer){
-          if(renderer.setVisible) renderer.setVisible(false);
-          if(renderer.canvas) renderer.canvas.style.visibility = "hidden";
-        }
+        destroyLibSelectionGlass(reason || "now playing visible");
         return;
       }
       const settings = glassElementSettings("selectedRow");
-      const selectionRenderer = liquidGlassRendererByKey("libSelection");
+      let selectionRenderer = liquidGlassRendererByKey("libSelection");
+      if(typeof window.liquidGL === "function" && (!selectionRenderer || !selectionRenderer.lenses || !selectionRenderer.lenses.length)){
+        window.liquidGL(Object.assign({}, liquidGlassElementOptions("selectedRow"), {
+          target: "#libListSelectedGlass.liquidGlass",
+          rendererKey: "libSelection",
+          sourceType: "visualizerWebgl",
+          sourceElement: "#visualizerBg",
+          syncTargets: true
+        }));
+        mountLiquidCanvas();
+        selectionRenderer = liquidGlassRendererByKey("libSelection");
+      }
       if(selectionRenderer && selectionRenderer.canvas) selectionRenderer.canvas.style.visibility = "";
       applyGlassModeClass(el, settings.glassTint);
       const row = list.querySelector(".ipodItem.sel");
@@ -1054,24 +1239,7 @@
   }
 
   function hideTransientListGlass(reason){
-    try{
-      setLibSelectionTarget(listSelectionMotion.targetX, listSelectionMotion.targetY, listSelectionMotion.targetWidth, listSelectionMotion.targetHeight, listSelectionMotion.targetRadius, 0);
-      const selectionRenderer = liquidGlassRendererByKey("libSelection");
-      if(selectionRenderer){
-        if(selectionRenderer.setVisible) selectionRenderer.setVisible(false);
-        if(selectionRenderer.canvas) selectionRenderer.canvas.style.visibility = "hidden";
-      }
-      const pillsRenderer = liquidGlassRendererByKey("libPills");
-      if(pillsRenderer){
-        if(pillsRenderer.setVisible) pillsRenderer.setVisible(false);
-        if(pillsRenderer.canvas) pillsRenderer.canvas.style.visibility = "hidden";
-        pillsRenderer._metricsDirty = true;
-        pillsRenderer._snapshotRectPx = null;
-        if(pillsRenderer.lenses) pillsRenderer.lenses.forEach((lens)=>{ try{ lens.rectPx = null; }catch(e){} });
-      }
-      document.querySelectorAll(".ipodPill[data-liquid-row-pill]").forEach((el)=>{ try{ el.setAttribute("data-liquid-clipped", ""); }catch(e){} });
-      markFrameWork({metrics:true, render:true, textContrast:true});
-    }catch(e){}
+    destroyTransientListGlass(reason || "hide transient list glass");
   }
 
   function positionNpOverlayLiquidCanvas(){
@@ -1097,49 +1265,7 @@
   }
 
   function refreshLibPillGlassLenses(reason){
-    try{
-      if(typeof window.liquidGL !== "function") return;
-      const list = document.getElementById("libList");
-      const renderer = liquidGlassRendererByKey("libPills");
-      if(list && list.classList && list.classList.contains("npUnderlay")){
-        if(renderer){
-          if(renderer.setVisible) renderer.setVisible(false);
-          if(renderer.canvas) renderer.canvas.style.visibility = "hidden";
-        }
-        document.querySelectorAll(".ipodPill[data-liquid-row-pill]").forEach((el)=>{ try{ el.setAttribute("data-liquid-clipped", ""); el.style.visibility = "hidden"; }catch(e){} });
-        return;
-      }
-      if(renderer && renderer.canvas) renderer.canvas.style.visibility = "";
-      let safeTop = -Infinity;
-      let safeBottom = Infinity;
-      if(list){
-        const rect = list.getBoundingClientRect();
-        const frame = parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--screenFrame") || "14") || 14;
-        safeTop = rect.top + frame;
-        safeBottom = rect.bottom - frame;
-      }
-      document.querySelectorAll(".ipodPill[data-liquid-row-pill]").forEach((el)=>{
-        try{
-          const rect = el.getBoundingClientRect();
-          const clipped = rect.top < safeTop || rect.bottom > safeBottom;
-          el.toggleAttribute("data-liquid-clipped", clipped);
-          el.style.visibility = clipped ? "hidden" : "";
-        }catch(e){}
-      });
-      window.liquidGL(Object.assign({}, liquidGlassElementOptions("listPills"), {
-        target: ".ipodPill.liquidGlass[data-liquid-row-pill]:not([data-liquid-clipped])",
-        rendererKey: "libPills",
-        sourceType: "visualizerWebgl",
-        sourceElement: "#visualizerBg",
-        clipTarget: "#libList",
-        clipToPaddingBox: true,
-        syncTargets: true
-      }));
-      applyElementGlassModeClasses();
-      mountLiquidCanvas();
-      refreshLiquidGlassVisualizerSources(reason || "lib pills");
-      invalidateLibPillGlass(reason || "lib pills");
-    }catch(e){}
+    reconcileLibPillGlassTargets(reason || "lib pills");
   }
 
   function scheduleLiquidGlassSnapshot(reason, includeLibList){
@@ -1213,6 +1339,11 @@
           row.textureWidth = renderer.textureWidth || 0;
           row.textureHeight = renderer.textureHeight || 0;
           row.sourceType = renderer.sourceType || "";
+          row._npOverlaySourceKey = renderer._npOverlaySourceKey || "";
+          row.activeAlbumArtSourceKey = root.albumArtTexture && root.albumArtTexture.activeSourceKey ? root.albumArtTexture.activeSourceKey() : "";
+          row.albumArtTransitionActive = !!(root.albumArtTexture && root.albumArtTexture.hasTransition && root.albumArtTexture.hasTransition());
+          row.lastSourceUploadReason = renderer._npOverlayLastSourceUploadReason || "";
+          row.lastSourceUploadSuccess = renderer._npOverlayLastSourceUploadSuccess === true;
           row.canvasVisibility = canvasStyle ? {display:canvasStyle.display, visibility:canvasStyle.visibility, opacity:canvasStyle.opacity} : null;
           row.targetRects = targetRects;
         }
@@ -1287,7 +1418,7 @@
         sourceElement: "#visualizerBg"
       }));
       window.liquidGL(Object.assign({}, liquidGlassElementOptions("listPills"), {
-        target: ".ipodPill.liquidGlass[data-liquid-row-pill]:not([data-liquid-clipped])",
+        target: ".ipodPill.liquidGlass[data-liquid-row-pill][data-liquid-pill-id]",
         rendererKey: "libPills",
         sourceType: "visualizerWebgl",
         sourceElement: "#visualizerBg",

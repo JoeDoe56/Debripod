@@ -28,6 +28,11 @@
     const js = await apiGet("/api/settings");
     state.settingsData = js || {};
     state.appSettings = Object.assign({}, (js && js.settings) || {});
+    state.advancedUiDefaults = Object.assign({}, (js && js.advanced_ui_defaults) || {});
+    if(window.DebriPod && DebriPod.uiSettings && DebriPod.uiSettings.applyServerAdvancedDefaults){
+      DebriPod.uiSettings.applyServerAdvancedDefaults(state.advancedUiDefaults);
+      uiSettings = DebriPod.uiSettings.settings;
+    }
     state.startupSettings = Object.assign({}, (js && js.startup) || {});
     state.toolStatus = Object.assign({}, (js && js.tools) || {});
     state.connectionStatus = Object.assign({}, (js && js.connections) || {});
@@ -1625,7 +1630,8 @@ async function libDoSearch(engine, q){
         await settingsLoad();
         const labels = advancedCategoryLabels();
         const items = [
-          {kind:"libui_action", label:"Commit advanced settings", sub_label:"Writes local advanced UI defaults into the app defaults", action:"commit_advanced_defaults", pills:["Writes code"], forceTwoLine:true, settingRow:true},
+          {kind:"libui_action", label:"Save advanced defaults", sub_label:"Writes commit ready app defaults to config", action:"save_advanced_defaults", pills:["Config"], forceTwoLine:true, settingRow:true},
+          {kind:"libui_action", label:"Reset advanced defaults", sub_label:"Removes saved advanced UI defaults from config", action:"reset_advanced_defaults", pills:["Config"], forceTwoLine:true, settingRow:true},
           {kind:"libui_action", label:"Performance overlay button", sub_label:"Show the compact performance toggle button", action:"toggle_performance_overlay_button", pills:[uiSettings.performanceOverlayButton ? "On" : "Off"], forceTwoLine:true, settingRow:true}
         ].concat(["glass", "text", "ui", "animations", "search", "downloads", "services", "playback", "system"].map((key)=>({
           kind:"libui_action",
@@ -2165,13 +2171,13 @@ async function libDoSearch(engine, q){
       }, true);
       return true;
     };
-    const commitAdvancedDefaults = async ()=>{
+    const saveAdvancedDefaults = async ()=>{
       try{
         uiSettings.textModes = cloneTextModes(uiSettings.textModes);
         uiSettings.animationFps = cloneAnimationFps(uiSettings.animationFps);
         uiSettings.textTransparency = normalizeTextTransparency(uiSettings.textTransparency);
         saveUiSettings();
-        const res = await apiPost("/api/ui/advanced_defaults/commit", {
+        const res = await apiPost("/api/ui/advanced_defaults/save", {
           uiSettings: uiSettings,
           liquidGlassElements: cloneGlassElementSettings(uiSettings.liquidGlassElements),
           appSettings: state.appSettings || {},
@@ -2179,16 +2185,27 @@ async function libDoSearch(engine, q){
         });
         const js = res && res.json ? res.json : {};
         if(!res || !res.ok || !js.ok) throw new Error((js && js.error) ? js.error : "Failed to write defaults");
-        try{
-          if(window.caches && caches.keys){
-            const keys = await caches.keys();
-            await Promise.all(keys.filter(k=> /^debripod-/.test(k)).map(k=> caches.delete(k)));
-          }
-          if(navigator.serviceWorker && navigator.serviceWorker.getRegistration){
-            const reg = await navigator.serviceWorker.getRegistration("/");
-            if(reg && reg.update) await reg.update();
-          }
-        }catch(cacheErr){}
+        if(js.advanced_ui_defaults && window.DebriPod && DebriPod.uiSettings && DebriPod.uiSettings.applyServerAdvancedDefaults){
+          DebriPod.uiSettings.applyServerAdvancedDefaults(js.advanced_ui_defaults);
+          uiSettings = DebriPod.uiSettings.settings;
+        }
+        try{ libSetStatus("Advanced defaults saved to config.", "ok"); }catch(statusErr){}
+      }catch(e){
+        alert(String(e && e.message ? e.message : e));
+      }
+      await viewLibAdvancedSettings(false);
+      return true;
+    };
+    const resetAdvancedDefaults = async ()=>{
+      try{
+        const res = await apiPost("/api/ui/advanced_defaults/reset", {});
+        const js = res && res.json ? res.json : {};
+        if(!res || !res.ok || !js.ok) throw new Error((js && js.error) ? js.error : "Failed to reset defaults");
+        if(window.DebriPod && DebriPod.uiSettings && DebriPod.uiSettings.applyServerAdvancedDefaults){
+          DebriPod.uiSettings.applyServerAdvancedDefaults({});
+          uiSettings = DebriPod.uiSettings.settings;
+        }
+        try{ libSetStatus("Advanced defaults removed from config.", "ok"); }catch(statusErr){}
       }catch(e){
         alert(String(e && e.message ? e.message : e));
       }
@@ -2277,8 +2294,10 @@ async function libDoSearch(engine, q){
         cycleVisualizerFpsLock();
         await viewLibUiSettings(false);
         return true;
-      case "commit_advanced_defaults":
-        return await commitAdvancedDefaults();
+      case "save_advanced_defaults":
+        return await saveAdvancedDefaults();
+      case "reset_advanced_defaults":
+        return await resetAdvancedDefaults();
       case "toggle_performance_overlay_button":
         uiSettings.performanceOverlayButton = !uiSettings.performanceOverlayButton;
         saveUiSettings();

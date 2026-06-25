@@ -23,7 +23,7 @@ from .Services import lastfm as lastfm_module
 from .Services import soulseek as soulseek_module
 from .factory import DeferredApp
 from .auth import register_auth
-from .config import _coerce_config_value, ensure_startup_security_config, save_config
+from .config import _coerce_config_value, ensure_startup_security_config, load_default_app_config_overrides, save_config, save_default_app_config_overrides
 from .Library.library_db import load_folder_entries, load_palette, load_palette_for_media, load_visualizer_analysis_for_media, save_folder_entries, save_palette
 from .Library.index import build_index_for_root, set_index_cache
 from .Library.metadata import file_meta_cached, warm_video_analysis
@@ -75,6 +75,15 @@ def _current_settings_username() -> str:
         return str(session.get("username") or "").strip()
     except Exception:
         return ""
+
+
+def _default_app_overrides() -> dict[str, Any]:
+    return load_default_app_config_overrides()
+
+
+def _advanced_ui_defaults_from_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    raw = settings.get("ADVANCED_UI_SETTINGS_DEFAULTS") if isinstance(settings, dict) else {}
+    return dict(raw) if isinstance(raw, dict) else {}
 
 
 def _shutdown_soulseek_service() -> None:
@@ -176,7 +185,7 @@ def _apply_runtime_settings_for_user(username: str, force: bool = False) -> dict
         and _ACTIVE_SETTINGS_DATA
     ):
         return dict(_ACTIVE_SETTINGS_DATA)
-    settings = ensure_app_settings(username=username)
+    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
     signature = settings_fingerprint(username)
     modules = (state_module, downloads_module, route_state_module, mcp_routes)
     for key, raw_value in settings.items():
@@ -1420,7 +1429,7 @@ def api_library_reindex_status():
 def api_settings_get():
     cfg = ensure_startup_security_config()
     username = _current_settings_username()
-    settings = _apply_runtime_settings_for_user(username) if username else ensure_app_settings()
+    settings = _apply_runtime_settings_for_user(username) if username else ensure_app_settings(defaults_overrides=_default_app_overrides())
     soulseek_service = getattr(state_module, "SOULSEEK_SERVICE", None)
     soulseek_status = soulseek_service.startup_status() if soulseek_service and hasattr(soulseek_service, "startup_status") else {}
     connections = {
@@ -1448,6 +1457,7 @@ def api_settings_get():
             "MCP_TOKEN_SET": bool(str(cfg.get("MCP_TOKEN") or "").strip()),
         },
         "settings": masked_settings(settings),
+        "advanced_ui_defaults": _advanced_ui_defaults_from_settings(settings),
         "tools": {
             "ffmpeg": executable_status(str(settings.get("FFMPEG_PATH") or "ffmpeg")),
             "ffprobe": executable_status(str(settings.get("FFPROBE_PATH") or "ffprobe")),
@@ -1560,7 +1570,7 @@ def _setup_status_for_user(username: str, settings: dict[str, Any]) -> dict[str,
 @app.route("/api/setup/status", methods=["GET"])
 def api_setup_status():
     username = _current_settings_username()
-    settings = _apply_runtime_settings_for_user(username) if username else ensure_app_settings()
+    settings = _apply_runtime_settings_for_user(username) if username else ensure_app_settings(defaults_overrides=_default_app_overrides())
     return jsonify(_setup_status_for_user(username, settings))
 
 
@@ -1572,21 +1582,21 @@ def api_setup_skip():
     if service not in allowed:
         return jsonify({"ok": False, "error": "Unknown setup step"}), 400
     username = _current_settings_username()
-    settings = ensure_app_settings(username=username)
+    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
     skipped = _setup_skipped_services(settings)
     skipped[service] = "skipped"
-    saved = save_app_settings({"SETUP_SKIPPED_SERVICES": skipped}, username=username)
+    saved = save_app_settings({"SETUP_SKIPPED_SERVICES": skipped}, username=username, defaults_overrides=_default_app_overrides())
     return jsonify(_setup_status_for_user(username, saved))
 
 
 @app.route("/api/setup/finish", methods=["POST"])
 def api_setup_finish():
     username = _current_settings_username()
-    settings = ensure_app_settings(username=username)
+    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
     status = _setup_status_for_user(username, settings)
     if not status.get("required_complete"):
         return jsonify({"ok": False, "error": "Add a library folder or explicitly skip local library setup first."}), 400
-    saved = save_app_settings({"SETUP_WIZARD_COMPLETE": True}, username=username)
+    saved = save_app_settings({"SETUP_WIZARD_COMPLETE": True}, username=username, defaults_overrides=_default_app_overrides())
     _kick_library_indexes_from_settings(saved)
     return jsonify(_setup_status_for_user(username, saved))
 
@@ -1594,7 +1604,7 @@ def api_setup_finish():
 @app.route("/api/services/status", methods=["GET"])
 def api_services_status():
     username = _current_settings_username()
-    settings = _apply_runtime_settings_for_user(username) if username else ensure_app_settings()
+    settings = _apply_runtime_settings_for_user(username) if username else ensure_app_settings(defaults_overrides=_default_app_overrides())
     return jsonify({"ok": True, "services": _service_status_payload(settings)})
 
 
@@ -1602,7 +1612,7 @@ def api_services_status():
 def api_settings_export():
     username = _current_settings_username()
     include_secrets = (request.args.get("include_secrets") or "").strip() == "1"
-    settings = ensure_app_settings(username=username)
+    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
     payload = {}
     for key in sorted(APP_SETTING_KEYS):
         if key in {"SETUP_SKIPPED_SERVICES", "SETUP_WIZARD_COMPLETE"}:
@@ -1630,7 +1640,7 @@ def api_settings_import():
             continue
         clean[key_upper] = value
     username = _current_settings_username()
-    saved = save_app_settings(clean, username=username)
+    saved = save_app_settings(clean, username=username, defaults_overrides=_default_app_overrides())
     if username:
         _apply_runtime_settings_for_user(username, force=True)
     if "LIBRARY_FOLDERS" in clean:
@@ -1651,7 +1661,7 @@ def api_settings_save():
             continue
         clean_settings[key_upper] = value
     username = _current_settings_username()
-    saved = save_app_settings(clean_settings, username=username)
+    saved = save_app_settings(clean_settings, username=username, defaults_overrides=_default_app_overrides())
 
     cfg = ensure_startup_security_config()
     if "PORT" in startup_updates:
@@ -1889,19 +1899,27 @@ def _replace_py_const_object(text: str, name: str, replacement: str) -> str:
     raise ValueError(f"{name} closing brace not found")
 
 
-def _coerce_app_default_settings(raw: Any) -> dict[str, Any]:
-    defaults = default_app_settings()
+def _coerce_app_default_overrides(raw: Any) -> dict[str, Any]:
     source = raw if isinstance(raw, dict) else {}
-    skip = set(SECRET_SETTING_KEYS) | {"LIBRARY_FOLDERS", "SETUP_SKIPPED_SERVICES"}
+    skip = set(SECRET_SETTING_KEYS) | {
+        "ADVANCED_UI_SETTINGS_DEFAULTS",
+        "LIBRARY_FOLDERS",
+        "SETUP_SKIPPED_SERVICES",
+        "SETUP_WIZARD_COMPLETE",
+    }
+    path_like_suffixes = ("_DIR", "_PATH")
+    out: dict[str, Any] = {}
     for key, value in source.items():
         key_upper = str(key).upper()
-        if key_upper not in APP_SETTING_KEYS or key_upper in skip:
+        if key_upper not in APP_SETTING_KEYS or key_upper in skip or key_upper.endswith(path_like_suffixes):
+            continue
+        if value == "***":
             continue
         try:
-            defaults[key_upper] = _coerce_config_value(key_upper, value)
+            out[key_upper] = _coerce_config_value(key_upper, value)
         except Exception:
             pass
-    return defaults
+    return out
 
 
 def _commit_app_defaults(settings: dict[str, Any]) -> None:
@@ -1931,28 +1949,49 @@ def _commit_startup_defaults(startup: Any) -> None:
 
 @app.route("/api/ui/advanced_defaults/commit", methods=["POST"])
 def api_ui_advanced_defaults_commit():
+    return jsonify({"ok": False, "error": "Source rewriting is disabled. Use /api/ui/advanced_defaults/save."}), 410
+
+
+@app.route("/api/ui/advanced_defaults/save", methods=["POST"])
+def api_ui_advanced_defaults_save():
     data = request.get_json(silent=True) or {}
-    glass = _coerce_glass_defaults(data.get("liquidGlassElements"))
-    defaults = _coerce_advanced_ui_defaults(data.get("uiSettings"), glass)
-    app_defaults = _coerce_app_default_settings(data.get("appSettings"))
-    path = Path(__file__).resolve().parent / "static" / "js" / "ui-settings.js"
-    text = path.read_text(encoding="utf-8")
-    start = "  // GLASS_DEFAULTS_BEGIN"
-    end = "  // GLASS_DEFAULTS_END"
-    if start not in text or end not in text:
-        return jsonify({"ok": False, "error": "Glass defaults markers not found"}), 500
-    block = start + "\n  const DEFAULT_LIQUID_GLASS_ELEMENT_SETTINGS = " + json.dumps(glass, indent=2).replace("\n", "\n  ") + ";\n" + end
-    before, rest = text.split(start, 1)
-    _, after = rest.split(end, 1)
-    text = before + block + after
     try:
-        text = _replace_js_const_object(text, "DEFAULT_UI_SETTINGS", _advanced_ui_defaults_js(defaults))
-    except ValueError as exc:
-        return jsonify({"ok": False, "error": str(exc)}), 500
-    path.write_text(text, encoding="utf-8")
-    _commit_app_defaults(app_defaults)
-    _commit_startup_defaults(data.get("startupSettings"))
-    return jsonify({"ok": True, "skipped_secret_defaults": sorted(SECRET_SETTING_KEYS)})
+        glass = _coerce_glass_defaults(data.get("liquidGlassElements"))
+        defaults = _coerce_advanced_ui_defaults(data.get("uiSettings"), glass)
+        defaults["liquidGlassElements"] = glass
+        next_defaults = load_default_app_config_overrides()
+        next_defaults.update(_coerce_app_default_overrides(data.get("appSettings")))
+        next_defaults["ADVANCED_UI_SETTINGS_DEFAULTS"] = defaults
+        path = save_default_app_config_overrides(next_defaults)
+    except Exception as exc:
+        target = str(getattr(save_default_app_config_overrides, "__defaults_path__", "") or (Path(__file__).resolve().parent.parent / "config" / "debripod.defaults.json"))
+        return jsonify({"ok": False, "error": f"Failed to write defaults config: {target}: {exc}", "path": target}), 500
+    username = _current_settings_username()
+    if username:
+        _apply_runtime_settings_for_user(username, force=True)
+    return jsonify({
+        "ok": True,
+        "path": str(path),
+        "saved_keys": sorted(next_defaults.keys()),
+        "advanced_ui_defaults": defaults,
+        "skipped_secret_defaults": sorted(SECRET_SETTING_KEYS),
+    })
+
+
+@app.route("/api/ui/advanced_defaults/reset", methods=["POST"])
+def api_ui_advanced_defaults_reset():
+    try:
+        next_defaults = load_default_app_config_overrides()
+        removed = "ADVANCED_UI_SETTINGS_DEFAULTS" in next_defaults
+        next_defaults.pop("ADVANCED_UI_SETTINGS_DEFAULTS", None)
+        path = save_default_app_config_overrides(next_defaults)
+    except Exception as exc:
+        target = str(Path(__file__).resolve().parent.parent / "config" / "debripod.defaults.json")
+        return jsonify({"ok": False, "error": f"Failed to write defaults config: {target}: {exc}", "path": target}), 500
+    username = _current_settings_username()
+    if username:
+        _apply_runtime_settings_for_user(username, force=True)
+    return jsonify({"ok": True, "path": str(path), "removed": removed, "saved_keys": sorted(next_defaults.keys())})
 
 
 @app.route("/api/library/building", methods=["GET"])
@@ -1971,7 +2010,7 @@ def api_client_state():
             pass
     any_building, roots_status = index_building_status()
     username = _current_settings_username()
-    settings = ensure_app_settings(username=username)
+    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
     search_history_items = _load_search_history()
     with PLAYBACK_STATE_LOCK:
         playback_recent = PLAYBACK_STATE.get("recent") or []
@@ -1997,7 +2036,7 @@ def api_client_state():
 @app.route("/api/performance", methods=["GET"])
 def api_performance():
     username = _current_settings_username()
-    settings = ensure_app_settings(username=username)
+    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
     any_building, roots_status = index_building_status()
     services = _service_status_payload(settings)
     service_summary = {}
@@ -2029,7 +2068,7 @@ def api_performance():
 @app.route("/api/sync", methods=["GET"])
 def api_sync():
     username = _current_settings_username()
-    settings = ensure_app_settings(username=username)
+    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
     try:
         since = json.loads(request.args.get("since") or "{}")
     except Exception:
@@ -2067,6 +2106,7 @@ def api_sync():
         "library_changes": library_changes,
         "deleted": deleted,
         "settings": masked_settings(settings),
+        "advanced_ui_defaults": _advanced_ui_defaults_from_settings(settings),
         "search_history": _load_search_history(),
         "playback": playback,
         "services": _service_status_payload(settings),
