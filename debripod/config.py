@@ -3,12 +3,14 @@ from __future__ import annotations
 import json
 import os
 import secrets
+import warnings
 from pathlib import Path
 from typing import Any, MutableMapping
 
-from .settings import APP_SETTING_KEYS, DEFAULT_APP_SETTINGS, STARTUP_CONFIG_KEYS, ensure_app_settings
+from .settings import APP_SETTING_KEYS, DEFAULT_APP_SETTINGS, SECRET_SETTING_KEYS, STARTUP_CONFIG_KEYS, ensure_app_settings
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
+DEFAULTS_CONFIG_PATH = PACKAGE_ROOT / "config" / "debripod.defaults.json"
 DEFAULT_CONFIG_PATHS = [
     PACKAGE_ROOT / "config" / "debripod.local.json",
     PACKAGE_ROOT / "config" / "debripod.json",
@@ -33,6 +35,45 @@ SECRET_KEYS = {
     "KNABEN_API_KEY", "REAL_DEBRID_API_KEY", "SOULSEEK_USERNAME", "SOULSEEK_PASSWORD",
     "LASTFM_API_KEY", "LASTFM_API_SECRET", "LASTFM_SESSION_KEY", "APP_SECRET_KEY", "MCP_TOKEN",
 }
+
+
+def load_default_app_config_overrides(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
+    candidate = Path(path) if path else DEFAULTS_CONFIG_PATH
+    candidate = Path(os.path.expandvars(os.path.expanduser(str(candidate))))
+    if not candidate.is_file():
+        return {}
+    try:
+        with candidate.open("r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except Exception as exc:
+        warnings.warn(f"DebriPod defaults config is unreadable: {candidate}: {exc}", RuntimeWarning)
+        return {}
+    if not isinstance(data, dict):
+        warnings.warn(f"DebriPod defaults config must contain a JSON object: {candidate}", RuntimeWarning)
+        return {}
+    out: dict[str, Any] = {}
+    for key, value in data.items():
+        key_upper = str(key).upper()
+        if key_upper in APP_SETTING_KEYS and key_upper not in SECRET_SETTING_KEYS:
+            out[key_upper] = value
+    return out
+
+
+def save_default_app_config_overrides(data: dict[str, Any], path: str | os.PathLike[str] | None = None) -> Path:
+    target = Path(path) if path else DEFAULTS_CONFIG_PATH
+    target = Path(os.path.expandvars(os.path.expanduser(str(target))))
+    clean: dict[str, Any] = {}
+    for key, value in (data or {}).items():
+        key_upper = str(key).upper()
+        if key_upper in APP_SETTING_KEYS and key_upper not in SECRET_SETTING_KEYS:
+            clean[key_upper] = value
+    target.parent.mkdir(parents=True, exist_ok=True)
+    tmp = target.with_name(target.name + ".tmp")
+    with tmp.open("w", encoding="utf-8") as handle:
+        json.dump(clean, handle, indent=2, sort_keys=True)
+        handle.write("\n")
+    tmp.replace(target)
+    return target
 
 
 def _coerce_path(value: str) -> str:
@@ -106,7 +147,7 @@ def save_config(data: dict[str, Any], path: str | os.PathLike[str] | None = None
 
 def ensure_startup_security_config(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
     data = load_config(path)
-    ensure_app_settings(data)
+    ensure_app_settings(data, defaults_overrides=load_default_app_config_overrides())
     changed = False
     for key in list(data.keys()):
         key_upper = str(key).upper()
@@ -147,8 +188,10 @@ def _coerce_config_value(key_upper: str, value: Any) -> Any:
 
 def apply_config_to_module(module_globals: MutableMapping[str, Any], path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
     startup_config = load_config(path)
-    app_settings = ensure_app_settings(startup_config)
+    default_overrides = load_default_app_config_overrides()
+    app_settings = ensure_app_settings(startup_config, defaults_overrides=default_overrides)
     config = dict(DEFAULT_CONFIG)
+    config.update(default_overrides)
     config.update(app_settings)
     for key in ("PORT", "USERS", "APP_SECRET_KEY", "ENABLE_MCP", "MCP_TOKEN", "SETUP_COMPLETE"):
         if key in startup_config:

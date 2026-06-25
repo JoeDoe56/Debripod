@@ -14,80 +14,77 @@ SETTINGS_PATH = PACKAGE_ROOT / "data" / "settings.json"
 
 STARTUP_CONFIG_KEYS = {"PORT", "USERS", "APP_SECRET_KEY", "ENABLE_MCP", "MCP_TOKEN", "SETUP_COMPLETE"}
 
-DEFAULT_APP_SETTINGS: dict[str, Any] = {
-    "APP_NAME": "DebriPod",
-    "WHEEL_ROTATION_MAX_DEGREES": 10,
-    "PLAYBACK_STREAMING_MODE": "http",
-    "RESULTS_PER_PAGE": 50,
-    "MAX_FILES_PER_TORRENT": 50,
-    "MAX_TORRENT_WAIT_SECONDS": 1800,
-    "POLL_INTERVAL_SECONDS": 4,
-    "REQUEST_TIMEOUT_SECONDS": 25,
-    "STREAM_PROXY_ALLOWED_HOST_SUFFIXES": [
-        "real-debrid.com",
-        "download.real-debrid.com",
-        "youtube.com",
-        "googlevideo.com",
-        "ytimg.com",
-    ],
-    "SEARCH_STREAM_ROOT_ID": "__search_stream__",
-    "SEARCH_STREAM_SESSION_TTL_SECONDS": 21600,
-    "SEARCH_HISTORY_MAX_ITEMS": 50,
-    "SEARCH_DISK_CACHE_TTL_SECONDS": 604800,
-    "TASKS_POLL_MS": 1200,
-    "MCP_PROTOCOL_VERSION": "2025-03-26",
-    "MCP_SEARCH_RESULT_LIMIT": 20,
-    "MCP_SSE_KEEPALIVE_SECONDS": 15,
-    "MCP_SESSION_TTL_SECONDS": 43200,
-    "KNABEN_API_KEY": "",
-    "KNABEN_MIN_SECONDS_BETWEEN_REQUESTS": 0.6,
-    "KNABEN_CACHE_TTL_SECONDS": 120.0,
-    "KNABEN_MAX_RETRIES": 5,
-    "KNABEN_API_BASE": "https://api.knaben.org/v1",
-    "KNABEN_WEB_BASE": "https://knaben.org",
-    "YTDLP_CMD": "yt-dlp",
-    "YOUTUBE_DOWNLOAD_DIR": "./data/youtube",
-    "YOUTUBE_STREAM_CACHE_SUBDIR": "youtube_streams",
-    "YOUTUBE_WEB_BASE": "https://www.youtube.com",
-    "YOUTUBE_SEARCH_LIMIT": 24,
-    "YOUTUBE_CHANNEL_BROWSE_LIMIT": 0,
-    "YOUTUBE_REQUEST_HEADERS": {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36",
-        "Accept-Language": "en-US,en;q=0.9",
-    },
-    "FFMPEG_PATH": "ffmpeg",
-    "FFPROBE_PATH": "ffprobe",
-    "AUDIO_TRANSCODE": "",
-    "AUTO_TRANSCODE_FOR_BROWSER_COMPATIBILITY": True,
-    "REPLACE_ORIGINAL": True,
-    "PRELOAD_NEXT_FOR_GAPLESS": True,
-    "PRELOAD_NEXT_CHUNK_BYTES": 2097152,
-    "CACHE_DIR_NAME": "_debripod_cache",
-    "VIDEO_BROWSER_TARGET_EXT": "mp4",
-    "REAL_DEBRID_API_KEY": "",
-    "RD_BASE": "https://api.real-debrid.com/rest/1.0",
-    "DOWNLOAD_DIR": "./data/debrid",
-    "SOULSEEK_USERNAME": "",
-    "SOULSEEK_PASSWORD": "",
-    "SOULSEEK_DOWNLOAD_DIR": "./data/soulseek",
-    "SOULSEEK_LISTENING_PORT": 61000,
-    "SOULSEEK_OBFUSCATED_PORT": 0,
-    "SOULSEEK_SEARCH_TIMEOUT_SEC": 8,
-    "SOULSEEK_SEARCH_MAX_RESULTS": 5000,
-    "SOULSEEK_SEARCH_IDLE_STOP_SEC": 2.5,
-    "SOULSEEK_SEARCH_HARD_MAX_SEC": 60,
-    "LASTFM_API_KEY": "",
-    "LASTFM_API_SECRET": "",
-    "LASTFM_SESSION_KEY": "",
-    "LASTFM_CALLBACK_URL": "",
-    "LASTFM_API_ROOT": "https://ws.audioscrobbler.com/2.0/",
-    "LASTFM_REQUEST_TIMEOUT_SECONDS": 12,
-    "LIBRARY_FOLDERS": [],
-    "SETUP_WIZARD_COMPLETE": False,
-    "SETUP_SKIPPED_SERVICES": {},
-}
+DEFAULT_APP_SETTINGS: dict[str, Any] = {'APP_NAME': 'DebriPod',
+ 'WHEEL_ROTATION_MAX_DEGREES': 15,
+ 'PLAYBACK_STREAMING_MODE': 'http',
+ 'RESULTS_PER_PAGE': 50,
+ 'MAX_FILES_PER_TORRENT': 50,
+ 'MAX_TORRENT_WAIT_SECONDS': 1800,
+ 'POLL_INTERVAL_SECONDS': 4,
+ 'REQUEST_TIMEOUT_SECONDS': 25,
+ 'STREAM_PROXY_ALLOWED_HOST_SUFFIXES': ['real-debrid.com',
+                                        'download.real-debrid.com',
+                                        'youtube.com',
+                                        'googlevideo.com',
+                                        'ytimg.com'],
+ 'SEARCH_STREAM_ROOT_ID': '__search_stream__',
+ 'SEARCH_STREAM_SESSION_TTL_SECONDS': 21600,
+ 'SEARCH_HISTORY_MAX_ITEMS': 50,
+ 'SEARCH_DISK_CACHE_TTL_SECONDS': 604800,
+ 'TASKS_POLL_MS': 1200,
+ 'MCP_PROTOCOL_VERSION': '2025-03-26',
+ 'MCP_SEARCH_RESULT_LIMIT': 20,
+ 'MCP_SSE_KEEPALIVE_SECONDS': 15,
+ 'MCP_SESSION_TTL_SECONDS': 43200,
+ 'KNABEN_API_KEY': '',
+ 'KNABEN_MIN_SECONDS_BETWEEN_REQUESTS': 0.6,
+ 'KNABEN_CACHE_TTL_SECONDS': 120,
+ 'KNABEN_MAX_RETRIES': 5,
+ 'KNABEN_API_BASE': 'https://api.knaben.org/v1',
+ 'KNABEN_WEB_BASE': 'https://knaben.org',
+ 'YTDLP_CMD': 'yt-dlp',
+ 'YOUTUBE_DOWNLOAD_DIR': 'C:\\Users\\bugma\\Debripod\\youtube',
+ 'YOUTUBE_STREAM_CACHE_SUBDIR': 'youtube_streams',
+ 'YOUTUBE_WEB_BASE': 'https://www.youtube.com',
+ 'YOUTUBE_SEARCH_LIMIT': 24,
+ 'YOUTUBE_CHANNEL_BROWSE_LIMIT': 0,
+ 'YOUTUBE_REQUEST_HEADERS': {'Accept-Language': 'en-US,en;q=0.9',
+                             'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like '
+                                           'Gecko) Chrome/122.0 Safari/537.36'},
+ 'FFMPEG_PATH': 'ffmpeg',
+ 'FFPROBE_PATH': 'ffprobe',
+ 'AUDIO_TRANSCODE': '',
+ 'AUTO_TRANSCODE_FOR_BROWSER_COMPATIBILITY': True,
+ 'REPLACE_ORIGINAL': True,
+ 'PRELOAD_NEXT_FOR_GAPLESS': True,
+ 'PRELOAD_NEXT_CHUNK_BYTES': 2097152,
+ 'CACHE_DIR_NAME': '_debripod_cache',
+ 'VIDEO_BROWSER_TARGET_EXT': 'mp4',
+ 'REAL_DEBRID_API_KEY': '',
+ 'RD_BASE': 'https://api.real-debrid.com/rest/1.0',
+ 'DOWNLOAD_DIR': 'C:\\Users\\bugma\\Debripod\\debrid',
+ 'SOULSEEK_USERNAME': '',
+ 'SOULSEEK_PASSWORD': '',
+ 'SOULSEEK_DOWNLOAD_DIR': 'C:\\Users\\bugma\\Debripod\\soulseek',
+ 'SOULSEEK_LISTENING_PORT': 61000,
+ 'SOULSEEK_OBFUSCATED_PORT': 0,
+ 'SOULSEEK_SEARCH_TIMEOUT_SEC': 8,
+ 'SOULSEEK_SEARCH_MAX_RESULTS': 5000,
+ 'SOULSEEK_SEARCH_IDLE_STOP_SEC': 2.5,
+ 'SOULSEEK_SEARCH_HARD_MAX_SEC': 60,
+ 'LASTFM_API_KEY': '',
+ 'LASTFM_API_SECRET': '',
+ 'LASTFM_SESSION_KEY': '',
+ 'LASTFM_CALLBACK_URL': '',
+ 'LASTFM_API_ROOT': 'https://ws.audioscrobbler.com/2.0/',
+ 'LASTFM_REQUEST_TIMEOUT_SECONDS': 12,
+ 'LIBRARY_FOLDERS': [],
+ 'SETUP_WIZARD_COMPLETE': False,
+ 'SETUP_SKIPPED_SERVICES': {},
+ 'ADVANCED_UI_SETTINGS_DEFAULTS': {}}
 
 APP_SETTING_KEYS = set(DEFAULT_APP_SETTINGS)
+NON_PERSISTED_APP_SETTING_KEYS = {"ADVANCED_UI_SETTINGS_DEFAULTS"}
 SECRET_SETTING_KEYS = {
     "KNABEN_API_KEY",
     "REAL_DEBRID_API_KEY",
@@ -115,8 +112,12 @@ def _user_data_dir(username: str) -> Path:
     return _user_settings_path(username).parent
 
 
-def default_app_settings(username: str | None = None) -> dict[str, Any]:
+def default_app_settings(username: str | None = None, defaults_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     out = dict(DEFAULT_APP_SETTINGS)
+    for key, value in (defaults_overrides or {}).items():
+        key_upper = str(key).upper()
+        if key_upper in APP_SETTING_KEYS and key_upper not in SECRET_SETTING_KEYS:
+            out[key_upper] = _coerce_setting(key_upper, value)
     if str(username or "").strip():
         base = _user_data_dir(str(username))
         out["DOWNLOAD_DIR"] = str(base / "debrid")
@@ -231,8 +232,8 @@ def _matches_legacy_default_library_folders(value: Any) -> bool:
     return _coerce_setting("LIBRARY_FOLDERS", value) == LEGACY_DEFAULT_LIBRARY_FOLDERS
 
 
-def normalize_settings(data: dict[str, Any], username: str | None = None) -> dict[str, Any]:
-    out = default_app_settings(username)
+def normalize_settings(data: dict[str, Any], username: str | None = None, defaults_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+    out = default_app_settings(username, defaults_overrides=defaults_overrides)
     for key, value in (data or {}).items():
         key_upper = str(key).upper()
         if key_upper in APP_SETTING_KEYS:
@@ -240,7 +241,11 @@ def normalize_settings(data: dict[str, Any], username: str | None = None) -> dic
     return out
 
 
-def ensure_app_settings(startup_config: dict[str, Any] | None = None, username: str | None = None) -> dict[str, Any]:
+def _persistable_settings(data: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in data.items() if key not in NON_PERSISTED_APP_SETTING_KEYS}
+
+
+def ensure_app_settings(startup_config: dict[str, Any] | None = None, username: str | None = None, defaults_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     path = _settings_path(username)
     raw = _read_json(path)
     changed = not path.is_file()
@@ -252,7 +257,7 @@ def ensure_app_settings(startup_config: dict[str, Any] | None = None, username: 
                 merged[key_upper] = value
                 changed = True
     else:
-        user_defaults = default_app_settings(username)
+        user_defaults = default_app_settings(username, defaults_overrides=defaults_overrides)
         if _matches_legacy_default_library_folders(merged.get("LIBRARY_FOLDERS")):
             merged["LIBRARY_FOLDERS"] = []
             changed = True
@@ -260,20 +265,21 @@ def ensure_app_settings(startup_config: dict[str, Any] | None = None, username: 
             if str(merged.get(key) or "").strip() == str(DEFAULT_APP_SETTINGS.get(key) or "").strip():
                 merged[key] = user_defaults[key]
                 changed = True
-    normalized = normalize_settings(merged, username=username)
-    if changed or normalized != raw:
-        _atomic_write_json(path, normalized)
+    normalized = normalize_settings(merged, username=username, defaults_overrides=defaults_overrides)
+    persisted = _persistable_settings(normalized)
+    if changed or persisted != raw:
+        _atomic_write_json(path, persisted)
     return normalized
 
 
-def save_app_settings(updates: dict[str, Any], username: str | None = None) -> dict[str, Any]:
-    current = ensure_app_settings(username=username)
+def save_app_settings(updates: dict[str, Any], username: str | None = None, defaults_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+    current = ensure_app_settings(username=username, defaults_overrides=defaults_overrides)
     for key, value in (updates or {}).items():
         key_upper = str(key).upper()
-        if key_upper in APP_SETTING_KEYS:
+        if key_upper in APP_SETTING_KEYS and key_upper not in NON_PERSISTED_APP_SETTING_KEYS:
             current[key_upper] = _coerce_setting(key_upper, value)
-    current = normalize_settings(current, username=username)
-    _atomic_write_json(_settings_path(username), current)
+    current = normalize_settings(current, username=username, defaults_overrides=defaults_overrides)
+    _atomic_write_json(_settings_path(username), _persistable_settings(current))
     return current
 
 

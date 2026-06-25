@@ -238,6 +238,8 @@
           resetNowPlayingLayout();
           try{ setHeader(); }catch(e){}
           scheduleLiquidGlassSnapshot("now playing hidden", true);
+          try{ if(typeof reconcileLibPillGlassTargets === "function") reconcileLibPillGlassTargets("now playing hidden"); }catch(e){}
+          try{ if(typeof updateLibSelectionGlass === "function") updateLibSelectionGlass("now playing hidden"); }catch(e){}
         }catch(e){}
         npPageFadeTimer = null;
       }, fadeMs);

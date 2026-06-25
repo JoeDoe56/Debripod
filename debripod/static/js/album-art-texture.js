@@ -17,6 +17,7 @@
   let ready = false;
   let animFrame = 0;
   let glassState = null;
+  let lastRenderedFrame = null;
   const vsSource = "attribute vec2 p; varying vec2 uv; void main(){ uv=(p+1.0)*0.5; gl_Position=vec4(p,0.0,1.0); }";
   const fsSource = "precision mediump float; uniform sampler2D currentTex; uniform sampler2D nextTex; uniform float mixNext; uniform vec2 canvasSize; uniform vec2 currentSize; uniform vec2 nextSize; varying vec2 uv; vec2 coverUv(vec2 v, vec2 imageSize){ float ca=canvasSize.x/max(1.0,canvasSize.y); float ia=imageSize.x/max(1.0,imageSize.y); vec2 outUv=v; if(ca>ia){ outUv.y=(v.y-0.5)*ca/ia+0.5; }else{ outUv.x=(v.x-0.5)*ia/ca+0.5; } return vec2(outUv.x, 1.0-outUv.y); } void main(){ vec4 a=texture2D(currentTex,coverUv(uv,currentSize)); vec4 b=texture2D(nextTex,coverUv(uv,nextSize)); gl_FragColor=mix(a,b,mixNext); }";
 
@@ -273,6 +274,32 @@
     });
   }
 
+  function currentFrameState(allowFinish){
+    if(!ready || !currentSrc || !currentImage) return null;
+    let mix = 0;
+    if(nextSrc && transitionStart && transitionMs){
+      const now = performance.now ? performance.now() : Date.now();
+      mix = Math.max(0, Math.min(1, (now - transitionStart) / transitionMs));
+      if(mix >= 1 && allowFinish){
+        finishTransition();
+        mix = 0;
+        cancelTransitionFrame();
+      }
+    }
+    const activeNextSrc = nextSrc && nextImage ? nextSrc : "";
+    return {
+      currentSrc,
+      nextSrc: activeNextSrc,
+      currentImage,
+      nextImage: activeNextSrc ? nextImage : null,
+      currentImageSize,
+      nextImageSize,
+      mix: activeNextSrc ? mix : 0,
+      sourceKey: activeNextSrc || currentSrc || "",
+      renderedAt: performance.now ? performance.now() : Date.now()
+    };
+  }
+
   function refreshNpOverlayFromAlbumArtFrame(reason){
     try{ renderGlassSourceCanvas(); }catch(e){}
     try{
@@ -308,16 +335,8 @@
     gl.clearColor(0, 0, 0, 0);
     gl.clear(gl.COLOR_BUFFER_BIT);
     if(!ready || !currentSrc) return null;
-    let mix = 0;
-    if(nextSrc && transitionStart && transitionMs){
-      const now = performance.now ? performance.now() : Date.now();
-      mix = Math.max(0, Math.min(1, (now - transitionStart) / transitionMs));
-      if(mix >= 1){
-        finishTransition();
-        mix = 0;
-        cancelTransitionFrame();
-      }
-    }
+    const frame = currentFrameState(true);
+    if(!frame) return null;
     gl.useProgram(program);
     const loc = gl.getAttribLocation(program, "p");
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
@@ -327,14 +346,15 @@
     gl.bindTexture(gl.TEXTURE_2D, texCurrent);
     gl.uniform1i(gl.getUniformLocation(program, "currentTex"), 0);
     gl.activeTexture(gl.TEXTURE1);
-    gl.bindTexture(gl.TEXTURE_2D, nextSrc ? texNext : texCurrent);
+    gl.bindTexture(gl.TEXTURE_2D, frame.nextSrc ? texNext : texCurrent);
     gl.uniform1i(gl.getUniformLocation(program, "nextTex"), 1);
-    gl.uniform1f(gl.getUniformLocation(program, "mixNext"), mix);
+    gl.uniform1f(gl.getUniformLocation(program, "mixNext"), frame.mix);
     gl.uniform2f(gl.getUniformLocation(program, "canvasSize"), size.width, size.height);
-    gl.uniform2f(gl.getUniformLocation(program, "currentSize"), currentImageSize.width, currentImageSize.height);
-    gl.uniform2f(gl.getUniformLocation(program, "nextSize"), nextImageSize.width, nextImageSize.height);
+    gl.uniform2f(gl.getUniformLocation(program, "currentSize"), frame.currentImageSize.width, frame.currentImageSize.height);
+    gl.uniform2f(gl.getUniformLocation(program, "nextSize"), frame.nextImageSize.width, frame.nextImageSize.height);
     gl.drawArrays(gl.TRIANGLES, 0, 6);
     try{ gl.flush(); gl.finish(); }catch(e){}
+    lastRenderedFrame = frame;
     return outputCanvas;
   }
 
@@ -352,20 +372,21 @@
     return 0;
   }
 
-  function renderStateToCanvas(state, outputCanvas, referenceEl){
+  function renderStateToCanvas(state, outputCanvas, referenceEl, frameOverride){
     if(!state || !outputCanvas || !ready || !currentSrc || !currentImage) return null;
     if(state.canvas !== outputCanvas) return null;
-    const mix = transitionMix();
+    const frame = frameOverride || currentFrameState(false);
+    if(!frame || !frame.currentSrc || !frame.currentImage) return null;
     const ctx = state.gl;
     const size = resizeCanvasToElement(outputCanvas, referenceEl);
     if(!size.width || !size.height) return null;
-    if(state.uploadedCurrentSrc !== currentSrc){
-      if(!uploadFor(ctx, state.texCurrent, currentImage)) return null;
-      state.uploadedCurrentSrc = currentSrc;
+    if(state.uploadedCurrentSrc !== frame.currentSrc){
+      if(!uploadFor(ctx, state.texCurrent, frame.currentImage)) return null;
+      state.uploadedCurrentSrc = frame.currentSrc;
     }
-    const activeNextSrc = nextSrc && nextImage ? nextSrc : "";
+    const activeNextSrc = frame.nextSrc && frame.nextImage ? frame.nextSrc : "";
     if(activeNextSrc && state.uploadedNextSrc !== activeNextSrc){
-      if(!uploadFor(ctx, state.texNext, nextImage)) return null;
+      if(!uploadFor(ctx, state.texNext, frame.nextImage)) return null;
       state.uploadedNextSrc = activeNextSrc;
     }else if(!activeNextSrc){
       state.uploadedNextSrc = "";
@@ -384,10 +405,10 @@
     ctx.activeTexture(ctx.TEXTURE1);
     ctx.bindTexture(ctx.TEXTURE_2D, activeNextSrc ? state.texNext : state.texCurrent);
     ctx.uniform1i(ctx.getUniformLocation(state.program, "nextTex"), 1);
-    ctx.uniform1f(ctx.getUniformLocation(state.program, "mixNext"), activeNextSrc ? mix : 0);
+    ctx.uniform1f(ctx.getUniformLocation(state.program, "mixNext"), activeNextSrc ? frame.mix : 0);
     ctx.uniform2f(ctx.getUniformLocation(state.program, "canvasSize"), size.width, size.height);
-    ctx.uniform2f(ctx.getUniformLocation(state.program, "currentSize"), currentImageSize.width, currentImageSize.height);
-    ctx.uniform2f(ctx.getUniformLocation(state.program, "nextSize"), nextImageSize.width, nextImageSize.height);
+    ctx.uniform2f(ctx.getUniformLocation(state.program, "currentSize"), frame.currentImageSize.width, frame.currentImageSize.height);
+    ctx.uniform2f(ctx.getUniformLocation(state.program, "nextSize"), frame.nextImageSize.width, frame.nextImageSize.height);
     ctx.drawArrays(ctx.TRIANGLES, 0, 6);
     try{ ctx.flush(); ctx.finish(); }catch(e){}
     return outputCanvas;
@@ -400,12 +421,15 @@
     if(!glassState || glassState.canvas !== glass){
       glassState = createRenderState(glass);
     }
-    return renderStateToCanvas(glassState, glass, visible);
+    const now = performance.now ? performance.now() : Date.now();
+    const frame = lastRenderedFrame && (now - lastRenderedFrame.renderedAt) < 150 ? lastRenderedFrame : currentFrameState(false);
+    return renderStateToCanvas(glassState, glass, visible, frame);
   }
 
   root.albumArtTexture = {
     setSource,
     currentSource: function(){ return nextSrc || currentSrc || ""; },
+    activeSourceKey: function(){ const frame = currentFrameState(false); return frame ? frame.sourceKey : ""; },
     renderToCanvas,
     renderGlassSourceCanvas,
     renderFromElements: function(){ return renderToCanvas(document.getElementById("npArt")); },
