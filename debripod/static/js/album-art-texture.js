@@ -435,12 +435,32 @@
     return renderFrameToCanvas(glass, visible, frame) ? glass : null;
   }
 
+  function sourceForLiquidGL(){
+    const frame = lastRenderedFrame || currentFrameState(false);
+    if(!frame || !frame.currentImage) return null;
+    return {
+      ready: !!ready,
+      frameId: frame.frameId || 0,
+      sourceKey: frame.sourceKey || frame.nextSrc || frame.currentSrc || "",
+      currentSrc: frame.currentSrc || "",
+      nextSrc: frame.nextSrc || "",
+      currentImage: frame.currentImage,
+      nextImage: frame.nextImage || null,
+      currentImageSize: frame.currentImageSize || {width:1, height:1},
+      nextImageSize: frame.nextImageSize || frame.currentImageSize || {width:1, height:1},
+      mix: Number(frame.mix || 0) || 0,
+      transitioning: frame.transitioning === true,
+      renderedAt: frame.renderedAt || 0
+    };
+  }
+
   root.albumArtTexture = {
     setSource,
     currentSource: function(){ return nextSrc || currentSrc || ""; },
     activeSourceKey: function(){ return (lastRenderedFrame && lastRenderedFrame.sourceKey) || nextSrc || currentSrc || ""; },
     currentFrame: function(){ return lastRenderedFrame || currentFrameState(false); },
     lastRenderedFrame: function(){ return lastRenderedFrame; },
+    sourceForLiquidGL,
     renderToCanvas,
     renderFrameToCanvas,
     renderGlassSourceCanvas,

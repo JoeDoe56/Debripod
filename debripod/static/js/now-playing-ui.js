@@ -23,6 +23,12 @@ function setNowPlayingArtSrc(src, opts){
           renderer._npOverlayFrameId = 0;
           renderer._npOverlayLastUploadedMix = 0;
           renderer._npOverlayLastUploadedTransitioning = false;
+          renderer._albumSourceKey = "";
+          renderer._albumFrameId = 0;
+          renderer._albumUploadedCurrentSrc = "";
+          renderer._albumUploadedNextSrc = "";
+          renderer._albumMix = 0;
+          renderer._albumTransitioning = false;
         }
       }catch(e){}
     }
@@ -58,11 +64,6 @@ function setNowPlayingArtSrc(src, opts){
     if(window.DebriPod && DebriPod.albumArtTexture && DebriPod.albumArtTexture.setSource){
       DebriPod.albumArtTexture.setSource(v, opts || {});
     }
-    try{
-      if(window.DebriPod && DebriPod.albumArtTexture && DebriPod.albumArtTexture.renderGlassSourceCanvas){
-        DebriPod.albumArtTexture.renderGlassSourceCanvas();
-      }
-    }catch(e){}
     recaptureLiquidGlassElement(npArt);
     if(artChanged){
       try{
@@ -106,7 +107,6 @@ function refreshNowPlayingSurfaceAfterDisplay(reason){
       try{
         if(window.DebriPod && DebriPod.albumArtTexture){
           if(DebriPod.albumArtTexture.renderToCanvas) DebriPod.albumArtTexture.renderToCanvas(npArt);
-          if(DebriPod.albumArtTexture.renderGlassSourceCanvas) DebriPod.albumArtTexture.renderGlassSourceCanvas();
         }
       }catch(e){}
       try{ recaptureLiquidGlassElement(npArt); }catch(e){}

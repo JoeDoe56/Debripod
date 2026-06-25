@@ -253,6 +253,7 @@
       this.sourceType = sourceOptions.sourceType || "visualizerWebgl";
       this.sourceSelector = sourceOptions.sourceElement || sourceOptions.source || "#visualizerBg";
       this.sourceCssSelector = sourceOptions.sourceCssElement || sourceOptions.sourceCssSelector || null;
+      this.sourceProvider = typeof sourceOptions.sourceProvider === "function" ? sourceOptions.sourceProvider : null;
       this._engine = "snapdom";
       this._sourceElement = null;
       this._sourceCssRect = null;
@@ -260,6 +261,18 @@
       this._sourceIsSolidFallback = false;
       this._sourceOwnsTexture = true;
       this._solidCanvas = null;
+      this._albumCurrentTexture = null;
+      this._albumNextTexture = null;
+      this._albumUploadedCurrentSrc = "";
+      this._albumUploadedNextSrc = "";
+      this._albumCurrentSize = { width: 1, height: 1 };
+      this._albumNextSize = { width: 1, height: 1 };
+      this._albumMix = 0;
+      this._albumTransitioning = false;
+      this._albumFrameId = 0;
+      this._albumSourceKey = "";
+      this._albumRenderedAt = 0;
+      this.renderCount = 0;
       this.visible = true;
       this._adaptiveQuality = 1;
 
@@ -412,9 +425,14 @@
         precision mediump float;
         varying vec2 v_uv;
         uniform sampler2D u_tex;
+        uniform sampler2D u_albumCurrentTex;
+        uniform sampler2D u_albumNextTex;
         uniform vec2  u_resolution;
         uniform vec2  u_textureResolution;
+        uniform vec2  u_albumCurrentSize;
+        uniform vec2  u_albumNextSize;
         uniform vec4  u_bounds;
+        uniform float u_albumMix;
         uniform float u_refraction;
         uniform float u_refractionFill;
         uniform float u_bevelDepth;
@@ -433,6 +451,7 @@
         uniform int   u_glassMode;
         uniform float u_glassDarkAmount;
         uniform float u_glassLightAmount;
+        uniform bool  u_useAlbumTransitionSource;
 
         float udRoundBox( vec2 p, vec2 b, float r ) {
           return length(max(abs(p)-b+r,0.0))-r;
@@ -459,6 +478,29 @@
           float innerRadius = max(0.0, u_radius - u_hollowInset);
           float innerD = udRoundBox(p_px, innerB, innerRadius);
           return 1.0 - smoothstep(-1.25, 1.25, innerD);
+        }
+
+        vec2 albumCoverUV(vec2 uv, vec2 imageSize) {
+          vec2 sourceSize = max(u_textureResolution, vec2(1.0));
+          vec2 safeImageSize = max(imageSize, vec2(1.0));
+          float ca = sourceSize.x / sourceSize.y;
+          float ia = safeImageSize.x / safeImageSize.y;
+          vec2 outUv = uv;
+          if (ca > ia) {
+            outUv.y = (uv.y - 0.5) * ca / ia + 0.5;
+          } else {
+            outUv.x = (uv.x - 0.5) * ia / ca + 0.5;
+          }
+          return vec2(outUv.x, 1.0 - outUv.y);
+        }
+
+        vec4 sampleLiquidSource(vec2 uv) {
+          if (u_useAlbumTransitionSource) {
+            vec4 cur = texture2D(u_albumCurrentTex, albumCoverUV(uv, u_albumCurrentSize));
+            vec4 next = texture2D(u_albumNextTex, albumCoverUV(uv, u_albumNextSize));
+            return mix(cur, next, clamp(u_albumMix, 0.0, 1.0));
+          }
+          return texture2D(u_tex, uv);
         }
 
         void main(){
@@ -496,7 +538,7 @@
             }
           }
 
-          vec4 baseCol   = texture2D(u_tex, mapped);
+          vec4 baseCol   = sampleLiquidSource(mapped);
 
           vec2 texel = 1.0 / u_textureResolution;
           vec4 refrCol;
@@ -510,15 +552,15 @@
                   float angle = random(v_uv + float(i)) * 6.283185;
                   float dist = sqrt(random(v_uv - float(i))) * radius;
                   vec2 offset = vec2(cos(angle), sin(angle)) * texel * dist;
-                  sum += texture2D(u_tex, sampleUV + offset);
+                  sum += sampleLiquidSource(sampleUV + offset);
               }
               refrCol = sum / float(SAMPLES);
           } else {
-              refrCol = texture2D(u_tex, sampleUV);
-              refrCol += texture2D(u_tex, sampleUV + vec2( texel.x, 0.0));
-              refrCol += texture2D(u_tex, sampleUV + vec2(-texel.x, 0.0));
-              refrCol += texture2D(u_tex, sampleUV + vec2(0.0,  texel.y));
-              refrCol += texture2D(u_tex, sampleUV + vec2(0.0, -texel.y));
+              refrCol = sampleLiquidSource(sampleUV);
+              refrCol += sampleLiquidSource(sampleUV + vec2( texel.x, 0.0));
+              refrCol += sampleLiquidSource(sampleUV + vec2(-texel.x, 0.0));
+              refrCol += sampleLiquidSource(sampleUV + vec2(0.0,  texel.y));
+              refrCol += sampleLiquidSource(sampleUV + vec2(0.0, -texel.y));
               refrCol /= 5.0;
           }
 
@@ -588,12 +630,17 @@
 
       this.u = {
         tex: gl.getUniformLocation(this.program, "u_tex"),
+        albumCurrentTex: gl.getUniformLocation(this.program, "u_albumCurrentTex"),
+        albumNextTex: gl.getUniformLocation(this.program, "u_albumNextTex"),
         res: gl.getUniformLocation(this.program, "u_resolution"),
         textureResolution: gl.getUniformLocation(
           this.program,
           "u_textureResolution"
         ),
+        albumCurrentSize: gl.getUniformLocation(this.program, "u_albumCurrentSize"),
+        albumNextSize: gl.getUniformLocation(this.program, "u_albumNextSize"),
         bounds: gl.getUniformLocation(this.program, "u_bounds"),
+        albumMix: gl.getUniformLocation(this.program, "u_albumMix"),
         refraction: gl.getUniformLocation(this.program, "u_refraction"),
         refractionFill: gl.getUniformLocation(this.program, "u_refractionFill"),
         bevelDepth: gl.getUniformLocation(this.program, "u_bevelDepth"),
@@ -612,6 +659,7 @@
         glassMode: gl.getUniformLocation(this.program, "u_glassMode"),
         glassDarkAmount: gl.getUniformLocation(this.program, "u_glassDarkAmount"),
         glassLightAmount: gl.getUniformLocation(this.program, "u_glassLightAmount"),
+        useAlbumTransitionSource: gl.getUniformLocation(this.program, "u_useAlbumTransitionSource"),
       };
     }
 
@@ -681,11 +729,14 @@
       const nextType = options.sourceType || this.sourceType || "visualizerWebgl";
       const nextSelector = options.sourceElement || options.source || this.sourceSelector || "#visualizerBg";
       const nextCssSelector = options.sourceCssElement || options.sourceCssSelector || this.sourceCssSelector || null;
+      const nextProvider = typeof options.sourceProvider === "function" ? options.sourceProvider : this.sourceProvider;
+      const providerChanged = nextProvider !== this.sourceProvider;
       this._engine = "snapdom";
-      if (nextType !== this.sourceType || nextSelector !== this.sourceSelector || nextCssSelector !== this.sourceCssSelector) {
+      if (nextType !== this.sourceType || nextSelector !== this.sourceSelector || nextCssSelector !== this.sourceCssSelector || providerChanged) {
         this.sourceType = nextType;
         this.sourceSelector = nextSelector;
         this.sourceCssSelector = nextCssSelector;
+        this.sourceProvider = nextProvider;
         this._sourceElement = null;
         this.refreshSourceTexture("source configured");
       }
@@ -726,6 +777,9 @@
 
     refreshSourceTexture(reason = "") {
       const source = this._resolveSourceElement();
+      if (this.sourceType === "albumArtTransition") {
+        return this._refreshAlbumArtTransitionSource(reason || "album art transition");
+      }
       if (this.sourceType === "visualizerWebgl" || this.sourceType === "webglTexture") {
         const adapter =
           window.DebriPod &&
@@ -792,6 +846,98 @@
       return this.updateTextureFromSolidColor(8, 8, [0, 0, 0, 255], { reason: reason || "fallback", allowDark: true });
     }
 
+    _createAlbumTexture() {
+      const gl = this.gl;
+      const tex = gl.createTexture();
+      if (!tex) return null;
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
+      return tex;
+    }
+
+    _uploadAlbumImageTexture(image, existingTexture) {
+      if (!image || !image.complete || !image.naturalWidth || !image.naturalHeight) return null;
+      const gl = this.gl;
+      const texture = existingTexture || this._createAlbumTexture();
+      if (!texture) return null;
+      try {
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      } catch (e) {
+        liquidGLLog("warn", "liquidGL: Album art transition texture upload failed.", {
+          rendererKey: this.rendererKey,
+          message: e && e.message ? e.message : e
+        });
+        return null;
+      }
+      return texture;
+    }
+
+    _albumImageSize(image, fallback) {
+      const fromFallback = fallback || {};
+      return {
+        width: Math.max(1, Number(fromFallback.width || image && image.naturalWidth || image && image.width || 1) || 1),
+        height: Math.max(1, Number(fromFallback.height || image && image.naturalHeight || image && image.height || 1) || 1)
+      };
+    }
+
+    _refreshAlbumArtTransitionSource(reason = "") {
+      const provider = typeof this.sourceProvider === "function"
+        ? this.sourceProvider
+        : (window.DebriPod && window.DebriPod.albumArtTexture && typeof window.DebriPod.albumArtTexture.sourceForLiquidGL === "function"
+          ? window.DebriPod.albumArtTexture.sourceForLiquidGL
+          : null);
+      const adapter = provider ? provider() : null;
+      if (!adapter || !adapter.ready || !adapter.currentImage) return false;
+
+      const currentSrc = String(adapter.currentSrc || adapter.sourceKey || "");
+      const nextSrc = String(adapter.nextSrc || "");
+      if (!this._albumCurrentTexture || currentSrc !== this._albumUploadedCurrentSrc) {
+        const uploaded = this._uploadAlbumImageTexture(adapter.currentImage, this._albumCurrentTexture);
+        if (!uploaded) return false;
+        this._albumCurrentTexture = uploaded;
+        this._albumUploadedCurrentSrc = currentSrc;
+      }
+
+      if (nextSrc && adapter.nextImage) {
+        if (!this._albumNextTexture || nextSrc !== this._albumUploadedNextSrc) {
+          const uploaded = this._uploadAlbumImageTexture(adapter.nextImage, this._albumNextTexture);
+          if (!uploaded) return false;
+          this._albumNextTexture = uploaded;
+          this._albumUploadedNextSrc = nextSrc;
+        }
+      } else {
+        this._albumNextTexture = this._albumCurrentTexture;
+        this._albumUploadedNextSrc = currentSrc;
+      }
+
+      this.texture = this._albumCurrentTexture;
+      this._sourceTextureReady = true;
+      this._sourceIsSolidFallback = false;
+      this._sourceOwnsTexture = false;
+      this._albumCurrentSize = this._albumImageSize(adapter.currentImage, adapter.currentImageSize);
+      this._albumNextSize = this._albumImageSize(adapter.nextImage || adapter.currentImage, adapter.nextImageSize || adapter.currentImageSize);
+      this._albumMix = Math.max(0, Math.min(1, Number(adapter.mix || 0) || 0));
+      this._albumTransitioning = adapter.transitioning === true;
+      this._albumFrameId = Number(adapter.frameId || 0) || 0;
+      this._albumSourceKey = String(adapter.sourceKey || currentSrc || "");
+      this._albumRenderedAt = Number(adapter.renderedAt || 0) || 0;
+      const sourceRect = this._resolveSourceCssRect ? this._resolveSourceCssRect() : null;
+      this._sourceCssRect = sourceRect;
+      this.textureWidth = Math.max(1, sourceRect ? Math.round(sourceRect.width || 1) : this._albumCurrentSize.width || 1);
+      this.textureHeight = Math.max(1, sourceRect ? Math.round(sourceRect.height || 1) : this._albumCurrentSize.height || 1);
+      return true;
+    }
+
     updateTextureFromCanvas(canvas, options = {}) {
       if (!canvas || !canvas.width || !canvas.height) {
         if (this.texture) return false;
@@ -835,6 +981,10 @@
       this._sourceIsSolidFallback = false;
       this._sourceOwnsTexture = true;
       this._sourceCssRect = null;
+      this._albumFrameId = 0;
+      this._albumSourceKey = "";
+      this._albumMix = 0;
+      this._albumTransitioning = false;
       this.clear();
       liquidGLLog("log", "liquidGL: Source texture cleared.", {
         rendererKey: this.rendererKey,
@@ -1057,6 +1207,7 @@
       if (this._isScrolling) {
         this._scrollUpdateCounter++;
       }
+      this.renderCount++;
 
       gl.clearColor(0, 0, 0, 0);
       gl.clear(gl.COLOR_BUFFER_BIT);
@@ -1064,6 +1215,19 @@
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, this.texture);
       gl.uniform1i(this.u.tex, 0);
+      const useAlbumTransitionSource = this.sourceType === "albumArtTransition" && !!this._albumCurrentTexture;
+      if (this.u.useAlbumTransitionSource) gl.uniform1i(this.u.useAlbumTransitionSource, useAlbumTransitionSource ? 1 : 0);
+      if (this.u.albumCurrentTex) {
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, this._albumCurrentTexture || this.texture);
+        gl.uniform1i(this.u.albumCurrentTex, 1);
+      }
+      if (this.u.albumNextTex) {
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, this._albumNextTexture || this._albumCurrentTexture || this.texture);
+        gl.uniform1i(this.u.albumNextTex, 2);
+      }
+      gl.activeTexture(gl.TEXTURE0);
 
       const time = Number.isFinite(fs.timestamp) ? fs.timestamp / 1000 : (Date.now() - this.startTime) / 1000;
       gl.uniform1f(this.u.time, time);
@@ -1214,6 +1378,15 @@
         this.textureWidth,
         this.textureHeight
       );
+      if (this.u.albumCurrentSize) {
+        gl.uniform2f(this.u.albumCurrentSize, this._albumCurrentSize.width || 1, this._albumCurrentSize.height || 1);
+      }
+      if (this.u.albumNextSize) {
+        gl.uniform2f(this.u.albumNextSize, this._albumNextSize.width || 1, this._albumNextSize.height || 1);
+      }
+      if (this.u.albumMix) {
+        gl.uniform1f(this.u.albumMix, this._albumMix || 0);
+      }
       gl.uniform1f(this.u.refraction, lens.options.refraction);
       gl.uniform1f(this.u.refractionFill, Number.isFinite(Number(lens.options.refractionFill)) ? Number(lens.options.refractionFill) : 0);
       gl.uniform1f(this.u.bevelDepth, lens.options.bevelDepth);
