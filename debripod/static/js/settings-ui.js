@@ -1585,6 +1585,7 @@ async function libDoSearch(engine, q){
 
   async function viewLibUiSettings(push){
     showNowPlaying(false, {immediate:true});
+    try{ if(libList){ libList.style.display = "block"; libList.classList.remove("npUnderlay", "pageFadeHidden"); } }catch(e){}
     const restoreSel = (!push && state.current && state.current.kind === "libuisettings") ? state.sel : null;
     const restoreScroll = (!push && state.current && state.current.kind === "libuisettings" && libList) ? libList.scrollTop : null;
     await setView({
@@ -1595,7 +1596,12 @@ async function libDoSearch(engine, q){
       load: async function(){
         libControlsHide();
         const items = [];
-        items.push({kind:"libui_action", label:"Visualizer", action:"toggle_visualizer", pills:[visualizerEnabled ? "On" : "Off"]});
+        const vizOn = (typeof visualizerEnabled === "boolean") ? visualizerEnabled : !!uiSettings.visualizer;
+        const presetName = (typeof visualizerPresetName !== "undefined") ? visualizerPresetName : normalizeVisualizerPreset(uiSettings.visualizerPreset);
+        const presetLabel = (typeof visualizerPresetLabel === "function") ? visualizerPresetLabel(presetName) : String(presetName || "album");
+        const fps = (typeof visualizerFpsLock !== "undefined") ? visualizerFpsLock : uiSettings.visualizerFpsLock;
+        const bpm = (typeof visualizerBpm !== "undefined") ? visualizerBpm : (state.visualizerBpm || 120);
+        items.push({kind:"libui_action", label:"Visualizer", action:"toggle_visualizer", pills:[vizOn ? "On" : "Off"]});
         items.push({
           kind:"libui_action",
           label:"Max visualizer brightness",
@@ -1605,9 +1611,9 @@ async function libDoSearch(engine, q){
           forceTwoLine:true,
           settingRow:true
         });
-        items.push({kind:"libui_action", label:"Visualizer Preset", action:"cycle_visualizer_preset", pills:[visualizerPresetLabel(visualizerPresetName)]});
-        items.push({kind:"libui_action", label:"FPS Lock", action:"cycle_visualizer_fps_lock", pills:[String(normalizeVisualizerFpsLock(visualizerFpsLock)) + " FPS"]});
-        items.push({kind:"info", label:"Estimated Tempo", pills:[String(Math.round(visualizerBpm || 120)) + " BPM"]});
+        items.push({kind:"libui_action", label:"Visualizer Preset", action:"cycle_visualizer_preset", pills:[presetLabel]});
+        items.push({kind:"libui_action", label:"FPS Lock", action:"cycle_visualizer_fps_lock", pills:[String(normalizeVisualizerFpsLock(fps)) + " FPS"]});
+        items.push({kind:"info", label:"Estimated Tempo", pills:[String(Math.round(bpm || 120)) + " BPM"]});
         resetList(items);
       }
     }, push);

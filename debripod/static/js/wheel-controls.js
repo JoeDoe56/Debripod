@@ -27,7 +27,7 @@
       showNowPlaying(true);
       return;
     }
-    if(nowPlaying.style.display === "block") hidePlaybackPillsImmediate("menu button");
+    if(nowPlaying.style.display === "block" && !playbackPillsPinned) hidePlaybackPillsImmediate("menu button");
     if(nowPlaying.style.display === "block" && seekMode && !isVideoActive() && lastfmIsEnabled()){
       lastfmToggleLoved(lastfmState.meta);
       resetSeekIdle();

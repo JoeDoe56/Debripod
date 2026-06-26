@@ -405,6 +405,11 @@
         nowPlaying.style.display === "block" &&
         nowPlaying.classList.contains("npPageActive")
       );
+      if(Object.prototype.hasOwnProperty.call(opts, "explicit")){
+        state.nowPlayingPathActive = !!opts.explicit;
+      }else if(!alreadyActive && !(nowPlaying && nowPlaying.style.display === "block")){
+        state.nowPlayingPathActive = false;
+      }
       try{ if(typeof hideTransientListGlass === "function") hideTransientListGlass("now playing active"); }catch(e){}
       try{ libList.classList.add("npUnderlay"); }catch(e){}
       layoutNowPlayingToLibList();
@@ -437,6 +442,7 @@
       });
       try{ if(playbackPillsPinned && hasNowPlayingMetadata()) showPlaybackPills(true, "now playing entering"); }catch(e){}
     }else{
+      state.nowPlayingPathActive = false;
       if(!playbackPillsPinned) hidePlaybackPillsImmediate("now playing leaving", false);
       try{ libList.classList.remove("npUnderlay"); }catch(e){}
       try{ nowPlaying.classList.remove("npPageActive"); }catch(e){}
@@ -563,16 +569,8 @@
 
   function headerText(){
     try{
-      if(nowPlaying && nowPlaying.style.display === "block"){
-        const m = state.nowMeta || {};
-        const sn = state.serverNow || {};
-        const now = state.now || {};
-        const rel = String(now.rel || sn.rel || "").replace(/\\/g, "/");
-        const fallback = rel ? (rel.split("/").pop() || "") : "";
-        const title = String(m.title || m.label || sn.title || sn.label || (npTitle && npTitle.textContent) || fallback || "").trim();
-        const artist = String(m.artist || sn.artist || "").trim();
-        const item = (artist && title) ? (artist + " - " + title) : (title || fallback);
-        return item ? ("Now Playing > " + item) : "Now Playing";
+      if(nowPlaying && nowPlaying.style.display === "block" && state.nowPlayingPathActive){
+        return "Now Playing";
       }
     }catch(e){}
     const parts = [];

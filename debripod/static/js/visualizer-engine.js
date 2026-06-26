@@ -1158,7 +1158,25 @@ function ensureVisualizerFrameLoop(){
   }catch(e){}
 }
 if(npArt){
-  npArt.addEventListener("click", (ev)=>{ try{ ev.stopPropagation(); }catch(e){} togglePlaybackPillsFromArt(); });
+  var npArtPinToggleTs = 0;
+  npArt.addEventListener("pointerup", (ev)=>{
+    try{
+      ev.preventDefault();
+      ev.stopPropagation();
+      if(ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+      npArtPinToggleTs = performance.now();
+    }catch(e){}
+    togglePlaybackPillsFromArt();
+  }, {passive:false});
+  npArt.addEventListener("click", (ev)=>{
+    try{
+      ev.preventDefault();
+      ev.stopPropagation();
+      if(ev.stopImmediatePropagation) ev.stopImmediatePropagation();
+      if(performance.now() - npArtPinToggleTs < 500) return;
+    }catch(e){}
+    togglePlaybackPillsFromArt();
+  });
 }
 if(nowPlaying){
   nowPlaying.addEventListener("click", (ev)=>{

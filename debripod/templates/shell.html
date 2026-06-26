@@ -55,7 +55,7 @@
               <ul class="ipodList liquidGlass" id="libList" data-liquid-list-surface></ul>
 
               <div class="nowPlaying" id="nowPlaying">
-                <img class="npArt" id="npArt" alt="" crossorigin="anonymous" data-liquid-ignore>
+                <canvas class="npArt" id="npArt" aria-label="Album art" data-liquid-ignore></canvas>
 
                 <div class="npVideoOverlay" id="npVideoOverlay" style="display:none;">
                   <video id="npVideo" controls autoplay playsinline></video>
@@ -136,6 +136,7 @@
 <script src="{{ url_for('static', filename='js/path-pill.js') }}?v={{ asset_v }}"></script>
 <script src="{{ url_for('static', filename='js/playback-loader.js') }}?v={{ asset_v }}"></script>
 <script src="{{ url_for('static', filename='js/visualizer-engine.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/album-art-texture.js') }}?v={{ asset_v }}"></script>
 <script src="{{ url_for('static', filename='js/now-playing-ui.js') }}?v={{ asset_v }}"></script>
 <script src="{{ url_for('static', filename='js/media-session.js') }}?v={{ asset_v }}"></script>
 <script src="{{ url_for('static', filename='js/playback-sync.js') }}?v={{ asset_v }}"></script>

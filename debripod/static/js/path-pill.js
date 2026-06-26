@@ -4,6 +4,7 @@
   var playbackPillsVisible = false;
   var playbackPillsHideTimer = null;
   var playbackPillMetadataVisible = false;
+  var playbackPillTransitionMs = 220;
   try{
     pathPillPinned = (localStorage.getItem("debripod_path_pill_pinned") || "") === "1";
   }catch(e){}
@@ -34,8 +35,8 @@
     try{
       if(!libHeader) return;
       libHeader.classList.remove("pathPillHidden");
-      setTimeout(()=> startHScrollTextAuto(document.getElementById("libHeaderText")), 260);
-      animatePathPillGlassTransition("path pill shown", 240);
+      setTimeout(()=> startHScrollTextAuto(document.getElementById("libHeaderText")), playbackPillTransitionMs + 20);
+      animatePathPillGlassTransition("path pill shown", playbackPillTransitionMs);
     }catch(e){}
     if(effectivePinned){
       try{ if(pathPillHideTimer) clearTimeout(pathPillHideTimer); }catch(e){}
@@ -54,8 +55,8 @@
           const ae = document.activeElement;
           if(ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.tagName === "SELECT" || ae.isContentEditable)) return;
           libHeader.classList.add("pathPillHidden");
-          animatePathPillGlassTransition("path pill hidden", 220);
-          setTimeout(()=> hidePathPillGlassNow("path pill hidden final"), 260);
+          animatePathPillGlassTransition("path pill hidden", playbackPillTransitionMs);
+          setTimeout(()=> hidePathPillGlassNow("path pill hidden final"), playbackPillTransitionMs + 40);
         }catch(e){}
       }, (ms || 2500));
     }catch(e){}
@@ -441,11 +442,11 @@
         const wasHidden = infoPill.classList.contains("infoPillHidden");
         infoPill.classList.remove("infoPillHidden");
         infoPill.style.pointerEvents = "";
-        if(wasHidden) animateInfoPillGlassTransition(reason || "info pill show", 240);
+        if(wasHidden) animateInfoPillGlassTransition(reason || "info pill show", playbackPillTransitionMs);
         else forceInfoPillGlassRender(reason || "info pill visible", false);
       }
-      animatePathPillGlassTransition(reason || "playback pills show", 240);
-      setTimeout(()=> startHScrollTextAuto(pathPillNowText), 260);
+      animatePathPillGlassTransition(reason || "playback pills show", playbackPillTransitionMs);
+      setTimeout(()=> startHScrollTextAuto(pathPillNowText), playbackPillTransitionMs + 20);
     }catch(e){}
     if(!effectivePinned) scheduleHidePlaybackPills(2500);
   }
@@ -462,13 +463,13 @@
       if(infoPill){
         infoPill.classList.add("infoPillHidden");
         infoPill.style.pointerEvents = "none";
-        animateInfoPillGlassTransition(reason || "info pill hide", 220);
-        setTimeout(()=> hideInfoPillGlassNow(reason || "info pill hide final"), 260);
+        animateInfoPillGlassTransition(reason || "info pill hide", playbackPillTransitionMs);
+        setTimeout(()=> hideInfoPillGlassNow(reason || "info pill hide final"), playbackPillTransitionMs + 40);
       }
       if(!pathPillPinned && libHeader) {
         libHeader.classList.add("pathPillHidden");
-        animatePathPillGlassTransition(reason || "playback path hide", 220);
-        setTimeout(()=> hidePathPillGlassNow(reason || "playback path hide final"), 260);
+        animatePathPillGlassTransition(reason || "playback path hide", playbackPillTransitionMs);
+        setTimeout(()=> hidePathPillGlassNow(reason || "playback path hide final"), playbackPillTransitionMs + 40);
       }
     }catch(e){}
   }
