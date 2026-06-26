@@ -51,6 +51,8 @@ var selectedContrastRgb = {r:255,g:255,b:255};
 var selectedPillContrastRgb = {r:255,g:255,b:255};
 var selectedContrastAppliedRgb = null;
 var selectedPillContrastAppliedRgb = null;
+var selectedRenderContrastAppliedRgb = null;
+var selectedPillRenderContrastAppliedRgb = null;
 var selectedPillEdgeApplied = "";
 var visualizerPaletteRevision = 0;
 var visualizerLastTextureSignature = "";
@@ -1363,6 +1365,26 @@ function rgbToHex(rgb){
   return "#" + [rgb.r, rgb.g, rgb.b].map(v=>clampByte(v).toString(16).padStart(2, "0")).join("");
 }
 
+function cssColorToRgb(value){
+  var s = String(value || "").trim();
+  var m = s.match(/^rgba?\(\s*([+-]?\d+(?:\.\d+)?)\s*,\s*([+-]?\d+(?:\.\d+)?)\s*,\s*([+-]?\d+(?:\.\d+)?)(?:\s*,\s*([+-]?\d*(?:\.\d+)?))?\s*\)$/i);
+  if(m){
+    return {
+      r: clampByte(m[1]),
+      g: clampByte(m[2]),
+      b: clampByte(m[3]),
+      a: Math.max(0, Math.min(1, m[4] == null || m[4] === "" ? 1 : Number(m[4])))
+    };
+  }
+  var hex = s.match(/^#([0-9a-f]{3}|[0-9a-f]{6})$/i);
+  if(hex){
+    var rgb = rgbFromHex(hex[0], null);
+    if(rgb) rgb.a = 1;
+    return rgb;
+  }
+  return null;
+}
+
 function srgbChannelToLinear(value){
   var v = Math.max(0, Math.min(1, Number(value || 0) / 255));
   return v <= 0.04045 ? v / 12.92 : Math.pow((v + 0.055) / 1.055, 2.4);
@@ -1392,6 +1414,33 @@ function brightenRgb(rgb, amount){
 function darkenRgb(rgb, amount){
   var p = 1 - Math.max(0, Math.min(1, Number(amount || 0)));
   return {r:(rgb.r || 0) * p, g:(rgb.g || 0) * p, b:(rgb.b || 0) * p};
+}
+
+function visibleRgbLuma(rgb){
+  var alpha = rgb && rgb.a == null ? 1 : Number(rgb && rgb.a);
+  return rgbLuma(rgb || {}) * Math.max(0, Math.min(1, Number.isFinite(alpha) ? alpha : 1));
+}
+
+function minBrightenToLuma(rgb, targetLuma){
+  var base = rgbLuma(rgb || {});
+  var target = Math.max(0, Math.min(1, Number(targetLuma || 0)));
+  if(base >= target) return 0;
+  return Math.max(0, Math.min(1, (target - base) / Math.max(0.001, 1 - base)));
+}
+
+function selectedTextRenderRgb(rgb, list){
+  try{
+    var listStyle = window.getComputedStyle ? window.getComputedStyle(list || document.documentElement) : null;
+    var rootStyle = window.getComputedStyle ? window.getComputedStyle(document.documentElement) : null;
+    var rowText = cssColorToRgb(
+      (listStyle && String(listStyle.getPropertyValue("--dp-text-rows") || "").trim()) ||
+      (rootStyle && String(rootStyle.getPropertyValue("--dp-text-rows") || "").trim())
+    );
+    if(!rowText) return rgb;
+    var boost = minBrightenToLuma(rgb, Math.min(1, visibleRgbLuma(rowText) + 0.015));
+    return boost > 0 ? brightenRgb(rgb, boost) : rgb;
+  }catch(e){}
+  return rgb;
 }
 
 function bestContrastCandidate(bg, palette){
@@ -1616,24 +1665,38 @@ function applySelectedTextContrast(options){
       b: selectedPillContrastRgb.b + (next.b - selectedPillContrastRgb.b) * 0.20
     };
     const rootEl = document.documentElement;
+    const renderContrastRgb = selectedTextRenderRgb(selectedContrastRgb, list);
+    const renderPillContrastRgb = selectedTextRenderRgb(selectedPillContrastRgb, list);
     const contrast = rgbToHex(selectedContrastRgb);
     const pillContrast = rgbToHex(selectedPillContrastRgb);
+    const renderContrast = rgbToHex(renderContrastRgb);
+    const renderPillContrast = rgbToHex(renderPillContrastRgb);
     const pillEdge = paletteObj.ui && paletteObj.ui.selectedPillEdge ? paletteObj.ui.selectedPillEdge : rgbToHex(selectedPillContrastRgb);
     const changed = !!(opts.force ||
       !selectedContrastAppliedRgb ||
       !selectedPillContrastAppliedRgb ||
+      !selectedRenderContrastAppliedRgb ||
+      !selectedPillRenderContrastAppliedRgb ||
       rgbDistance(selectedContrastRgb, selectedContrastAppliedRgb) > 4 ||
       rgbDistance(selectedPillContrastRgb, selectedPillContrastAppliedRgb) > 4 ||
+      rgbDistance(renderContrastRgb, selectedRenderContrastAppliedRgb) > 4 ||
+      rgbDistance(renderPillContrastRgb, selectedPillRenderContrastAppliedRgb) > 4 ||
       selectedPillEdgeApplied !== pillEdge);
     if(!changed) return false;
     rootEl.style.setProperty("--lib-selected-contrast", contrast);
     rootEl.style.setProperty("--lib-selected-pill-contrast", pillContrast);
+    rootEl.style.setProperty("--lib-selected-render-contrast", renderContrast);
+    rootEl.style.setProperty("--lib-selected-pill-render-contrast", renderPillContrast);
     rootEl.style.setProperty("--lib-selected-pill-edge", pillEdge);
     list.style.setProperty("--lib-selected-contrast", contrast);
     list.style.setProperty("--lib-selected-pill-contrast", pillContrast);
+    list.style.setProperty("--lib-selected-render-contrast", renderContrast);
+    list.style.setProperty("--lib-selected-pill-render-contrast", renderPillContrast);
     list.style.setProperty("--lib-selected-pill-edge", pillEdge);
     selectedContrastAppliedRgb = {r:selectedContrastRgb.r, g:selectedContrastRgb.g, b:selectedContrastRgb.b};
     selectedPillContrastAppliedRgb = {r:selectedPillContrastRgb.r, g:selectedPillContrastRgb.g, b:selectedPillContrastRgb.b};
+    selectedRenderContrastAppliedRgb = {r:renderContrastRgb.r, g:renderContrastRgb.g, b:renderContrastRgb.b};
+    selectedPillRenderContrastAppliedRgb = {r:renderPillContrastRgb.r, g:renderPillContrastRgb.g, b:renderPillContrastRgb.b};
     selectedPillEdgeApplied = pillEdge;
     return true;
   }catch(e){}

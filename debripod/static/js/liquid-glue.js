@@ -22,8 +22,8 @@
     if(key === "black") return "rgba(0,0,0,0.92)";
     if(key === "white") return "rgba(255,255,255,0.92)";
     if(key === "contrast"){
-      if(group === "selectedRowPills") return "var(--lib-selected-pill-contrast)";
-      if(group === "selectedRow") return "var(--lib-selected-contrast)";
+      if(group === "selectedRowPills") return "var(--lib-selected-pill-render-contrast)";
+      if(group === "selectedRow") return "var(--lib-selected-render-contrast)";
       return "var(--text)";
     }
     if(key === "engraved") return "rgba(255,255,255,0.035)";

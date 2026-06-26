@@ -31,14 +31,16 @@
       --dp-text-info-pill: rgba(255,255,255,.68);
       --dp-text-rows: rgba(255,255,255,.68);
       --dp-text-row-pills: rgba(255,255,255,.68);
-      --dp-text-selected-row: var(--lib-selected-contrast);
-      --dp-text-selected-row-pills: var(--lib-selected-pill-contrast);
+      --dp-text-selected-row: var(--lib-selected-render-contrast);
+      --dp-text-selected-row-pills: var(--lib-selected-pill-render-contrast);
       --dp-text-transparent-alpha: .68;
       --dp-selected-pill-edge-room: 44px;
       --dp-selected-foreground-base-pct: 0%;
       --dp-selected-foreground-target-pct: 100%;
       --lib-selected-contrast: var(--dp-glass-selected-text);
       --lib-selected-pill-contrast: var(--dp-glass-selected-pill-text);
+      --lib-selected-render-contrast: var(--lib-selected-contrast);
+      --lib-selected-pill-render-contrast: var(--lib-selected-pill-contrast);
       --lib-selected-pill-edge: rgba(255,255,255,.72);
       --viz-energy: .0;
       --viz-bass: .0;
@@ -1715,20 +1717,20 @@
       height:16px;
     }
     .infoPill input[type="range"].npSeek{
-      accent-color:var(--lib-selected-contrast);
+      accent-color:var(--lib-selected-render-contrast);
       height:16px;
     }
     .infoPill .npSeekIndicator{
       top:4px;
       bottom:4px;
       width:2px;
-      background:var(--lib-selected-contrast);
+      background:var(--lib-selected-render-contrast);
     }
     .infoPill .npVolumeBar{
       height:7px;
     }
     .infoPill .npVolumeFill{
-      background:var(--lib-selected-contrast);
+      background:var(--lib-selected-render-contrast);
     }
     .infoPill .npTime{
       margin-top:2px;
