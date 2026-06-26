@@ -219,6 +219,14 @@
   // Server-side playback sync (Now Playing + History)
   async function playbackPost(payload){
     try{
+      if(payload && typeof payload === "object"){
+        try{
+          payload.session = state.playbackSession || payload.session || null;
+          if(window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.savePlaybackSession){
+            DebriPod.clientSync.savePlaybackSession(state.playbackSession);
+          }
+        }catch(e){}
+      }
       await fetch("/api/playback/update", {
         method: "POST",
         headers: {"Content-Type": "application/json"},
@@ -235,11 +243,20 @@
       state.serverNow = (js && js.now) ? js.now : null;
       state.serverRecent = (js && Array.isArray(js.recent)) ? js.recent : [];
       state.serverLoaded = true;
-      if(state.serverNow && state.serverNow.root_id && state.serverNow.rel){
-        state.now = {rootId: state.serverNow.root_id, rel: state.serverNow.rel, media: state.serverNow.media || "", streamed: !!state.serverNow.streamed};
-      }else{
-        // keep local state.now if it exists; otherwise clear
-        if(!state.now) state.now = null;
+      try{
+        if(typeof applyServerPlaybackSession === "function"){
+          applyServerPlaybackSession(js || {});
+        }else if(state.serverNow && state.serverNow.root_id && state.serverNow.rel){
+          state.now = {rootId: state.serverNow.root_id, rel: state.serverNow.rel, media: state.serverNow.media || "", streamed: !!state.serverNow.streamed};
+        }else if(!state.now){
+          state.now = null;
+        }
+      }catch(e){
+        if(state.serverNow && state.serverNow.root_id && state.serverNow.rel){
+          state.now = {rootId: state.serverNow.root_id, rel: state.serverNow.rel, media: state.serverNow.media || "", streamed: !!state.serverNow.streamed};
+        }else if(!state.now){
+          state.now = null;
+        }
       }
     }catch(e){
       state.serverLoaded = false;

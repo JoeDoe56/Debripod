@@ -2093,11 +2093,16 @@ def api_sync():
             library_changes.extend([dict(item, root_id=rid) for item in items if not item.get("deleted")])
             deleted.extend([dict(item, root_id=rid) for item in items if item.get("deleted")])
     with PLAYBACK_STATE_LOCK:
+        now = PLAYBACK_STATE.get("now")
         recent = PLAYBACK_STATE.get("recent") or []
-        playback = {"recent": [dict(x) for x in recent if isinstance(x, dict)][:100], "version": int(PLAYBACK_STATE.get("version") or len(recent) or 0)}
+        version = int(PLAYBACK_STATE.get("version") or len(recent) or 0)
+        playback = {"now": dict(now) if isinstance(now, dict) else None, "recent": [dict(x) for x in recent if isinstance(x, dict)][:100], "session": dict(PLAYBACK_STATE.get("playback_session") or {}), "version": version}
     for item in playback.get("recent") or []:
         for key in ["_key", "_sess", "_stream_item"]:
             item.pop(key, None)
+    if isinstance(playback.get("now"), dict):
+        for key in ["_key", "_sess", "_stream_item"]:
+            playback["now"].pop(key, None)
     state_payload = {
         "ok": True,
         "server_version": int(time.time()),

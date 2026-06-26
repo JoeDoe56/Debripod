@@ -439,6 +439,47 @@
     return saveRenderedViewSnapshot(state && state.items ? state.items : []);
   }
 
+  async function savePlaybackSession(session){
+    try{
+      if(!session || typeof session !== "object") return false;
+      const rec = {
+        key: scope + "::session",
+        scope: scope,
+        session: sanitizeItem(session, 0),
+        savedAt: Date.now()
+      };
+      await put("playback", rec);
+      return true;
+    }catch(e){
+      return false;
+    }
+  }
+
+  async function restorePlaybackSession(){
+    try{
+      const rec = await get("playback", scope + "::session");
+      const session = rec && rec.session ? rec.session : null;
+      if(!session || typeof session !== "object" || !state) return false;
+      if(typeof buildPlaybackSessionUpdate === "function"){
+        buildPlaybackSessionUpdate({
+          now: session.now || null,
+          queue: Array.isArray(session.queue) ? session.queue : [],
+          queueIndex: isFinite(session.queueIndex) ? Number(session.queueIndex) : -1,
+          history: Array.isArray(session.history) ? session.history : [],
+          nav: session.nav || null,
+          sourceView: session.sourceView || null,
+          media: session.now && session.now.media ? session.now.media : "audio"
+        }, "local-restore", Number(session.revision || 0) || undefined);
+        if(state.playbackSession) state.playbackSession.local = true;
+        return true;
+      }
+      state.playbackSession = session;
+      return true;
+    }catch(e){
+      return false;
+    }
+  }
+
   async function restoreCurrentViewState(){
     try{
       const last = await get("kv", scope + "::last-view");
@@ -655,6 +696,11 @@
       if(js.playback){
         await put("playback", {key:scope + "::recent", value:js.playback, savedAt:Date.now()});
         await put("playback_recent", {key:scopedKey(), scope:scope, playback:js.playback, savedAt:Date.now()});
+        try{
+          if(typeof applyServerPlaybackSession === "function"){
+            applyServerPlaybackSession({now:js.playback.now || null, recent:js.playback.recent || [], session:js.playback.session || null, version:js.playback.version || 0});
+          }
+        }catch(e){}
       }
     }catch(e){}
   }
@@ -766,6 +812,7 @@
     started = true;
     await openDb();
     registerServiceWorker();
+    await restorePlaybackSession();
     startupRestored = await restoreStartupViewState();
     try{
       const cachedState = await cachedApiGet("/api/client-state");
@@ -808,6 +855,8 @@
     restoreStartupViewState,
     saveCurrentViewState,
     saveRenderedViewSnapshot,
+    savePlaybackSession,
+    restorePlaybackSession,
     isSafeGet,
     serverRequiredMessage,
     isServerUnavailable,

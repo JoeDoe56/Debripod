@@ -33,7 +33,19 @@
     visualizerPreset: visualizerPresetName,
     visualizerBpm: visualizerBpm,
     streamQueue: [],
-    streamQueueIndex: -1
+    streamQueueIndex: -1,
+    nowNavContext: null,
+    playbackSession: {
+      now: null,
+      queue: [],
+      history: [],
+      queueIndex: -1,
+      nav: null,
+      sourceView: null,
+      updatedAt: 0,
+      revision: 0,
+      local: false
+    }
   };
 
   var npPlaylistReturnView = null;
@@ -49,6 +61,223 @@
   var playbackLastPos = -1;
   var playbackLastPlaylistHash = "";
 
+  function playbackDebugEnabled(){
+    try{
+      if(window.DEBRIPOD_UI_DEBUG === true) return true;
+      return (localStorage.getItem("debripod_ui_debug") || "") === "1";
+    }catch(e){ return false; }
+  }
+
+  function playbackDebug(kind, details){
+    if(!playbackDebugEnabled()) return;
+    try{ console.debug("[DebriPod playback]", kind, details || {}); }catch(e){}
+  }
+
+  function normalizePlaybackItem(it, mediaFallback){
+    if(!it || typeof it !== "object") return null;
+    const rootId = (it.root && it.root.id) ? String(it.root.id || "") : String(it.root_id || it.rootId || "");
+    const rel = String(it.rel || "");
+    if(!rootId || !rel) return null;
+    const media = String(it.media || mediaFallback || "audio").toLowerCase();
+    return {
+      kind: it.kind || "file",
+      media: media,
+      root: {id: rootId, name: (it.root && it.root.name) ? String(it.root.name || "") : ""},
+      rel: rel,
+      label: String(it.label || it.title || rel.split("/").slice(-1)[0] || ""),
+      streamed: !!it.streamed,
+      source: String(it.source || ""),
+      ext: String(it.ext || ""),
+      quality: String(it.quality || "")
+    };
+  }
+
+  function normalizePlaybackQueue(items, mediaFallback){
+    const out = [];
+    (Array.isArray(items) ? items : []).forEach((it)=>{
+      const clean = normalizePlaybackItem(it, mediaFallback);
+      if(clean) out.push(clean);
+    });
+    return out;
+  }
+
+  function captureSourceViewContext(item, playlist, index){
+    const cur = state.current || {};
+    const root = (cur.root && cur.root.id) ? cur.root : (state.root || null);
+    let itemKeys = [];
+    try{
+      itemKeys = (Array.isArray(state.items) ? state.items : []).map((x)=>{
+        const clean = normalizePlaybackItem(x, x && x.media);
+        if(clean) return clean.root.id + "::" + clean.rel;
+        return String((x && (x.key || x.label || x.kind)) || "");
+      }).filter(Boolean).slice(0, 1000);
+    }catch(e){ itemKeys = []; }
+    return {
+      kind: cur.kind || "",
+      label: cur.label || "",
+      rootId: root && root.id ? String(root.id || "") : "",
+      rootName: root && root.name ? String(root.name || "") : "",
+      rootMode: root && root.mode ? String(root.mode || "") : "",
+      rel: cur.rel || "",
+      level: cur.level || "",
+      value: cur.value || "",
+      playlistRel: cur.playlistRel || "",
+      selectedIndex: Number(state.sel || 0),
+      playIndex: Number(index || 0),
+      itemKey: item ? (((item.root && item.root.id) || item.root_id || item.rootId || "") + "::" + (item.rel || "")) : "",
+      itemKeys: itemKeys
+    };
+  }
+
+  function ensurePlaybackSession(){
+    if(!state.playbackSession || typeof state.playbackSession !== "object"){
+      state.playbackSession = {now:null, queue:[], history:[], queueIndex:-1, nav:null, sourceView:null, updatedAt:0, revision:0, local:false};
+    }
+    if(!Array.isArray(state.playbackSession.queue)) state.playbackSession.queue = [];
+    if(!Array.isArray(state.playbackSession.history)) state.playbackSession.history = [];
+    if(!isFinite(state.playbackSession.revision)) state.playbackSession.revision = 0;
+    return state.playbackSession;
+  }
+
+  function applyPlaybackQueueToRuntime(queue, index, media, reason, revision){
+    const clean = normalizePlaybackQueue(queue, media);
+    const oldLen = media === "video" ? (Array.isArray(state.videoPlaylist) ? state.videoPlaylist.length : 0) : (Array.isArray(state.playlist) ? state.playlist.length : 0);
+    if(!clean.length && oldLen > 0 && reason !== "explicit-clear" && reason !== "server-newer"){
+      playbackDebug("skip empty queue replace", {oldLength:oldLen, newLength:0, reason:reason || "", revision:revision});
+      return false;
+    }
+    const safeIndex = clean.length ? Math.max(0, Math.min(clean.length - 1, Number(index || 0))) : -1;
+    if(media === "video"){
+      state.videoPlaylist = clean;
+      state.videoIndex = safeIndex;
+    }else{
+      state.playlist = clean;
+      state.playIndex = safeIndex;
+    }
+    playbackDebug("replace queue", {oldLength:oldLen, newLength:clean.length, reason:reason || "", revision:revision});
+    return true;
+  }
+
+  function replacePlaybackQueue(nextQueue, reason, revision, media, index){
+    const sess = ensurePlaybackSession();
+    const oldLen = Array.isArray(sess.queue) ? sess.queue.length : 0;
+    const clean = normalizePlaybackQueue(nextQueue, media);
+    if(!clean.length && oldLen > 0 && reason !== "explicit-clear" && reason !== "server-newer"){
+      playbackDebug("skip empty session queue", {oldLength:oldLen, newLength:0, reason:reason || "", revision:revision});
+      return false;
+    }
+    sess.queue = clean;
+    sess.queueIndex = clean.length ? Math.max(0, Math.min(clean.length - 1, Number(index || 0))) : -1;
+    playbackDebug("replace session queue", {oldLength:oldLen, newLength:clean.length, reason:reason || "", revision:revision});
+    applyPlaybackQueueToRuntime(clean, sess.queueIndex, media || (sess.now && sess.now.media) || "audio", reason, revision);
+    return true;
+  }
+
+  function replacePlaybackHistory(nextHistory, reason, revision){
+    const sess = ensurePlaybackSession();
+    const oldLen = Array.isArray(sess.history) ? sess.history.length : 0;
+    const clean = Array.isArray(nextHistory) ? nextHistory.filter(x=>x && typeof x === "object").slice(0, 100) : [];
+    if(!clean.length && oldLen > 0 && reason !== "explicit-clear" && reason !== "server-newer"){
+      playbackDebug("skip empty history", {oldLength:oldLen, newLength:0, reason:reason || "", revision:revision});
+      return false;
+    }
+    sess.history = clean;
+    state.serverRecent = clean.slice();
+    playbackDebug("replace history", {oldLength:oldLen, newLength:clean.length, reason:reason || "", revision:revision});
+    return true;
+  }
+
+  function replaceNowPlaying(nextNow, reason, revision){
+    const sess = ensurePlaybackSession();
+    const prev = sess.now || null;
+    sess.now = nextNow || null;
+    if(nextNow){
+      state.now = {rootId: nextNow.rootId || nextNow.root_id || "", rel: nextNow.rel || "", media: nextNow.media || "", streamed: !!nextNow.streamed, nav: nextNow.nav || null};
+      if(nextNow.meta) state.nowMeta = nextNow.meta;
+      if(nextNow.nav) state.nowNavContext = nextNow.nav;
+    }else if(reason === "explicit-clear"){
+      state.now = null;
+      state.nowMeta = null;
+      state.nowNavContext = null;
+    }
+    playbackDebug("replace now", {hadNow:!!prev, hasNow:!!nextNow, reason:reason || "", revision:revision});
+    return true;
+  }
+
+  function buildPlaybackSessionUpdate(fields, reason, revision){
+    const sess = ensurePlaybackSession();
+    const nextRevision = isFinite(revision) ? Number(revision) : (Number(sess.revision || 0) + 1);
+    if(fields && Object.prototype.hasOwnProperty.call(fields, "now")) replaceNowPlaying(fields.now, reason, nextRevision);
+    if(fields && Object.prototype.hasOwnProperty.call(fields, "queue")) replacePlaybackQueue(fields.queue, reason, nextRevision, fields.media || (fields.now && fields.now.media) || (sess.now && sess.now.media) || "audio", fields.queueIndex);
+    if(fields && Object.prototype.hasOwnProperty.call(fields, "history")) replacePlaybackHistory(fields.history, reason, nextRevision);
+    if(fields && Object.prototype.hasOwnProperty.call(fields, "nav")){
+      sess.nav = fields.nav || null;
+      state.nowNavContext = sess.nav;
+      if(state.now) state.now.nav = sess.nav;
+    }
+    if(fields && Object.prototype.hasOwnProperty.call(fields, "sourceView")) sess.sourceView = fields.sourceView || null;
+    sess.updatedAt = Date.now();
+    sess.revision = nextRevision;
+    sess.local = reason !== "server-newer";
+    persistPlaybackSessionLocal();
+    return sess;
+  }
+
+  function applyServerPlaybackSession(payload){
+    const sess = ensurePlaybackSession();
+    const serverSession = payload && typeof payload.session === "object" ? payload.session : null;
+    const revision = Number((serverSession && serverSession.revision) || payload.version || 0);
+    if(revision && Number(sess.revision || 0) > revision){
+      playbackDebug("skip stale server session", {localRevision:sess.revision, serverRevision:revision});
+      return false;
+    }
+    const sn = payload && payload.now ? payload.now : null;
+    const nextNow = sn ? {
+      rootId: sn.root_id || sn.rootId || "",
+      rel: sn.rel || "",
+      media: sn.media || "",
+      streamed: !!sn.streamed,
+      nav: sn.nav || (serverSession && serverSession.nav) || null,
+      meta: {
+        label: sn.label || "",
+        title: sn.title || "",
+        artist: sn.artist || "",
+        album: sn.album || "",
+        art: sn.art || "",
+        streamed: !!sn.streamed,
+        source: sn.source || "",
+        ext: sn.ext || "",
+        quality: sn.quality || ""
+      }
+    } : null;
+    const playlist = (serverSession && Array.isArray(serverSession.queue)) ? serverSession.queue : (sn && sn.playlist && Array.isArray(sn.playlist.items) ? sn.playlist.items : null);
+    const queueIndex = (serverSession && isFinite(serverSession.queueIndex)) ? Number(serverSession.queueIndex) : (sn && sn.playlist && isFinite(sn.playlist.index) ? Number(sn.playlist.index) : 0);
+    buildPlaybackSessionUpdate({
+      now: nextNow || sess.now,
+      queue: playlist || sess.queue,
+      queueIndex: queueIndex,
+      history: Array.isArray(payload.recent) ? payload.recent : sess.history,
+      nav: (serverSession && serverSession.nav) || (sn && sn.nav) || sess.nav || null,
+      sourceView: (serverSession && serverSession.sourceView) || sess.sourceView || null,
+      media: (nextNow && nextNow.media) || (sess.now && sess.now.media) || "audio"
+    }, "server-newer", revision || undefined);
+    state.playbackSession.local = false;
+    return true;
+  }
+
+  function persistPlaybackSessionLocal(){
+    try{
+      if(window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.savePlaybackSession){
+        DebriPod.clientSync.savePlaybackSession(state.playbackSession);
+      }
+    }catch(e){}
+  }
+
+  function currentPlaybackNavContext(){
+    const sess = ensurePlaybackSession();
+    return (state.now && state.now.nav) || state.nowNavContext || sess.nav || captureNavContext();
+  }
+
   function playbackStringHash(text){
     let h = 2166136261;
     const s = String(text || "");
@@ -62,8 +291,10 @@
   function playbackPlaylistContext(media){
     let playlistCtx = null;
     try{
-      const srcList = media === "video" ? state.videoPlaylist : state.playlist;
-      const srcIndex = media === "video" ? state.videoIndex : state.playIndex;
+      const sess = ensurePlaybackSession();
+      const sessMedia = sess.now && sess.now.media ? String(sess.now.media || "") : "";
+      const srcList = (sess.queue && sess.queue.length && (!media || !sessMedia || sessMedia === media)) ? sess.queue : (media === "video" ? state.videoPlaylist : state.playlist);
+      const srcIndex = (sess.queue && sess.queue.length) ? sess.queueIndex : (media === "video" ? state.videoIndex : state.playIndex);
       if(Array.isArray(srcList) && srcList.length){
         const items = srcList.slice(0, 500).map(it=>({
           root_id: (it.root && it.root.id) ? it.root.id : "",
@@ -112,7 +343,8 @@
       position: p,
       duration: (dur && isFinite(dur)) ? Number(dur) : null,
       playing: !!playing,
-      nav: captureNavContext(),
+      nav: currentPlaybackNavContext(),
+      session: state.playbackSession || null,
       event: ev || "time",
       streamed: !!m.streamed,
       source: m.source || "",
