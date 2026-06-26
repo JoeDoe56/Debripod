@@ -549,6 +549,10 @@
       min-width:0;
       transition:grid-template-rows .22s ease, transform .22s ease;
     }
+    .pathPill:not(.pathPillHidden) .pathPillRows,
+    .pathPill:not(.pathPillHidden) .pathPillRow,
+    .pathPill:not(.pathPillHidden) .pathPillText,
+    .pathPill:not(.pathPillHidden) .pathPillNowText,
     .pathPill.playbackPillVisible .pathPillRows{
       z-index:120;
       opacity:1 !important;
@@ -569,8 +573,15 @@
     .pathPill.pathPillExpanded .pathPillNowRow{
       opacity:1;
       transform:translateY(0);
+      visibility:visible;
     }
-    .pathPill.playbackPillVisible .pathPillNowRow{
+    .pathPill:not(.pathPillHidden):not(.pathPillExpanded) .pathPillNowRow{
+      opacity:0 !important;
+      transform:translateY(-4px);
+      visibility:hidden !important;
+    }
+    .pathPill.pathPillExpanded.playbackPillVisible .pathPillNowRow,
+    .pathPill:not(.pathPillHidden).pathPillExpanded .pathPillNowRow{
       opacity:1 !important;
       transform:translateY(0);
       visibility:visible !important;
@@ -599,8 +610,7 @@
       transform: translateY(10px);
       pointer-events: none;
     }
-    .pathPill.pathPillHidden.playbackPillVisible,
-    .pathPill.playbackPillVisible{
+    .pathPill:not(.pathPillHidden).playbackPillVisible{
       opacity:1;
       transform:translateY(0);
       pointer-events:auto;
@@ -1576,8 +1586,7 @@
   visibility:hidden;
   transition:opacity var(--playbackPillFadeMs) ease, transform var(--playbackPillFadeMs) ease, visibility 0s linear var(--playbackPillFadeMs);
 }
-.infoPill.infoPillHidden.playbackPillVisible,
-.infoPill.playbackPillVisible{
+.infoPill:not(.infoPillHidden).playbackPillVisible{
   opacity:1;
   transform:translateY(0);
   visibility:visible;
@@ -1603,10 +1612,15 @@
   justify-content:center;
   overflow:hidden;
 }
+.infoPill:not(.infoPillHidden) .infoPillContent,
 .infoPill.playbackPillVisible .infoPillContent{
   opacity:1 !important;
   visibility:visible !important;
 }
+.infoPill:not(.infoPillHidden) .npBarArea,
+.infoPill:not(.infoPillHidden) .npProgressWrap,
+.infoPill:not(.infoPillHidden) .npTime,
+.infoPill:not(.infoPillHidden) .npSeek,
 .infoPill.playbackPillVisible .npBarArea,
 .infoPill.playbackPillVisible .npProgressWrap,
 .infoPill.playbackPillVisible .npTime,

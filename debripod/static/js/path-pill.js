@@ -7,6 +7,7 @@
   var playbackPillTransitionMs = 220;
   var pathPillHideFinalTimer = null;
   var infoPillHideFinalTimer = null;
+  var playbackPillVisibleClassTimer = null;
   try{
     pathPillPinned = (localStorage.getItem("debripod_path_pill_pinned") || "") === "1";
   }catch(e){}
@@ -401,8 +402,10 @@
     try{
       if(pathPillHideFinalTimer) clearTimeout(pathPillHideFinalTimer);
       if(infoPillHideFinalTimer) clearTimeout(infoPillHideFinalTimer);
+      if(playbackPillVisibleClassTimer) clearTimeout(playbackPillVisibleClassTimer);
       pathPillHideFinalTimer = null;
       infoPillHideFinalTimer = null;
+      playbackPillVisibleClassTimer = null;
     }catch(e){}
   }
 
@@ -522,6 +525,17 @@
     }catch(e){}
   }
 
+  function schedulePlaybackPillVisibleClassRemoval(){
+    try{
+      if(playbackPillVisibleClassTimer) clearTimeout(playbackPillVisibleClassTimer);
+      playbackPillVisibleClassTimer = setTimeout(()=>{
+        playbackPillVisibleClassTimer = null;
+        setPlaybackPillVisibleClass(false);
+        refreshPlaybackPillTextLayer("playback pill hidden class final", true);
+      }, playbackPillTransitionMs + 20);
+    }catch(e){}
+  }
+
   function showPlaybackPills(pinned, reason){
     const effectivePinned = !!pinned || !!playbackPillsPinned;
     playbackPillsVisible = hasNowPlayingMetadata();
@@ -568,7 +582,6 @@
     playbackPillsHideTimer = null;
     playbackPillsVisible = false;
     try{
-      setPlaybackPillVisibleClass(false);
       if(infoPill){
         infoPill.classList.add("infoPillHidden");
         infoPill.style.pointerEvents = "none";
@@ -580,6 +593,7 @@
         animatePathPillGlassTransition(reason || "playback path hide", playbackPillTransitionMs);
         schedulePathPillHideFinal(reason || "playback path hide final");
       }
+      schedulePlaybackPillVisibleClassRemoval();
     }catch(e){}
   }
 

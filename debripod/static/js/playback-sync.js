@@ -443,6 +443,7 @@
       try{ if(playbackPillsPinned && hasNowPlayingMetadata()) showPlaybackPills(true, "now playing entering"); }catch(e){}
     }else{
       state.nowPlayingPathActive = false;
+      try{ if(typeof stopNowPlayingArtTextureLoop === "function") stopNowPlayingArtTextureLoop(); }catch(e){}
       if(!playbackPillsPinned) hidePlaybackPillsImmediate("now playing leaving", false);
       try{ libList.classList.remove("npUnderlay"); }catch(e){}
       try{ nowPlaying.classList.remove("npPageActive"); }catch(e){}
