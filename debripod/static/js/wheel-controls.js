@@ -27,7 +27,7 @@
       showNowPlaying(true);
       return;
     }
-    if(nowPlaying.style.display === "block") hideNpPillImmediate("menu button");
+    if(nowPlaying.style.display === "block") hidePlaybackPillsImmediate("menu button");
     if(nowPlaying.style.display === "block" && seekMode && !isVideoActive() && lastfmIsEnabled()){
       lastfmToggleLoved(lastfmState.meta);
       resetSeekIdle();
@@ -130,7 +130,7 @@
     triggerWheelClickTilt(zone);
     if(options && options.pulse) pulseWheelCenter();
     vibeTick();
-    if(nowPlaying.style.display === "block" && !(options && options.skipNpPill)) npPillActivity(false);
+    if(nowPlaying.style.display === "block" && !(options && options.skipPlaybackPill)) playbackPillActivity(false, "wheel button");
     pressFn();
   }
 
@@ -197,7 +197,7 @@
     });
   }
 
-  bindWheelButton(btnMenu, "top", menuButtonPress, ()=>{ if(typeof openNowFolder === "function") return openNowFolder(); }, {skipNpPill:true});
+  bindWheelButton(btnMenu, "top", menuButtonPress, ()=>{ if(typeof openNowFolder === "function") return openNowFolder(); }, {skipPlaybackPill:true});
   bindWheelButton(btnRev, "left", revButtonPress, ()=>{ if(typeof viewHistory === "function") return viewHistory(true); });
   bindWheelButton(btnFwd, "right", fwdButtonPress, ()=>{ if(typeof viewPlaybackQueue === "function") return viewPlaybackQueue(true); });
   bindWheelButton(btnPlay, "bottom", playButtonPress, null);
@@ -287,13 +287,9 @@
     }
 
     if(nowPlaying.style.display === "block"){
-      if(seekMode){
-        showNpPill(true);
-      }else{
-        npPillActivity(false);
-      }
       if(Math.abs(accum) >= step){
         if(seekMode){
+          showPlaybackPills(true, "seek wheel step");
           adjustSeekPreview(accum > 0 ? 1 : -1);
         }else{
           adjustVolumeStep(accum > 0 ? 1 : -1);

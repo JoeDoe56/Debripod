@@ -176,7 +176,7 @@
   function replacePlaybackHistory(nextHistory, reason, revision){
     const sess = ensurePlaybackSession();
     const oldLen = Array.isArray(sess.history) ? sess.history.length : 0;
-    const clean = Array.isArray(nextHistory) ? nextHistory.filter(x=>x && typeof x === "object").slice(0, 100) : [];
+    const clean = Array.isArray(nextHistory) ? nextHistory.filter(x=>x && typeof x === "object") : [];
     if(!clean.length && oldLen > 0 && reason !== "explicit-clear" && reason !== "server-newer"){
       playbackDebug("skip empty history", {oldLength:oldLen, newLength:0, reason:reason || "", revision:revision});
       return false;
@@ -386,8 +386,9 @@
     return new Promise(resolve=> setTimeout(resolve, ms || 220));
   }
 
-  function showNowPlaying(on){
+  function showNowPlaying(on, options){
     const fadeMs = 220;
+    const opts = options && typeof options === "object" ? options : {};
     try{ if(libList) libList.style.display = "block"; }catch(e){}
     try{
       if(npPageFadeTimer){
@@ -411,34 +412,17 @@
       try{ setHeader(); }catch(e){}
       if(alreadyActive){
         updateVisualizerState();
-        try{
-          if(window.DebriPod && DebriPod.albumArtTexture && DebriPod.albumArtTexture.renderToCanvas){
-            DebriPod.albumArtTexture.renderToCanvas(npArt);
-          }
-        }catch(e){}
-        try{ recaptureLiquidGlassElement(npArt); }catch(e){}
-        try{ scheduleNpOverlayGlassRender(); }catch(e){}
         try{ scheduleLiquidGlassRender(); }catch(e){}
-        try{ npPillActivity(false); }catch(e){}
+        try{ if(playbackPillsPinned && hasNowPlayingMetadata()) showPlaybackPills(true, "now playing active"); }catch(e){}
         cancelSeekMode();
-        showProgressBar();
+        setInfoPillControlMode("progress", "now playing active");
         return;
       }
       try{ nowPlaying.classList.remove("npPageActive"); }catch(e){}
       updateVisualizerState();
-      try{
-        if(window.DebriPod && DebriPod.albumArtTexture && DebriPod.albumArtTexture.renderToCanvas){
-          DebriPod.albumArtTexture.renderToCanvas(npArt);
-        }
-      }catch(e){}
       scheduleLiquidGlassSnapshot("now playing entering", true);
       setTimeout(()=>{
         try{
-          if(window.DebriPod && DebriPod.albumArtTexture && DebriPod.albumArtTexture.renderToCanvas){
-            DebriPod.albumArtTexture.renderToCanvas(npArt);
-          }
-          recaptureLiquidGlassElement(npArt);
-          scheduleNpOverlayGlassRender();
           scheduleLiquidGlassRender();
         }catch(e){}
       }, 80);
@@ -447,23 +431,17 @@
           try{
             if(fadeToken !== npPageFadeToken) return;
             nowPlaying.classList.add("npPageActive");
-            try{
-              if(window.DebriPod && DebriPod.albumArtTexture && DebriPod.albumArtTexture.renderToCanvas){
-                DebriPod.albumArtTexture.renderToCanvas(npArt);
-              }
-              scheduleNpOverlayGlassRender();
-            }catch(e){}
             scheduleLiquidGlassSnapshot("now playing active", true);
           }catch(e){}
         });
       });
-      npPillActivity(false);
+      try{ if(playbackPillsPinned && hasNowPlayingMetadata()) showPlaybackPills(true, "now playing entering"); }catch(e){}
     }else{
-      hideNpPillImmediate("now playing leaving");
+      if(!playbackPillsPinned) hidePlaybackPillsImmediate("now playing leaving", false);
       try{ libList.classList.remove("npUnderlay"); }catch(e){}
       try{ nowPlaying.classList.remove("npPageActive"); }catch(e){}
       scheduleLiquidGlassSnapshot("now playing leaving", true);
-      npPageFadeTimer = setTimeout(()=>{
+      const finishHide = ()=>{
         try{
           if(fadeToken !== npPageFadeToken) return;
           nowPlaying.style.display = "none";
@@ -474,7 +452,9 @@
           try{ if(typeof updateLibSelectionGlass === "function") updateLibSelectionGlass("now playing hidden"); }catch(e){}
         }catch(e){}
         npPageFadeTimer = null;
-      }, fadeMs);
+      };
+      if(opts.immediate) finishHide();
+      else npPageFadeTimer = setTimeout(finishHide, fadeMs);
     }
     if(!on){
       stopVideoOverlay();
@@ -482,7 +462,7 @@
       volBarTimer = null;
     }
     cancelSeekMode();
-    showProgressBar();
+    setInfoPillControlMode("progress", "now playing transition");
   }
 
   function syncWheelZoneHeight(){

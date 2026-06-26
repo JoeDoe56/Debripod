@@ -281,21 +281,28 @@
     return 44;
   }
 
+  function virtualizableViewKind(kind){
+    const stableViews = new Set([
+      "folder",
+      "metatop",
+      "metalist",
+      "history",
+      "playback_queue",
+      "libsearch_history",
+      "libsearch_files",
+      "libsearch_result_list",
+      "libtasks"
+    ]);
+    return stableViews.has(String(kind || ""));
+  }
+
   function canVirtualizeList(){
     try{
       if(!libList || !state || !Array.isArray(state.items)) return false;
       if(state.items.length < 220) return false;
       const cur = state.current || {};
       const kind = String(cur.kind || "");
-      const stableViews = new Set([
-        "folder",
-        "metatop",
-        "metalist",
-        "history",
-        "playback_queue",
-        "libsearch_history"
-      ]);
-      if(!stableViews.has(kind) && cur.readOnly !== true) return false;
+      if(!virtualizableViewKind(kind) && cur.readOnly !== true) return false;
       const active = document.activeElement;
       if(active && libList.contains(active) && /^(INPUT|TEXTAREA|SELECT|BUTTON)$/i.test(active.tagName || "")) return false;
       return !state.items.some((item)=> item && (

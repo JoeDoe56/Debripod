@@ -45,11 +45,11 @@
       "specular": false,
       "shadow": true
     },
-    "nowPlayingPill": {
-      "label": "Now playing pill",
-      "mode": "dark",
-      "glassTint": 0.75,
-      "resolution": 1.0,
+    "infoPill": {
+      "label": "Info pill",
+      "mode": "clear",
+      "glassTint": 1.0,
+      "resolution": 0.25,
       "refraction": 0.047,
       "bevelDepth": 0.136,
       "bevelWidth": 0.076,
@@ -57,7 +57,7 @@
       "refractionFill": 0.0,
       "magnify": 1.0,
       "specular": false,
-      "shadow": false
+      "shadow": true
     },
     "listPills": {
       "label": "List pills",
@@ -89,11 +89,12 @@
     }
   };
   // GLASS_DEFAULTS_END
-  const GLASS_ELEMENT_KEYS = ["libraryList", "wheel", "pathPill", "nowPlayingPill", "listPills", "selectedRow"];
+  const GLASS_ELEMENT_KEYS = ["libraryList", "wheel", "pathPill", "infoPill", "listPills", "selectedRow"];
   const UI_SETTINGS_KEY = "debripod_ui_settings";
   const DEFAULT_TEXT_MODES = {
     wheelLabels: "transparent",
     pathPill: "transparent",
+    infoPill: "transparent",
     rows: "transparent",
     rowPills: "transparent",
     selectedRow: "contrast",
@@ -103,7 +104,7 @@
     selectedRow: 60,
     wheelTilt: 60,
     libraryList: 60,
-    nowPlayingPill: 60,
+    infoPill: 60,
     albumArtTransition: 60,
     pageTransition: 60,
     pathPill: 60
@@ -122,12 +123,13 @@
   let serverAdvancedUiDefaults = {};
   const DEFAULT_UI_SETTINGS = {
       "visualizer": true,
-      "visualizerStrength": "high",
+      "visualizerMaxBrightnessPct": 60,
       "visualizerPreset": "album",
       "visualizerFpsLock": 30,
       "textModes": {
           "wheelLabels": "transparent",
           "pathPill": "transparent",
+          "infoPill": "transparent",
           "rows": "transparent",
           "rowPills": "transparent",
           "selectedRow": "contrast",
@@ -138,7 +140,7 @@
           "selectedRow": 60,
           "wheelTilt": 60,
           "libraryList": 60,
-          "nowPlayingPill": 60,
+          "infoPill": 60,
           "albumArtTransition": 60,
           "pageTransition": 60,
           "pathPill": 60
@@ -167,6 +169,17 @@
     return (k === "low" || k === "medium" || k === "high") ? k : "medium";
   }
 
+  function normalizeVisualizerMaxBrightnessPct(value){
+    return clampNumber(value, 60, 0, 200);
+  }
+
+  function legacyVisualizerBrightnessPct(value){
+    const k = normalizeVisualizerStrength(value);
+    if(k === "low") return 35;
+    if(k === "medium") return 50;
+    return 60;
+  }
+
   function normalizeVisualizerPreset(value){
     const k = String(value || "album").trim().toLowerCase();
     return VISUALIZER_PRESETS[k] ? k : "album";
@@ -191,7 +204,8 @@
     const src = value && typeof value === "object" ? value : {};
     const out = {};
     Object.keys(DEFAULT_TEXT_MODES).forEach((key)=>{
-      out[key] = normalizeTextMode(src[key] || DEFAULT_TEXT_MODES[key]);
+      const inherit = key === "infoPill" && src.infoPill == null && src.pathPill != null ? src.pathPill : null;
+      out[key] = normalizeTextMode(inherit || src[key] || DEFAULT_TEXT_MODES[key]);
     });
     return out;
   }
@@ -206,7 +220,8 @@
     const src = value && typeof value === "object" ? value : {};
     const out = {};
     Object.keys(DEFAULT_ANIMATION_FPS).forEach((key)=>{
-      out[key] = normalizeAnimationFps(src[key] == null ? DEFAULT_ANIMATION_FPS[key] : src[key]);
+      const inherit = key === "infoPill" && src.infoPill == null && src.pathPill != null ? src.pathPill : null;
+      out[key] = normalizeAnimationFps(src[key] == null ? (inherit == null ? DEFAULT_ANIMATION_FPS[key] : inherit) : src[key]);
     });
     return out;
   }
@@ -236,7 +251,9 @@
 
   function cloneGlassElementSettings(value){
     const out = {};
-    const input = value && typeof value === "object" ? value : {};
+    const input = value && typeof value === "object" ? Object.assign({}, value) : {};
+    if(!input.infoPill && input.pathPill) input.infoPill = input.pathPill;
+    else if(!input.infoPill && input.nowPlayingPill) input.infoPill = input.nowPlayingPill;
     GLASS_ELEMENT_KEYS.forEach((key)=>{
       const def = DEFAULT_LIQUID_GLASS_ELEMENT_SETTINGS[key];
       const src = input[key] && typeof input[key] === "object" ? input[key] : {};
@@ -263,7 +280,8 @@
   function applyUiSettingsObject(out, saved){
     if(!out || !saved || typeof saved !== "object") return out;
     if(Object.prototype.hasOwnProperty.call(saved, "visualizer")) out.visualizer = !!saved.visualizer;
-    if(saved.visualizerStrength != null) out.visualizerStrength = normalizeVisualizerStrength(saved.visualizerStrength);
+    if(saved.visualizerMaxBrightnessPct != null) out.visualizerMaxBrightnessPct = normalizeVisualizerMaxBrightnessPct(saved.visualizerMaxBrightnessPct);
+    else if(saved.visualizerStrength != null) out.visualizerMaxBrightnessPct = legacyVisualizerBrightnessPct(saved.visualizerStrength);
     if(saved.visualizerPreset != null) out.visualizerPreset = normalizeVisualizerPreset(saved.visualizerPreset);
     if(saved.visualizerFpsLock != null) out.visualizerFpsLock = normalizeVisualizerFpsLock(saved.visualizerFpsLock);
     if(saved.textModes != null) out.textModes = cloneTextModes(saved.textModes);
@@ -300,7 +318,11 @@
       const legacyVisualizer = localStorage.getItem("debripod_visualizer");
       if(legacyVisualizer !== null) out.visualizer = legacyVisualizer === "1";
     }catch(e){}
-    try{ out.visualizerStrength = normalizeVisualizerStrength(localStorage.getItem("debripod_visualizer_strength") || out.visualizerStrength); }catch(e){}
+    try{
+      const legacyStrength = localStorage.getItem("debripod_visualizer_strength");
+      if(legacyStrength !== null) out.visualizerMaxBrightnessPct = legacyVisualizerBrightnessPct(legacyStrength);
+      out.visualizerMaxBrightnessPct = normalizeVisualizerMaxBrightnessPct(out.visualizerMaxBrightnessPct);
+    }catch(e){}
     try{ out.visualizerPreset = normalizeVisualizerPreset(localStorage.getItem("debripod_visualizer_preset") || out.visualizerPreset); }catch(e){}
     try{ out.visualizerFpsLock = normalizeVisualizerFpsLock(localStorage.getItem("debripod_visualizer_fps_lock") || out.visualizerFpsLock); }catch(e){}
     out.textModes = cloneTextModes(out.textModes);
@@ -323,12 +345,12 @@
     const uiSettings = settings || root.uiSettings.settings || DEFAULT_UI_SETTINGS;
     try{ localStorage.setItem(UI_SETTINGS_KEY, JSON.stringify(uiSettings)); }catch(e){}
     try{ localStorage.setItem("debripod_visualizer", uiSettings.visualizer ? "1" : "0"); }catch(e){}
-    try{ localStorage.setItem("debripod_visualizer_strength", uiSettings.visualizerStrength); }catch(e){}
     try{ localStorage.setItem("debripod_visualizer_preset", uiSettings.visualizerPreset); }catch(e){}
     try{ localStorage.setItem("debripod_visualizer_fps_lock", String(normalizeVisualizerFpsLock(uiSettings.visualizerFpsLock))); }catch(e){}
     try{ uiSettings.textModes = cloneTextModes(uiSettings.textModes); }catch(e){}
     try{ uiSettings.textTransparency = normalizeTextTransparency(uiSettings.textTransparency); }catch(e){}
     try{ uiSettings.animationFps = cloneAnimationFps(uiSettings.animationFps); }catch(e){}
+    try{ uiSettings.visualizerMaxBrightnessPct = normalizeVisualizerMaxBrightnessPct(uiSettings.visualizerMaxBrightnessPct); }catch(e){}
     uiSettings.performanceOverlayButton = !!uiSettings.performanceOverlayButton;
     uiSettings.performanceOverlayText = !!uiSettings.performanceOverlayText;
     try{ uiSettings.liquidGlassElements = cloneGlassElementSettings(uiSettings.liquidGlassElements); }catch(e){}
@@ -354,6 +376,7 @@
     VISUALIZER_BAND_LABELS,
     clampNumber,
     normalizeVisualizerStrength,
+    normalizeVisualizerMaxBrightnessPct,
     normalizeVisualizerPreset,
     normalizeVisualizerFpsLock,
     normalizeTextMode,

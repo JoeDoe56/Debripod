@@ -275,7 +275,7 @@
       this._albumSourceRect = null;
       this._albumSourceSize = { width: 1, height: 1 };
       this._debugCanaryTexture = null;
-      this._npOverlayHiddenSkipSince = 0;
+      this._hiddenSkipSince = 0;
       this.renderCount = 0;
       this.visible = true;
       this._adaptiveQuality = 1;
@@ -828,8 +828,8 @@
         albumNextTexture: !!this._albumNextTexture,
         albumUploadedCurrentSrc: this._albumUploadedCurrentSrc || "",
         albumUploadedNextSrc: this._albumUploadedNextSrc || "",
-        canaryEnabled: this._forceNpGlassCanary(),
-        albumFlatDebugEnabled: this._debugNpAlbumSourceFlat(),
+        canaryEnabled: this._forceGlassCanary(),
+        albumFlatDebugEnabled: this._debugAlbumSourceFlat(),
         useAlbumTransitionSource: this.sourceType === "albumArtTransition" && !!this._albumCurrentTexture,
         albumSourceSize: this._albumSourceSize || null,
         albumCurrentSize: this._albumCurrentSize || null,
@@ -845,28 +845,28 @@
       };
     }
 
-    _npOverlayDebugEnabled() {
+    _rendererDebugEnabled() {
       try {
-        return this.rendererKey === "npOverlay" && (
+        return this.rendererKey === "removedOverlayKey" && (
           window.DEBRIPOD_UI_DEBUG === true ||
-          window.DEBRIPOD_NP_OVERLAY_DEBUG === true ||
+          window.DEBRIPOD_LIQUID_RENDERER_DEBUG === true ||
           (localStorage.getItem("debripod_ui_debug") || "") === "1" ||
-          (localStorage.getItem("debripod_np_overlay_debug") || "") === "1"
+          (localStorage.getItem("debripod_liquid_renderer_debug") || "") === "1"
         );
       } catch (e) {
         return false;
       }
     }
 
-    _debugNpOverlaySkip(reason, details = {}) {
-      if (!this._npOverlayDebugEnabled()) return;
-      liquidGLLog("warn", "liquidGL: npOverlay render diagnostic", Object.assign({
+    _debugRenderSkip(reason, details = {}) {
+      if (!this._rendererDebugEnabled()) return;
+      liquidGLLog("warn", "liquidGL: renderer diagnostic", Object.assign({
         reason,
         rendererState: this.debugState ? this.debugState() : null
       }, details || {}));
     }
 
-    _isNpOverlayIntentionallyHidden(lens) {
+    _isLensIntentionallyHidden(lens) {
       try {
         let node = lens && lens.el ? lens.el : null;
         while (node && node !== document.body) {
@@ -874,8 +874,8 @@
           if (
             Number(style.opacity || 1) <= 0.01 ||
             (node.classList &&
-              (node.classList.contains("npPillHidden") ||
-                node.classList.contains("npPillSwapHidden")))
+              (node.classList.contains("infoPillHidden") ||
+                node.classList.contains("infoPillHidden")))
           ) {
             return true;
           }
@@ -885,40 +885,40 @@
       return false;
     }
 
-    _debugNpOverlayLensHidden(lens) {
-      if (this.rendererKey !== "npOverlay" || !this._npOverlayDebugEnabled()) return;
-      if (this._isNpOverlayIntentionallyHidden(lens)) {
-        this._npOverlayHiddenSkipSince = 0;
+    _debugLensHidden(lens) {
+      if (this.rendererKey !== "removedOverlayKey" || !this._rendererDebugEnabled()) return;
+      if (this._isLensIntentionallyHidden(lens)) {
+        this._hiddenSkipSince = 0;
         return;
       }
       const now = performance && performance.now ? performance.now() : Date.now();
-      if (!this._npOverlayHiddenSkipSince) {
-        this._npOverlayHiddenSkipSince = now;
+      if (!this._hiddenSkipSince) {
+        this._hiddenSkipSince = now;
         return;
       }
-      if (now - this._npOverlayHiddenSkipSince < 250) return;
-      this._npOverlayHiddenSkipSince = now;
-      this._debugNpOverlaySkip("lens skipped: not visible", {
+      if (now - this._hiddenSkipSince < 250) return;
+      this._hiddenSkipSince = now;
+      this._debugRenderSkip("lens skipped: not visible", {
         lensClassName: lens && lens.el ? lens.el.className : ""
       });
     }
 
-    _forceNpGlassCanary() {
+    _forceGlassCanary() {
       try {
-        return this.rendererKey === "npOverlay" && (
+        return this.rendererKey === "removedOverlayKey" && (
           window.DEBRIPOD_FORCE_NP_GLASS_CANARY === true ||
-          (localStorage.getItem("debripod_force_np_glass_canary") || "") === "1"
+          (localStorage.getItem("debripod_force_glass_canary") || "") === "1"
         );
       } catch (e) {
         return false;
       }
     }
 
-    _debugNpAlbumSourceFlat() {
+    _debugAlbumSourceFlat() {
       try {
-        return this.rendererKey === "npOverlay" &&
+        return this.rendererKey === "removedOverlayKey" &&
           this.sourceType === "albumArtTransition" &&
-          (localStorage.getItem("debripod_debug_np_album_source_flat") || "") === "1";
+          (localStorage.getItem("debripod_debug_album_source_flat") || "") === "1";
       } catch (e) {
         return false;
       }
@@ -956,7 +956,7 @@
       const gl = this.gl;
       const useAlbumTransitionSource = this.sourceType === "albumArtTransition" && !!this._albumCurrentTexture;
       if (this.u.useAlbumTransitionSource) gl.uniform1i(this.u.useAlbumTransitionSource, useAlbumTransitionSource ? 1 : 0);
-      if (this.u.debugAlbumSourceFlat) gl.uniform1i(this.u.debugAlbumSourceFlat, this._debugNpAlbumSourceFlat() ? 1 : 0);
+      if (this.u.debugAlbumSourceFlat) gl.uniform1i(this.u.debugAlbumSourceFlat, this._debugAlbumSourceFlat() ? 1 : 0);
       if (this.u.albumCurrentTex) {
         gl.activeTexture(gl.TEXTURE1);
         gl.bindTexture(gl.TEXTURE_2D, this._albumCurrentTexture || this.texture);
@@ -1078,8 +1078,8 @@
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-        if (this._npOverlayDebugEnabled()) {
-          liquidGLLog("log", "liquidGL: npOverlay album image uploaded", {
+        if (this._rendererDebugEnabled()) {
+          liquidGLLog("log", "liquidGL: album image uploaded", {
             rendererKey: this.rendererKey,
             complete: image.complete === true,
             naturalWidth: image.naturalWidth || 0,
@@ -1107,16 +1107,12 @@
 
     _refreshAlbumArtTransitionSource(reason = "") {
       this._sourceTextureReady = false;
-      const provider = typeof this.sourceProvider === "function"
-        ? this.sourceProvider
-        : (window.DebriPod && window.DebriPod.albumArtTexture && typeof window.DebriPod.albumArtTexture.sourceForLiquidGL === "function"
-          ? window.DebriPod.albumArtTexture.sourceForLiquidGL
-          : null);
+      const provider = typeof this.sourceProvider === "function" ? this.sourceProvider : null;
       const adapter = provider ? provider() : null;
       if (!adapter || !adapter.ready || !adapter.currentImage) return false;
       const sourceRect = this._resolveSourceCssRect ? this._resolveSourceCssRect() : null;
       if (!sourceRect || !(sourceRect.width > 0) || !(sourceRect.height > 0)) {
-        liquidGLLog("warn", "liquidGL: npOverlay albumArtTransition source rect missing", this.debugState ? this.debugState() : {});
+        liquidGLLog("warn", "liquidGL: albumArtTransition source rect missing", this.debugState ? this.debugState() : {});
         return false;
       }
 
@@ -1167,7 +1163,7 @@
         (this._sourceCssRect.width || 0) > 0 &&
         (this._sourceCssRect.height || 0) > 0;
       if (!drawable) {
-        liquidGLLog("warn", "liquidGL: npOverlay albumArtTransition source not drawable", this.debugState ? this.debugState() : {});
+        liquidGLLog("warn", "liquidGL: albumArtTransition source not drawable", this.debugState ? this.debugState() : {});
         return false;
       }
       this._markSourceReadyAfterUpload(reason || "album art transition provider");
@@ -1466,12 +1462,12 @@
     render(frameState) {
       const gl = this.gl;
       if (!this.visible || document.hidden) {
-        if (!this.visible) this._debugNpOverlaySkip("render skipped: renderer not visible");
+        if (!this.visible) this._debugRenderSkip("render skipped: renderer not visible");
         this.clear();
         return;
       }
       if (!this.texture) this.refreshSourceTexture("render fallback");
-      if (!this.texture && this._forceNpGlassCanary()) {
+      if (!this.texture && this._forceGlassCanary()) {
         const canary = this._ensureDebugCanaryTexture();
         if (canary) {
           this.texture = canary;
@@ -1481,11 +1477,11 @@
         }
       }
       if (!this.texture) {
-        this._debugNpOverlaySkip("render skipped: missing texture");
+        this._debugRenderSkip("render skipped: missing texture");
         return;
       }
-      if (this.sourceType === "albumArtTransition" && !this._albumCurrentTexture && !this._forceNpGlassCanary()) {
-        this._debugNpOverlaySkip("render skipped: albumArtTransition missing current texture");
+      if (this.sourceType === "albumArtTransition" && !this._albumCurrentTexture && !this._forceGlassCanary()) {
+        this._debugRenderSkip("render skipped: albumArtTransition missing current texture");
         return;
       }
       if (frameState) this._externalFrameState = frameState;
@@ -1522,10 +1518,10 @@
 
       this.lenses.forEach((lens) => {
         if (this._lensVisible(lens)) {
-          this._npOverlayHiddenSkipSince = 0;
+          this._hiddenSkipSince = 0;
           this._renderLens(lens);
         } else {
-          this._debugNpOverlayLensHidden(lens);
+          this._debugLensHidden(lens);
         }
       });
 
@@ -1585,8 +1581,8 @@
             parentStyle.visibility === "hidden" ||
             Number(parentStyle.opacity || 1) <= 0.01 ||
             (node.classList &&
-              (node.classList.contains("npPillHidden") ||
-                node.classList.contains("npPillSwapHidden")))
+              (node.classList.contains("infoPillHidden") ||
+                node.classList.contains("infoPillHidden")))
           ) {
             return false;
           }
@@ -1605,7 +1601,7 @@
     _renderLens(lens) {
       const gl = this.gl;
       const rect = lens.rectPx;
-      const forceCanary = this._forceNpGlassCanary();
+      const forceCanary = this._forceGlassCanary();
       if (forceCanary && !this.texture) {
         const canary = this._ensureDebugCanaryTexture();
         if (canary) {
@@ -1615,24 +1611,24 @@
         }
       }
       if (!rect) {
-        this._debugNpOverlaySkip("_renderLens skipped: missing rect");
+        this._debugRenderSkip("_renderLens skipped: missing rect");
         return;
       }
       if ((!this.texture || !this.textureWidth || !this.textureHeight) && !forceCanary) {
-        this._debugNpOverlaySkip("_renderLens skipped: missing texture dimensions");
+        this._debugRenderSkip("_renderLens skipped: missing texture dimensions");
         return;
       }
       if (!(rect.width > 0) || !(rect.height > 0)) {
-        this._debugNpOverlaySkip("_renderLens skipped: zero lens rect", { rect });
+        this._debugRenderSkip("_renderLens skipped: zero lens rect", { rect });
         return;
       }
       if (this.sourceType === "albumArtTransition" && !forceCanary) {
         if (!this._albumCurrentTexture) {
-          this._debugNpOverlaySkip("_renderLens skipped: albumArtTransition missing current texture");
+          this._debugRenderSkip("_renderLens skipped: albumArtTransition missing current texture");
           return;
         }
         if (!this._sourceCssRect || !(this._sourceCssRect.width > 0) || !(this._sourceCssRect.height > 0)) {
-          this._debugNpOverlaySkip("_renderLens skipped: albumArtTransition missing source rect");
+          this._debugRenderSkip("_renderLens skipped: albumArtTransition missing source rect");
           return;
         }
       }
@@ -1679,7 +1675,7 @@
         leftUV >= 1.02 ||
         topUV >= 1.02
       ) {
-        this._debugNpOverlaySkip("_renderLens skipped: invalid bounds", {
+        this._debugRenderSkip("_renderLens skipped: invalid bounds", {
           leftUV,
           topUV,
           wUV,
@@ -2568,8 +2564,8 @@
           style.visibility === "hidden" ||
           (node !== this.el && parseFloat(style.opacity || "1") <= 0.01) ||
             (node.classList &&
-            (node.classList.contains("npPillHidden") ||
-              node.classList.contains("npPillSwapHidden")))
+            (node.classList.contains("infoPillHidden") ||
+              node.classList.contains("infoPillHidden")))
         ) {
           return true;
         }

@@ -4,16 +4,13 @@ var seekChanged = false;
 var seekPreview = 0;
 var seekIdleTimer = null;
 
-var npPillHideTimer = null;
-var npPillSwapTimer = null;
 var visualizerEnabled = !!uiSettings.visualizer;
 var visualizerActive = false;
 var visualizerTrackKey = "";
 var visualizerSampleNonce = 0;
-var visualizerStrength = normalizeVisualizerStrength(uiSettings.visualizerStrength);
 var visualizerPresetName = normalizeVisualizerPreset(uiSettings.visualizerPreset);
 var visualizerFpsLock = normalizeVisualizerFpsLock(uiSettings.visualizerFpsLock);
-var visualizerStrengthTransition = null;
+var visualizerAlbumBrightness = 0.5;
 var defaultTheme = {
   accent: "rgba(10,132,255,.88)",
   accentStrong: "rgba(10,132,255,1)",
@@ -118,51 +115,21 @@ var visualizerAnalysisState = {
   videoPalettePending: false
 };
 
-var VISUALIZER_STRENGTHS = {
-  low: {dpr: 0.62, interval: 33, bassFields: 1, midFields: 1, trebleFields: 1, speed: 0.52, alpha: 0.28, bright: 0.52, coverage: 0.62, density: 0.04},
-  medium: {dpr: 0.74, interval: 25, bassFields: 1, midFields: 2, trebleFields: 2, speed: 0.66, alpha: 0.48, bright: 0.74, coverage: 0.82, density: 0.22},
-  high: {dpr: 0.86, interval: 17, bassFields: 2, midFields: 2, trebleFields: 2, speed: 0.82, alpha: 0.72, bright: 0.98, coverage: 1.05, density: 0.45}
+var VISUALIZER_RENDER_CONFIG = {
+  dpr: 0.74,
+  interval: 17,
+  bassFields: 2,
+  midFields: 2,
+  trebleFields: 2,
+  speed: 0.72,
+  alpha: 0.72,
+  bright: 1.0,
+  coverage: 1.0,
+  density: 0.35
 };
 
-function visualizerStrengthConfigFor(name){
-  return VISUALIZER_STRENGTHS[normalizeVisualizerStrength(name)] || VISUALIZER_STRENGTHS.medium;
-}
-
-function mixVisualizerStrengthConfig(a, b, t){
-  var p = Math.max(0, Math.min(1, Number(t || 0)));
-  var out = {};
-  Object.keys(b || {}).forEach((key)=>{
-    const av = Number(a && a[key]);
-    const bv = Number(b && b[key]);
-    if(Number.isFinite(av) && Number.isFinite(bv)){
-      out[key] = av + (bv - av) * p;
-    }else{
-      out[key] = b[key];
-    }
-  });
-  out.bassFields = Math.max(1, Math.round(out.bassFields || b.bassFields || 1));
-  out.midFields = Math.max(1, Math.round(out.midFields || b.midFields || 1));
-  out.trebleFields = Math.max(1, Math.round(out.trebleFields || b.trebleFields || 1));
-  return out;
-}
-
-function currentVisualizerStrengthConfig(ts){
-  var target = visualizerStrengthConfigFor(visualizerStrength);
-  try{
-    const tr = visualizerStrengthTransition;
-    if(!tr) return target;
-    const now = Number(ts || performance.now() || 0);
-    const p = Math.max(0, Math.min(1, (now - tr.start) / tr.duration));
-    const eased = 1 - Math.pow(1 - p, 3);
-    if(p >= 1){
-      visualizerStrengthTransition = null;
-      return target;
-    }
-    return mixVisualizerStrengthConfig(tr.from, tr.to, eased);
-  }catch(e){
-    visualizerStrengthTransition = null;
-    return target;
-  }
+function currentVisualizerRenderConfig(ts){
+  return VISUALIZER_RENDER_CONFIG;
 }
 
 function currentVisualizerMediaElement(){
@@ -833,7 +800,7 @@ function blendVisualizerPalette(){
 function renderVisualizerWebGL(ts){
   try{
     if(!visualizerBg) return false;
-    const cfg = currentVisualizerStrengthConfig(ts);
+    const cfg = currentVisualizerRenderConfig(ts);
     if(!resizeVisualizerSurface(cfg)) return false;
     const gl = visualizerGl;
     const nowTs = Number(ts || performance.now() || 0);
@@ -863,7 +830,7 @@ function renderVisualizerWebGL(ts){
     gl.uniform1f(u.activeAmount, activeAmount);
     gl.uniform1f(u.idleAmount, idleAmount);
     gl.uniform1f(u.alphaScale, Number(cfg.alpha || 0.68));
-    gl.uniform1f(u.brightScale, Number(cfg.bright || 1));
+    gl.uniform1f(u.brightScale, Number(cfg.bright || 1) * currentVisualizerBrightnessScale());
     gl.uniform1f(u.coverage, Number(cfg.coverage || 1));
     gl.uniform1f(u.densityScale, Number(cfg.density || 0));
     gl.uniform4f(u.anchor, anchor.cx, anchor.cy, anchor.rx, anchor.ry);
@@ -912,7 +879,7 @@ function currentVisualizerFrameState(ts){
   return {
     timestamp: Number(ts || performance.now() || 0),
     active: !!visualizerActive,
-    strength: visualizerStrength,
+    brightnessScale: currentVisualizerBrightnessScale(),
     energy: visualizerEnergy,
     bass: visualizerBass,
     mid: visualizerMid,
@@ -991,7 +958,7 @@ function visualizerTextureSignature(ts, sourceMotionActive){
       visualizerCanvasW || 0,
       visualizerCanvasH || 0,
       normalizeVisualizerPreset(visualizerPresetName),
-      normalizeVisualizerStrength(visualizerStrength),
+      normalizeVisualizerMaxBrightnessPct(uiSettings.visualizerMaxBrightnessPct),
       normalizeVisualizerFpsLock(visualizerFpsLock),
       visualizerPaletteRevision,
       sourceMotionActive ? 1 : 0,
@@ -1054,7 +1021,7 @@ function visualizerFrame(ts){
   visualizerFrameHandle = 0;
   try{
     const nowTs = Number(ts || performance.now() || 0);
-    const cfg = currentVisualizerStrengthConfig(ts);
+    const cfg = currentVisualizerRenderConfig(ts);
     const residual = visualizerResidualVisible(nowTs);
     const pathNeedsFrame = visualizerEnabled && (visualizerActive || residual) && isPathPillVisible();
     const hasResidualEnergy = visualizerEnabled && (visualizerEnergy > 0.003 || visualizerBass > 0.003 || visualizerMid > 0.003 || visualizerTreble > 0.003);
@@ -1190,92 +1157,15 @@ function ensureVisualizerFrameLoop(){
     scheduleVisualizerFrame(0);
   }catch(e){}
 }
-var npPillPinned = false;
-var npPillVisible = false;
-try{
-  npPillPinned = (localStorage.getItem("debripod_np_pill_pinned") || "") === "1";
-}catch(e){}
-
-function setNpPillPinned(on){
-  npPillPinned = !!on;
-  try{ localStorage.setItem("debripod_np_pill_pinned", npPillPinned ? "1" : "0"); }catch(e){}
-  if(npPillPinned){
-    showNpPill(true, "pin");
-  }else{
-    npPillActivity(false);
-  }
-}
-
-function setNpOverlayLiquidGlassVisible(visible, reason){
-  try{
-    const renderer = liquidGlassRendererByKey("npOverlay");
-    if(!renderer) return;
-    if(visible){
-      if(renderer.setVisible) renderer.setVisible(true);
-      forceNpOverlayGlassRender(reason || "np pill show", true);
-      animateNpOverlayGlassTransition(reason || "np pill show", 260);
-    }else{
-      animateNpOverlayGlassTransition(reason || "np pill hide", 220);
-    }
-  }catch(e){}
-}
-
-function setNpPillVisible(visible, reason, pinnedValue){
-  var nextVisible = !!visible;
-  if(typeof pinnedValue === "boolean"){
-    npPillPinned = !!pinnedValue;
-    try{ localStorage.setItem("debripod_np_pill_pinned", npPillPinned ? "1" : "0"); }catch(e){}
-  }
-  try{ if(npPillHideTimer) clearTimeout(npPillHideTimer); }catch(e){}
-  npPillHideTimer = null;
-  if(!nextVisible){
-    try{ if(npPillSwapTimer) clearTimeout(npPillSwapTimer); }catch(e){}
-    npPillSwapTimer = null;
-  }
-  npPillVisible = nextVisible;
-  try{
-    if(!npOverlayPill){
-      setNpOverlayLiquidGlassVisible(nextVisible, reason);
-      return;
-    }
-    if(nextVisible){
-      try{ if(typeof hideTransientListGlass === "function") hideTransientListGlass(reason || "np pill show"); }catch(e){}
-      refreshNpOverlayGlassSource(reason || "np pill show");
-      npOverlayPill.classList.remove("npPillHidden");
-      npOverlayPill.classList.remove("npPillSwapHidden");
-      npOverlayPill.style.pointerEvents = "";
-      setNpOverlayLiquidGlassVisible(true, reason || "np pill show");
-    }else{
-      npOverlayPill.classList.add("npPillHidden");
-      npOverlayPill.classList.remove("npPillSwapHidden");
-      npOverlayPill.style.pointerEvents = "none";
-      setNpOverlayLiquidGlassVisible(false, reason || "np pill hide");
-    }
-  }catch(e){}
-}
-
-function hideNpPillImmediate(reason, pinnedValue){
-  setNpPillVisible(false, reason || "immediate hide", pinnedValue);
-}
-
-function toggleNpPillFromArt(){
-    if(nowPlaying.style.display !== "block") return;
-    if(isNpPillShown()){
-      hideNpPillImmediate("art toggle", false);
-    }else{
-      setNpPillPinned(true);
-    }
-}
-
 if(npArt){
-  npArt.addEventListener("click", (ev)=>{ try{ ev.stopPropagation(); }catch(e){} toggleNpPillFromArt(); });
+  npArt.addEventListener("click", (ev)=>{ try{ ev.stopPropagation(); }catch(e){} togglePlaybackPillsFromArt(); });
 }
 if(nowPlaying){
   nowPlaying.addEventListener("click", (ev)=>{
     try{
       const tgt = ev.target;
-      if(tgt && tgt.closest && tgt.closest(".npOverlayPill, .npOverlaySurface, .npVideoOverlay, input, button, select, textarea")) return;
-      toggleNpPillFromArt();
+      if(tgt && tgt.closest && tgt.closest(".infoPill, .npVideoOverlay, input, button, select, textarea")) return;
+      togglePlaybackPillsFromArt();
     }catch(e){}
   });
 }
@@ -1285,6 +1175,34 @@ function clampByte(n){
   var v = Math.round(Number(n || 0));
   if(!isFinite(v)) return 0;
   return Math.max(0, Math.min(255, v));
+}
+
+function relativeLuminanceRgb(rgb){
+  const r = clampByte(rgb.r) / 255;
+  const g = clampByte(rgb.g) / 255;
+  const b = clampByte(rgb.b) / 255;
+  return 0.2126 * r + 0.7152 * g + 0.0722 * b;
+}
+
+function updateVisualizerAlbumBrightnessFromPalette(colors){
+  try{
+    const list = (colors || []).filter(Boolean);
+    if(!list.length){
+      visualizerAlbumBrightness = 0.5;
+      return;
+    }
+    let maxLum = 0;
+    list.forEach(c=>{ maxLum = Math.max(maxLum, relativeLuminanceRgb(c)); });
+    visualizerAlbumBrightness = Math.max(0.05, Math.min(1, maxLum || 0.5));
+  }catch(e){
+    visualizerAlbumBrightness = 0.5;
+  }
+}
+
+function currentVisualizerBrightnessScale(){
+  const pct = normalizeVisualizerMaxBrightnessPct(uiSettings.visualizerMaxBrightnessPct);
+  if(pct <= 0) return 0;
+  return Math.max(0.18, Math.max(0, pct / 100) * visualizerAlbumBrightness);
 }
 
 function rgbaFrom(rgb, a){
@@ -1383,27 +1301,11 @@ function setVisualizerEnabled(on){
   updateVisualizerState();
 }
 
-function setVisualizerStrength(value){
-  var now = performance.now();
-  var next = normalizeVisualizerStrength(value);
-  visualizerStrengthTransition = {
-    from: currentVisualizerStrengthConfig(now),
-    to: visualizerStrengthConfigFor(next),
-    start: now,
-    duration: 460
-  };
-  visualizerStrength = next;
-  uiSettings.visualizerStrength = visualizerStrength;
+function setVisualizerMaxBrightnessPct(value){
+  uiSettings.visualizerMaxBrightnessPct = normalizeVisualizerMaxBrightnessPct(value);
   saveUiSettings();
-  visualizerCanvasDpr = 0;
-  renderVisualizerWebGL(now);
+  renderVisualizerWebGL(performance.now());
   scheduleVisualizerFrame(0);
-}
-
-function cycleVisualizerStrength(){
-  var order = ["low", "medium", "high"];
-  var idx = order.indexOf(normalizeVisualizerStrength(visualizerStrength));
-  setVisualizerStrength(order[(idx + 1) % order.length]);
 }
 
 function setVisualizerFpsLock(value){
@@ -1725,6 +1627,7 @@ function setVisualizerPalette(palette){
     .map(c=>({r:clampByte(c.r), g:clampByte(c.g), b:clampByte(c.b)}))
     .slice(0, MAX_VISUALIZER_PALETTE_COLORS);
   visualizerTargetPalette = colors.length ? colors : defaultVisualizerPalette.slice();
+  updateVisualizerAlbumBrightnessFromPalette(visualizerTargetPalette);
   currentVisualizerPalette = normalizeVisualizerPaletteObject(paletteObj, visualizerTargetPalette);
   visualizerPaletteRevision += 1;
   var rootTheme = themeFromBase(visualizerTargetPalette[0] || defaultVisualizerPalette[0]);
