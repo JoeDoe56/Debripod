@@ -302,6 +302,18 @@
             screenHost.insertBefore(renderer.canvas, screenHost.firstChild);
           }
           positionLibSelectionLiquidCanvas();
+        }else if(key === "default"){
+          const stage = document.querySelector(".ipodStage");
+          if(stage && renderer.canvas.parentNode !== stage){
+            stage.insertBefore(renderer.canvas, stage.firstChild);
+          }else if(!stage && renderer.canvas.parentNode !== wrap){
+            const afterBg = document.getElementById("visualizerBg");
+            if(afterBg && afterBg.parentNode === wrap && afterBg.nextSibling){
+              wrap.insertBefore(renderer.canvas, afterBg.nextSibling);
+            }else{
+              wrap.insertBefore(renderer.canvas, wrap.firstChild);
+            }
+          }
         }else if(renderer.canvas.parentNode !== wrap){
           const afterBg = document.getElementById("visualizerBg");
           if(afterBg && afterBg.parentNode === wrap && afterBg.nextSibling){
