@@ -42,7 +42,8 @@
       toggleShuffle();
       resetSeekIdle();
     }else{
-      togglePlay();
+      const p = togglePlay();
+      if(p && typeof p.catch === "function") p.catch(()=>{});
     }
   }
 
@@ -205,6 +206,50 @@
 
   updateWheelLabels();
 
+  function keyboardInputTarget(tgt){
+    return !!(tgt && (tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA" || tgt.tagName === "SELECT" || tgt.isContentEditable));
+  }
+
+  function rowFromEventTarget(tgt){
+    try{
+      return tgt && tgt.closest ? tgt.closest(".ipodItem[data-index]") : null;
+    }catch(e){
+      return null;
+    }
+  }
+
+  if(libList && !libList._dpContextMenuBound){
+    libList._dpContextMenuBound = true;
+    libList.addEventListener("contextmenu", (ev)=>{
+      try{
+        if(keyboardInputTarget(ev.target)) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        const row = rowFromEventTarget(ev.target);
+        if(row && row.dataset && row.dataset.index != null){
+          const idx = Number(row.dataset.index);
+          if(Number.isFinite(idx) && idx >= 0 && idx < (state.items || []).length){
+            setSelectionFast(idx);
+          }
+        }
+        menuButtonPress();
+      }catch(e){}
+    });
+  }
+  if(document && !document._dpStageContextMenuBound){
+    document._dpStageContextMenuBound = true;
+    document.addEventListener("contextmenu", (ev)=>{
+      try{
+        if(keyboardInputTarget(ev.target)) return;
+        const inStage = ev.target && ev.target.closest && ev.target.closest(".ipodStage");
+        if(!inStage) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        menuButtonPress();
+      }catch(e){}
+    });
+  }
+
   // rotation scroll on wheel ring
   var wheelPointerDown = false;
   var dragging = false;
@@ -359,12 +404,14 @@
       return;
     }
     const tgt = ev.target;
-    if(tgt && (tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA" || tgt.tagName === "SELECT" || tgt.isContentEditable)) return;
+    if(keyboardInputTarget(tgt)) return;
 
     try{ if(isLibraryTabActive()) pathPillActivity(false); }catch(e){}
 
-
-    try{ if(isLibraryTabActive()) pathPillActivity(false); }catch(e){}
+    try{
+      const overList = !!(libList && tgt && tgt.closest && tgt.closest("#libList"));
+      if(overList && nowPlaying.style.display !== "block") return;
+    }catch(e){}
 
     ev.preventDefault();
     const dir = ev.deltaY > 0 ? 1 : -1;
@@ -389,7 +436,7 @@
 
     // Don't hijack typing inside inputs/textareas/selects/contenteditable elements
     const tgt = ev.target;
-    if(tgt && (tgt.tagName === "INPUT" || tgt.tagName === "TEXTAREA" || tgt.tagName === "SELECT" || tgt.isContentEditable)){
+    if(keyboardInputTarget(tgt)){
       if(typeof rangeEditorWheelActive === "function" && rangeEditorWheelActive() && (ev.key === "ArrowUp" || ev.key === "ArrowDown")){
         ev.preventDefault();
         adjustRangeEditor(ev.key === "ArrowUp" ? -1 : 1);
@@ -406,10 +453,20 @@
     if(k === "w" || k === "W"){
       ev.preventDefault();
       menuButtonPress();
+    }else if(k === "Escape" || k === "Backspace"){
+      ev.preventDefault();
+      menuButtonPress();
     }else if(k === "a" || k === "A"){
       ev.preventDefault();
       revButtonPress();
+    }else if(k === "ArrowLeft"){
+      ev.preventDefault();
+      revButtonPress();
     }else if(k === "s" || k === "S"){
+      ev.preventDefault();
+      pulseWheelCenter();
+      centerPress();
+    }else if(k === "Enter"){
       ev.preventDefault();
       pulseWheelCenter();
       centerPress();
@@ -418,6 +475,9 @@
       if(state.current && state.current.kind === "np_playlist_add") return;
       playButtonPress();
     }else if(k === "d" || k === "D"){
+      ev.preventDefault();
+      fwdButtonPress();
+    }else if(k === "ArrowRight"){
       ev.preventDefault();
       fwdButtonPress();
     }else if(k === "q" || k === "Q"){
@@ -452,6 +512,18 @@
       }else{
         scrollSel(1);
       }
+    }else if(k === "Home"){
+      ev.preventDefault();
+      if(nowPlaying.style.display !== "block") setSelectionFast(0);
+    }else if(k === "End"){
+      ev.preventDefault();
+      if(nowPlaying.style.display !== "block") setSelectionFast(Math.max(0, (state.items || []).length - 1));
+    }else if(k === "PageUp"){
+      ev.preventDefault();
+      if(nowPlaying.style.display !== "block") scrollSel(-Math.max(1, Math.floor(((libList && libList.clientHeight) || 320) / 56)));
+    }else if(k === "PageDown"){
+      ev.preventDefault();
+      if(nowPlaying.style.display !== "block") scrollSel(Math.max(1, Math.floor(((libList && libList.clientHeight) || 320) / 56)));
     }
   });
 

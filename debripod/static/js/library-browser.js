@@ -99,74 +99,158 @@
   }
 
   
-  async function resumeFromServerNow(forceShow){
-    await syncPlaybackFromServer();
+  function persistedNowRootId(entry){
+    return String((entry && (entry.root_id || entry.rootId || (entry.root && entry.root.id))) || "");
+  }
+
+  function persistedNowRel(entry){
+    return String((entry && entry.rel) || "");
+  }
+
+  function persistedNowMedia(entry){
+    const media = String((entry && entry.media) || "").toLowerCase();
+    return media === "video" ? "video" : "audio";
+  }
+
+  function persistedNowMeta(entry){
+    const meta = (entry && entry.meta && typeof entry.meta === "object") ? entry.meta : {};
+    return Object.assign({}, meta, {
+      label: entry && entry.label ? String(entry.label || "") : (meta.label || ""),
+      title: entry && entry.title ? String(entry.title || "") : (meta.title || ""),
+      artist: entry && entry.artist ? String(entry.artist || "") : (meta.artist || ""),
+      album: entry && entry.album ? String(entry.album || "") : (meta.album || ""),
+      art: entry && entry.art ? String(entry.art || "") : (meta.art || ""),
+      streamed: !!(entry && entry.streamed),
+      source: String((entry && entry.source) || meta.source || ""),
+      ext: String((entry && entry.ext) || meta.ext || ""),
+      quality: String((entry && entry.quality) || meta.quality || "")
+    });
+  }
+
+  function serverNowMatches(rootId, rel, media){
+    const sn = state.serverNow || null;
+    return !!(sn && String(sn.root_id || "") === String(rootId || "") && String(sn.rel || "") === String(rel || "") && (!media || String(sn.media || media).toLowerCase() === String(media || "").toLowerCase()));
+  }
+
+  function persistedNowPosition(entry, media){
     try{
-      const sess = state.playbackSession || {};
-      const localNow = sess.now || null;
-      const localRevision = Number(sess.revision || 0);
-      const serverRevision = Number((state.serverNow && state.serverNow.revision) || (state.serverNow && state.serverNow.version) || 0);
-      const shouldPreferLocal = !!(localNow && localNow.rel && (sess.local || !state.serverNow || localRevision >= serverRevision));
-      if(shouldPreferLocal){
-        if(forceShow) showNowPlaying(true);
-        return;
+      const rootId = persistedNowRootId(entry);
+      const rel = persistedNowRel(entry);
+      if(serverNowMatches(rootId, rel, media) && state.serverNow && isFinite(state.serverNow.position)){
+        return Math.max(0, Number(state.serverNow.position || 0));
+      }
+      if(entry && isFinite(entry.position)) return Math.max(0, Number(entry.position || 0));
+    }catch(e){}
+    return 0;
+  }
+
+  function persistedNowItem(entry, media){
+    const meta = persistedNowMeta(entry);
+    const rootId = persistedNowRootId(entry);
+    const rel = persistedNowRel(entry);
+    if(!rootId || !rel) return null;
+    return {
+      kind:"file",
+      media:media || persistedNowMedia(entry),
+      root:{id:rootId},
+      rel:rel,
+      label: meta.label || meta.title || rel.split("/").slice(-1)[0] || "",
+      streamed: !!meta.streamed,
+      source: meta.source || "",
+      ext: meta.ext || "",
+      quality: meta.quality || ""
+    };
+  }
+
+  function persistedQueueItems(media, entry){
+    const fallbackItem = persistedNowItem(entry, media);
+    let queue = null;
+    let index = -1;
+    try{
+      const sess = ensurePlaybackSession();
+      if(sess && Array.isArray(sess.queue) && sess.queue.length){
+        queue = sess.queue;
+        index = isFinite(sess.queueIndex) ? Number(sess.queueIndex) : -1;
       }
     }catch(e){}
-    const sn = state.serverNow;
-    if(!sn || !sn.root_id || !sn.rel){
+    try{
+      const sn = state.serverNow || null;
+      if((!queue || !queue.length) && sn && sn.playlist && Array.isArray(sn.playlist.items) && sn.playlist.items.length){
+        queue = sn.playlist.items;
+        index = isFinite(sn.playlist.index) ? Number(sn.playlist.index) : -1;
+      }
+    }catch(e){}
+    let items = normalizePlaybackQueue(queue || [], media).map((it)=>({
+      kind:"file",
+      media:String(it.media || media || "audio"),
+      root:{id:(it.root && it.root.id) || it.root_id || it.rootId || ""},
+      rel:it.rel || "",
+      label:it.label || "",
+      streamed:!!it.streamed,
+      source:it.source || "",
+      ext:it.ext || "",
+      quality:it.quality || ""
+    })).filter(x=>x.root.id && x.rel);
+    if(!items.length && fallbackItem) items = [fallbackItem];
+    if(items.length){
+      const rootId = persistedNowRootId(entry);
+      const rel = persistedNowRel(entry);
+      const found = items.findIndex(x=>x && x.root && x.root.id === rootId && x.rel === rel);
+      if(found >= 0) index = found;
+      index = Math.max(0, Math.min(items.length - 1, index >= 0 ? index : 0));
+    }else{
+      index = -1;
+    }
+    return {items:items, index:index};
+  }
+
+  function persistedNowEntry(){
+    try{
+      const sess = ensurePlaybackSession();
+      if(sess && sess.now && persistedNowRootId(sess.now) && persistedNowRel(sess.now)) return sess.now;
+    }catch(e){}
+    const sn = state.serverNow || null;
+    if(sn && sn.root_id && sn.rel) return sn;
+    return null;
+  }
+
+  async function resumePersistedPlayback(forceShow, options){
+    const opts = options || {};
+    if(opts.sync !== false) await syncPlaybackFromServer();
+    const entry = persistedNowEntry();
+    if(!entry || !persistedNowRootId(entry) || !persistedNowRel(entry)) return false;
+    const media = persistedNowMedia(entry);
+    const item = persistedNowItem(entry, media);
+    if(!item) return false;
+    const resumeAt = persistedNowPosition(entry, media);
+    try{
+      const meta = persistedNowMeta(entry);
+      state.nowMeta = Object.assign({}, state.nowMeta || {}, meta);
+      state.nowNavContext = (entry && entry.nav) || (state.playbackSession && state.playbackSession.nav) || state.nowNavContext || null;
+    }catch(e){}
+    if(media === "video"){
+      const q = persistedQueueItems("video", entry);
+      state.videoPlaylist = q.items.length ? q.items : [item];
+      state.videoIndex = q.index >= 0 ? q.index : 0;
+      await startVideoFromItem(item, !!forceShow, resumeAt);
+      return true;
+    }
+    const q = persistedQueueItems("audio", entry);
+    state.playlist = q.items.length ? q.items : [item];
+    state.playIndex = q.index >= 0 ? q.index : 0;
+    await startAudioFromItem(item, state.playlist, state.playIndex, !!forceShow, resumeAt);
+    return true;
+  }
+
+  async function resumeFromServerNow(forceShow){
+    const resumed = await resumePersistedPlayback(forceShow, {sync:true});
+    if(!resumed){
       if(forceShow){
         showNowPlaying(false);
         await showRoots();
       }
       return;
     }
-
-    const session = state.playbackSession || {};
-    const restoreNav = (session.nav && session.nav.root_id) ? session.nav : (sn.nav || null);
-    // restore browsing context first so Menu goes back to where it was started
-    if(restoreNav && restoreNav.root_id){
-      await openNavContext(restoreNav);
-    }
-
-    if((sn.media || "") === "video"){
-      try{
-        if(sn.playlist && Array.isArray(sn.playlist.items) && sn.playlist.items.length){
-          state.videoPlaylist = sn.playlist.items.map(x=>({kind:"file", media:"video", root:{id:x.root_id}, rel:x.rel, label:x.label || ""})).filter(x=>x.root.id && x.rel);
-          const vi = isFinite(sn.playlist.index) ? Number(sn.playlist.index) : 0;
-          state.videoIndex = Math.max(0, Math.min(state.videoPlaylist.length - 1, vi));
-        }
-      }catch(e){}
-      await startVideoFromItem({kind:"file", media:"video", root:{id: sn.root_id}, rel: sn.rel, label: sn.label || ""}, true, (sn.position || 0));
-      return;
-    }
-
-    // audio
-    const it = {kind:"file", media:"audio", root:{id: sn.root_id}, rel: sn.rel, label: sn.label || ""};
-
-    // Prefer server-provided playlist context (more reliable than rebuilding from the current view)
-    let pl = null;
-    let idx = -1;
-    try{
-      const queue = (session && Array.isArray(session.queue) && session.queue.length) ? session.queue : (sn.playlist && Array.isArray(sn.playlist.items) ? sn.playlist.items : null);
-      if(queue && queue.length){
-        pl = queue.map(x=>({kind:"file", media:String(x.media || "audio"), root:{id:x.root_id || x.rootId || (x.root && x.root.id)}, rel:x.rel, label:x.label || "", streamed:!!x.streamed, source:x.source || "", ext:x.ext || "", quality:x.quality || ""})).filter(x=>x.root.id && x.rel);
-        idx = isFinite(session.queueIndex) ? Number(session.queueIndex) : (isFinite(sn.playlist && sn.playlist.index) ? Number(sn.playlist.index) : 0);
-      }
-    }catch(e){ pl = null; idx = -1; }
-
-    if(!pl || !pl.length){
-      pl = buildPlaylistFromItems(state.items);
-      try{
-        idx = pl.findIndex(x => x.rel === it.rel && x.root && x.root.id === it.root.id);
-      }catch(e){ idx = -1; }
-    }
-    if(!pl || !pl.length){
-      pl = [it];
-      idx = 0;
-    }else{
-      idx = Math.max(0, Math.min(pl.length - 1, (idx >= 0 ? idx : 0)));
-    }
-    await startAudioFromItem(it, pl, idx, true, (sn.position || 0));
   }
 
 
@@ -563,7 +647,14 @@ async function goBack(){
     setTimeout(()=>{ try{ preloadNextAudio(); }catch(e){} }, 250);
   }
 
-  function togglePlay(){
+  async function togglePlay(){
+    try{
+      const hasAudioSource = !!(activeAudio && (activeAudio.currentSrc || activeAudio.src));
+      if(!isVideoActive() && (!state.now || !hasAudioSource)){
+        const resumed = await resumePersistedPlayback(false, {sync:true});
+        if(resumed) return;
+      }
+    }catch(e){}
     if(!isVideoActive() && !state.now) return;
     const m = wheelMedia();
     if(!m) return;

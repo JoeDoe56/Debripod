@@ -75,6 +75,14 @@
     }catch(e){}
     setMediaActionHandler("play", ()=>{
       try{ ensurePlaybackAudioSession(); }catch(e){}
+      try{
+        const hasAudioSource = !!(activeAudio && (activeAudio.currentSrc || activeAudio.src));
+        if(!isVideoActive() && !hasAudioSource && typeof resumePersistedPlayback === "function"){
+          const p = resumePersistedPlayback(false, {sync:true});
+          if(p && p.catch) p.catch(()=>{});
+          return;
+        }
+      }catch(e){}
       if(isVideoActive()){
         try{ npVideo.play().catch(()=>{}); }catch(e){}
         return;
