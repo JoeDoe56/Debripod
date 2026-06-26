@@ -464,7 +464,6 @@
       else npPageFadeTimer = setTimeout(finishHide, fadeMs);
     }
     if(!on){
-      stopVideoOverlay();
       try{ if(volBarTimer) clearTimeout(volBarTimer); }catch(e){}
       volBarTimer = null;
     }
@@ -492,18 +491,58 @@
       wheelZoneEl.style.minHeight = target + "px";
       wheelZoneEl.style.flex = "0 0 " + target + "px";
       document.documentElement.style.setProperty("--wheelZoneHeight", target + "px");
+      updateWheelScreenIntersection();
+    }catch(e){}
+  }
+
+  function rectsOverlap(a, b){
+    try{
+      if(!a || !b) return false;
+      return a.left < b.right && a.right > b.left && a.top < b.bottom && a.bottom > b.top;
+    }catch(e){
+      return false;
+    }
+  }
+
+  function updateWheelScreenIntersection(){
+    try{
+      const screenEl = document.querySelector("#tab-library .ipodScreen");
+      const wheelEl = document.getElementById("wheel") || document.querySelector("#tab-library .wheel");
+      const doc = document.documentElement;
+      if(!screenEl || !wheelEl || !doc) return false;
+      const screenRect = screenEl.getBoundingClientRect();
+      const wheelRect = wheelEl.getBoundingClientRect();
+      const overlaps = rectsOverlap(screenRect, wheelRect);
+      doc.classList.toggle("wheelIntersectsScreen", overlaps);
+      return overlaps;
+    }catch(e){}
+    return false;
+  }
+
+  function scheduleWheelIntersectionCheck(){
+    try{
+      if(scheduleWheelIntersectionCheck._frame) cancelAnimationFrame(scheduleWheelIntersectionCheck._frame);
+      scheduleWheelIntersectionCheck._frame = requestAnimationFrame(()=>{
+        scheduleWheelIntersectionCheck._frame = 0;
+        updateWheelScreenIntersection();
+      });
     }catch(e){}
   }
 
 
   window.addEventListener("resize", ()=>{
     try{ syncWheelZoneHeight(); }catch(e){}
+    try{ scheduleWheelIntersectionCheck(); }catch(e){}
     try{
       if(nowPlaying && nowPlaying.style.display === "block"){
         layoutNowPlayingToLibList();
       }
     }catch(e){}
   });
+  if(window.visualViewport){
+    try{ window.visualViewport.addEventListener("resize", scheduleWheelIntersectionCheck, {passive:true}); }catch(e){}
+    try{ window.visualViewport.addEventListener("scroll", scheduleWheelIntersectionCheck, {passive:true}); }catch(e){}
+  }
 
   function bringToNowPlayingIfPlaying(){
     if(!state.now) return;
@@ -539,8 +578,10 @@
   function saveResumeNowPlaying(){
     if(!state.now) return;
     try{
+      const media = String((state.now && state.now.media) || "").toLowerCase();
+      const m = media === "video" ? npVideo : activeAudio;
       localStorage.setItem("debripod_tab", "library");
-      localStorage.setItem("debripod_resume_np", JSON.stringify({rootId: state.now.rootId, rel: state.now.rel, playing: (activeAudio && !activeAudio.paused), ts: Date.now()}));
+      localStorage.setItem("debripod_resume_np", JSON.stringify({rootId: state.now.rootId, rel: state.now.rel, media: media || "audio", playing: !!(m && !m.paused), ts: Date.now()}));
     }catch(e){}
   }
 

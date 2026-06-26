@@ -36,6 +36,47 @@ function currentNowPlayingArtTextureSrc(){
   }
 }
 
+function npArtStillEl(){
+  return document.getElementById("npArtStill");
+}
+
+function showStaticNowPlayingArt(src){
+  try{
+    const img = npArtStillEl();
+    if(!img) return;
+    const art = nowPlayingArtSrcValue(src);
+    if(art){
+      if(img.getAttribute("src") !== art) img.src = art;
+      img.style.display = "block";
+    }else{
+      img.removeAttribute("src");
+      img.style.display = "none";
+    }
+  }catch(e){}
+}
+
+function setNowPlayingArtCanvasAnimating(on){
+  try{
+    const canvas = document.getElementById("npArt");
+    if(!canvas) return;
+    canvas.classList.toggle("npArtAnimating", !!on);
+  }catch(e){}
+}
+
+function loadNowPlayingArtImage(src, onload, onerror){
+  const art = nowPlayingArtSrcValue(src);
+  if(!art){
+    if(onerror) onerror();
+    return null;
+  }
+  const img = new Image();
+  img.crossOrigin = "anonymous";
+  img.onload = function(){ if(onload) onload(img); };
+  img.onerror = function(){ if(onerror) onerror(); };
+  img.src = art;
+  return img;
+}
+
 function npArtCompileShader(gl, type, source){
   const shader = gl.createShader(type);
   gl.shaderSource(shader, source);
@@ -134,12 +175,13 @@ function ensureNowPlayingArtTexture(){
   }
 }
 
-function stopNowPlayingArtTextureLoop(){
+function stopNowPlayingArtTextureLoop(keepCanvasVisible){
   const st = npArtTextureState;
   if(st && st.frame){
     cancelAnimationFrame(st.frame);
     st.frame = 0;
   }
+  if(!keepCanvasVisible) setNowPlayingArtCanvasAnimating(false);
 }
 
 function resizeNowPlayingArtTexture(){
@@ -220,6 +262,8 @@ function renderNowPlayingArtTexture(ts){
   if(st.fadeActive){
     st.frame = requestAnimationFrame(renderNowPlayingArtTexture);
   }else{
+    showStaticNowPlayingArt(st.currentSrc);
+    setNowPlayingArtCanvasAnimating(false);
     st.frame = 0;
     debugNowPlayingArtTexture("render loop stopped", {frame: st.frame});
   }
@@ -232,15 +276,14 @@ function setNowPlayingArtTexture(src, opts){
   const st = npArtTextureState;
   const canvas = document.getElementById("npArt");
   if(canvas && canvas.dataset) canvas.dataset.artSrc = art;
-  if(!ensureNowPlayingArtTexture()){
-    st.currentSrc = art;
-    return;
-  }
   const nextKey = nowPlayingArtCompareKey(art);
   const curKey = nowPlayingArtCompareKey(st.currentSrc);
   if(nextKey === curKey){
     stopNowPlayingArtTextureLoop();
-    renderNowPlayingArtTexture(performance.now());
+    showStaticNowPlayingArt(art);
+    setNowPlayingArtCanvasAnimating(false);
+    st.fadeActive = false;
+    st.frame = 0;
     return;
   }
   if(!art){
@@ -249,46 +292,79 @@ function setNowPlayingArtTexture(src, opts){
     st.images[st.currentSlot] = null;
     st.fadeActive = false;
     st.nextSlot = st.currentSlot ? 0 : 1;
-    renderNowPlayingArtTexture(performance.now());
+    st.frame = 0;
+    showStaticNowPlayingArt("");
+    setNowPlayingArtCanvasAnimating(false);
     return;
   }
-  const img = new Image();
-  img.crossOrigin = "anonymous";
-  img.onload = function(){
-    try{
-      const targetSlot = options.animate && st.currentSrc ? st.nextSlot : st.currentSlot;
-      uploadNowPlayingArtTexture(targetSlot, img);
-      if(options.animate && st.currentSrc){
-        st.nextSlot = targetSlot;
-        st.fadeStart = performance.now();
-        st.fadeDuration = Math.max(80, Number(options.duration || 240));
-        st.fadeActive = true;
-        npArtTextureDebugState.postFadeFrames = 0;
-        npArtTextureDebugState.postFadeSecondStart = 0;
-        debugNowPlayingArtTexture("fade started", {src: art, duration: st.fadeDuration});
-      }else{
-        st.currentSlot = targetSlot;
-        st.nextSlot = st.currentSlot ? 0 : 1;
-        st.fadeActive = false;
-      }
-      st.currentSrc = art;
-      stopNowPlayingArtTextureLoop();
-      renderNowPlayingArtTexture(performance.now());
-    }catch(e){}
-  };
-  img.onerror = function(){
+
+  const shouldAnimate = !!(options.animate && curKey && nextKey && curKey !== nextKey);
+  if(!shouldAnimate){
     stopNowPlayingArtTextureLoop();
-    st.currentSrc = "";
+    st.currentSrc = art;
     st.fadeActive = false;
     st.nextSlot = st.currentSlot ? 0 : 1;
-    renderNowPlayingArtTexture(performance.now());
-  };
-  img.src = art;
+    st.frame = 0;
+    showStaticNowPlayingArt(art);
+    setNowPlayingArtCanvasAnimating(false);
+    return;
+  }
+
+  if(!ensureNowPlayingArtTexture()){
+    stopNowPlayingArtTextureLoop();
+    st.currentSrc = art;
+    st.fadeActive = false;
+    st.frame = 0;
+    showStaticNowPlayingArt(art);
+    setNowPlayingArtCanvasAnimating(false);
+    return;
+  }
+
+  const previousSrc = st.currentSrc;
+  loadNowPlayingArtImage(previousSrc, function(prevImg){
+    try{
+      uploadNowPlayingArtTexture(st.currentSlot, prevImg);
+      loadNowPlayingArtImage(art, function(nextImg){
+        try{
+          const targetSlot = st.currentSlot ? 0 : 1;
+          uploadNowPlayingArtTexture(targetSlot, nextImg);
+          st.nextSlot = targetSlot;
+          st.fadeStart = performance.now();
+          st.fadeDuration = Math.max(80, Number(options.duration || 240));
+          st.fadeActive = true;
+          st.currentSrc = art;
+          showStaticNowPlayingArt(art);
+          setNowPlayingArtCanvasAnimating(true);
+          npArtTextureDebugState.postFadeFrames = 0;
+          npArtTextureDebugState.postFadeSecondStart = 0;
+          debugNowPlayingArtTexture("fade started", {src: art, duration: st.fadeDuration});
+          stopNowPlayingArtTextureLoop(true);
+          renderNowPlayingArtTexture(performance.now());
+        }catch(e){}
+      }, function(){
+        stopNowPlayingArtTextureLoop();
+        st.fadeActive = false;
+        st.frame = 0;
+        showStaticNowPlayingArt(st.currentSrc);
+        setNowPlayingArtCanvasAnimating(false);
+      });
+    }catch(e){}
+  }, function(){
+    stopNowPlayingArtTextureLoop();
+    st.currentSrc = art;
+    st.fadeActive = false;
+    st.frame = 0;
+    showStaticNowPlayingArt(art);
+    setNowPlayingArtCanvasAnimating(false);
+  });
 }
 
 window.addEventListener("resize", ()=>{
   try{
-    if(npArtTextureState && npArtTextureState.frame) stopNowPlayingArtTextureLoop();
-    renderNowPlayingArtTexture(performance.now());
+    if(npArtTextureState && npArtTextureState.fadeActive){
+      setNowPlayingArtCanvasAnimating(true);
+      if(npArtTextureState.frame) stopNowPlayingArtTextureLoop(true);
+      renderNowPlayingArtTexture(performance.now());
+    }
   }catch(e){}
 }, {passive:true});
