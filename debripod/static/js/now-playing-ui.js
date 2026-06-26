@@ -62,6 +62,7 @@ function setPlaybackPillMetadata(meta, fallbackLabel){
     }
     playbackPillMetadataVisible = !!plain.trim();
     if(libHeader) libHeader.classList.toggle("pathPillExpanded", hasNowPlayingMetadata());
+    try{ if(typeof updatePathPillMaxWidth === "function") updatePathPillMaxWidth(); }catch(e){}
     if(!hasNowPlayingMetadata() && infoPill) infoPill.classList.add("infoPillHidden");
   }catch(e){}
   try{ if(npTech) npTech.textContent = m.tech || ""; }catch(e){}

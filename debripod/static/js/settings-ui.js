@@ -1727,6 +1727,7 @@ async function libDoSearch(engine, q){
     return [
       {key:"wheelLabels", label:"Wheel labels"},
       {key:"pathPill", label:"Path pill"},
+      {key:"infoPill", label:"Info pill"},
       {key:"rows", label:"Rows"},
       {key:"rowPills", label:"Row pills"},
       {key:"selectedRow", label:"Selected row"},

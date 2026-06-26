@@ -423,7 +423,7 @@
 
   function glassTextUnderColorSignature(style, width, height){
     try{
-      const modeBits = ["wheel-labels", "path-pill", "rows", "row-pills", "selected-row", "selected-row-pills"]
+      const modeBits = ["wheel-labels", "path-pill", "info-pill", "rows", "row-pills", "selected-row", "selected-row-pills"]
         .map((key)=> document.documentElement.getAttribute("data-text-mode-" + key) || "")
         .join(",");
       return [
