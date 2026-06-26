@@ -1941,8 +1941,8 @@ if(it.kind === "root"){
       return;
     }
     if(it.kind === "nowplaying"){
-      await resumeFromServerNow(true);
-      showNowPlaying(true);
+      await resumeFromServerNow(false);
+      showNowPlaying(true, {explicit:true});
       return;
     }
     if(it.kind === "history_item"){

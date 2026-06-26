@@ -1,6 +1,7 @@
 function currentNowPlayingArtSrc(){
   try{
-    if(npArt && npArt.tagName === "IMG") return nowPlayingArtSrcValue(npArt.getAttribute("src") || "");
+    if(typeof currentNowPlayingArtTextureSrc === "function") return currentNowPlayingArtTextureSrc();
+    if(npArt && npArt.dataset) return nowPlayingArtSrcValue(npArt.dataset.artSrc || "");
   }catch(e){
   }
   return "";
@@ -13,8 +14,8 @@ function setNowPlayingArtSrc(src, opts){
     const prevKey = nowPlayingArtCompareKey(currentNowPlayingArtSrc());
     const nextKey = nowPlayingArtCompareKey(v);
     const artChanged = prevKey !== nextKey;
-    if(!v && npArt.getAttribute("src")) npArt.removeAttribute("src");
-    else if(v && (npArt.getAttribute("src") || "") !== v) npArt.src = v;
+    if(typeof setNowPlayingArtTexture === "function") setNowPlayingArtTexture(v, opts || {});
+    else if(npArt && npArt.dataset) npArt.dataset.artSrc = v;
     if(artChanged) sampleThemeFromArt(v);
   }catch(e){}
 }
