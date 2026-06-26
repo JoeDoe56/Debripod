@@ -244,7 +244,7 @@
           }catch(e){}
         });
       }
-      if(refreshSource !== false) refreshLiquidGlassVisualizerSources(reason || "path pill");
+      if(refreshSource !== false) refreshLiquidGlassVisualizerSources(reason || "path pill", {keys:["default"]});
       if(touched && renderer.render) renderer.render(currentVisualizerFrameState());
     }catch(e){}
   }

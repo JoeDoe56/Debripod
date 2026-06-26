@@ -30,7 +30,19 @@ var defaultVisualizerPalette = [
   {r:10,g:132,b:255},
   {r:94,g:92,b:230},
   {r:255,g:69,b:58},
-  {r:48,g:209,b:88}
+  {r:48,g:209,b:88},
+  {r:255,g:159,b:10},
+  {r:191,g:90,b:242},
+  {r:0,g:199,b:190},
+  {r:255,g:55,b:95},
+  {r:100,g:210,b:255},
+  {r:255,g:214,b:10},
+  {r:50,g:173,b:230},
+  {r:175,g:82,b:222},
+  {r:52,g:199,b:89},
+  {r:255,g:149,b:0},
+  {r:125,g:122,b:255},
+  {r:90,g:200,b:250}
 ];
 var MAX_VISUALIZER_PALETTE_COLORS = 16;
 var visualizerPaletteCache = new Map();
@@ -40,6 +52,14 @@ var currentVisualizerPalette = null;
 var selectedTextContrastMix = {low: 0.18, mid: 0.42, high: 0.40};
 var selectedContrastRgb = {r:255,g:255,b:255};
 var selectedPillContrastRgb = {r:255,g:255,b:255};
+var selectedContrastAppliedRgb = null;
+var selectedPillContrastAppliedRgb = null;
+var selectedPillEdgeApplied = "";
+var visualizerPaletteRevision = 0;
+var visualizerLastTextureSignature = "";
+var visualizerLastPaletteRolesSignature = "";
+var visualizerLastVisibleRendererSignature = "";
+var visualizerLastSelectedRowSignature = "";
 var visualizerPaletteDbPromise = null;
 var visualizerAudioCtx = null;
 var visualizerAnalyser = null;
@@ -909,6 +929,102 @@ function currentVisualizerFrameState(ts){
   };
 }
 
+function roundedVisualizerPaletteSignature(){
+  try{
+    return (visualizerPalette || []).map((c)=> [
+      Math.round(c && c.r || 0),
+      Math.round(c && c.g || 0),
+      Math.round(c && c.b || 0)
+    ].join(",")).join(";");
+  }catch(e){
+    return "";
+  }
+}
+
+function visualizerPaletteRolesSignature(){
+  try{
+    const obj = currentVisualizerPalette || {};
+    const colors = Array.isArray(obj.colors) ? obj.colors.join(",") : roundedVisualizerPaletteSignature();
+    const roles = obj.roles || {};
+    const roleBits = Object.keys(roles).sort().map((key)=>{
+      const role = roles[key] || {};
+      return key + ":" + String(role.color || "") + "/" + String(role.contrast || "");
+    }).join("|");
+    const ui = obj.ui || {};
+    const uiBits = ["selectedFallbackText", "selectedFallbackPillText", "selectedPillEdge", "wheelText"]
+      .map((key)=> key + ":" + String(ui[key] || ""))
+      .join("|");
+    return [visualizerPaletteRevision, colors, roleBits, uiBits].join("||");
+  }catch(e){
+    return String(visualizerPaletteRevision || 0);
+  }
+}
+
+function visibleVisualizerRendererKeys(){
+  try{
+    if(typeof visibleLiquidGlassVisualizerRendererKeys === "function") return visibleLiquidGlassVisualizerRendererKeys();
+  }catch(e){}
+  return [];
+}
+
+function selectedRowGeometrySignature(){
+  try{
+    const row = libList ? libList.querySelector(".ipodItem.sel") : null;
+    if(!row) return "";
+    const rect = row.getBoundingClientRect();
+    return [
+      row.dataset ? String(row.dataset.index || "") : "",
+      Math.round(rect.top || 0),
+      Math.round(rect.height || 0),
+      Math.round(rect.width || 0)
+    ].join("|");
+  }catch(e){
+    return "";
+  }
+}
+
+function visualizerTextureSignature(ts, sourceMotionActive){
+  try{
+    const motionBucket = sourceMotionActive ? Math.floor(Number(ts || 0) / 16) : 0;
+    const bands = (visualizerBands || []).map((v)=> Math.round(Number(v || 0) * 100)).join(",");
+    return [
+      visualizerCanvasW || 0,
+      visualizerCanvasH || 0,
+      normalizeVisualizerPreset(visualizerPresetName),
+      normalizeVisualizerStrength(visualizerStrength),
+      normalizeVisualizerFpsLock(visualizerFpsLock),
+      visualizerPaletteRevision,
+      sourceMotionActive ? 1 : 0,
+      motionBucket,
+      sourceMotionActive ? Math.round(visualizerEnergy * 100) : 0,
+      sourceMotionActive ? Math.round(visualizerBass * 100) : 0,
+      sourceMotionActive ? Math.round(visualizerMid * 100) : 0,
+      sourceMotionActive ? Math.round(visualizerTreble * 100) : 0,
+      sourceMotionActive ? bands : "",
+      roundedVisualizerPaletteSignature()
+    ].join("|");
+  }catch(e){
+    return String(Date.now());
+  }
+}
+
+function handleVisualizerLiquidGlassChanges(frameState, changes){
+  try{
+    const keys = changes && Array.isArray(changes.visibleKeys) ? changes.visibleKeys : [];
+    const needsSource = !!(changes && (changes.textureChanged || changes.visibleKeysChanged));
+    const needsRender = !!(changes && (changes.textureChanged || changes.visibleKeysChanged || changes.paletteRolesChanged || changes.selectedContrastChanged));
+    if(needsSource && keys.length && typeof refreshLiquidGlassVisualizerSources === "function"){
+      refreshLiquidGlassVisualizerSources("visualizer texture changed", {keys:keys});
+    }
+    if((changes && changes.paletteRolesChanged) && typeof updateGlassTextUnderColors === "function"){
+      updateGlassTextUnderColors({reason:"visualizer palette", force:true});
+    }
+    if(needsRender && keys.length && typeof renderLiquidGlassVisualizerSourceNow === "function"){
+      renderLiquidGlassVisualizerSourceNow(frameState, {keys:keys, activeAnimating:!!(changes && changes.textureChanged)});
+    }
+  }catch(e){}
+}
+
 function scheduleVisualizerFrame(delayMs){
   try{
     if(visualizerFrameHandle || visualizerFrameTimer) return;
@@ -1030,10 +1146,31 @@ function visualizerFrame(ts){
       updateVisualizerTempo(nowTs, nextBands[0] || nextBass, nextEnergy);
     }
     try{ if(state) state.visualizerBpm = Math.round(visualizerBpm); }catch(e){}
-    renderVisualizerWebGL(nowTs);
-    applySelectedTextContrast();
-    refreshLiquidGlassVisualizerSources("visualizer frame");
-    renderLiquidGlassVisualizerSourceNow(currentVisualizerFrameState(nowTs));
+    const visibleKeys = visibleVisualizerRendererKeys();
+    const visibleSignature = visibleKeys.join(",");
+    const visibleKeysChanged = visibleSignature !== visualizerLastVisibleRendererSignature;
+    visualizerLastVisibleRendererSignature = visibleSignature;
+    const paletteRolesSignature = visualizerPaletteRolesSignature();
+    const paletteRolesChanged = paletteRolesSignature !== visualizerLastPaletteRolesSignature;
+    visualizerLastPaletteRolesSignature = paletteRolesSignature;
+    const rowSignature = selectedRowGeometrySignature();
+    const selectedRowChanged = rowSignature !== visualizerLastSelectedRowSignature;
+    visualizerLastSelectedRowSignature = rowSignature;
+    const sourceMotionActive = !!(visualizerActive || residual);
+    const renderedVisualizer = renderVisualizerWebGL(nowTs);
+    const textureSignature = visualizerTextureSignature(nowTs, sourceMotionActive);
+    const textureChanged = !!(renderedVisualizer && textureSignature !== visualizerLastTextureSignature && (sourceMotionActive || paletteRolesChanged || visibleKeysChanged));
+    visualizerLastTextureSignature = textureSignature;
+    const selectedContrastChanged = (paletteRolesChanged || sourceMotionActive || selectedRowChanged || visibleKeysChanged)
+      ? applySelectedTextContrast({force:paletteRolesChanged || selectedRowChanged || visibleKeysChanged})
+      : false;
+    handleVisualizerLiquidGlassChanges(currentVisualizerFrameState(nowTs), {
+      visibleKeys: visibleKeys,
+      visibleKeysChanged: visibleKeysChanged,
+      paletteRolesChanged: paletteRolesChanged,
+      selectedContrastChanged: selectedContrastChanged,
+      textureChanged: textureChanged
+    });
   }catch(e){}
   try{
     const residualNow = visualizerResidualVisible(performance.now());
@@ -1355,26 +1492,93 @@ function bestContrastCandidate(bg, palette){
   return {rgb:{r:clampByte(best.r), g:clampByte(best.g), b:clampByte(best.b)}, contrast:bestScore};
 }
 
+function paletteContainsRgb(palette, rgb){
+  try{
+    return (palette || []).some((c)=> rgbDistance(c, rgb) < 1.5);
+  }catch(e){
+    return false;
+  }
+}
+
+function bestPaletteContrastCandidate(bg, palette){
+  var colors = (palette || []).filter(Boolean);
+  var best = null;
+  var bestRatio = -1;
+  colors.forEach((color)=>{
+    if(rgbDistance(bg, color) < 1.5) return;
+    var ratio = contrastRatio(bg, color);
+    if(ratio > bestRatio){
+      best = color;
+      bestRatio = ratio;
+    }
+  });
+  if(best && bestRatio >= 3){
+    return {rgb:{r:clampByte(best.r), g:clampByte(best.g), b:clampByte(best.b)}, contrast:bestRatio, fallback:false};
+  }
+  var fallbacks = [{r:255,g:255,b:255}, {r:0,g:0,b:0}];
+  var fallbackBest = best || fallbacks[0];
+  var fallbackRatio = Math.max(0, bestRatio);
+  fallbacks.forEach((color)=>{
+    var ratio = contrastRatio(bg, color);
+    var inPalette = paletteContainsRgb(colors, color);
+    if(inPalette && ratio > fallbackRatio){
+      fallbackBest = color;
+      fallbackRatio = ratio;
+      best = color;
+    }else if(bestRatio < 3 && !inPalette && ratio > fallbackRatio){
+      fallbackBest = color;
+      fallbackRatio = ratio;
+    }
+  });
+  return {
+    rgb:{r:clampByte(fallbackBest.r), g:clampByte(fallbackBest.g), b:clampByte(fallbackBest.b)},
+    contrast:fallbackRatio,
+    fallback:!paletteContainsRgb(colors, fallbackBest)
+  };
+}
+
+function paletteContrastPairs(palette){
+  return (palette || []).map((color)=>{
+    var best = bestPaletteContrastCandidate(color, palette);
+    return {
+      color: rgbToHex(color),
+      contrast: rgbToHex(best.rgb),
+      contrastRatio: Number(best.contrast || 0),
+      fallback: best.fallback === true
+    };
+  });
+}
+
 function buildVisualizerPaletteObject(colors){
   var palette = (Array.isArray(colors) && colors.length ? colors : defaultVisualizerPalette)
     .map(c=>({r:clampByte(c.r), g:clampByte(c.g), b:clampByte(c.b)}));
+  palette = palette.slice(0, MAX_VISUALIZER_PALETTE_COLORS);
+  var contrastPairs = paletteContrastPairs(palette);
+  var contrastMap = {};
+  contrastPairs.forEach((pair)=>{ contrastMap[pair.color] = pair; });
   var roleNames = ["low", "lowHigh", "lowMid", "mid", "upperMid", "highLow", "high"];
   var roles = {};
   roleNames.forEach((name, idx)=>{
     var bg = palette[idx % palette.length] || defaultVisualizerPalette[idx % defaultVisualizerPalette.length];
-    var best = bestContrastCandidate(bg, palette);
+    var best = contrastPairs[idx % contrastPairs.length] || {};
     roles[name] = {
       color: rgbToHex(bg),
-      contrast: rgbToHex(best.rgb),
-      contrastRatio: Number(best.contrast || 0)
+      contrast: best.contrast || rgbToHex(bestPaletteContrastCandidate(bg, palette).rgb),
+      contrastRatio: Number(best.contrastRatio || 0)
     };
   });
   var darkText = bestContrastCandidate({r:18,g:18,b:22}, palette).rgb;
   var lightText = bestContrastCandidate({r:236,g:238,b:242}, palette).rgb;
-  var selectedFallback = bestContrastCandidate(palette[0] || defaultVisualizerPalette[0], palette).rgb;
+  var selectedFallback = bestPaletteContrastCandidate(palette[0] || defaultVisualizerPalette[0], palette).rgb;
   return {
     version: 1,
     colors: palette.map(rgbToHex),
+    contrastPairs: contrastPairs,
+    contrastMap: contrastMap,
+    metadata: {
+      paletteColorCount: palette.length,
+      contrastSource: "palette"
+    },
     roles: roles,
     ui: {
       darkText: rgbToHex(darkText),
@@ -1405,6 +1609,31 @@ function colorsFromPaletteObject(paletteObj){
     return out.length ? out : null;
   }catch(e){
     return null;
+  }
+}
+
+function normalizeVisualizerPaletteObject(paletteObj, colors){
+  try{
+    const normalized = buildVisualizerPaletteObject(colors || colorsFromPaletteObject(paletteObj) || defaultVisualizerPalette);
+    if(!paletteObj || typeof paletteObj !== "object") return normalized;
+    const out = Object.assign({}, paletteObj, {
+      version: paletteObj.version || normalized.version,
+      colors: normalized.colors,
+      roles: normalized.roles,
+      ui: Object.assign({}, normalized.ui, paletteObj.ui || {}),
+      contrastPairs: Array.isArray(paletteObj.contrastPairs) && paletteObj.contrastPairs.length >= normalized.colors.length
+        ? paletteObj.contrastPairs
+        : normalized.contrastPairs,
+      contrastMap: paletteObj.contrastMap && typeof paletteObj.contrastMap === "object"
+        ? paletteObj.contrastMap
+        : normalized.contrastMap,
+      metadata: Object.assign({}, normalized.metadata, paletteObj.metadata || {})
+    });
+    out.metadata.paletteColorCount = normalized.colors.length;
+    if(!out.metadata.contrastSource) out.metadata.contrastSource = "palette";
+    return out;
+  }catch(e){
+    return buildVisualizerPaletteObject(defaultVisualizerPalette);
   }
 }
 
@@ -1441,10 +1670,11 @@ function blendRoleContrast(roles, mix){
   };
 }
 
-function applySelectedTextContrast(){
+function applySelectedTextContrast(options){
   try{
+    const opts = options || {};
     const list = libList || document.getElementById("libList");
-    if(!list) return;
+    if(!list) return false;
     const paletteObj = currentVisualizerPalette || buildVisualizerPaletteObject(defaultVisualizerPalette);
     const nextMix = roleWeightsForSelectedText();
     selectedTextContrastMix = {
@@ -1467,13 +1697,25 @@ function applySelectedTextContrast(){
     const contrast = rgbToHex(selectedContrastRgb);
     const pillContrast = rgbToHex(selectedPillContrastRgb);
     const pillEdge = paletteObj.ui && paletteObj.ui.selectedPillEdge ? paletteObj.ui.selectedPillEdge : rgbToHex(selectedPillContrastRgb);
+    const changed = !!(opts.force ||
+      !selectedContrastAppliedRgb ||
+      !selectedPillContrastAppliedRgb ||
+      rgbDistance(selectedContrastRgb, selectedContrastAppliedRgb) > 4 ||
+      rgbDistance(selectedPillContrastRgb, selectedPillContrastAppliedRgb) > 4 ||
+      selectedPillEdgeApplied !== pillEdge);
+    if(!changed) return false;
     rootEl.style.setProperty("--lib-selected-contrast", contrast);
     rootEl.style.setProperty("--lib-selected-pill-contrast", pillContrast);
     rootEl.style.setProperty("--lib-selected-pill-edge", pillEdge);
     list.style.setProperty("--lib-selected-contrast", contrast);
     list.style.setProperty("--lib-selected-pill-contrast", pillContrast);
     list.style.setProperty("--lib-selected-pill-edge", pillEdge);
+    selectedContrastAppliedRgb = {r:selectedContrastRgb.r, g:selectedContrastRgb.g, b:selectedContrastRgb.b};
+    selectedPillContrastAppliedRgb = {r:selectedPillContrastRgb.r, g:selectedPillContrastRgb.g, b:selectedPillContrastRgb.b};
+    selectedPillEdgeApplied = pillEdge;
+    return true;
   }catch(e){}
+  return false;
 }
 
 function setVisualizerPalette(palette){
@@ -1483,7 +1725,8 @@ function setVisualizerPalette(palette){
     .map(c=>({r:clampByte(c.r), g:clampByte(c.g), b:clampByte(c.b)}))
     .slice(0, MAX_VISUALIZER_PALETTE_COLORS);
   visualizerTargetPalette = colors.length ? colors : defaultVisualizerPalette.slice();
-  currentVisualizerPalette = paletteObj || buildVisualizerPaletteObject(visualizerTargetPalette);
+  currentVisualizerPalette = normalizeVisualizerPaletteObject(paletteObj, visualizerTargetPalette);
+  visualizerPaletteRevision += 1;
   var rootTheme = themeFromBase(visualizerTargetPalette[0] || defaultVisualizerPalette[0]);
   if(visualizerTargetPalette.length >= 3){
     rootTheme.visualizerA = rgbaFrom(visualizerTargetPalette[0], .46);
@@ -1491,7 +1734,8 @@ function setVisualizerPalette(palette){
     rootTheme.visualizerC = rgbaFrom(visualizerTargetPalette[2], .24);
   }
   applyThemeVars(rootTheme);
-  applySelectedTextContrast();
+  applySelectedTextContrast({force:true});
+  try{ if(typeof updateGlassTextUnderColors === "function") updateGlassTextUnderColors({reason:"visualizer palette", force:true}); }catch(e){}
 }
 
 function applyVisualizerPresetPalette(){
@@ -1584,9 +1828,7 @@ function loadVisualizerPaletteLocal(key, nonce){
             const colors = colorsFromPaletteObject(paletteObj);
             if(!colors || !paletteObj) return;
             cacheVisualizerPalette(key, colors, paletteObj);
-            setVisualizerPalette(colors);
-            currentVisualizerPalette = paletteObj;
-            applySelectedTextContrast();
+            setVisualizerPalette(paletteObj);
             updateVisualizerState();
           }catch(e){}
         };
@@ -1620,9 +1862,7 @@ function loadPersistedVisualizerPalette(key, sourceIdentity, nonce){
             return;
           }
           cacheVisualizerPalette(key, colors, paletteObj);
-          setVisualizerPalette(colors);
-          currentVisualizerPalette = paletteObj;
-          applySelectedTextContrast();
+          setVisualizerPalette(paletteObj);
           updateVisualizerState();
         }catch(e){}
       })

@@ -1,3 +1,10 @@
+  var LIQUID_VISUALIZER_RENDERER_KEYS = ["default", "wheel", "libList", "libSelection", "libPills"];
+  var glassTextUnderColorState = {
+    lastRun: 0,
+    lastSignature: "",
+    runCount: 0
+  };
+
   function applyUiTuningCss(){
     try{
       const doc = document.documentElement;
@@ -356,23 +363,72 @@
 
   function refreshLiquidGlassSource(renderer, reason){
     try{
-      if(!renderer || !renderer.refreshSourceTexture) return;
-      renderer.refreshSourceTexture(reason || "app");
+      if(!renderer || !renderer.refreshSourceTexture) return false;
+      const updated = !!renderer.refreshSourceTexture(reason || "app");
+      renderer._dpSourceRefreshCount = (renderer._dpSourceRefreshCount || 0) + 1;
+      renderer._dpLastSourceRefreshReason = reason || "app";
+      renderer._dpLastSourceRefreshSuccess = updated;
+      return updated;
+    }catch(e){}
+    return false;
+  }
+
+  function normalizeLiquidRendererKeys(keys){
+    try{
+      if(!keys) return LIQUID_VISUALIZER_RENDERER_KEYS.slice();
+      const raw = Array.isArray(keys) ? keys : [keys];
+      const seen = new Set();
+      const out = [];
+      raw.forEach((key)=>{
+        const value = String(key || "").trim();
+        if(!value || LIQUID_VISUALIZER_RENDERER_KEYS.indexOf(value) < 0 || seen.has(value)) return;
+        seen.add(value);
+        out.push(value);
+      });
+      return out.length ? out : LIQUID_VISUALIZER_RENDERER_KEYS.slice();
+    }catch(e){
+      return LIQUID_VISUALIZER_RENDERER_KEYS.slice();
+    }
+  }
+
+  function visibleLiquidGlassVisualizerRendererKeys(keys){
+    const out = [];
+    try{
+      normalizeLiquidRendererKeys(keys).forEach((key)=>{
+        const renderer = liquidGlassRendererByKey(key);
+        if(renderer && rendererTargetVisible(renderer)) out.push(key);
+      });
+    }catch(e){}
+    return out;
+  }
+
+  function markLiquidRendererSourceRefresh(renderer, reason, updated){
+    try{
+      if(!renderer) return;
+      renderer._dpSourceRefreshCount = (renderer._dpSourceRefreshCount || 0) + 1;
+      renderer._dpLastSourceRefreshReason = reason || "";
+      renderer._dpLastSourceRefreshSuccess = updated === true;
     }catch(e){}
   }
 
-  function refreshLiquidGlassVisualizerSources(reason){
+  function refreshLiquidGlassVisualizerSources(reason, options){
     try{
-      ["default", "wheel", "libList", "libSelection", "libPills"].forEach((key)=>{
+      const opts = options || {};
+      normalizeLiquidRendererKeys(opts.keys).forEach((key)=>{
         const renderer = liquidGlassRendererByKey(key);
         if(!renderer) return;
+        if(!opts.force && !rendererTargetVisible(renderer)) return;
+        let updated = false;
+        let alreadyCounted = false;
         if((renderer.sourceType === "visualizerWebgl" || renderer.sourceType === "webglTexture") && renderer.refreshSourceTexture){
-          renderer.refreshSourceTexture(reason || "visualizer webgl");
+          updated = !!renderer.refreshSourceTexture(reason || "visualizer webgl");
         }else if(visualizerBg && renderer.updateTextureFromCanvas){
-          renderer.updateTextureFromCanvas(visualizerBg, {reason: reason || "visualizer", allowDark: true, sourceRect: {left:0, top:0, width: window.innerWidth || 1, height: window.innerHeight || 1}});
+          updated = !!renderer.updateTextureFromCanvas(visualizerBg, {reason: reason || "visualizer", allowDark: true, sourceRect: {left:0, top:0, width: window.innerWidth || 1, height: window.innerHeight || 1}});
         }else{
-          refreshLiquidGlassSource(renderer, reason || "visualizer fallback");
+          updated = refreshLiquidGlassSource(renderer, reason || "visualizer fallback");
+          alreadyCounted = true;
         }
+        if(!alreadyCounted) markLiquidRendererSourceRefresh(renderer, reason || "visualizer", updated);
       });
     }catch(e){}
   }
@@ -788,13 +844,50 @@
     }
   }
 
-  function updateGlassTextUnderColors(){
+  function glassTextUnderColorSignature(style, width, height){
     try{
+      const modeBits = ["wheel-labels", "path-pill", "rows", "row-pills", "selected-row", "selected-row-pills"]
+        .map((key)=> document.documentElement.getAttribute("data-text-mode-" + key) || "")
+        .join(",");
+      return [
+        Math.round(width || 0),
+        Math.round(height || 0),
+        String(style.getPropertyValue("--theme-visualizer-a") || "").trim(),
+        String(style.getPropertyValue("--theme-visualizer-b") || "").trim(),
+        String(style.getPropertyValue("--theme-visualizer-c") || "").trim(),
+        String(style.getPropertyValue("--viz-x1") || "").trim(),
+        String(style.getPropertyValue("--viz-y1") || "").trim(),
+        String(style.getPropertyValue("--viz-x2") || "").trim(),
+        String(style.getPropertyValue("--viz-y2") || "").trim(),
+        String(style.getPropertyValue("--viz-x3") || "").trim(),
+        String(style.getPropertyValue("--viz-y3") || "").trim(),
+        modeBits
+      ].join("|");
+    }catch(e){
+      return "";
+    }
+  }
+
+  function updateGlassTextUnderColors(options){
+    try{
+      const opts = options && typeof options === "object"
+        ? options
+        : (arguments.length ? {reason:String(options || ""), force:true} : {reason:"direct", force:true});
       const root = document.documentElement;
       const style = window.getComputedStyle ? window.getComputedStyle(root) : null;
       if(!style) return;
       const width = window.innerWidth || 1;
       const height = window.innerHeight || 1;
+      const now = performance && performance.now ? performance.now() : Date.now();
+      const signature = glassTextUnderColorSignature(style, width, height);
+      const signatureChanged = signature !== glassTextUnderColorState.lastSignature;
+      const activeRateMs = 260;
+      const idleRateMs = 1200;
+      const minInterval = opts.activeAnimating ? activeRateMs : idleRateMs;
+      if(!opts.force && !signatureChanged && (now - glassTextUnderColorState.lastRun) < minInterval) return false;
+      glassTextUnderColorState.lastRun = now;
+      glassTextUnderColorState.lastSignature = signature;
+      glassTextUnderColorState.runCount += 1;
       const colors = [
         {color: String(style.getPropertyValue("--theme-visualizer-a") || "rgba(10,132,255,.42)").trim(), x: cssPointValue(style, "--viz-x1", width, width * 0.5), y: cssPointValue(style, "--viz-y1", height, height * 0.28)},
         {color: String(style.getPropertyValue("--theme-visualizer-b") || "rgba(94,92,230,.30)").trim(), x: cssPointValue(style, "--viz-x2", width, width * 0.22), y: cssPointValue(style, "--viz-y2", height, height * 0.68)},
@@ -816,12 +909,15 @@
           el.style.setProperty("--dp-engrave-under-c", ranked[2].color);
         }catch(e){}
       });
+      return true;
     }catch(e){}
+    return false;
   }
 
-  function renderLiquidGlassNow(frameState){
+  function renderLiquidGlassNow(frameState, options){
     try{
-      updateGlassTextUnderColors();
+      const opts = options || {};
+      updateGlassTextUnderColors({reason:opts.reason || "liquid render", activeAnimating:!!opts.activeAnimating});
       updateLibSelectionGlass("");
       liquidGlassRenderers().forEach((renderer)=>{
         if(!renderer || !renderer.render) return;
@@ -843,17 +939,19 @@
     }catch(e){}
   }
 
-  function renderLiquidGlassVisualizerSourceNow(frameState){
+  function renderLiquidGlassVisualizerSourceNow(frameState, options){
     try{
-      updateGlassTextUnderColors();
-      ["default", "wheel", "libList", "libSelection", "libPills"].forEach((key)=>{
+      const opts = options || {};
+      const keys = visibleLiquidGlassVisualizerRendererKeys(opts.keys);
+      updateGlassTextUnderColors({reason:opts.reason || "visualizer render", activeAnimating:opts.activeAnimating !== false});
+      keys.forEach((key)=>{
         const renderer = liquidGlassRendererByKey(key);
         if(key === "libList") positionLibListLiquidCanvas();
         if(key === "libSelection") positionLibSelectionLiquidCanvas();
         if(key === "libPills") positionLibPillsLiquidCanvas();
         if(renderer && renderer.render && rendererTargetVisible(renderer)) renderer.render(frameState || currentVisualizerFrameState());
       });
-      if(isPathPillVisible()) forcePathPillGlassRender("visualizer frame", false);
+      if(keys.indexOf("default") >= 0 && isPathPillVisible()) forcePathPillGlassRender("visualizer frame", false);
     }catch(e){}
   }
 
@@ -861,8 +959,12 @@
     try{
       refreshLiquidGlassVisualizerSources(reason || "app");
       refreshNpOverlayGlassSource(reason || "app");
-      if(includeLibList) refreshLiquidGlassSource(liquidGlassRendererByKey("libList"), reason || "app");
-      renderLiquidGlassNow();
+      if(includeLibList){
+        const libRenderer = liquidGlassRendererByKey("libList");
+        if(libRenderer && rendererTargetVisible(libRenderer)) refreshLiquidGlassSource(libRenderer, reason || "app");
+      }
+      updateGlassTextUnderColors({reason:reason || "snapshot", force:true});
+      renderLiquidGlassNow(null, {reason:reason || "snapshot"});
     }catch(e){}
   }
 
@@ -1074,7 +1176,7 @@
       }
       applyElementGlassModeClasses();
       mountLiquidCanvas();
-      refreshLiquidGlassVisualizerSources(reason || "lib pills");
+      refreshLiquidGlassVisualizerSources(reason || "lib pills", {keys:["libPills"]});
       invalidateLibPillGlass(reason || "lib pills");
     }catch(e){}
   }
@@ -1194,7 +1296,7 @@
         if(scheduler && scheduler.request){
           listSelectionMotion.raf = -1;
           scheduler.request("lib-selection-motion", stepLibSelectionMotion);
-          scheduler.mark({metrics:true, render:true, keepAlive:true});
+          scheduler.mark({keepAlive:true});
         }else{
           listSelectionMotion.raf = requestAnimationFrame(stepLibSelectionMotion);
         }
@@ -1416,7 +1518,11 @@
           texture:String(renderer.textureWidth || 0) + "x" + String(renderer.textureHeight || 0),
           lens_count:renderer.lenses ? renderer.lenses.length : 0,
           lensCount:renderer.lenses ? renderer.lenses.length : 0,
-          canvas_opacity:renderer.canvas && window.getComputedStyle ? window.getComputedStyle(renderer.canvas).opacity : ""
+          canvas_opacity:renderer.canvas && window.getComputedStyle ? window.getComputedStyle(renderer.canvas).opacity : "",
+          renderCount: renderer._renderCount || renderer.renderCount || 0,
+          sourceRefreshCount: renderer._dpSourceRefreshCount || 0,
+          lastSourceRefreshReason: renderer._dpLastSourceRefreshReason || "",
+          lastSourceRefreshSuccess: renderer._dpLastSourceRefreshSuccess === true
         };
         if(key === "npOverlay"){
           const activeFrame = root.albumArtTexture && root.albumArtTexture.currentFrame ? root.albumArtTexture.currentFrame() : null;
@@ -1544,9 +1650,9 @@
           scheduler.register("liquid-glass", (frameState)=>{
             const flags = frameState && frameState.flags ? frameState.flags : {};
             if(flags.refreshSources) refreshLiquidGlassVisualizerSources("scheduler");
-            if(flags.textContrast) updateGlassTextUnderColors();
-            if(flags.metrics || flags.render || flags.refreshSources || flags.textContrast || flags.keepAlive){
-              renderLiquidGlassNow(frameState);
+            if(flags.textContrast) updateGlassTextUnderColors({reason:"scheduler", force:true});
+            if(flags.metrics || flags.render || flags.refreshSources || flags.textContrast){
+              renderLiquidGlassNow(frameState, {reason:"scheduler", activeAnimating:!!flags.keepAlive});
             }
           });
         }
@@ -1608,7 +1714,7 @@
         if(scheduler && scheduler.request){
           wheelTiltAnimFrame = -1;
           scheduler.request("wheel-tilt", wheelTiltEaseStep);
-          scheduler.mark({metrics:true, render:true, keepAlive:true});
+          scheduler.mark({keepAlive:true});
         }else{
           wheelTiltAnimFrame = requestAnimationFrame(wheelTiltEaseStep);
         }
@@ -1631,7 +1737,7 @@
         if(scheduler && scheduler.request){
           wheelTiltAnimFrame = -1;
           scheduler.request("wheel-tilt", wheelTiltEaseStep);
-          scheduler.mark({metrics:true, render:true, keepAlive:true});
+          scheduler.mark({keepAlive:true});
         }else{
           wheelTiltAnimFrame = requestAnimationFrame(wheelTiltEaseStep);
         }
@@ -1725,6 +1831,14 @@
 
   try{
     root.liquidDiagnostics = {
-      renderers: liquidGlassDiagnostics
+      renderers: liquidGlassDiagnostics,
+      visibleVisualizerRenderers: visibleLiquidGlassVisualizerRendererKeys,
+      textColorScans: function(){
+        return {
+          runCount: glassTextUnderColorState.runCount || 0,
+          lastRun: glassTextUnderColorState.lastRun || 0,
+          lastSignature: glassTextUnderColorState.lastSignature || ""
+        };
+      }
     };
   }catch(e){}

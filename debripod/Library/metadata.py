@@ -5,8 +5,9 @@ import math
 import struct
 import threading
 import zlib
+import hashlib
 from collections import Counter
-from typing import Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple
 
 from ..paths import art_cache_dir
 from ..playback.probe import ffprobe_json, run_cmd
@@ -31,6 +32,24 @@ META_LOCK = threading.Lock()
 ANALYSIS_LOCK = threading.BoundedSemaphore(1)
 PALETTE_ALGORITHM_VERSION = 3
 PALETTE_COLOR_COUNT = 16
+DEFAULT_VISUALIZER_PALETTE: list[tuple[int, int, int]] = [
+    (10, 132, 255),
+    (94, 92, 230),
+    (255, 69, 58),
+    (48, 209, 88),
+    (255, 159, 10),
+    (191, 90, 242),
+    (0, 199, 190),
+    (255, 55, 95),
+    (100, 210, 255),
+    (255, 214, 10),
+    (50, 173, 230),
+    (175, 82, 222),
+    (52, 199, 89),
+    (255, 149, 0),
+    (125, 122, 255),
+    (90, 200, 250),
+]
 ANALYSIS_RATE_HZ = 30
 ANALYSIS_SAMPLE_RATE_HZ = 8820
 ANALYSIS_BANDS = [60, 120, 250, 500, 1000, 2000, 3600]
@@ -381,11 +400,60 @@ def _best_contrast(bg: tuple[int, int, int], palette: list[tuple[int, int, int]]
     return best, best_score
 
 
+def _palette_has_color(palette: list[tuple[int, int, int]], color: tuple[int, int, int]) -> bool:
+    return any(_palette_distance(existing, color) < 1.5 for existing in palette)
+
+
+def _best_palette_contrast(bg: tuple[int, int, int], palette: list[tuple[int, int, int]]) -> tuple[tuple[int, int, int], float, bool]:
+    best: tuple[int, int, int] | None = None
+    best_ratio = -1.0
+    for color in palette:
+        if _palette_distance(bg, color) < 1.5:
+            continue
+        ratio = _contrast(bg, color)
+        if ratio > best_ratio:
+            best = color
+            best_ratio = ratio
+    if best is not None and best_ratio >= 3.0:
+        return best, best_ratio, False
+    fallback_best = best or (255, 255, 255)
+    fallback_ratio = max(0.0, best_ratio)
+    for color in ((255, 255, 255), (0, 0, 0)):
+        ratio = _contrast(bg, color)
+        in_palette = _palette_has_color(palette, color)
+        if in_palette and ratio > fallback_ratio:
+            fallback_best = color
+            fallback_ratio = ratio
+            best = color
+        elif best_ratio < 3.0 and not in_palette and ratio > fallback_ratio:
+            fallback_best = color
+            fallback_ratio = ratio
+    return fallback_best, fallback_ratio, not _palette_has_color(palette, fallback_best)
+
+
 def _palette_distance(a: tuple[int, int, int], b: tuple[int, int, int]) -> float:
     dr = float(a[0] - b[0])
     dg = float(a[1] - b[1])
     db = float(a[2] - b[2])
     return math.sqrt(dr * dr + dg * dg + db * db)
+
+
+def _palette_luma(rgb: tuple[int, int, int]) -> float:
+    return (rgb[0] * 0.299 + rgb[1] * 0.587 + rgb[2] * 0.114) / 255.0
+
+
+def _palette_saturation(rgb: tuple[int, int, int]) -> float:
+    mx = max(rgb)
+    mn = min(rgb)
+    return ((mx - mn) / mx) if mx else 0.0
+
+
+def _near_black_or_white(rgb: tuple[int, int, int]) -> bool:
+    mx = max(rgb)
+    mn = min(rgb)
+    lum = _palette_luma(rgb)
+    sat = _palette_saturation(rgb)
+    return mx <= 24 or mn >= 235 or (lum <= 0.08 and sat <= 0.22) or (lum >= 0.92 and sat <= 0.18)
 
 
 def _distinct_palette(colors: list[tuple[int, int, int]], limit: int = PALETTE_COLOR_COUNT) -> list[tuple[int, int, int]]:
@@ -403,20 +471,66 @@ def _distinct_palette(colors: list[tuple[int, int, int]], limit: int = PALETTE_C
     return selected[:limit]
 
 
+def _rank_palette_counts(counts: Counter[tuple[int, int, int]]) -> list[tuple[int, int, int]]:
+    if not counts:
+        return []
+    total = float(sum(counts.values()) or 1)
+
+    def score(item: tuple[tuple[int, int, int], int]) -> tuple[float, int]:
+        rgb, freq = item
+        sat = _palette_saturation(rgb)
+        lum = _palette_luma(rgb)
+        colorfulness = sat * (1.0 - abs(lum - 0.5) * 0.72)
+        freq_score = math.log1p(freq) / math.log1p(total)
+        useful_penalty = -1.8 if _near_black_or_white(rgb) else 0.0
+        return (freq_score * 1.55 + colorfulness * 1.15 + useful_penalty, freq)
+
+    return [rgb for rgb, _freq in sorted(counts.items(), key=score, reverse=True)]
+
+
+def _palette_from_counts(counts: Counter[tuple[int, int, int]], limit: int = PALETTE_COLOR_COUNT) -> list[tuple[int, int, int]]:
+    ranked = _rank_palette_counts(counts)
+    useful = [rgb for rgb in ranked if not _near_black_or_white(rgb)]
+    fallback = [rgb for rgb in ranked if _near_black_or_white(rgb)]
+    selected = _distinct_palette(useful, limit)
+    if len(selected) < limit:
+        selected.extend([rgb for rgb in _distinct_palette(fallback, limit) if rgb not in selected][: max(0, limit - len(selected))])
+    if len(selected) < limit:
+        selected.extend([rgb for rgb in ranked if rgb not in selected][: max(0, limit - len(selected))])
+    return selected[:limit]
+
+
 def _palette_object(colors: list[tuple[int, int, int]]) -> dict:
-    palette = _distinct_palette(colors, PALETTE_COLOR_COUNT) or [(10, 132, 255), (94, 92, 230), (255, 69, 58), (48, 209, 88)]
+    palette = _distinct_palette(colors, PALETTE_COLOR_COUNT) or DEFAULT_VISUALIZER_PALETTE[:PALETTE_COLOR_COUNT]
+    palette = palette[:PALETTE_COLOR_COUNT]
+    contrast_pairs = []
+    contrast_map = {}
+    fallback_used = False
+    for color in palette:
+        contrast_rgb, ratio, fallback = _best_palette_contrast(color, palette)
+        pair = {"color": _hex(color), "contrast": _hex(contrast_rgb), "contrastRatio": ratio, "fallback": bool(fallback)}
+        contrast_pairs.append(pair)
+        contrast_map[pair["color"]] = pair
+        fallback_used = fallback_used or bool(fallback)
     role_names = ["low", "lowHigh", "lowMid", "mid", "upperMid", "highLow", "high"]
     roles = {}
     for idx, name in enumerate(role_names):
         bg = palette[idx % len(palette)]
-        contrast_rgb, ratio = _best_contrast(bg, palette)
-        roles[name] = {"color": _hex(bg), "contrast": _hex(contrast_rgb), "contrastRatio": ratio}
+        pair = contrast_pairs[idx % len(contrast_pairs)]
+        roles[name] = {"color": _hex(bg), "contrast": pair["contrast"], "contrastRatio": pair["contrastRatio"]}
     dark_text, _ = _best_contrast((18, 18, 22), palette)
     light_text, _ = _best_contrast((236, 238, 242), palette)
-    selected, _ = _best_contrast(palette[0], palette)
+    selected, _, _ = _best_palette_contrast(palette[0], palette)
     return {
         "version": PALETTE_ALGORITHM_VERSION,
         "colors": [_hex(c) for c in palette],
+        "contrastPairs": contrast_pairs,
+        "contrastMap": contrast_map,
+        "metadata": {
+            "paletteColorCount": len(palette),
+            "contrastSource": "palette",
+            "contrastFallbackUsed": bool(fallback_used),
+        },
         "roles": roles,
         "ui": {
             "darkText": _hex(dark_text),
@@ -446,36 +560,93 @@ def _extract_palette_from_image(path: str) -> Optional[dict]:
                 counts[(int(r), int(g), int(b))] += 1
             if not counts:
                 return None
-            total = float(sum(counts.values()) or 1)
-
-            def score(item: tuple[tuple[int, int, int], int]) -> tuple[float, int]:
-                (r, g, b), freq = item
-                mx = max(r, g, b)
-                mn = min(r, g, b)
-                sat = ((mx - mn) / mx) if mx else 0.0
-                lum = (r * 0.299 + g * 0.587 + b * 0.114) / 255.0
-                colorfulness = sat * (1.0 - abs(lum - 0.5) * 0.72)
-                freq_score = math.log1p(freq) / math.log1p(total)
-                return (freq_score * 1.55 + colorfulness * 1.15, freq)
-
-            ranked = [rgb for rgb, _freq in sorted(counts.items(), key=score, reverse=True)]
-            return _palette_object(ranked)
+            return _palette_object(_palette_from_counts(counts))
     except Exception:
         return None
 
 
-def warm_art_palette(abs_path: str, *, root_id: str = "", rel: str = "") -> Optional[dict]:
+def _file_sha1(path: str) -> str:
+    try:
+        h = hashlib.sha1()
+        with open(path, "rb") as f:
+            while True:
+                chunk = f.read(1024 * 1024)
+                if not chunk:
+                    break
+                h.update(chunk)
+        return h.hexdigest()
+    except Exception:
+        return ""
+
+
+def _normalized_identity_part(value: Any) -> str:
+    return " ".join(str(value or "").strip().lower().split())
+
+
+def art_identity_for_media(abs_path: str, *, root_id: str = "", rel: str = "", meta: Optional[dict] = None) -> Optional[dict[str, Any]]:
     art = art_for_media_path(abs_path)
     if not art:
         return None
+    art_abs = os.path.abspath(art)
+    digest = _file_sha1(art_abs)
     size, mtime_ns = file_identity(art)
-    key = sha1_text(f"art:{os.path.abspath(art)}:{size}:{mtime_ns}:v{PALETTE_ALGORITHM_VERSION}")
+    source_kind = "embedded-art" if os.path.abspath(art_abs).startswith(os.path.abspath(art_cache_dir())) else "folder-art"
+    if digest:
+        identity = f"art-sha1:{digest}:v{PALETTE_ALGORITHM_VERSION}"
+    else:
+        meta_obj = meta if isinstance(meta, dict) else file_meta_cached(abs_path)
+        album_artist = ""
+        album = ""
+        if isinstance(meta_obj, dict):
+            album_artist = str(meta_obj.get("album_artist") or meta_obj.get("artist") or "")
+            album = str(meta_obj.get("album") or "")
+        fallback = "|".join(
+            [
+                str(root_id or ""),
+                _normalized_identity_part(album_artist),
+                _normalized_identity_part(album),
+                _normalized_identity_part(os.path.relpath(art_abs, os.path.dirname(os.path.abspath(abs_path))) if os.path.isabs(art_abs) else art_abs),
+                source_kind,
+            ]
+        )
+        identity = f"art-fallback:{sha1_text(fallback)}:v{PALETTE_ALGORITHM_VERSION}"
+    return {
+        "art_identity": identity,
+        "cache_key": identity,
+        "art_path": art_abs,
+        "source_kind": source_kind,
+        "source_identity": digest or art_abs,
+        "size": size,
+        "mtime_ns": mtime_ns,
+    }
+
+
+def warm_art_palette(abs_path: str, *, root_id: str = "", rel: str = "", art_info: Optional[dict[str, Any]] = None, linked_count: int = 0) -> Optional[dict]:
+    info = art_info if isinstance(art_info, dict) else art_identity_for_media(abs_path, root_id=root_id, rel=rel)
+    if not info:
+        return None
+    art = str(info.get("art_path") or "")
+    if not art:
+        return None
+    key = str(info.get("cache_key") or info.get("art_identity") or "")
+    if not key:
+        return None
     cached = load_palette(key)
     if cached:
         return cached
     palette = _extract_palette_from_image(art)
     if palette:
-        save_palette(key, palette, source_kind="art", source_identity=os.path.abspath(art), root_id=root_id, rel=rel)
+        metadata = palette.get("metadata") if isinstance(palette.get("metadata"), dict) else {}
+        metadata.update(
+            {
+                "artIdentity": str(info.get("art_identity") or key),
+                "sourceKind": str(info.get("source_kind") or "art"),
+                "sourceIdentity": str(info.get("source_identity") or ""),
+                "linkedTrackCount": int(linked_count or 0),
+            }
+        )
+        palette["metadata"] = metadata
+        save_palette(key, palette, source_kind=str(info.get("source_kind") or "art"), source_identity=str(info.get("source_identity") or os.path.abspath(art)), root_id=root_id, rel=rel)
     return palette
 
 
@@ -684,15 +855,41 @@ def _compute_audio_analysis(abs_path: str, key: str, *, root_id: str, rel: str, 
 def warm_video_analysis(abs_path: str, *, root_id: str = "", rel: str = "", media_id: str = "", duration: Optional[float] = None) -> Optional[dict]:
     if not is_video(abs_path):
         return None
+    audio = warm_video_audio_analysis(abs_path, root_id=root_id, rel=rel, media_id=media_id, duration=duration)
+    frames = warm_video_frame_palette_analysis(abs_path, root_id=root_id, rel=rel, media_id=media_id, duration=duration)
+    return frames or audio
+
+
+def warm_video_audio_analysis(abs_path: str, *, root_id: str = "", rel: str = "", media_id: str = "", duration: Optional[float] = None) -> Optional[dict]:
+    if not is_video(abs_path):
+        return None
     key = _analysis_key(abs_path)
     cached = load_visualizer_analysis(key)
-    cached_meta = cached.get("metadata") if isinstance(cached, dict) else {}
-    if cached and not (isinstance(cached_meta, dict) and cached_meta.get("video_palette_pending")):
+    if cached:
         return cached
     if not ANALYSIS_LOCK.acquire(blocking=False):
         return None
     try:
-        return _compute_video_analysis(abs_path, key, root_id=root_id, rel=rel, media_id=media_id, duration=duration)
+        return _compute_video_audio_analysis(abs_path, key, root_id=root_id, rel=rel, media_id=media_id, duration=duration)
+    finally:
+        try:
+            ANALYSIS_LOCK.release()
+        except Exception:
+            pass
+
+
+def warm_video_frame_palette_analysis(abs_path: str, *, root_id: str = "", rel: str = "", media_id: str = "", duration: Optional[float] = None) -> Optional[dict]:
+    if not is_video(abs_path):
+        return None
+    key = _analysis_key(abs_path)
+    cached = load_visualizer_analysis(key)
+    cached_meta = cached.get("metadata") if isinstance(cached, dict) else {}
+    if cached and isinstance(cached_meta, dict) and not cached_meta.get("video_palette_pending") and cached_meta.get("video_palette_frames"):
+        return cached
+    if not ANALYSIS_LOCK.acquire(blocking=False):
+        return None
+    try:
+        return _compute_video_frame_palette_analysis(abs_path, key, root_id=root_id, rel=rel, media_id=media_id, duration=duration)
     finally:
         try:
             ANALYSIS_LOCK.release()
@@ -762,9 +959,15 @@ def _extract_video_palette_frames(abs_path: str) -> tuple[list[list[object]], in
             for off in range(start, len(chunk) - 2, step):
                 counts[(chunk[off], chunk[off + 1], chunk[off + 2])] += 1
             if counts:
-                ranked = [rgb for rgb, _freq in counts.most_common()]
-                colors = [_hex(rgb) for rgb in _distinct_palette(ranked, PALETTE_COLOR_COUNT)]
-                frames.append([frame_index, colors])
+                palette_obj = _palette_object(_palette_from_counts(counts))
+                colors = list(palette_obj.get("colors") or [])
+                frame_meta = {
+                    "contrastPairs": palette_obj.get("contrastPairs") or [],
+                    "contrastMap": palette_obj.get("contrastMap") or {},
+                    "metadata": palette_obj.get("metadata") or {},
+                }
+                if not frames or list(frames[-1][1] or []) != colors:
+                    frames.append([frame_index, colors, frame_meta])
             frame_index += 1
         try:
             proc.kill()
@@ -784,69 +987,47 @@ def _idle_video_feature_blob(frame_count: int) -> bytes:
     return frame * count
 
 
-def _compute_video_analysis(abs_path: str, key: str, *, root_id: str, rel: str, media_id: str, duration: Optional[float]) -> Optional[dict]:
-    raw_blob, audio_frames = _decode_audio_feature_blob(abs_path)
-    _, _, probed_duration = _video_stream_dimensions(abs_path)
-    duration_value = duration if duration is not None else probed_duration
-    if audio_frames > 0 and raw_blob:
-        stored_blob, compression = _compress_analysis_blob(raw_blob)
-        save_visualizer_analysis(
-            key,
-            media_id=media_id,
-            root_id=root_id,
-            rel=rel,
-            abs_path=abs_path,
-            duration=duration_value,
-            analysis_rate_hz=ANALYSIS_RATE_HZ,
-            band_count=len(ANALYSIS_BANDS),
-            frame_count=audio_frames,
-            feature_blob=stored_blob,
-            compression=compression,
-            decoder_settings_hash=DECODER_SETTINGS_HASH,
-            metadata={
-                "media_kind": "video",
-                "frame_stride": len(ANALYSIS_BANDS) + 2,
-                "raw_bytes": len(raw_blob),
-                "stored_bytes": len(stored_blob),
-                "fields": ["band0", "band1", "band2", "band3", "band4", "band5", "band6", "energy", "beat"],
-                "video_palette_frame_stride": 0,
-                "video_palette_encoding": "frame-indexed-exact-hex-v1",
-                "video_palette_colors_per_frame": PALETTE_COLOR_COUNT,
-                "video_palette_frames": [],
-                "video_palette_pending": True,
-                "palette_source": "server",
-                "audio_source": "decoded",
-            },
-        )
-
-    palette_frames, palette_stride, decoded_video_frames = _extract_video_palette_frames(abs_path)
-    frame_count = audio_frames
-    if frame_count <= 0:
-        if decoded_video_frames > 0:
-            frame_count = decoded_video_frames
-        elif duration_value and duration_value > 0:
-            frame_count = max(1, int(float(duration_value) * ANALYSIS_RATE_HZ))
-        raw_blob = _idle_video_feature_blob(frame_count)
-    if frame_count <= 0 or not raw_blob:
-        return None
-    stored_blob, compression = _compress_analysis_blob(raw_blob)
-    # Video palette metadata format:
-    # video_palette_frames is [[frame_index, ["#rrggbb", ...]], ...].
-    # Each hex color is an exact RGB triple observed in that decoded frame.
-    # frame_stride is the deterministic pixel sampling stride over raw rgb24 frames.
+def _video_analysis_metadata(
+    *,
+    raw_bytes: int,
+    stored_bytes: int,
+    audio_source: str,
+    palette_frames: Optional[list[list[object]]] = None,
+    palette_stride: int = 0,
+    palette_pending: bool = True,
+) -> dict:
     metadata = {
         "media_kind": "video",
         "frame_stride": len(ANALYSIS_BANDS) + 2,
-        "raw_bytes": len(raw_blob),
-        "stored_bytes": len(stored_blob),
+        "raw_bytes": int(raw_bytes or 0),
+        "stored_bytes": int(stored_bytes or 0),
         "fields": ["band0", "band1", "band2", "band3", "band4", "band5", "band6", "energy", "beat"],
-        "video_palette_frame_stride": palette_stride,
+        "video_palette_frame_stride": int(palette_stride or 0),
         "video_palette_encoding": "frame-indexed-exact-hex-v1",
         "video_palette_colors_per_frame": PALETTE_COLOR_COUNT,
-        "video_palette_frames": palette_frames,
+        "video_palette_frames": palette_frames if isinstance(palette_frames, list) else [],
         "palette_source": "server",
-        "audio_source": "decoded" if audio_frames > 0 else "idle",
+        "audio_source": str(audio_source or ""),
     }
+    if palette_pending:
+        metadata["video_palette_pending"] = True
+    return metadata
+
+
+def _compute_video_audio_analysis(abs_path: str, key: str, *, root_id: str, rel: str, media_id: str, duration: Optional[float]) -> Optional[dict]:
+    raw_blob, audio_frames = _decode_audio_feature_blob(abs_path)
+    _, _, probed_duration = _video_stream_dimensions(abs_path)
+    duration_value = duration if duration is not None else probed_duration
+    audio_source = "decoded"
+    frame_count = audio_frames
+    if frame_count <= 0 or not raw_blob:
+        audio_source = "idle"
+        if duration_value and duration_value > 0:
+            frame_count = max(1, int(float(duration_value) * ANALYSIS_RATE_HZ))
+        else:
+            frame_count = 1
+        raw_blob = _idle_video_feature_blob(frame_count)
+    stored_blob, compression = _compress_analysis_blob(raw_blob)
     save_visualizer_analysis(
         key,
         media_id=media_id,
@@ -860,6 +1041,73 @@ def _compute_video_analysis(abs_path: str, key: str, *, root_id: str, rel: str, 
         feature_blob=stored_blob,
         compression=compression,
         decoder_settings_hash=DECODER_SETTINGS_HASH,
-        metadata=metadata,
+        metadata=_video_analysis_metadata(
+            raw_bytes=len(raw_blob),
+            stored_bytes=len(stored_blob),
+            audio_source=audio_source,
+            palette_pending=True,
+        ),
     )
     return load_visualizer_analysis(key)
+
+
+def _compute_video_frame_palette_analysis(abs_path: str, key: str, *, root_id: str, rel: str, media_id: str, duration: Optional[float]) -> Optional[dict]:
+    cached = load_visualizer_analysis(key)
+    cached_meta = cached.get("metadata") if isinstance(cached, dict) else {}
+    _, _, probed_duration = _video_stream_dimensions(abs_path)
+    duration_value = duration if duration is not None else probed_duration
+    palette_frames, palette_stride, decoded_video_frames = _extract_video_palette_frames(abs_path)
+    if cached:
+        stored_blob = bytes(cached.get("feature_blob") or b"")
+        compression = str(cached.get("compression") or "none")
+        frame_count = int(cached.get("frame_count") or 0)
+        raw_bytes = int(cached_meta.get("raw_bytes") or 0) if isinstance(cached_meta, dict) else 0
+        audio_source = str(cached_meta.get("audio_source") or "decoded") if isinstance(cached_meta, dict) else "decoded"
+    else:
+        stored_blob = b""
+        compression = "none"
+        frame_count = 0
+        raw_bytes = 0
+        audio_source = "idle"
+    if frame_count <= 0:
+        if decoded_video_frames > 0:
+            frame_count = decoded_video_frames
+        elif duration_value and duration_value > 0:
+            frame_count = max(1, int(float(duration_value) * ANALYSIS_RATE_HZ))
+        else:
+            frame_count = 1
+    if not stored_blob:
+        raw_blob = _idle_video_feature_blob(frame_count)
+        raw_bytes = len(raw_blob)
+        stored_blob, compression = _compress_analysis_blob(raw_blob)
+    if frame_count <= 0 or not stored_blob:
+        return None
+    save_visualizer_analysis(
+        key,
+        media_id=media_id,
+        root_id=root_id,
+        rel=rel,
+        abs_path=abs_path,
+        duration=duration_value,
+        analysis_rate_hz=ANALYSIS_RATE_HZ,
+        band_count=len(ANALYSIS_BANDS),
+        frame_count=frame_count,
+        feature_blob=stored_blob,
+        compression=compression,
+        decoder_settings_hash=DECODER_SETTINGS_HASH,
+        metadata=_video_analysis_metadata(
+            raw_bytes=raw_bytes,
+            stored_bytes=len(stored_blob),
+            audio_source=audio_source,
+            palette_frames=palette_frames,
+            palette_stride=palette_stride,
+            palette_pending=False,
+        ),
+    )
+    return load_visualizer_analysis(key)
+
+
+def _compute_video_analysis(abs_path: str, key: str, *, root_id: str, rel: str, media_id: str, duration: Optional[float]) -> Optional[dict]:
+    audio = _compute_video_audio_analysis(abs_path, key, root_id=root_id, rel=rel, media_id=media_id, duration=duration)
+    frames = _compute_video_frame_palette_analysis(abs_path, key, root_id=root_id, rel=rel, media_id=media_id, duration=duration)
+    return frames or audio
