@@ -85,36 +85,11 @@
   }
 
   /* --------------------------------------------------
-   *  Glassworks capture backend: snapdom first, lazy html2canvas fallback.
-   *  DebriPod keeps direct visualizer/album texture sources, but DOM snapshot
-   *  renderers can opt into this engine without reintroducing eager html2canvas.
+   *  Glassworks capture backend.
+   *  DebriPod uses direct visualizer, album art, video, or WebGL sources for
+   *  normal renderers. DOM snapshots are snapdom-only and never use fallback
+   *  canvas rasterizers, so text can stay isolated above the glass.
    * ------------------------------------------------*/
-  const HTML2CANVAS_CDN =
-    "https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js";
-  let _h2cLoadPromise = null;
-
-  function ensureHtml2canvas() {
-    if (typeof window.html2canvas === "function") return Promise.resolve(window.html2canvas);
-    if (_h2cLoadPromise) return _h2cLoadPromise;
-    _h2cLoadPromise = new Promise((resolve, reject) => {
-      const s = document.createElement("script");
-      s.src = window.LIQUIDGL_HTML2CANVAS_URL || HTML2CANVAS_CDN;
-      s.crossOrigin = "anonymous";
-      s.onload = () => {
-        if (typeof window.html2canvas === "function") resolve(window.html2canvas);
-        else {
-          _h2cLoadPromise = null;
-          reject(new Error("liquidGL: html2canvas loaded without global."));
-        }
-      };
-      s.onerror = () => {
-        _h2cLoadPromise = null;
-        reject(new Error("liquidGL: failed to lazy-load html2canvas."));
-      };
-      document.head.appendChild(s);
-    });
-    return _h2cLoadPromise;
-  }
 
   function parseBackgroundImageUrl(value) {
     if (!value || value === "none") return null;
@@ -203,49 +178,10 @@
     });
   }
 
-  async function captureViaHtml2canvas(target, { scale, ignore } = {}) {
-    const html2canvas = await ensureHtml2canvas();
-    const restores = [];
-    if (typeof ignore === "function" && target.querySelectorAll) {
-      target.querySelectorAll("*").forEach((el) => {
-        try {
-          if (ignore(el)) {
-            el.setAttribute("data-liquidgl-hide", "");
-            restores.push(() => el.removeAttribute("data-liquidgl-hide"));
-          }
-        } catch (e) {}
-      });
-    }
-    try {
-      return await html2canvas(target, {
-        allowTaint: false,
-        useCORS: true,
-        backgroundColor: null,
-        removeContainer: true,
-        width: target.scrollWidth,
-        height: target.scrollHeight,
-        scrollX: 0,
-        scrollY: 0,
-        scale,
-        logging: false,
-        ignoreElements: (el) => !!(el && el.tagName === "CANVAS" && el.hasAttribute && el.hasAttribute("data-liquid-ignore")),
-        onclone: (doc) => {
-          doc.querySelectorAll("[data-liquidgl-hide]").forEach((el) => {
-            el.style.visibility = "hidden";
-          });
-        }
-      });
-    } finally {
-      for (let i = restores.length - 1; i >= 0; i--) restores[i]();
-    }
-  }
-
   async function snapToCanvas(target, { scale, ignore, engine, onEngineFallback, validateCompleteness } = {}) {
-    if ((engine || "snapdom") === "html2canvas") return captureViaHtml2canvas(target, { scale, ignore });
+    if ((engine || "snapdom") !== "snapdom") throw new Error("liquidGL: DOM snapshot engine disabled.");
     if (typeof window.snapdom === "undefined") {
-      liquidGLLog("warn", "liquidGL: snapdom missing; falling back to html2canvas.");
-      if (typeof onEngineFallback === "function") onEngineFallback("html2canvas");
-      return captureViaHtml2canvas(target, { scale, ignore });
+      throw new Error("liquidGL: snapdom missing and DOM snapshot fallback is disabled.");
     }
     const restores = [];
     if (typeof ignore === "function" && target.querySelectorAll) {
@@ -266,17 +202,14 @@
       canvas = await snapdomCapture(target, scale);
     } catch (e) {
       failed = true;
-      liquidGLLog("warn", "liquidGL: snapdom capture failed; falling back to html2canvas.", e);
+      liquidGLLog("warn", "liquidGL: snapdom capture failed.", e);
     } finally {
       for (let i = restores.length - 1; i >= 0; i--) restores[i]();
     }
     if (failed || (validateCompleteness === true && !snapshotLooksComplete(canvas))) {
-      if (typeof onEngineFallback === "function") onEngineFallback("html2canvas");
-      try {
-        return await captureViaHtml2canvas(target, { scale, ignore });
-      } finally {
-        for (let i = shimCleanups.length - 1; i >= 0; i--) shimCleanups[i]();
-      }
+      if (typeof onEngineFallback === "function") onEngineFallback("disabled");
+      for (let i = shimCleanups.length - 1; i >= 0; i--) shimCleanups[i]();
+      throw new Error("liquidGL: DOM snapshot capture unavailable.");
     }
     for (let i = shimCleanups.length - 1; i >= 0; i--) shimCleanups[i]();
     return canvas;
@@ -317,14 +250,35 @@
         0.1,
         Math.min(3.0, snapshotResolution)
       );
-      this.sourceType = sourceOptions.sourceType || "visualizerCanvas";
+      this.sourceType = sourceOptions.sourceType || "visualizerWebgl";
       this.sourceSelector = sourceOptions.sourceElement || sourceOptions.source || "#visualizerBg";
-      this._engine = sourceOptions.engine === "html2canvas" ? "html2canvas" : "snapdom";
+      this.sourceCssSelector = sourceOptions.sourceCssElement || sourceOptions.sourceCssSelector || null;
+      this.sourceProvider = typeof sourceOptions.sourceProvider === "function" ? sourceOptions.sourceProvider : null;
+      this._engine = "snapdom";
       this._sourceElement = null;
       this._sourceCssRect = null;
       this._sourceTextureReady = false;
+      this._sourceIsSolidFallback = false;
+      this._sourceOwnsTexture = true;
       this._solidCanvas = null;
+      this._albumCurrentTexture = null;
+      this._albumNextTexture = null;
+      this._albumUploadedCurrentSrc = "";
+      this._albumUploadedNextSrc = "";
+      this._albumCurrentSize = { width: 1, height: 1 };
+      this._albumNextSize = { width: 1, height: 1 };
+      this._albumMix = 0;
+      this._albumTransitioning = false;
+      this._albumFrameId = 0;
+      this._albumSourceKey = "";
+      this._albumRenderedAt = 0;
+      this._albumSourceRect = null;
+      this._albumSourceSize = { width: 1, height: 1 };
+      this._debugCanaryTexture = null;
+      this._hiddenSkipSince = 0;
+      this.renderCount = 0;
       this.visible = true;
+      this._adaptiveQuality = 1;
 
       this._initGL();
 
@@ -344,9 +298,8 @@
             this._isScrolling = false;
           }, 200);
         }
-        requestAnimationFrame(scrollCheck);
       };
-      requestAnimationFrame(scrollCheck);
+      window.addEventListener("scroll", scrollCheck, { passive: true });
 
       const onResize = debounce(() => {
         if (this._capturing || this._isScrolling) return;
@@ -476,10 +429,17 @@
         precision mediump float;
         varying vec2 v_uv;
         uniform sampler2D u_tex;
+        uniform sampler2D u_albumCurrentTex;
+        uniform sampler2D u_albumNextTex;
         uniform vec2  u_resolution;
         uniform vec2  u_textureResolution;
+        uniform vec2  u_albumSourceSize;
+        uniform vec2  u_albumCurrentSize;
+        uniform vec2  u_albumNextSize;
         uniform vec4  u_bounds;
+        uniform float u_albumMix;
         uniform float u_refraction;
+        uniform float u_refractionFill;
         uniform float u_bevelDepth;
         uniform float u_bevelWidth;
         uniform float u_frost;
@@ -496,6 +456,8 @@
         uniform int   u_glassMode;
         uniform float u_glassDarkAmount;
         uniform float u_glassLightAmount;
+        uniform bool  u_useAlbumTransitionSource;
+        uniform bool  u_debugAlbumSourceFlat;
 
         float udRoundBox( vec2 p, vec2 b, float r ) {
           return length(max(abs(p)-b+r,0.0))-r;
@@ -524,22 +486,70 @@
           return 1.0 - smoothstep(-1.25, 1.25, innerD);
         }
 
+        vec2 albumCoverUVFromSourceUV(vec2 sourceUV, vec2 sourceSize, vec2 imageSize) {
+          vec2 safeSourceSize = max(sourceSize, vec2(1.0));
+          vec2 safeImageSize = max(imageSize, vec2(1.0));
+          float ca = safeSourceSize.x / safeSourceSize.y;
+          float ia = safeImageSize.x / safeImageSize.y;
+          vec2 outUv = sourceUV;
+          if (ca > ia) {
+            outUv.y = (sourceUV.y - 0.5) * ca / ia + 0.5;
+          } else {
+            outUv.x = (sourceUV.x - 0.5) * ia / ca + 0.5;
+          }
+          return clamp(vec2(outUv.x, 1.0 - outUv.y), vec2(0.0), vec2(1.0));
+        }
+
+        vec4 sampleAlbumArtSource(vec2 sourceUV) {
+          vec2 curUV = albumCoverUVFromSourceUV(sourceUV, u_albumSourceSize, u_albumCurrentSize);
+          vec2 nextUV = albumCoverUVFromSourceUV(sourceUV, u_albumSourceSize, u_albumNextSize);
+          vec4 cur = texture2D(u_albumCurrentTex, curUV);
+          vec4 next = texture2D(u_albumNextTex, nextUV);
+          vec4 col = mix(cur, next, clamp(u_albumMix, 0.0, 1.0));
+          if (col.a < 0.01) {
+            col.a = 1.0;
+          }
+          return col;
+        }
+
+        vec4 sampleLiquidSource(vec2 uv) {
+          if (u_useAlbumTransitionSource) {
+            return sampleAlbumArtSource(uv);
+          }
+          return texture2D(u_tex, uv);
+        }
+
         void main(){
+          vec2 localUV = (v_uv - 0.5) / u_magnify + 0.5;
+          vec2 flippedUV = vec2(localUV.x, 1.0 - localUV.y);
+          vec2 mapped = u_bounds.xy + flippedUV * u_bounds.zw;
+
+          if (u_debugAlbumSourceFlat) {
+            vec4 albumCol = sampleAlbumArtSource(mapped);
+            if (albumCol.a < 0.01) {
+              albumCol = vec4(1.0, 0.0, 1.0, 1.0);
+            }
+            gl_FragColor = albumCol;
+            return;
+          }
+
           vec2 p = v_uv - 0.5;
           p.x *= u_resolution.x / u_resolution.y;
 
           float edge = edgeFactor(v_uv, u_radius);
           float min_dimension = min(u_resolution.x, u_resolution.y);
-          float offsetAmt = (edge * u_refraction + pow(edge, 10.0) * u_bevelDepth);
-          float centreBlend = smoothstep(0.15, 0.45, length(p));
-          vec2 offset = normalize(p) * offsetAmt * centreBlend;
+          float centreDistance = length(p);
+          float fill = clamp(u_refractionFill, 0.0, 1.0);
+          float refractionField = mix(edge, max(edge, 0.34), fill);
+          float offsetAmt = (refractionField * u_refraction + pow(edge, 10.0) * u_bevelDepth);
+          float edgeCentreBlend = smoothstep(0.15, 0.45, centreDistance);
+          float centreBlend = mix(edgeCentreBlend, 1.0, fill);
+          vec2 refractDirection = centreDistance > 0.0001 ? p / centreDistance : vec2(0.0);
+          vec2 offset = refractDirection * offsetAmt * centreBlend;
 
           float tiltRefractionScale = 0.05;
           vec2 tiltOffset = vec2(tan(radians(u_tiltY)), -tan(radians(u_tiltX))) * tiltRefractionScale;
 
-          vec2 localUV = (v_uv - 0.5) / u_magnify + 0.5;
-          vec2 flippedUV = vec2(localUV.x, 1.0 - localUV.y);
-          vec2 mapped = u_bounds.xy + flippedUV * u_bounds.zw;
           vec2 refracted = mapped + offset - tiltOffset;
 
           float oob = max(max(-refracted.x, refracted.x - 1.0), max(-refracted.y, refracted.y - 1.0));
@@ -554,7 +564,7 @@
             }
           }
 
-          vec4 baseCol   = texture2D(u_tex, mapped);
+          vec4 baseCol   = sampleLiquidSource(mapped);
 
           vec2 texel = 1.0 / u_textureResolution;
           vec4 refrCol;
@@ -568,15 +578,15 @@
                   float angle = random(v_uv + float(i)) * 6.283185;
                   float dist = sqrt(random(v_uv - float(i))) * radius;
                   vec2 offset = vec2(cos(angle), sin(angle)) * texel * dist;
-                  sum += texture2D(u_tex, sampleUV + offset);
+                  sum += sampleLiquidSource(sampleUV + offset);
               }
               refrCol = sum / float(SAMPLES);
           } else {
-              refrCol = texture2D(u_tex, sampleUV);
-              refrCol += texture2D(u_tex, sampleUV + vec2( texel.x, 0.0));
-              refrCol += texture2D(u_tex, sampleUV + vec2(-texel.x, 0.0));
-              refrCol += texture2D(u_tex, sampleUV + vec2(0.0,  texel.y));
-              refrCol += texture2D(u_tex, sampleUV + vec2(0.0, -texel.y));
+              refrCol = sampleLiquidSource(sampleUV);
+              refrCol += sampleLiquidSource(sampleUV + vec2( texel.x, 0.0));
+              refrCol += sampleLiquidSource(sampleUV + vec2(-texel.x, 0.0));
+              refrCol += sampleLiquidSource(sampleUV + vec2(0.0,  texel.y));
+              refrCol += sampleLiquidSource(sampleUV + vec2(0.0, -texel.y));
               refrCol /= 5.0;
           }
 
@@ -614,11 +624,8 @@
             final.rgb += h * vec3(1.0, 0.97, 0.90);
           }
 
-          if (u_glassMode == 1) {
-            final.rgb = mix(final.rgb, vec3(0.0), clamp(u_glassDarkAmount, 0.0, 0.80));
-          } else if (u_glassMode == 2) {
-            final.rgb = mix(final.rgb, vec3(1.0), clamp(u_glassLightAmount, 0.0, 0.80));
-          }
+          final.rgb = mix(final.rgb, vec3(0.0), clamp(u_glassDarkAmount, 0.0, 0.80));
+          final.rgb = mix(final.rgb, vec3(1.0), clamp(u_glassLightAmount, 0.0, 0.80));
 
           if (u_revealType == 1) {
               final.rgb *= u_revealProgress;
@@ -649,13 +656,20 @@
 
       this.u = {
         tex: gl.getUniformLocation(this.program, "u_tex"),
+        albumCurrentTex: gl.getUniformLocation(this.program, "u_albumCurrentTex"),
+        albumNextTex: gl.getUniformLocation(this.program, "u_albumNextTex"),
         res: gl.getUniformLocation(this.program, "u_resolution"),
         textureResolution: gl.getUniformLocation(
           this.program,
           "u_textureResolution"
         ),
+        albumSourceSize: gl.getUniformLocation(this.program, "u_albumSourceSize"),
+        albumCurrentSize: gl.getUniformLocation(this.program, "u_albumCurrentSize"),
+        albumNextSize: gl.getUniformLocation(this.program, "u_albumNextSize"),
         bounds: gl.getUniformLocation(this.program, "u_bounds"),
+        albumMix: gl.getUniformLocation(this.program, "u_albumMix"),
         refraction: gl.getUniformLocation(this.program, "u_refraction"),
+        refractionFill: gl.getUniformLocation(this.program, "u_refractionFill"),
         bevelDepth: gl.getUniformLocation(this.program, "u_bevelDepth"),
         bevelWidth: gl.getUniformLocation(this.program, "u_bevelWidth"),
         frost: gl.getUniformLocation(this.program, "u_frost"),
@@ -672,6 +686,8 @@
         glassMode: gl.getUniformLocation(this.program, "u_glassMode"),
         glassDarkAmount: gl.getUniformLocation(this.program, "u_glassDarkAmount"),
         glassLightAmount: gl.getUniformLocation(this.program, "u_glassLightAmount"),
+        useAlbumTransitionSource: gl.getUniformLocation(this.program, "u_useAlbumTransitionSource"),
+        debugAlbumSourceFlat: gl.getUniformLocation(this.program, "u_debugAlbumSourceFlat"),
       };
     }
 
@@ -713,8 +729,7 @@
           scale,
           ignore,
           engine: this._engine,
-          validateCompleteness: true,
-          onEngineFallback: (next) => { this._engine = next; }
+          validateCompleteness: true
         });
         if (!snapCanvas) return false;
         this._snapshotRectPx = this.snapshotTarget.getBoundingClientRect();
@@ -739,15 +754,33 @@
     }
 
     configureSource(options = {}) {
-      const nextType = options.sourceType || this.sourceType || "visualizerCanvas";
+      const nextType = options.sourceType || this.sourceType || "visualizerWebgl";
       const nextSelector = options.sourceElement || options.source || this.sourceSelector || "#visualizerBg";
-      this._engine = options.engine === "html2canvas" ? "html2canvas" : (this._engine || "snapdom");
-      if (nextType !== this.sourceType || nextSelector !== this.sourceSelector) {
+      const nextCssSelector = options.sourceCssElement || options.sourceCssSelector || this.sourceCssSelector || null;
+      const nextProvider = typeof options.sourceProvider === "function" ? options.sourceProvider : this.sourceProvider;
+      const providerChanged = nextProvider !== this.sourceProvider;
+      this._engine = "snapdom";
+      if (nextType !== this.sourceType || nextSelector !== this.sourceSelector || nextCssSelector !== this.sourceCssSelector || providerChanged) {
         this.sourceType = nextType;
         this.sourceSelector = nextSelector;
+        this.sourceCssSelector = nextCssSelector;
+        this.sourceProvider = nextProvider;
         this._sourceElement = null;
         this.refreshSourceTexture("source configured");
       }
+    }
+
+    _resolveSourceCssRect() {
+      const el = this.sourceCssSelector ? document.querySelector(this.sourceCssSelector) : null;
+      if (!el) return null;
+      const rect = el.getBoundingClientRect();
+      if (!rect || !(rect.width > 0) || !(rect.height > 0)) return null;
+      return {
+        left: rect.left || 0,
+        top: rect.top || 0,
+        width: rect.width || 1,
+        height: rect.height || 1
+      };
     }
 
     _fallbackCanvas(width = 8, height = 8, rgba = [5, 5, 7, 255]) {
@@ -770,13 +803,238 @@
       return source ? (source.videoHeight || source.naturalHeight || source.height || 0) : 0;
     }
 
+    debugState() {
+      return {
+        rendererKey: this.rendererKey,
+        sourceType: this.sourceType,
+        visible: this.visible,
+        canvasOpacity: this.canvas ? this.canvas.style.opacity : "",
+        canvasDisplay: this.canvas ? this.canvas.style.display : "",
+        canvasVisibility: this.canvas ? this.canvas.style.visibility : "",
+        canvasWidth: this.canvas ? this.canvas.width : 0,
+        canvasHeight: this.canvas ? this.canvas.height : 0,
+        lensCount: this.lenses ? this.lenses.length : 0,
+        lensRects: (this.lenses || []).map((ln) => ln && ln.rectPx ? {
+          left: ln.rectPx.left,
+          top: ln.rectPx.top,
+          width: ln.rectPx.width,
+          height: ln.rectPx.height
+        } : null),
+        hasTexture: !!this.texture,
+        textureWidth: this.textureWidth || 0,
+        textureHeight: this.textureHeight || 0,
+        sourceReady: !!this._sourceTextureReady,
+        albumCurrentTexture: !!this._albumCurrentTexture,
+        albumNextTexture: !!this._albumNextTexture,
+        albumUploadedCurrentSrc: this._albumUploadedCurrentSrc || "",
+        albumUploadedNextSrc: this._albumUploadedNextSrc || "",
+        canaryEnabled: this._forceGlassCanary(),
+        albumFlatDebugEnabled: this._debugAlbumSourceFlat(),
+        useAlbumTransitionSource: this.sourceType === "albumArtTransition" && !!this._albumCurrentTexture,
+        albumSourceSize: this._albumSourceSize || null,
+        albumCurrentSize: this._albumCurrentSize || null,
+        albumNextSize: this._albumNextSize || null,
+        albumMix: this._albumMix || 0,
+        albumTransitioning: this._albumTransitioning === true,
+        albumFrameId: this._albumFrameId || 0,
+        albumSourceKey: this._albumSourceKey || "",
+        sourceCssRect: this._sourceCssRect || null,
+        albumSourceRect: this._albumSourceRect || null,
+        pendingRevealCount: this._pendingReveal ? this._pendingReveal.length || 0 : 0,
+        renderCount: this.renderCount || 0
+      };
+    }
+
+    _rendererDebugEnabled() {
+      try {
+        return this.rendererKey === "removedOverlayKey" && (
+          window.DEBRIPOD_UI_DEBUG === true ||
+          window.DEBRIPOD_LIQUID_RENDERER_DEBUG === true ||
+          (localStorage.getItem("debripod_ui_debug") || "") === "1" ||
+          (localStorage.getItem("debripod_liquid_renderer_debug") || "") === "1"
+        );
+      } catch (e) {
+        return false;
+      }
+    }
+
+    _debugRenderSkip(reason, details = {}) {
+      if (!this._rendererDebugEnabled()) return;
+      liquidGLLog("warn", "liquidGL: renderer diagnostic", Object.assign({
+        reason,
+        rendererState: this.debugState ? this.debugState() : null
+      }, details || {}));
+    }
+
+    _isLensIntentionallyHidden(lens) {
+      try {
+        let node = lens && lens.el ? lens.el : null;
+        while (node && node !== document.body) {
+          const style = window.getComputedStyle(node);
+          if (
+            Number(style.opacity || 1) <= 0.01 ||
+            (node.classList &&
+              (node.classList.contains("infoPillHidden") ||
+                node.classList.contains("infoPillHidden")))
+          ) {
+            return true;
+          }
+          node = node.parentElement;
+        }
+      } catch (e) {}
+      return false;
+    }
+
+    _debugLensHidden(lens) {
+      if (this.rendererKey !== "removedOverlayKey" || !this._rendererDebugEnabled()) return;
+      if (this._isLensIntentionallyHidden(lens)) {
+        this._hiddenSkipSince = 0;
+        return;
+      }
+      const now = performance && performance.now ? performance.now() : Date.now();
+      if (!this._hiddenSkipSince) {
+        this._hiddenSkipSince = now;
+        return;
+      }
+      if (now - this._hiddenSkipSince < 250) return;
+      this._hiddenSkipSince = now;
+      this._debugRenderSkip("lens skipped: not visible", {
+        lensClassName: lens && lens.el ? lens.el.className : ""
+      });
+    }
+
+    _forceGlassCanary() {
+      try {
+        return this.rendererKey === "removedOverlayKey" && (
+          window.DEBRIPOD_FORCE_NP_GLASS_CANARY === true ||
+          (localStorage.getItem("debripod_force_glass_canary") || "") === "1"
+        );
+      } catch (e) {
+        return false;
+      }
+    }
+
+    _debugAlbumSourceFlat() {
+      try {
+        return this.rendererKey === "removedOverlayKey" &&
+          this.sourceType === "albumArtTransition" &&
+          (localStorage.getItem("debripod_debug_album_source_flat") || "") === "1";
+      } catch (e) {
+        return false;
+      }
+    }
+
+    _ensureDebugCanaryTexture() {
+      if (this._debugCanaryTexture) return this._debugCanaryTexture;
+      const gl = this.gl;
+      const tex = gl.createTexture();
+      if (!tex) return null;
+      const pixels = new Uint8Array([
+        255, 64, 64, 255, 255, 220, 80, 255,
+        80, 180, 255, 255, 255, 255, 255, 255
+      ]);
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 2, 2, 0, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      this._debugCanaryTexture = tex;
+      return tex;
+    }
+
+    _albumSourceSizeForUniform() {
+      const rect = this._sourceCssRect || this._albumSourceRect || null;
+      return {
+        width: Math.max(1, Number(rect && rect.width || this._albumSourceSize && this._albumSourceSize.width || this.textureWidth || 1) || 1),
+        height: Math.max(1, Number(rect && rect.height || this._albumSourceSize && this._albumSourceSize.height || this.textureHeight || 1) || 1)
+      };
+    }
+
+    _bindAlbumTransitionUniforms() {
+      const gl = this.gl;
+      const useAlbumTransitionSource = this.sourceType === "albumArtTransition" && !!this._albumCurrentTexture;
+      if (this.u.useAlbumTransitionSource) gl.uniform1i(this.u.useAlbumTransitionSource, useAlbumTransitionSource ? 1 : 0);
+      if (this.u.debugAlbumSourceFlat) gl.uniform1i(this.u.debugAlbumSourceFlat, this._debugAlbumSourceFlat() ? 1 : 0);
+      if (this.u.albumCurrentTex) {
+        gl.activeTexture(gl.TEXTURE1);
+        gl.bindTexture(gl.TEXTURE_2D, this._albumCurrentTexture || this.texture);
+        gl.uniform1i(this.u.albumCurrentTex, 1);
+      }
+      if (this.u.albumNextTex) {
+        gl.activeTexture(gl.TEXTURE2);
+        gl.bindTexture(gl.TEXTURE_2D, this._albumNextTexture || this._albumCurrentTexture || this.texture);
+        gl.uniform1i(this.u.albumNextTex, 2);
+      }
+      if (this.u.albumMix) gl.uniform1f(this.u.albumMix, this._albumMix || 0);
+      if (this.u.albumCurrentSize) {
+        gl.uniform2f(this.u.albumCurrentSize, this._albumCurrentSize.width || 1, this._albumCurrentSize.height || 1);
+      }
+      if (this.u.albumNextSize) {
+        gl.uniform2f(this.u.albumNextSize, this._albumNextSize.width || 1, this._albumNextSize.height || 1);
+      }
+      if (this.u.albumSourceSize) {
+        const sourceSize = this._albumSourceSizeForUniform();
+        gl.uniform2f(this.u.albumSourceSize, sourceSize.width, sourceSize.height);
+      }
+      gl.activeTexture(gl.TEXTURE0);
+    }
+
     refreshSourceTexture(reason = "") {
       const source = this._resolveSourceElement();
-      if (this.sourceType === "albumArtCanvasOrImage") {
-        if (source && source.complete && source.naturalWidth && source.naturalHeight) {
-          return this.updateTextureFromImage(source, { reason: reason || "album art" });
+      if (this.sourceType === "albumArtTransition") {
+        return this._refreshAlbumArtTransitionSource(reason || "album art transition");
+      }
+      if (this.sourceType === "visualizerWebgl" || this.sourceType === "webglTexture") {
+        const adapter =
+          window.DebriPod &&
+          window.DebriPod.visualizerRenderer &&
+          typeof window.DebriPod.visualizerRenderer.sourceForLiquidGL === "function"
+            ? window.DebriPod.visualizerRenderer.sourceForLiquidGL()
+            : null;
+        if (adapter && adapter.ready && adapter.texture && adapter.gl === this.gl) {
+          this.texture = adapter.texture;
+          this.textureWidth = adapter.width || 1;
+          this.textureHeight = adapter.height || 1;
+          this._sourceCssRect = adapter.sourceRect || { left: 0, top: 0, width: window.innerWidth || 1, height: window.innerHeight || 1 };
+          this._sourceTextureReady = true;
+          this._sourceIsSolidFallback = false;
+          this._sourceOwnsTexture = false;
+          return true;
         }
-        return this.updateTextureFromSolidColor(8, 8, [5, 5, 7, 255], { reason: reason || "album art fallback", allowDark: true });
+        if (adapter && adapter.ready && adapter.canvas) {
+          return this.updateTextureFromCanvas(adapter.canvas, {
+            reason: reason || "visualizer webgl source",
+            allowDark: true,
+            sourceRect: adapter.sourceRect || { left: 0, top: 0, width: window.innerWidth || adapter.width || 1, height: window.innerHeight || adapter.height || 1 }
+          });
+        }
+        return this.updateTextureFromSolidColor(8, 8, [0, 0, 0, 255], { reason: reason || "visualizer webgl fallback", allowDark: true });
+      }
+      if (this.sourceType === "albumArtCanvasOrImage") {
+        if (source && source instanceof HTMLCanvasElement && source.width && source.height) {
+          const rect = source.getBoundingClientRect();
+          const sourceRect = this._resolveSourceCssRect ? this._resolveSourceCssRect() : null;
+          return this.updateTextureFromCanvas(source, {
+            reason: reason || "album art canvas",
+            allowDark: !this.sourceCssSelector,
+            sourceRect: sourceRect || {
+              left: rect.left || 0,
+              top: rect.top || 0,
+              width: rect.width || source.width || 1,
+              height: rect.height || source.height || 1
+            }
+          });
+        }
+        if (source && source.complete && source.naturalWidth && source.naturalHeight) {
+          const sourceRect = this._resolveSourceCssRect ? this._resolveSourceCssRect() : null;
+          return this.updateTextureFromImage(source, {
+            reason: reason || "album art",
+            sourceRect: sourceRect || undefined
+          });
+        }
+        return false;
       }
       if (this.sourceType === "liveVideoFrame") {
         if (source && source.readyState >= 2 && source.videoWidth && source.videoHeight) {
@@ -794,6 +1052,124 @@
       return this.updateTextureFromSolidColor(8, 8, [0, 0, 0, 255], { reason: reason || "fallback", allowDark: true });
     }
 
+    _createAlbumTexture() {
+      const gl = this.gl;
+      const tex = gl.createTexture();
+      if (!tex) return null;
+      gl.bindTexture(gl.TEXTURE_2D, tex);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 1, 1, 0, gl.RGBA, gl.UNSIGNED_BYTE, new Uint8Array([0, 0, 0, 0]));
+      return tex;
+    }
+
+    _uploadAlbumImageTexture(image, existingTexture) {
+      if (!image || !image.complete || !image.naturalWidth || !image.naturalHeight) return null;
+      const gl = this.gl;
+      const texture = existingTexture || this._createAlbumTexture();
+      if (!texture) return null;
+      try {
+        gl.bindTexture(gl.TEXTURE_2D, texture);
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
+        gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, image);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        if (this._rendererDebugEnabled()) {
+          liquidGLLog("log", "liquidGL: album image uploaded", {
+            rendererKey: this.rendererKey,
+            complete: image.complete === true,
+            naturalWidth: image.naturalWidth || 0,
+            naturalHeight: image.naturalHeight || 0,
+            currentSrc: image.currentSrc || image.src || ""
+          });
+        }
+      } catch (e) {
+        liquidGLLog("warn", "liquidGL: Album art transition texture upload failed.", {
+          rendererKey: this.rendererKey,
+          message: e && e.message ? e.message : e
+        });
+        return null;
+      }
+      return texture;
+    }
+
+    _albumImageSize(image, fallback) {
+      const fromFallback = fallback || {};
+      return {
+        width: Math.max(1, Number(fromFallback.width || image && image.naturalWidth || image && image.width || 1) || 1),
+        height: Math.max(1, Number(fromFallback.height || image && image.naturalHeight || image && image.height || 1) || 1)
+      };
+    }
+
+    _refreshAlbumArtTransitionSource(reason = "") {
+      this._sourceTextureReady = false;
+      const provider = typeof this.sourceProvider === "function" ? this.sourceProvider : null;
+      const adapter = provider ? provider() : null;
+      if (!adapter || !adapter.ready || !adapter.currentImage) return false;
+      const sourceRect = this._resolveSourceCssRect ? this._resolveSourceCssRect() : null;
+      if (!sourceRect || !(sourceRect.width > 0) || !(sourceRect.height > 0)) {
+        liquidGLLog("warn", "liquidGL: albumArtTransition source rect missing", this.debugState ? this.debugState() : {});
+        return false;
+      }
+
+      const currentSrc = String(adapter.currentSrc || adapter.sourceKey || "");
+      const nextSrc = String(adapter.nextSrc || "");
+      if (!this._albumCurrentTexture || currentSrc !== this._albumUploadedCurrentSrc) {
+        const uploaded = this._uploadAlbumImageTexture(adapter.currentImage, this._albumCurrentTexture);
+        if (!uploaded) return false;
+        this._albumCurrentTexture = uploaded;
+        this._albumUploadedCurrentSrc = currentSrc;
+      }
+
+      if (nextSrc && adapter.nextImage) {
+        if (!this._albumNextTexture || nextSrc !== this._albumUploadedNextSrc) {
+          const uploaded = this._uploadAlbumImageTexture(adapter.nextImage, this._albumNextTexture);
+          if (!uploaded) return false;
+          this._albumNextTexture = uploaded;
+          this._albumUploadedNextSrc = nextSrc;
+        }
+      } else {
+        this._albumNextTexture = this._albumCurrentTexture;
+        this._albumUploadedNextSrc = currentSrc;
+      }
+
+      this.texture = this._albumCurrentTexture;
+      this._sourceOwnsTexture = false;
+      this._albumCurrentSize = this._albumImageSize(adapter.currentImage, adapter.currentImageSize);
+      this._albumNextSize = this._albumImageSize(adapter.nextImage || adapter.currentImage, adapter.nextImageSize || adapter.currentImageSize);
+      this._albumMix = Math.max(0, Math.min(1, Number(adapter.mix || 0) || 0));
+      this._albumTransitioning = adapter.transitioning === true;
+      this._albumFrameId = Number(adapter.frameId || 0) || 0;
+      this._albumSourceKey = String(adapter.sourceKey || currentSrc || "");
+      this._albumRenderedAt = Number(adapter.renderedAt || 0) || 0;
+      this._sourceCssRect = sourceRect;
+      this._albumSourceRect = sourceRect;
+      this._albumSourceSize = {
+        width: Math.max(1, sourceRect.width || 1),
+        height: Math.max(1, sourceRect.height || 1)
+      };
+      this.textureWidth = Math.max(1, Math.round(sourceRect.width || 1));
+      this.textureHeight = Math.max(1, Math.round(sourceRect.height || 1));
+      const drawable =
+        !!this._albumCurrentTexture &&
+        !!this.texture &&
+        (this.textureWidth || 0) > 0 &&
+        (this.textureHeight || 0) > 0 &&
+        this._sourceCssRect &&
+        (this._sourceCssRect.width || 0) > 0 &&
+        (this._sourceCssRect.height || 0) > 0;
+      if (!drawable) {
+        liquidGLLog("warn", "liquidGL: albumArtTransition source not drawable", this.debugState ? this.debugState() : {});
+        return false;
+      }
+      this._markSourceReadyAfterUpload(reason || "album art transition provider");
+      return true;
+    }
+
     updateTextureFromCanvas(canvas, options = {}) {
       if (!canvas || !canvas.width || !canvas.height) {
         if (this.texture) return false;
@@ -801,29 +1177,87 @@
       }
       if (options.sourceRect) this._sourceCssRect = options.sourceRect;
       else this._sourceCssRect = { left: 0, top: 0, width: window.innerWidth || canvas.width || 1, height: window.innerHeight || canvas.height || 1 };
-      return this._uploadTextureSource(canvas, canvas.width, canvas.height, options.reason || "canvas source", { allowDark: options.allowDark === true });
+      return this._uploadTextureSource(canvas, canvas.width, canvas.height, options.reason || "canvas source", { allowDark: options.allowDark === true, solidFallback: false });
     }
 
     updateTextureFromImage(img, options = {}) {
       if (!img || !img.complete || !img.naturalWidth || !img.naturalHeight) return false;
-      this._sourceCssRect = null;
-      return this._uploadTextureSource(img, img.naturalWidth, img.naturalHeight, options.reason || "image source", { allowDark: true, skipBlankCheck: true });
+      if (options.sourceRect) this._sourceCssRect = options.sourceRect;
+      else this._sourceCssRect = null;
+      return this._uploadTextureSource(img, img.naturalWidth, img.naturalHeight, options.reason || "image source", { allowDark: true, skipBlankCheck: true, solidFallback: false });
     }
 
     updateTextureFromVideo(video, options = {}) {
       if (!video || video.readyState < 2 || !video.videoWidth || !video.videoHeight) return false;
       this._sourceCssRect = null;
-      return this._uploadTextureSource(video, video.videoWidth, video.videoHeight, options.reason || "video source", { allowDark: options.allowDark === true, skipBlankCheck: true });
+      return this._uploadTextureSource(video, video.videoWidth, video.videoHeight, options.reason || "video source", { allowDark: options.allowDark === true, skipBlankCheck: true, solidFallback: false });
     }
 
     updateTextureFromSolidColor(width = 8, height = 8, rgba = [0, 0, 0, 255], options = {}) {
       const canvas = this._fallbackCanvas(width, height, rgba);
       this._sourceCssRect = null;
-      return this._uploadTextureSource(canvas, canvas.width, canvas.height, options.reason || "solid fallback", { allowDark: true, skipBlankCheck: true });
+      return this._uploadTextureSource(canvas, canvas.width, canvas.height, options.reason || "solid fallback", { allowDark: true, skipBlankCheck: true, solidFallback: true });
+    }
+
+    clearSourceTexture(reason = "") {
+      try {
+        if (this.texture && this._sourceOwnsTexture !== false) {
+          this.gl.deleteTexture(this.texture);
+        }
+      } catch (e) {}
+      this.texture = null;
+      this.textureWidth = 0;
+      this.textureHeight = 0;
+      this.staticSnapshotCanvas = null;
+      this._sourceTextureReady = false;
+      this._sourceIsSolidFallback = false;
+      this._sourceOwnsTexture = true;
+      this._sourceCssRect = null;
+      this._albumFrameId = 0;
+      this._albumSourceKey = "";
+      this._albumMix = 0;
+      this._albumTransitioning = false;
+      this._albumSourceRect = null;
+      this._albumSourceSize = { width: 1, height: 1 };
+      this.clear();
+      liquidGLLog("log", "liquidGL: Source texture cleared.", {
+        rendererKey: this.rendererKey,
+        reason
+      });
     }
 
     _uploadTexture(srcCanvas, reason = "") {
       return this._uploadTextureSource(srcCanvas, this._sourceWidth(srcCanvas), this._sourceHeight(srcCanvas), reason, {});
+    }
+
+    _markSourceReadyAfterUpload(reason = "", options = {}) {
+      this._sourceTextureReady = true;
+      this._sourceIsSolidFallback = options.solidFallback === true;
+
+      if (this.canvas) {
+        this.canvas.style.opacity = "1";
+        this.canvas.style.visibility = "";
+        this.canvas.style.display = "";
+      }
+
+      if (this._pendingReveal && this._pendingReveal.length) {
+        this._pendingReveal.forEach((ln) => {
+          try {
+            if (ln && ln._reveal) ln._reveal();
+          } catch (e) {}
+        });
+        this._pendingReveal.length = 0;
+      }
+
+      if (this.lenses && this.lenses.length) {
+        this.lenses.forEach((ln) => {
+          try {
+            if (ln && ln.el && !ln._initCalled && ln._TriggerInit) ln._TriggerInit();
+          } catch (e) {}
+        });
+      }
+
+      this._metricsDirty = true;
     }
 
     _uploadTextureSource(source, width, height, reason = "", options = {}) {
@@ -855,9 +1289,10 @@
         });
         return false;
       }
-      if (!this.texture) {
+      if (!this.texture || this._sourceOwnsTexture === false) {
         this.texture = gl.createTexture();
         if (!this.texture) return false;
+        this._sourceOwnsTexture = true;
       }
       const textureSizeChanged = this.textureWidth !== width || this.textureHeight !== height;
       try {
@@ -881,11 +1316,11 @@
         return false;
       }
 
-      this._sourceTextureReady = true;
       this.staticSnapshotCanvas = source instanceof HTMLCanvasElement ? source : null;
       this.textureWidth = width;
       this.textureHeight = height;
       this.scaleFactor = Number(options.scaleFactor) || 1;
+      this._markSourceReadyAfterUpload(reason, { solidFallback: options.solidFallback === true });
       if (textureSizeChanged && this._dynMeta && this._dynamicNodes) {
         this._dynamicNodes.forEach((node) => {
           const meta = this._dynMeta.get(node.el);
@@ -902,11 +1337,6 @@
         canvasClassName: this.canvas.className,
         canvasZIndex: window.getComputedStyle(this.canvas).zIndex
       });
-
-      if (this._pendingReveal.length) {
-        this._pendingReveal.forEach((ln) => ln._reveal());
-        this._pendingReveal.length = 0;
-      }
 
       return true;
     }
@@ -966,6 +1396,26 @@
       return lens;
     }
 
+    syncLenses(elements, options) {
+      const wanted = new Set(Array.from(elements || []).filter(Boolean));
+      this.lenses = this.lenses.filter((lens) => {
+        const keep = lens && lens.el && wanted.has(lens.el) && lens.el.isConnected;
+        if (!keep && lens && lens.destroy) lens.destroy();
+        return keep;
+      });
+      wanted.forEach((el) => {
+        const existing = this.lenses.find((lens) => lens.el === el);
+        if (existing && options) {
+          existing.options = Object.assign({}, existing.options || {}, options || {});
+        }
+        if (!existing) {
+          this.addLens(el, options);
+        }
+      });
+      this._metricsDirty = true;
+      return this.lenses.filter((lens) => wanted.has(lens.el));
+    }
+
     /* ----------------------------- */
     clear() {
       try {
@@ -983,7 +1433,13 @@
     setVisible(on) {
       const next = !!on;
       if (this.visible === next) {
-        if (!next) this.clear();
+        if (!next) {
+          this.clear();
+        } else if (this.canvas) {
+          this.canvas.style.opacity = "1";
+          this.canvas.style.visibility = "";
+          this.canvas.style.display = "";
+        }
         return;
       }
       this.visible = next;
@@ -994,25 +1450,49 @@
         this.clear();
         return;
       }
-      if (this.canvas) this.canvas.style.opacity = "1";
+      if (this.canvas) {
+        this.canvas.style.opacity = "1";
+        this.canvas.style.visibility = "";
+        this.canvas.style.display = "";
+      }
       this._metricsDirty = true;
     }
 
     /* ----------------------------- */
     render(frameState) {
       const gl = this.gl;
-      if (!this.visible) {
+      if (!this.visible || document.hidden) {
+        if (!this.visible) this._debugRenderSkip("render skipped: renderer not visible");
         this.clear();
         return;
       }
       if (!this.texture) this.refreshSourceTexture("render fallback");
-      if (!this.texture) return;
+      if (!this.texture && this._forceGlassCanary()) {
+        const canary = this._ensureDebugCanaryTexture();
+        if (canary) {
+          this.texture = canary;
+          this.textureWidth = 2;
+          this.textureHeight = 2;
+          this._sourceTextureReady = true;
+        }
+      }
+      if (!this.texture) {
+        this._debugRenderSkip("render skipped: missing texture");
+        return;
+      }
+      if (this.sourceType === "albumArtTransition" && !this._albumCurrentTexture && !this._forceGlassCanary()) {
+        this._debugRenderSkip("render skipped: albumArtTransition missing current texture");
+        return;
+      }
       if (frameState) this._externalFrameState = frameState;
       const fs = this._externalFrameState || {};
+      this._adaptiveQuality = Math.max(0.45, Math.min(1, Number(fs.qualityBias || 1)));
+      if (this._isScrolling) this._adaptiveQuality = Math.min(this._adaptiveQuality, 0.7);
 
       if (this._isScrolling) {
         this._scrollUpdateCounter++;
       }
+      this.renderCount++;
 
       gl.clearColor(0, 0, 0, 0);
       gl.clear(gl.COLOR_BUFFER_BIT);
@@ -1020,6 +1500,7 @@
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D, this.texture);
       gl.uniform1i(this.u.tex, 0);
+      this._bindAlbumTransitionUniforms();
 
       const time = Number.isFinite(fs.timestamp) ? fs.timestamp / 1000 : (Date.now() - this.startTime) / 1000;
       gl.uniform1f(this.u.time, time);
@@ -1036,7 +1517,12 @@
       }
 
       this.lenses.forEach((lens) => {
-        this._renderLens(lens);
+        if (this._lensVisible(lens)) {
+          this._hiddenSkipSince = 0;
+          this._renderLens(lens);
+        } else {
+          this._debugLensHidden(lens);
+        }
       });
 
       this.lenses.forEach((ln) => {
@@ -1082,13 +1568,70 @@
       });
     }
 
+    _lensVisible(lens) {
+      try {
+        if (!lens || !lens.el || !lens.el.isConnected) return false;
+        const style = window.getComputedStyle(lens.el);
+        if (style.display === "none" || style.visibility === "hidden") return false;
+        let node = lens.el.parentElement;
+        while (node && node !== document.body) {
+          const parentStyle = window.getComputedStyle(node);
+          if (
+            parentStyle.display === "none" ||
+            parentStyle.visibility === "hidden" ||
+            Number(parentStyle.opacity || 1) <= 0.01 ||
+            (node.classList &&
+              (node.classList.contains("infoPillHidden") ||
+                node.classList.contains("infoPillHidden")))
+          ) {
+            return false;
+          }
+          node = node.parentElement;
+        }
+        const rect = lens.rectPx || lens.el.getBoundingClientRect();
+        if (!rect || !(rect.width > 0) || !(rect.height > 0)) return false;
+        if (rect.right < -2 || rect.bottom < -2 || rect.left > (window.innerWidth || 0) + 2 || rect.top > (window.innerHeight || 0) + 2) return false;
+        return true;
+      } catch (e) {
+        return true;
+      }
+    }
+
     /* ----------------------------- */
     _renderLens(lens) {
       const gl = this.gl;
       const rect = lens.rectPx;
-      if (!rect) return;
-      if (!this.texture || !this.textureWidth || !this.textureHeight) return;
-      if (!(rect.width > 0) || !(rect.height > 0)) return;
+      const forceCanary = this._forceGlassCanary();
+      if (forceCanary && !this.texture) {
+        const canary = this._ensureDebugCanaryTexture();
+        if (canary) {
+          this.texture = canary;
+          this.textureWidth = 2;
+          this.textureHeight = 2;
+        }
+      }
+      if (!rect) {
+        this._debugRenderSkip("_renderLens skipped: missing rect");
+        return;
+      }
+      if ((!this.texture || !this.textureWidth || !this.textureHeight) && !forceCanary) {
+        this._debugRenderSkip("_renderLens skipped: missing texture dimensions");
+        return;
+      }
+      if (!(rect.width > 0) || !(rect.height > 0)) {
+        this._debugRenderSkip("_renderLens skipped: zero lens rect", { rect });
+        return;
+      }
+      if (this.sourceType === "albumArtTransition" && !forceCanary) {
+        if (!this._albumCurrentTexture) {
+          this._debugRenderSkip("_renderLens skipped: albumArtTransition missing current texture");
+          return;
+        }
+        if (!this._sourceCssRect || !(this._sourceCssRect.width > 0) || !(this._sourceCssRect.height > 0)) {
+          this._debugRenderSkip("_renderLens skipped: albumArtTransition missing source rect");
+          return;
+        }
+      }
 
       const dpr = this._dpr || Math.min(2, window.devicePixelRatio || 1);
 
@@ -1113,8 +1656,8 @@
       let topUV = 0;
       let wUV = 1;
       let hUV = 1;
-      if (this._sourceCssRect || (this.sourceType !== "albumArtCanvasOrImage" && this.sourceType !== "liveVideoFrame")) {
-        const srcRect = this._sourceCssRect || { left: 0, top: 0, width: window.innerWidth || 1, height: window.innerHeight || 1 };
+      if (this._sourceCssRect || forceCanary || (this.sourceType !== "albumArtCanvasOrImage" && this.sourceType !== "liveVideoFrame")) {
+        const srcRect = this._sourceCssRect || (forceCanary ? rect : { left: 0, top: 0, width: window.innerWidth || 1, height: window.innerHeight || 1 });
         leftUV = (rect.left - srcRect.left) / Math.max(1, srcRect.width);
         topUV = (rect.top - srcRect.top) / Math.max(1, srcRect.height);
         wUV = rect.width / Math.max(1, srcRect.width);
@@ -1132,6 +1675,14 @@
         leftUV >= 1.02 ||
         topUV >= 1.02
       ) {
+        this._debugRenderSkip("_renderLens skipped: invalid bounds", {
+          leftUV,
+          topUV,
+          wUV,
+          hUV,
+          rect,
+          sourceCssRect: this._sourceCssRect || null
+        });
         return;
       }
       gl.uniform4f(this.u.bounds, leftUV, topUV, wUV, hUV);
@@ -1141,10 +1692,15 @@
         this.textureWidth,
         this.textureHeight
       );
+      if (this.u.albumSourceSize) {
+        const albumSourceSize = this._albumSourceSizeForUniform();
+        gl.uniform2f(this.u.albumSourceSize, albumSourceSize.width, albumSourceSize.height);
+      }
       gl.uniform1f(this.u.refraction, lens.options.refraction);
+      gl.uniform1f(this.u.refractionFill, Number.isFinite(Number(lens.options.refractionFill)) ? Number(lens.options.refractionFill) : 0);
       gl.uniform1f(this.u.bevelDepth, lens.options.bevelDepth);
       gl.uniform1f(this.u.bevelWidth, lens.options.bevelWidth);
-      gl.uniform1f(this.u.frost, lens.options.frost);
+      gl.uniform1f(this.u.frost, Math.max(0, Number(lens.options.frost || 0) * (this._adaptiveQuality || 1)));
       gl.uniform1f(this.u.radius, lens.radiusGl);
       gl.uniform1i(this.u.specular, lens.options.specular ? 1 : 0);
       gl.uniform1f(this.u.revealProgress, lens._revealProgress || 1.0);
@@ -1166,6 +1722,18 @@
       gl.uniform1i(this.u.glassMode, lens.glassModeIndex || 0);
       gl.uniform1f(this.u.glassDarkAmount, Number.isFinite(Number(lens.options.glassDarkAmount)) ? Number(lens.options.glassDarkAmount) : 0.18);
       gl.uniform1f(this.u.glassLightAmount, Number.isFinite(Number(lens.options.glassLightAmount)) ? Number(lens.options.glassLightAmount) : 0.18);
+
+      if (forceCanary) {
+        const canary = this._ensureDebugCanaryTexture();
+        if (canary) {
+          gl.activeTexture(gl.TEXTURE0);
+          gl.bindTexture(gl.TEXTURE_2D, canary);
+          gl.uniform1i(this.u.tex, 0);
+          gl.uniform2f(this.u.textureResolution, 2, 2);
+          if (this.u.useAlbumTransitionSource) gl.uniform1i(this.u.useAlbumTransitionSource, 0);
+          if (this.u.debugAlbumSourceFlat) gl.uniform1i(this.u.debugAlbumSourceFlat, 0);
+        }
+      }
 
       gl.drawArrays(gl.TRIANGLES, 0, 6);
     }
@@ -1994,10 +2562,10 @@
         if (
           style.display === "none" ||
           style.visibility === "hidden" ||
-          parseFloat(style.opacity || "1") <= 0.01 ||
+          (node !== this.el && parseFloat(style.opacity || "1") <= 0.01) ||
             (node.classList &&
-            (node.classList.contains("npPillHidden") ||
-              node.classList.contains("npPillSwapHidden")))
+            (node.classList.contains("infoPillHidden") ||
+              node.classList.contains("infoPillHidden")))
         ) {
           return true;
         }
@@ -2025,11 +2593,45 @@
         return;
       }
 
-      this.rectPx = {
+      let visibleRect = {
         left: rect.left,
         top: rect.top,
-        width: rect.width,
-        height: rect.height,
+        right: rect.left + rect.width,
+        bottom: rect.top + rect.height,
+      };
+      if (this.options && this.options.clipTarget) {
+        const clipEl = document.querySelector(this.options.clipTarget);
+        if (clipEl) {
+          const clipRect = clipEl.getBoundingClientRect();
+          let clipLeft = clipRect.left;
+          let clipTop = clipRect.top;
+          let clipRight = clipRect.right;
+          let clipBottom = clipRect.bottom;
+          if (this.options.clipToPaddingBox) {
+            const clipStyle = window.getComputedStyle(clipEl);
+            clipLeft += parseFloat(clipStyle.paddingLeft || "0") || 0;
+            clipTop += parseFloat(clipStyle.paddingTop || "0") || 0;
+            clipRight -= parseFloat(clipStyle.paddingRight || "0") || 0;
+            clipBottom -= parseFloat(clipStyle.paddingBottom || "0") || 0;
+          }
+          visibleRect = {
+            left: Math.max(visibleRect.left, clipLeft),
+            top: Math.max(visibleRect.top, clipTop),
+            right: Math.min(visibleRect.right, clipRight),
+            bottom: Math.min(visibleRect.bottom, clipBottom),
+          };
+          if (visibleRect.right <= visibleRect.left || visibleRect.bottom <= visibleRect.top) {
+            this.rectPx = null;
+            return;
+          }
+        }
+      }
+
+      this.rectPx = {
+        left: visibleRect.left,
+        top: visibleRect.top,
+        width: visibleRect.right - visibleRect.left,
+        height: visibleRect.bottom - visibleRect.top,
       };
 
       const brRaw = style.borderTopLeftRadius.split(" ")[0];
@@ -2528,6 +3130,16 @@
       this._mirrorActive = false;
     }
 
+    destroy() {
+      try {
+        if (this._sizeObs) this._sizeObs.disconnect();
+      } catch (e) {}
+      try {
+        if (this._shadowEl) this._shadowEl.remove();
+      } catch (e) {}
+      this._destroyMirrorCanvas();
+    }
+
     _TriggerInit() {
       if (this._initCalled) return;
       this._initCalled = true;
@@ -2546,6 +3158,7 @@
       snapshot: "body",
       resolution: 2.0,
       refraction: 0.01,
+      refractionFill: 0,
       bevelDepth: 0.08,
       bevelWidth: 0.15,
       frost: 0,
@@ -2557,7 +3170,7 @@
       magnify: 1,
       glassMode: "clear",
       engine: "snapdom",
-      sourceType: "visualizerCanvas",
+      sourceType: "visualizerWebgl",
       sourceElement: "#visualizerBg",
       on: {},
     };
@@ -2611,6 +3224,10 @@
 
     const nodeList = document.querySelectorAll(options.target);
     if (!nodeList || nodeList.length === 0) {
+      if (options.syncTargets && renderer.syncLenses) {
+        renderer.syncLenses([], options);
+        renderer.render();
+      }
       liquidGLLog(
         "warn",
         `liquidGL: Target element(s) '${options.target}' not found.`
@@ -2618,9 +3235,9 @@
       return;
     }
 
-    const instances = Array.from(nodeList).map((el) =>
-      renderer.addLens(el, options)
-    );
+    const instances = options.syncTargets && renderer.syncLenses
+      ? renderer.syncLenses(nodeList, options)
+      : Array.from(nodeList).map((el) => renderer.addLens(el, options));
     liquidGLLog("log", "liquidGL: Renderer lenses registered.", {
       rendererKey,
       lensCount: renderer.lenses.length,
@@ -2629,6 +3246,11 @@
       canvasClassName: renderer.canvas.className,
       canvasZIndex: window.getComputedStyle(renderer.canvas).zIndex
     });
+
+    if (window.DebriPod && window.DebriPod.frameScheduler) {
+      renderer.useExternalTicker = true;
+      if (window.DebriPod.frameScheduler.mark) window.DebriPod.frameScheduler.mark({ render: true });
+    }
 
     if (!renderer._rafId && !renderer.useExternalTicker) {
       const loop = () => {

@@ -1,6 +1,5 @@
 
 import os
-import re
 import time
 import uuid
 import json
@@ -23,12 +22,10 @@ from flask import Flask, request, redirect, url_for, render_template, abort, Res
 
 from .Library.search_cache import (
     _SEARCH_DISK_LOCK,
-    _atomic_write_json,
     _disk_cache_get,
     _disk_cache_set,
     _load_search_history,
     _make_search_cache_key,
-    _read_json_file,
     clear_search_history_and_cache,
     configure_search_cache,
     record_search_history,
@@ -61,8 +58,15 @@ from .Library.index import (
     clear_index_cache,
     configure_library_index,
     ensure_index_async,
+    enrichment_status,
     get_index,
     index_building_status,
+    library_manifest,
+    library_metadata_facets,
+    library_root_version,
+    library_root_versions,
+    library_watch_root,
+    queue_video_analysis_warm,
     set_index_cache,
     track_sort_key,
 )
@@ -72,10 +76,12 @@ from .media_types import (
     VIDEO_EXTS,
 )
 from .paths import art_cache_dir, cache_dir, configure_paths, transcode_cache_dir
-from .Routes.icons import ICON_VERSION, register_icon_routes
+from .Routes import icons as icons_module
+from .Routes.icons import register_icon_routes
 from .Routes.lastfm import register_lastfm_routes
 from .Routes.shell import register_shell_routes
 from .Routes.tasks import register_task_routes
+from .version import app_version, app_version_info
 from .Services.knaben import configure_knaben, knaben_search, make_magnet
 from .Services.lastfm import (
     configure_lastfm,
@@ -183,11 +189,20 @@ from .playback.probe import configure_probe, ffprobe_json, run_cmd
 # =========================
 # Runtime config
 # =========================
-# Auto infer version from filename like debripod112.py.
-_fn = os.path.basename(__file__)
-_m = re.search(r"debripod(\d+)", _fn, re.IGNORECASE)
-VERSION = _m.group(1) if _m else "dev"
-del _fn, _m
+VERSION_INFO = app_version_info()
+VERSION = app_version()
+
+
+def _commit_cache_version() -> str:
+    full = str(VERSION_INFO.get("full_commit") or "").strip()
+    short = str(VERSION_INFO.get("short_commit") or "").strip()
+    return full or short or str(VERSION or "dev")
+
+
+ASSET_VERSION = _commit_cache_version()
+ICON_VERSION = ASSET_VERSION
+icons_module.configure_asset_versions(asset_version=ASSET_VERSION, icon_version=ICON_VERSION)
+VERSION_INFO.update({"asset_version": ASSET_VERSION, "icon_version": ICON_VERSION})
 
 HOST = "127.0.0.1"
 

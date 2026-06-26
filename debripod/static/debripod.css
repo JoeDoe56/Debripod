@@ -20,6 +20,28 @@
       --theme-visualizer-a: rgba(10,132,255,.42);
       --theme-visualizer-b: rgba(94,92,230,.30);
       --theme-visualizer-c: rgba(255,69,58,.18);
+      --dp-glass-list-text: rgba(255,255,255,.94);
+      --dp-glass-list-muted: rgba(235,235,245,.68);
+      --dp-glass-list-engrave-a: rgba(255,255,255,.72);
+      --dp-glass-list-engrave-b: rgba(120,190,255,.78);
+      --dp-glass-selected-text: #ffffff;
+      --dp-glass-selected-pill-text: #ffffff;
+      --dp-text-wheel-labels: rgba(255,255,255,.68);
+      --dp-text-path-pill: rgba(255,255,255,.68);
+      --dp-text-info-pill: rgba(255,255,255,.68);
+      --dp-text-rows: rgba(255,255,255,.68);
+      --dp-text-row-pills: rgba(255,255,255,.68);
+      --dp-text-selected-row: var(--lib-selected-render-contrast);
+      --dp-text-selected-row-pills: var(--lib-selected-pill-render-contrast);
+      --dp-text-transparent-alpha: .68;
+      --dp-selected-pill-edge-room: 44px;
+      --dp-selected-foreground-base-pct: 0%;
+      --dp-selected-foreground-target-pct: 100%;
+      --lib-selected-contrast: var(--dp-glass-selected-text);
+      --lib-selected-pill-contrast: var(--dp-glass-selected-pill-text);
+      --lib-selected-render-contrast: var(--lib-selected-contrast);
+      --lib-selected-pill-render-contrast: var(--lib-selected-pill-contrast);
+      --lib-selected-pill-edge: rgba(255,255,255,.72);
       --viz-energy: .0;
       --viz-bass: .0;
       --viz-mid: .0;
@@ -44,8 +66,21 @@
       --screenFrame: 14px;
       --screenContentInset: var(--screenFrame);
       --screenInnerRadius: max(0px, calc(var(--screenRadius) - var(--screenContentInset)));
+      --playbackPillRadius: 20px;
+      --playbackPillPadX: 10px;
+      --playbackPillPadY: 5px;
+      --playbackPillRowGap: 1px;
+      --playbackPillMaxWidth: min(calc(100vw - 24px), var(--pathPillMaxWidth, calc(100vw - 24px)));
+      --pathPillTargetWidth: auto;
+      --infoPillWidth: var(--pathPillMaxWidth, calc(100vw - 24px));
+      --infoPillHeight: 42px;
+      --wheelZoneHeight: calc(var(--wheelSize) + (var(--wheelGap) * 2));
+      --stageGap: 6px;
+      --infoPillGap: 2px;
+      --playbackPillZ: 79;
+      --playbackPillFadeMs: .22s;
       --barBlur: 26px;
-      --uiFont: "Open Sans", "Segoe UI", Arial, sans-serif;
+      --uiFont: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
     }
     *{box-sizing:border-box}
     html{height:100%}
@@ -55,6 +90,7 @@
       background: var(--bg);
       color:var(--text);
       font-family: var(--uiFont);
+      font-feature-settings: "ss01" 1, "ss03" 1, "cv05" 1, "cv06" 1, "cv11" 1;
       -webkit-font-smoothing: antialiased;
       text-rendering: optimizeLegibility;
       padding-bottom: calc(18px + env(safe-area-inset-bottom, 0px));
@@ -62,6 +98,69 @@
       overscroll-behavior-y: contain;
       }
     body, button, input, select, textarea{font-family: var(--uiFont);}
+    html.serverUnavailable #libList .ipodItem.info .glassText{
+      color: rgba(255,255,255,.86);
+    }
+    .passkeyGate{
+      position:fixed;
+      inset:0;
+      z-index:10000;
+      display:grid;
+      place-items:center;
+      padding:24px;
+      background:#07080a;
+      color:var(--text);
+    }
+    .passkeyGate[hidden]{display:none}
+    .passkeyGatePanel{
+      width:min(420px, calc(100vw - 48px));
+      display:grid;
+      gap:14px;
+    }
+    .passkeyGateKicker{
+      color:var(--muted);
+      font-size:13px;
+      font-weight:700;
+    }
+    .passkeyGate h1{
+      margin:0;
+      font-size:28px;
+      line-height:1.05;
+      letter-spacing:0;
+    }
+    .passkeyGate p{
+      margin:0;
+      color:var(--muted);
+      line-height:1.45;
+      font-size:15px;
+    }
+    .passkeyGateError{
+      min-height:20px;
+      color:#ff9d9d;
+      font-size:13px;
+      line-height:1.35;
+    }
+    .passkeyGateActions{
+      display:grid;
+      grid-template-columns:1fr 1fr;
+      gap:10px;
+      margin-top:2px;
+    }
+    .passkeyGate button{
+      border:0;
+      border-radius:8px;
+      padding:12px;
+      font:inherit;
+      font-weight:700;
+      cursor:pointer;
+      background:#f5f5f5;
+      color:#111;
+    }
+    .passkeyGate button.secondary{
+      background:#1b222c;
+      color:#f5f5f5;
+      border:1px solid #303846;
+    }
     .wrap{max-width:none;margin:0 auto;padding:0}
     .topbar{
       position: sticky;
@@ -162,6 +261,7 @@
       pointer-events: none !important;
     }
     .liquidGlassCanvasDefault{ z-index: 65 !important; }
+    .visualizerBg{ z-index: 1; }
     .liquidGlassCanvasWheel{
       position: absolute !important;
       right: auto !important;
@@ -170,8 +270,9 @@
       z-index: 10 !important;
       pointer-events: none !important;
     }
-    .liquidGlassCanvasNpOverlay{ z-index: 75 !important; }
-    .liquidGlassCanvasScreenFrame{ z-index: 64 !important; }
+    .liquidGlassCanvasLibList{ position: absolute !important; z-index: 1 !important; }
+    .liquidGlassCanvasLibSelection{ position: absolute !important; z-index: 2 !important; }
+    .liquidGlassCanvasLibPills{ position: absolute !important; z-index: 2 !important; }
 
     
     @media (max-height: 720px){
@@ -362,6 +463,9 @@
     .ipodStage{
       width: 100vw;
       max-width: 100vw;
+      position:relative;
+      z-index:10;
+      isolation:isolate;
       margin-left: calc(50% - 50vw);
       margin-right: calc(50% - 50vw);
       display:flex;
@@ -374,8 +478,8 @@
       width: 100vw;
       max-width: 100vw;
       position: relative;
-      z-index: 80;
-      padding: 10px 12px 8px;
+      z-index: var(--playbackPillZ);
+      padding: var(--stageGap) 12px var(--stageGap);
       display:flex;
       align-items: center;
       justify-content: center;
@@ -386,8 +490,10 @@
       display:inline-flex;
       position:relative;
       z-index:30;
+      isolation:isolate;
       align-items:center;
-      max-width: min(calc(100vw - 24px), var(--pathPillMaxWidth, calc(100vw - 24px)));
+      width:var(--pathPillTargetWidth);
+      max-width: var(--playbackPillMaxWidth);
       padding: 8px 12px;
       border-radius: 999px;
       border: 0;
@@ -400,8 +506,13 @@
       user-select:none;
       opacity: 1;
       transform: translateY(0);
-      transition: opacity .22s ease, transform .22s ease;
-      will-change: opacity, transform;
+      transition: opacity var(--playbackPillFadeMs) ease, transform var(--playbackPillFadeMs) ease, width var(--playbackPillFadeMs) ease, max-width var(--playbackPillFadeMs) ease;
+      will-change: opacity, transform, width;
+    }
+    .pathPill.pathPillExpanded{
+      width:var(--pathPillTargetWidth);
+      border-radius:var(--playbackPillRadius);
+      padding:var(--playbackPillPadY) var(--playbackPillPadX);
     }
     .pathPillGlass{
       position:absolute;
@@ -419,15 +530,91 @@
       position:relative;
       z-index:30;
       display:block;
+      width:100%;
       min-width:0;
       max-width:100%;
       white-space:nowrap;
-      text-shadow: 0 1px 1px rgba(0,0,0,.72);
+      overflow:hidden;
+      text-align:center;
+      text-overflow:ellipsis;
+      color: var(--dp-text-path-pill);
+      text-shadow: none;
+    }
+    .pathPillRows{
+      position:relative;
+      z-index:30;
+      display:grid;
+      grid-template-rows: 1fr 0fr;
+      row-gap:var(--playbackPillRowGap);
+      width:100%;
+      min-width:0;
+      transition:grid-template-rows .22s ease, transform .22s ease;
+    }
+    .pathPill:not(.pathPillHidden) .pathPillRows,
+    .pathPill:not(.pathPillHidden) .pathPillRow,
+    .pathPill:not(.pathPillHidden) .pathPillText,
+    .pathPill:not(.pathPillHidden) .pathPillNowText,
+    .pathPill.playbackPillVisible .pathPillRows{
+      z-index:120;
+      opacity:1 !important;
+      visibility:visible !important;
+    }
+    .pathPill.pathPillExpanded .pathPillRows{
+      grid-template-rows: 1fr 1fr;
+    }
+    .pathPillRow{
+      min-width:0;
+      overflow:hidden;
+    }
+    .pathPillNowRow{
+      opacity:0;
+      transform:translateY(-4px);
+      transition:opacity .18s ease, transform .22s ease;
+    }
+    .pathPill.pathPillExpanded .pathPillNowRow{
+      opacity:1;
+      transform:translateY(0);
+      visibility:visible;
+    }
+    .pathPill:not(.pathPillHidden):not(.pathPillExpanded) .pathPillNowRow{
+      opacity:0 !important;
+      transform:translateY(-4px);
+      visibility:hidden !important;
+    }
+    .pathPill.pathPillExpanded.playbackPillVisible .pathPillNowRow,
+    .pathPill:not(.pathPillHidden).pathPillExpanded .pathPillNowRow{
+      opacity:1 !important;
+      transform:translateY(0);
+      visibility:visible !important;
+    }
+    .pathPill.playbackPillVisible .pathPillRow,
+    .pathPill.playbackPillVisible .pathPillText,
+    .pathPill.playbackPillVisible .pathPillNowText{
+      opacity:1 !important;
+      visibility:visible !important;
+    }
+    .pathPillNowText{
+      display:block;
+      width:100%;
+      max-width:100%;
+      text-align:center;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      color:var(--dp-text-path-pill);
+    }
+    .pathPillNowTextSmall{
+      font-size:11px;
     }
     .pathPill.pathPillHidden{
       opacity: 0;
       transform: translateY(10px);
       pointer-events: none;
+    }
+    .pathPill:not(.pathPillHidden).playbackPillVisible{
+      opacity:1;
+      transform:translateY(0);
+      pointer-events:auto;
     }
     .wheelZone{
       width: 100%;
@@ -441,6 +628,15 @@
       box-sizing: border-box;
       padding-top: var(--wheelGap);
       padding-bottom: var(--wheelGap);
+      pointer-events:none;
+    }
+    .ipodWheelWrap{
+      pointer-events:auto;
+    }
+    html.wheelIntersectsScreen .ipodWheelWrap{
+      opacity:0;
+      visibility:hidden;
+      pointer-events:none;
     }
 
     /* Keep the iPod UI clear of the bottom tab bar on shorter viewports */
@@ -462,37 +658,23 @@
       border-radius: var(--screenRadius);
       background: transparent;
       box-shadow: none;
-      padding: var(--screenContentInset);
+      padding: 0;
       position: relative;
       overflow:hidden;
-      display:flex;
-      flex-direction: column;
-    }
-    .screenGlassFrame{
-      position:absolute;
-      inset:0;
-      z-index:0;
-      border-radius: var(--screenRadius);
-      pointer-events:none;
-      overflow:hidden;
-      --liquid-hole-inset: var(--screenFrame);
-      border:0;
-      background: transparent;
-      box-shadow: none;
+      display:block;
+      isolation:isolate;
     }
 
     .ipodScreenContent{
       position:relative;
-      z-index:auto;
-      display:flex;
-      flex-direction:column;
-      flex:1 1 auto;
+      z-index:2;
+      display:block;
       min-height:0;
       width:100%;
       height:100%;
       overflow:hidden;
-      border-radius: var(--screenInnerRadius);
-      background: rgb(8,8,10);
+      border-radius: var(--screenRadius);
+      background: transparent;
       border: 0;
       box-shadow: none;
     }
@@ -500,7 +682,7 @@
     .visualizerBg{
       position:fixed;
       inset:0;
-      z-index:0;
+      z-index:1;
       pointer-events:none;
       opacity:0;
       width:100vw;
@@ -514,8 +696,8 @@
 
     html.isIphone .visualizerBg,
     html.isIphone .liquidGlassCanvasDefault,
-    html.isIphone .liquidGlassCanvasScreenFrame,
-    html.isIphone .liquidGlassCanvasNpOverlay{
+    html.isIphone .liquidGlassCanvasLibList,
+    html.isIphone .liquidGlassCanvasWheel{
       border-top-left-radius: var(--screenRadius);
       border-top-right-radius: var(--screenRadius);
       overflow:hidden;
@@ -563,6 +745,8 @@
       text-overflow:ellipsis;
       white-space:nowrap;
       padding-right: 8px;
+      color: var(--dp-glass-list-text);
+      text-shadow: none;
     }
     .hScrollText{
       overflow-x:auto;
@@ -617,6 +801,8 @@
       margin-top: 3px;
       font-size: .92em;
       opacity: .82;
+      color: var(--dp-glass-list-muted);
+      text-shadow: none;
       overflow:hidden;
       text-overflow:ellipsis;
       white-space:nowrap;
@@ -689,20 +875,34 @@
       border-top-color:rgba(255,255,255,0.92);
       animation:dpSpin .75s linear infinite;
     }
-.ipodPill{
+    .ipodPill{
+      position: relative;
       display:inline-flex;
       align-items:center;
       gap:6px;
       padding: 4px 8px;
       border-radius: 999px;
-      border: 1px solid color-mix(in srgb, var(--theme-accent-outline) 84%, rgba(255,255,255,0.12));
-      background: color-mix(in srgb, var(--theme-accent-soft) 78%, rgba(255,255,255,0.08));
-      color: rgba(255,255,255,0.96);
+      border: 0;
+      background: transparent;
+      color: var(--dp-text-row-pills);
       font-size: 11px;
       line-height: 1;
       white-space:nowrap;
-      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.04);
+      box-shadow: none;
+      isolation: isolate;
+      overflow: hidden;
       transition: background .45s ease, border-color .45s ease, box-shadow .45s ease;
+    }
+    .ipodPill.liquidGlass{
+      background: transparent;
+      border-color: transparent;
+    }
+    .ipodPillText{
+      position: relative;
+      z-index: 3;
+      display: inline-block;
+      line-height: inherit;
+      color: inherit;
     }
 
     .ipodPill.bar{
@@ -718,13 +918,14 @@
       top:0;
       bottom:0;
       width:0%;
-      background: color-mix(in srgb, var(--theme-accent-bar) 58%, rgba(255,255,255,0.16));
+      display:none !important;
+      background: transparent !important;
     }
     .ipodPill.bar.ok .pillBarFill{
-      background: rgba(120,255,160,0.28);
+      background: transparent !important;
     }
     .ipodPill.bar.warn .pillBarFill{
-      background: rgba(255,214,120,0.28);
+      background: transparent !important;
     }
     .ipodPill.bar .pillBarText{
       position: relative;
@@ -732,17 +933,37 @@
       padding: 0 8px;
       font-size: 11px;
       line-height: 18px;
-      color: rgba(255,255,255,0.96);
+      color: var(--dp-text-row-pills);
+    }
+    .ipodPill.rangeValueEditing{
+      min-width: 86px;
+      min-height: 18px;
+      padding: 2px 8px;
+    }
+    .ipodPill.rangeValueEditing .libInlineInput{
+      width: 72px;
+      height: 14px;
+      max-height: 14px;
+      flex: 0 0 auto;
+      text-align: center;
+      font-size: 11px;
+      line-height: 14px;
     }
     .ipodPill.ok{
-      border-color: rgba(120,255,160,0.35);
-      background: rgba(120,255,160,0.16);
-      color: rgba(255,255,255,0.96);
+      border-color: transparent;
+      background: transparent;
+      color: var(--dp-text-row-pills);
     }
     .ipodPill.warn{
-      border-color: rgba(255,214,120,0.35);
-      background: rgba(255,214,120,0.16);
-      color: rgba(255,255,255,0.96);
+      border-color: transparent;
+      background: transparent;
+      color: var(--dp-text-row-pills);
+    }
+    .ipodPill.ok .ipodPillText{
+      color: color-mix(in srgb, var(--dp-text-row-pills) 88%, rgb(120,255,170) 12%);
+    }
+    .ipodPill.warn .ipodPillText{
+      color: color-mix(in srgb, var(--dp-text-row-pills) 86%, rgb(255,214,120) 14%);
     }
     .ipodItem{
       display:flex;
@@ -751,27 +972,73 @@
     }
 
     .ipodList{
-      position:relative;
-      z-index:2;
+      position:absolute;
+      inset:0;
+      z-index:80;
       list-style:none;
-      padding:0;
+      padding: calc(var(--screenFrame) + var(--dp-selected-pill-edge-room)) var(--screenFrame);
+      scroll-padding: calc(var(--screenFrame) + var(--dp-selected-pill-edge-room)) var(--screenFrame);
       margin: 0;
       overflow:auto;
-      border-radius: inherit;
+      touch-action: pan-y;
+      -webkit-overflow-scrolling: touch;
+      border-radius: var(--screenRadius);
+      clip-path: none;
       border: 0;
-      background: rgba(18,18,20,.88);
-      flex: 1 1 auto;
+      background: transparent;
+      pointer-events:auto;
+      -webkit-backdrop-filter: none;
+      backdrop-filter: none;
+      box-shadow: none;
+      scrollbar-width:none;
+      -ms-overflow-style:none;
+      width:100%;
+      height:100%;
+      display:block;
       min-height: 0;
       opacity: 1;
       transform: translateY(0);
       transition: opacity .22s ease, transform .22s ease, background .45s ease, border-color .45s ease;
       will-change: opacity, transform;
+      overflow-anchor: none;
+      -webkit-mask-image: linear-gradient(to bottom, transparent 0, black 18px, black calc(100% - 18px), transparent 100%);
+      mask-image: linear-gradient(to bottom, transparent 0, black 18px, black calc(100% - 18px), transparent 100%);
+    }
+    .ipodListItemsLayer{
+      position:relative;
+      z-index:3;
+      min-height:100%;
+      touch-action: pan-y;
+    }
+    .ipodVirtualSpacer{
+      display:block;
+      flex:0 0 auto;
+      width:100%;
+      padding:0;
+      margin:0;
+      border:0;
+      pointer-events:none;
+      overflow-anchor:none;
+    }
+    .ipodListEndSpacer{
+      display:block;
+      width:100%;
+      height: calc(var(--dp-selected-pill-edge-room) + 56px);
+      padding:0;
+      margin:0;
+      border:0;
+      pointer-events:none;
+    }
+    .ipodList::-webkit-scrollbar{
+      display:none;
+      width:0;
+      height:0;
     }
     @supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))){
       .ipodList{
-        -webkit-backdrop-filter: blur(20px) saturate(1.10);
-        backdrop-filter: blur(20px) saturate(1.10);
-        background: rgba(18,18,20,.82);
+        -webkit-backdrop-filter: none;
+        backdrop-filter: none;
+        background: transparent;
       }
     }
     .ipodList.pageFadeHidden{
@@ -779,34 +1046,108 @@
       transform: translateY(10px);
       pointer-events: none;
     }
+    .libListSelectedGlass{
+      position:absolute;
+      left:0;
+      top:0;
+      width:0;
+      height:0;
+      z-index:70;
+      pointer-events:none;
+      border-radius:var(--dp-selected-radius, 14px);
+      opacity:0;
+      background:transparent;
+      border:0;
+      box-shadow:none;
+      transform:translate3d(0,0,0);
+      transition:opacity .16s ease;
+      will-change:transform, width, height, border-radius, opacity;
+    }
+    .libListSelectedGlass.isVisible{
+      opacity:1;
+    }
 
     /* Keep lib list border visible under Now Playing */
     #libList.npUnderlay{pointer-events:none; background: transparent; border-color: transparent; -webkit-backdrop-filter: none !important; backdrop-filter: none !important; box-shadow: none !important;}
     #libList.npUnderlay .ipodItem{opacity:0;}
+    .ipodList.pageFadeHidden .ipodPill,
+    #libList.npUnderlay .ipodPill{
+      visibility: hidden !important;
+    }
     .ipodItem{
       padding: 11px 12px;
-      border-bottom: 1px solid rgba(255,255,255,.06);
+      border-bottom: 0;
+      background: transparent;
+      outline: 0;
+      box-shadow: none;
       display:flex;
       gap: 10px;
       align-items:center;
       user-select:none;
-      cursor: default;
+      cursor: pointer;
+      touch-action: pan-y;
       min-height: 44px;
+      position:relative;
+      z-index:3;
+    }
+    .ipodItem .hScrollText,
+    .ipodItem .glassText,
+    .ipodItem .ipodPillText{
+      pointer-events:none;
+    }
+    .ipodItem input,
+    .ipodItem textarea,
+    .ipodItem select,
+    .ipodItem button,
+    .ipodItem .ipodPill{
+      pointer-events:auto;
     }
     .ipodItem:last-child{border-bottom:none}
     .ipodItem.sel{
-      background: var(--theme-accent-soft);
-      outline: 1px solid var(--theme-accent-outline);
-      box-shadow: inset 0 0 0 1px rgba(255,255,255,.04), 0 0 0 1px rgba(0,0,0,.08), 0 10px 26px rgba(0,0,0,.12);
+      background: transparent;
+      outline: 0;
+      box-shadow: none;
       transition: background .45s ease, outline-color .45s ease, box-shadow .45s ease;
+    }
+    .ipodItem.sel .glassText{
+      color: color-mix(in srgb, var(--dp-text-rows) var(--dp-selected-foreground-base-pct), var(--dp-text-selected-row) var(--dp-selected-foreground-target-pct));
+    }
+    .ipodItem.sel [data-selected-row-text]{
+      transform: scale(var(--dp-selected-foreground-scale, 1));
+      transform-origin: left center;
+      z-index: 4;
+      position: relative;
+      transition: none;
+    }
+    .ipodItem.sel .ipodPillText{
+      color: color-mix(in srgb, var(--dp-text-row-pills) var(--dp-selected-foreground-base-pct), var(--dp-text-selected-row-pills) var(--dp-selected-foreground-target-pct));
+    }
+    .ipodItem.sel .ipodPill{
+      color: color-mix(in srgb, var(--dp-text-row-pills) var(--dp-selected-foreground-base-pct), var(--dp-text-selected-row-pills) var(--dp-selected-foreground-target-pct));
+      --dp-engrave-under-a: var(--lib-selected-pill-edge);
+      --dp-engrave-under-b: var(--lib-selected-pill-contrast);
+      transform: scale(var(--dp-selected-pill-scale, 1));
+      transform-origin: center;
+      padding-left: var(--dp-selected-pill-pad-x, 8px);
+      padding-right: var(--dp-selected-pill-pad-x, 8px);
+      z-index: 4;
+    }
+    #libList.dpGlassModeLight .ipodItem.sel{
+      background: transparent;
+      outline-color: transparent;
+    }
+    #libList.dpGlassModeClear .ipodItem.sel{
+      background: transparent;
+      outline-color: transparent;
     }
     .ipodItem.info{cursor:default; opacity:.78}
     .ipodItem.random{justify-content:center; letter-spacing:.02em}
-    .ipodItem.random.sel{background: color-mix(in srgb, var(--theme-accent-soft) 86%, rgba(255,255,255,.04)); outline: 1px solid color-mix(in srgb, var(--theme-accent-outline) 92%, rgba(255,255,255,.08))}
+    .ipodItem.random.sel{background: transparent; outline: 0;}
     .ipodBadge{
       margin-left:auto;
-      color: rgba(235,235,245,.55);
+      color: var(--dp-glass-list-muted);
       font-size: 12px;
+      text-shadow: none;
     }
 
         .ipodWheelWrap{width:auto; flex: 0 0 auto; margin-top: 0;}
@@ -880,11 +1221,11 @@
     .wheelLabel{
       position:absolute;
       z-index:30;
-      color: rgba(255,255,255,.96);
+      color: var(--dp-glass-list-text);
       font-weight: 700;
       font-size: 16px;
       letter-spacing: .3px;
-      text-shadow: 0 1px 2px rgba(0,0,0,.88);
+      text-shadow: none;
       pointer-events: none;
       user-select: none;
       display:flex;
@@ -903,17 +1244,164 @@
       display:block;
       overflow: visible;
     }
+    .glassText{
+      position:relative;
+      display:inline-block;
+      line-height:inherit;
+      color: var(--dp-text-rows);
+      --dp-engrave-under-a: var(--theme-visualizer-a);
+      --dp-engrave-under-b: var(--theme-visualizer-b);
+      --dp-engrave-under-c: var(--theme-visualizer-c);
+      text-shadow: none !important;
+      filter: none !important;
+    }
+    .hScrollText.glassText{
+      display:block;
+    }
+    .glassText::before,
+    .glassText::after{
+      content: none;
+      pointer-events:none;
+      position:absolute;
+      left:0;
+      top:0;
+      width:100%;
+      color: inherit;
+      white-space: inherit;
+      overflow: hidden;
+      text-overflow: inherit;
+    }
+    .dpGlassModeLight,
+    html.dpGlassModeLight{
+      --dp-glass-list-text: rgba(0,0,0,.88);
+      --dp-glass-list-muted: rgba(0,0,0,.58);
+      --dp-glass-selected-text: #000000;
+      --dp-glass-selected-pill-text: #000000;
+    }
+    .dpGlassModeDark,
+    html.dpGlassModeDark{
+      --dp-glass-list-text: rgba(255,255,255,.94);
+      --dp-glass-list-muted: rgba(235,235,245,.68);
+      --dp-glass-selected-text: #ffffff;
+      --dp-glass-selected-pill-text: #ffffff;
+    }
+    html[data-text-mode-rows="engraved"] #libList .glassText,
+    html[data-text-mode-path-pill="engraved"] .pathPillText,
+    html[data-text-mode-path-pill="engraved"] .pathPillNowText,
+    html[data-text-mode-wheel-labels="engraved"] .wheelLabel .glassText{
+      color: rgba(255,255,255,0.035);
+    }
+    html[data-text-mode-rows="engraved"] #libList .glassText::before,
+    html[data-text-mode-rows="engraved"] #libList .glassText::after,
+    html[data-text-mode-path-pill="engraved"] .pathPillText::before,
+    html[data-text-mode-path-pill="engraved"] .pathPillText::after,
+    html[data-text-mode-path-pill="engraved"] .pathPillNowText::before,
+    html[data-text-mode-path-pill="engraved"] .pathPillNowText::after,
+    html[data-text-mode-wheel-labels="engraved"] .wheelLabel .glassText::before,
+    html[data-text-mode-wheel-labels="engraved"] .wheelLabel .glassText::after{
+      content: attr(data-text);
+    }
+    html[data-text-mode-rows="engraved"] #libList .glassText::before,
+    html[data-text-mode-path-pill="engraved"] .pathPillText::before,
+    html[data-text-mode-path-pill="engraved"] .pathPillNowText::before,
+    html[data-text-mode-wheel-labels="engraved"] .wheelLabel .glassText::before{
+      color: color-mix(in srgb, var(--dp-engrave-under-a) 74%, var(--dp-glass-list-engrave-a));
+      transform: translate(-0.08px, -0.08px);
+      opacity: .92;
+      mix-blend-mode: screen;
+    }
+    html[data-text-mode-rows="engraved"] #libList .glassText::after,
+    html[data-text-mode-path-pill="engraved"] .pathPillText::after,
+    html[data-text-mode-path-pill="engraved"] .pathPillNowText::after,
+    html[data-text-mode-wheel-labels="engraved"] .wheelLabel .glassText::after{
+      color: color-mix(in srgb, var(--dp-engrave-under-b) 72%, var(--dp-engrave-under-c));
+      transform: translate(0.08px, 0.08px);
+      opacity: .72;
+      mix-blend-mode: plus-lighter;
+    }
+    html[data-text-mode-rows="engraved"] #libList .glassText .artistStrong,
+    html[data-text-mode-path-pill="engraved"] .pathPillText .artistStrong,
+    html[data-text-mode-path-pill="engraved"] .pathPillNowText .artistStrong,
+    html[data-text-mode-wheel-labels="engraved"] .wheelLabel .glassText .artistStrong{
+      color: inherit;
+    }
+    .glassGlyph{
+      position:relative;
+      display:inline-grid;
+      width:18px;
+      height:18px;
+      color: var(--dp-text-wheel-labels);
+      --dp-engrave-under-a: var(--theme-visualizer-a);
+      --dp-engrave-under-b: var(--theme-visualizer-b);
+      --dp-engrave-under-c: var(--theme-visualizer-c);
+      text-shadow:none;
+      filter:none;
+    }
+    .glassGlyph svg,
+    .glassGlyph img,
+    .glassGlyph .wheelSvgIcon{
+      grid-area:1 / 1;
+      color:inherit;
+    }
+    .glassGlyph .wheelSvgIcon{
+      display:block;
+      width:18px;
+      height:18px;
+      background: currentColor;
+      -webkit-mask-repeat:no-repeat;
+      mask-repeat:no-repeat;
+      -webkit-mask-position:center;
+      mask-position:center;
+      -webkit-mask-size:contain;
+      mask-size:contain;
+    }
+    .glassGlyph svg:nth-child(2),
+    .glassGlyph svg:nth-child(3),
+    .glassGlyph img:nth-child(2),
+    .glassGlyph img:nth-child(3),
+    .glassGlyph .wheelSvgIcon:nth-child(2),
+    .glassGlyph .wheelSvgIcon:nth-child(3){
+      display:none;
+      pointer-events:none;
+    }
+    html[data-text-mode-wheel-labels="engraved"] .glassGlyph{
+      color: rgba(255,255,255,0.035);
+    }
+    html[data-text-mode-wheel-labels="engraved"] .glassGlyph svg:nth-child(2),
+    html[data-text-mode-wheel-labels="engraved"] .glassGlyph svg:nth-child(3),
+    html[data-text-mode-wheel-labels="engraved"] .glassGlyph img:nth-child(2),
+    html[data-text-mode-wheel-labels="engraved"] .glassGlyph img:nth-child(3),
+    html[data-text-mode-wheel-labels="engraved"] .glassGlyph .wheelSvgIcon:nth-child(2),
+    html[data-text-mode-wheel-labels="engraved"] .glassGlyph .wheelSvgIcon:nth-child(3){
+      display:block;
+    }
+    html[data-text-mode-wheel-labels="engraved"] .glassGlyph svg:nth-child(2),
+    html[data-text-mode-wheel-labels="engraved"] .glassGlyph img:nth-child(2),
+    html[data-text-mode-wheel-labels="engraved"] .glassGlyph .wheelSvgIcon:nth-child(2){
+      color: color-mix(in srgb, var(--dp-engrave-under-a, var(--theme-visualizer-a)) 74%, var(--dp-glass-list-engrave-a));
+      opacity:.92;
+      transform: translate(-0.08px, -0.08px);
+      mix-blend-mode: screen;
+    }
+    html[data-text-mode-wheel-labels="engraved"] .glassGlyph svg:nth-child(3),
+    html[data-text-mode-wheel-labels="engraved"] .glassGlyph img:nth-child(3),
+    html[data-text-mode-wheel-labels="engraved"] .glassGlyph .wheelSvgIcon:nth-child(3){
+      color: color-mix(in srgb, var(--dp-engrave-under-b, var(--theme-visualizer-b)) 72%, var(--dp-engrave-under-c, var(--theme-visualizer-c)));
+      opacity:.72;
+      transform: translate(0.08px, 0.08px);
+      mix-blend-mode: plus-lighter;
+    }
     .wheelLabel .menuWord{
       font-size: 14px;
       letter-spacing: .9px;
       font-weight: 800;
-      color: #FFFFFF;
+      color: var(--dp-text-wheel-labels);
       line-height: 1;
     }
 
       .wheelLabel .wheelSvgIcon{
-        width: auto;
-        height: 14px;
+        width: 18px;
+        height: 18px;
         max-width: none;
         display: block;
         object-fit: contain;
@@ -924,6 +1412,103 @@
         flex: 0 0 auto;
       }
       .wheelLabel .wheelSvgIcon.isInactive{ opacity:.72; }
+
+    .dpSettingModalBackdrop{
+      position:fixed;
+      inset:0;
+      z-index:100000;
+      display:flex;
+      align-items:center;
+      justify-content:center;
+      padding:24px;
+      background:rgba(0,0,0,.28);
+      -webkit-backdrop-filter: blur(14px);
+      backdrop-filter: blur(14px);
+    }
+    .dpSettingModal{
+      width:min(360px, calc(100vw - 48px));
+      border-radius:8px;
+      padding:16px;
+      background:rgba(22,22,24,.92);
+      color:#f5f5f7;
+      border:1px solid rgba(255,255,255,.16);
+      box-shadow:0 18px 60px rgba(0,0,0,.42);
+      font: 14px/1.35 var(--fontBody);
+    }
+    .dpSettingModalTitle{
+      font-weight:700;
+      margin:0 0 12px;
+    }
+    .dpSettingModalControls{
+      display:grid;
+      grid-template-columns:1fr 88px;
+      gap:12px;
+      align-items:center;
+    }
+    .dpSettingModal input[type="range"]{
+      width:100%;
+      accent-color:#8e8e93;
+    }
+    .dpSettingModal input[type="number"]{
+      width:100%;
+      min-width:0;
+      border-radius:6px;
+      border:1px solid rgba(255,255,255,.18);
+      background:rgba(255,255,255,.08);
+      color:#f5f5f7;
+      padding:7px 8px;
+      font:inherit;
+    }
+    .dpSettingModalActions{
+      display:flex;
+      justify-content:flex-end;
+      gap:8px;
+      margin-top:14px;
+    }
+    .dpSettingModal button{
+      border:0;
+      border-radius:6px;
+      padding:7px 12px;
+      color:#f5f5f7;
+      background:rgba(255,255,255,.12);
+      font:inherit;
+    }
+    .dpSettingModal button[data-primary="true"]{
+      background:#8e8e93;
+      color:#050506;
+    }
+
+    .dpPerfButton{
+      position:fixed;
+      z-index:1000;
+      width:34px;
+      height:34px;
+      border:1px solid rgba(255,255,255,.28);
+      border-radius:999px;
+      background:rgba(0,0,0,.36);
+      color:#fff;
+      font:700 13px/1 var(--uiFont);
+      -webkit-backdrop-filter: blur(14px);
+      backdrop-filter: blur(14px);
+      cursor:pointer;
+      touch-action:manipulation;
+    }
+    .dpPerfButton[hidden],
+    .dpPerfOverlay[hidden]{
+      display:none !important;
+    }
+    .dpPerfOverlay{
+      position:fixed;
+      z-index:999;
+      pointer-events:none;
+      white-space:pre-wrap;
+      color:#fff;
+      font:11px/1.28 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+      text-shadow:0 1px 2px rgba(0,0,0,.8);
+      max-height:min(46vh, 260px);
+      overflow:hidden;
+    }
+
     .wheelLabel.top,.wheelLabel.wlTop{left:50%; top:18px; transform: translateX(-50%) translateZ(1px);}
     .wheelLabel.bottom,.wheelLabel.wlBottom{left:50%; bottom:18px; transform: translateX(-50%) translateZ(1px);}
     .wheelLabel.left,.wheelLabel.wlLeft{left:18px; top:50%; transform: translateY(-50%) translateZ(1px);}
@@ -942,14 +1527,14 @@
     .nowPlaying{
        display:none;
        position:absolute;
-       left:0;
-       top:0;
-       width:100%;
-       height:100%;
+       inset: var(--screenFrame);
+       width:auto;
+       height:auto;
        overflow:hidden;
        overscroll-behavior: contain;
        text-align: left;
-       border-radius: inherit;
+       border-radius: var(--screenInnerRadius);
+       z-index:120;
        opacity: 0;
        transform: translateY(10px);
        transition: opacity .22s ease, transform .22s ease;
@@ -970,107 +1555,118 @@
   pointer-events:none;
   z-index: 2;
 }
-.npArt{
+.npArt,
+.npArtStill{
   position:absolute;
   inset:0;
   width:100%;
   height:100%;
   margin:0;
   max-width:none;
-  aspect-ratio: auto;
   border-radius: inherit;
   border: none;
   background: transparent;
-  object-fit: cover;
   z-index: 1;
 }
-.npArtSwapLayer{
-  z-index: 3;
-  pointer-events: none;
-  opacity: 1;
-  transform: translateY(0) scale(1);
-  transition: opacity .22s ease, transform .22s ease;
-  will-change: opacity, transform;
-}
-.npArtSwapLayer.npArtSwapHidden{
-  opacity: 0;
-  transform: translateY(10px) scale(1.015);
-}
-.npOverlayPill{
-  position:absolute;
-  left: 12px;
-  right: 12px;
-  bottom: 12px;
-  z-index: 80;
-  border-radius: 20px;
-  border: 0;
-  background: transparent;
-  box-shadow: none;
-  overflow:hidden;
-  isolation:isolate;
-  opacity: 1;
-  transform: none;
-  transition: opacity .22s ease, transform .22s ease, visibility 0s linear 0s;
-  will-change: opacity, transform;
-}
-.npOverlayGlass{
-  position:absolute;
-  inset:0;
-  border-radius: inherit;
-  z-index:0;
+.npArtStill{
+  object-fit:cover;
+  object-position:center;
+  display:block;
   pointer-events:none;
-  overflow:hidden;
-  border:0;
-  background: transparent;
-  box-shadow: none;
-  opacity:1;
 }
-.npOverlaySurface{
+.npArt{
+  aspect-ratio: auto;
+  display:none;
+  cursor:pointer;
+  touch-action: manipulation;
+}
+.npArt.npArtAnimating{
+  display:block;
+}
+.bottomPills{
+  width:100vw;
+  max-width:100vw;
+  position:absolute;
+  left:0;
+  right:0;
+  bottom:calc(var(--wheelZoneHeight) - var(--infoPillHeight) - var(--stageGap));
+  z-index:var(--playbackPillZ);
+  padding:var(--infoPillGap) 0 var(--infoPillGap);
+  display:flex;
+  justify-content:center;
+  pointer-events:none;
+}
+.infoPill{
   position:relative;
   z-index:30;
-  width:100%;
-  min-height:0;
-  box-sizing:border-box;
-  border-radius:inherit;
-  padding: 8px 10px 8px;
-  min-width:0;
+  isolation:isolate;
+  width:var(--infoPillWidth);
+  max-width:var(--infoPillWidth);
+  inline-size:var(--infoPillWidth);
+  max-inline-size:var(--infoPillWidth);
+  flex:0 0 var(--infoPillWidth);
+  height:var(--infoPillHeight);
+  min-height:var(--infoPillHeight);
+  max-height:var(--infoPillHeight);
+  border-radius:var(--playbackPillRadius);
+  background:transparent;
+  overflow:hidden;
+  opacity:1;
+  transform:translateY(0);
+  visibility:visible;
+  transition:opacity var(--playbackPillFadeMs) ease, transform var(--playbackPillFadeMs) ease, visibility 0s linear 0s;
+  will-change:opacity, transform;
   pointer-events:auto;
 }
-.npOverlayPill.npPillHidden{
-  opacity: 0;
-  transform: translateY(calc(100% + 16px));
-  pointer-events: none;
-  visibility: hidden;
-  transition: opacity .18s ease, transform .18s ease, visibility 0s linear .18s;
+.infoPill.infoPillHidden{
+  opacity:0;
+  transform:translateY(8px);
+  pointer-events:none;
+  visibility:hidden;
+  transition:opacity var(--playbackPillFadeMs) ease, transform var(--playbackPillFadeMs) ease, visibility 0s linear var(--playbackPillFadeMs);
 }
-.npOverlayPill.npPillSwapHidden{
-  opacity: 0;
-  transform: translateY(10px);
-  visibility: hidden;
-  transition: opacity .22s ease, transform .22s ease, visibility 0s linear .22s;
+.infoPill:not(.infoPillHidden).playbackPillVisible{
+  opacity:1;
+  transform:translateY(0);
+  visibility:visible;
+  pointer-events:auto;
 }
-.npOverlaySurface .npTitle{
-  font-weight: 800;
-  font-size: 14px;
-  margin: 0;
-  white-space: nowrap;
+.infoPillGlass{
+  position:absolute;
+  inset:0;
+  z-index:0;
+  border-radius:inherit;
+  pointer-events:none;
+  background:transparent;
+}
+.infoPillContent{
+  position:relative;
+  z-index:120;
+  padding:4px 9px 3px;
+  width:100%;
+  height:100%;
+  min-height:0;
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
   overflow:hidden;
-  text-overflow: ellipsis;
-  text-shadow: 0 1px 0 rgba(0,0,0,.55);
 }
-.npOverlaySurface .npSub{
-  color: rgba(235,235,245,.62);
-  font-size: 12px;
-  margin-top: 2px;
-  white-space: nowrap;
-  overflow:hidden;
-  text-overflow: ellipsis;
-  text-shadow: 0 1px 0 rgba(0,0,0,.55);
+.infoPill:not(.infoPillHidden) .infoPillContent,
+.infoPill.playbackPillVisible .infoPillContent{
+  opacity:1 !important;
+  visibility:visible !important;
 }
-.npOverlaySurface .npBarArea{margin-top: 8px; height: 24px; position:relative;}
-.npOverlaySurface .npTime{margin-top: 4px; display:flex; align-items:center; gap: 8px; font-size: 11px; color: rgba(235,235,245,.62); text-shadow: 0 1px 0 rgba(0,0,0,.55);} 
-.npOverlaySurface .npTime #npCur, .npOverlaySurface .npTime #npDur{min-width: 44px;} 
-.npOverlaySurface .npTime .npTechInline{flex:1; text-align:center; white-space: nowrap; overflow:hidden; text-overflow: ellipsis;}
+.infoPill:not(.infoPillHidden) .npBarArea,
+.infoPill:not(.infoPillHidden) .npProgressWrap,
+.infoPill:not(.infoPillHidden) .npTime,
+.infoPill:not(.infoPillHidden) .npSeek,
+.infoPill.playbackPillVisible .npBarArea,
+.infoPill.playbackPillVisible .npProgressWrap,
+.infoPill.playbackPillVisible .npTime,
+.infoPill.playbackPillVisible .npSeek{
+  opacity:1 !important;
+  visibility:visible !important;
+}
 
 .npVideoOverlay{
       position:absolute;
@@ -1163,6 +1759,61 @@
       color: var(--muted);
       font-size: 12px;
       margin-top: 6px;
+    }
+    .infoPill .npBarArea{
+      margin-top:0;
+      height:16px;
+      position:relative;
+    }
+    .infoPill .npProgressWrap,
+    .infoPill .npVolumeWrap{
+      height:16px;
+    }
+    .infoPill input[type="range"].npSeek{
+      accent-color:var(--lib-selected-render-contrast);
+      height:16px;
+    }
+    .infoPill .npSeekIndicator{
+      top:4px;
+      bottom:4px;
+      width:2px;
+      background:var(--lib-selected-render-contrast);
+    }
+    .infoPill .npVolumeBar{
+      height:7px;
+    }
+    .infoPill .npVolumeFill{
+      background:var(--lib-selected-render-contrast);
+    }
+    .infoPill .npTime{
+      margin-top:2px;
+      font-size:10.5px;
+      align-items:center;
+      gap:8px;
+      color:var(--dp-text-info-pill);
+    }
+    .infoPill .npTime #npCur,
+    .infoPill .npTime #npDur{
+      min-width:44px;
+    }
+    .infoPill .npTime .npTechInline{
+      flex:1;
+      text-align:center;
+      white-space:nowrap;
+      overflow:hidden;
+      text-overflow:ellipsis;
+    }
+    .infoPill input[type="range"].npSeek::-webkit-slider-thumb{
+      width:8px;
+      height:8px;
+      border-radius:999px;
+      margin-top:0;
+    }
+    .infoPill input[type="range"].npSeek::-moz-range-thumb{
+      width:8px;
+      height:8px;
+      border-radius:999px;
+      border:0;
     }
     .npHint{
       color: var(--muted);
@@ -1294,10 +1945,25 @@
     }
     .ipodStage{
       position: relative;
-      z-index: auto;
+      z-index: 10;
       height: 100%;
       min-height: 100% !important;
     }
+    @font-face{
+      font-family: "Inter";
+      src: url("/static/fonts/inter-4.1/InterVariable.woff2?v=61") format("woff2");
+      font-weight: 100 900;
+      font-style: normal;
+      font-display: swap;
+    }
+    @font-face{
+      font-family: "Inter";
+      src: url("/static/fonts/inter-4.1/InterVariable-Italic.woff2?v=61") format("woff2");
+      font-weight: 100 900;
+      font-style: italic;
+      font-display: swap;
+    }
+
     :root{
       --wheelSize: 300px;
       --topPillsH: 70px;
@@ -1354,9 +2020,5 @@
         margin: 0;
         aspect-ratio: auto;
       }
-      .npArt,
-      .npArtSwapLayer{
-        object-fit: contain;
-        background: #000;
-      }
+      .npArt{ background: #000; }
     }

@@ -64,6 +64,17 @@ def _default_playback_state() -> dict:
             "last_activity_ts": 0.0,
             "last_stop_ts": 0.0,
         },
+        "playback_session": {
+            "now": None,
+            "queue": [],
+            "history": [],
+            "queueIndex": -1,
+            "nav": None,
+            "sourceView": None,
+            "updatedAt": 0,
+            "revision": 0,
+        },
+        "version": 0,
         "ver": 3,
         "updated": 0.0,
     }
@@ -126,6 +137,30 @@ def load_playback_state() -> None:
                 if "last_stop_ts" not in sess:
                     sess["last_stop_ts"] = 0.0
                 base["session"] = sess
+                ps = base.get("playback_session")
+                if not isinstance(ps, dict):
+                    ps = {}
+                if not isinstance(ps.get("queue"), list):
+                    ps["queue"] = []
+                if not isinstance(ps.get("history"), list):
+                    ps["history"] = []
+                try:
+                    ps["queueIndex"] = int(ps.get("queueIndex") if ps.get("queueIndex") is not None else -1)
+                except Exception:
+                    ps["queueIndex"] = -1
+                try:
+                    ps["revision"] = int(ps.get("revision") or base.get("version") or 0)
+                except Exception:
+                    ps["revision"] = 0
+                ps.setdefault("now", None)
+                ps.setdefault("nav", None)
+                ps.setdefault("sourceView", None)
+                ps.setdefault("updatedAt", 0)
+                base["playback_session"] = ps
+                try:
+                    base["version"] = int(base.get("version") or ps.get("revision") or 0)
+                except Exception:
+                    base["version"] = 0
 
                 with PLAYBACK_STATE_LOCK:
                     PLAYBACK_STATE.clear()
@@ -156,9 +191,80 @@ def save_playback_state_best_effort() -> None:
 def _media_key(media: str, root_id: str, rel: str) -> str:
     return f"{(media or '').strip().lower()}::{(root_id or '').strip()}::{(rel or '').strip()}"
 
-def _trim_recent(recent: list, max_items: int = 60) -> list:
-    out = recent[:max_items] if isinstance(recent, list) else []
+def _trim_recent(recent: list, max_items: int = 0) -> list:
+    out = recent if isinstance(recent, list) else []
+    if max_items and max_items > 0:
+        return out[:max_items]
     return out
+
+def _public_entry(value: Any) -> Any:
+    if isinstance(value, list):
+        return [_public_entry(x) for x in value]
+    if isinstance(value, dict):
+        d = dict(value)
+        for key in ("_key", "_sess", "_list", "_stream_item"):
+            d.pop(key, None)
+        return {k: _public_entry(v) for k, v in d.items()}
+    return value
+
+def _sanitize_session_item(it: Any, media_fallback: str = "audio") -> Optional[Dict[str, Any]]:
+    if not isinstance(it, dict):
+        return None
+    root_obj = it.get("root") if isinstance(it.get("root"), dict) else {}
+    root_id = str(it.get("root_id") or it.get("rootId") or root_obj.get("id") or "").strip()
+    rel = str(it.get("rel") or "").strip()
+    if not root_id or not rel:
+        return None
+    media = str(it.get("media") or media_fallback or "audio").strip().lower() or "audio"
+    if media not in ("audio", "video"):
+        media = media_fallback if media_fallback in ("audio", "video") else "audio"
+    return {
+        "kind": str(it.get("kind") or "file"),
+        "media": media,
+        "root": {"id": root_id},
+        "root_id": root_id,
+        "rel": rel,
+        "label": str(it.get("label") or it.get("title") or ""),
+        "streamed": bool(it.get("streamed")),
+        "source": str(it.get("source") or "").strip().lower(),
+        "ext": str(it.get("ext") or "").strip().lower(),
+        "quality": str(it.get("quality") or ""),
+    }
+
+def _sanitize_playback_session(raw: Any, now_entry: Optional[dict], recent: list, version: int) -> dict:
+    src = raw if isinstance(raw, dict) else {}
+    media = str((now_entry or {}).get("media") or (src.get("now") or {}).get("media") or "audio").lower()
+    queue = []
+    for it in (src.get("queue") if isinstance(src.get("queue"), list) else []):
+        clean = _sanitize_session_item(it, media)
+        if clean:
+            queue.append(clean)
+        if len(queue) >= 600:
+            break
+    try:
+        queue_index = int(src.get("queueIndex") if src.get("queueIndex") is not None else src.get("queue_index"))
+    except Exception:
+        queue_index = 0 if queue else -1
+    if queue:
+        queue_index = max(0, min(len(queue) - 1, queue_index))
+    else:
+        queue_index = -1
+    nav = src.get("nav") if isinstance(src.get("nav"), dict) else ((now_entry or {}).get("nav") if isinstance((now_entry or {}).get("nav"), dict) else None)
+    source_view = src.get("sourceView") if isinstance(src.get("sourceView"), dict) else (src.get("source_view") if isinstance(src.get("source_view"), dict) else None)
+    try:
+        revision = int(src.get("revision") or version or 0)
+    except Exception:
+        revision = int(version or 0)
+    return {
+        "now": _public_entry(src.get("now") if isinstance(src.get("now"), dict) else now_entry),
+        "queue": queue,
+        "history": _public_entry(_trim_recent(recent)),
+        "queueIndex": queue_index,
+        "nav": _public_entry(nav),
+        "sourceView": _public_entry(source_view),
+        "updatedAt": src.get("updatedAt") or int(time.time() * 1000),
+        "revision": revision,
+    }
 
 def _recent_list_key(media: str, root_id: str, rel: str, nav: dict) -> str:
     """Return a stable key that represents the *list context* an item was played from.
@@ -211,6 +317,7 @@ def playback_snapshot_public() -> dict:
     with PLAYBACK_STATE_LOCK:
         now = PLAYBACK_STATE.get("now")
         recent = PLAYBACK_STATE.get("recent") or []
+        version = int(PLAYBACK_STATE.get("version") or 0)
         # remove internal fields from each entry if present
         rp = []
         for it in recent:
@@ -228,7 +335,8 @@ def playback_snapshot_public() -> dict:
             out_now.pop("_sess", None)
             out_now.pop("_list", None)
             out_now.pop("_stream_item", None)
-        return {"now": out_now, "recent": rp}
+        session = _sanitize_playback_session(PLAYBACK_STATE.get("playback_session"), out_now, rp, version)
+        return {"now": out_now, "recent": rp, "session": session, "version": version}
 
 def playback_update_from_client(payload: dict) -> dict:
     # payload fields (best-effort):
@@ -319,11 +427,31 @@ def playback_update_from_client(payload: dict) -> dict:
                 lbl2 = str(itx.get("label") or "").strip()
                 if not rid or not rrel:
                     continue
-                clean_items.append({"root_id": rid, "rel": rrel, "media": m2, "label": lbl2})
+                clean_items.append({
+                    "root_id": rid,
+                    "rel": rrel,
+                    "media": m2,
+                    "label": lbl2,
+                    "streamed": bool(itx.get("streamed")),
+                    "source": str(itx.get("source") or "").strip().lower(),
+                    "ext": str(itx.get("ext") or "").strip().lower(),
+                    "quality": str(itx.get("quality") or ""),
+                })
             playlist_ctx["items"] = clean_items
 
+    playlist_hash = str(js.get("playlist_hash") or "").strip()
     if playlist_ctx:
         now_entry["playlist"] = playlist_ctx
+        if playlist_hash:
+            now_entry["playlist_hash"] = playlist_hash
+    elif playlist_hash:
+        try:
+            prev_now = PLAYBACK_STATE.get("now") if isinstance(PLAYBACK_STATE, dict) else None
+            if isinstance(prev_now, dict) and str(prev_now.get("playlist_hash") or "") == playlist_hash and isinstance(prev_now.get("playlist"), dict):
+                now_entry["playlist"] = dict(prev_now.get("playlist") or {})
+                now_entry["playlist_hash"] = playlist_hash
+        except Exception:
+            pass
     if stream_item:
         now_entry["streamed"] = True
         now_entry["source"] = str(stream_item.get("source") or now_entry.get("source") or "").strip().lower()
@@ -358,8 +486,12 @@ def playback_update_from_client(payload: dict) -> dict:
     
     # recently played overwrite key (list or directory context)
     now_entry["_list"] = _recent_list_key(media, root_id, rel, nav)
+    source_view = js.get("source_view") if isinstance(js.get("source_view"), dict) else None
+    client_session = js.get("session") if isinstance(js.get("session"), dict) else {}
 
     with PLAYBACK_STATE_LOCK:
+        prev_version = int(PLAYBACK_STATE.get("version") or 0)
+        next_version = prev_version + 1
         # update now playing
         if playing is not None:
             now_entry["playing"] = bool(playing)
@@ -459,9 +591,17 @@ def playback_update_from_client(payload: dict) -> dict:
                 recent.insert(0, dict(now_entry))
         PLAYBACK_STATE[sess_key] = sess
         PLAYBACK_STATE["recent"] = _trim_recent(recent)
+        session_seed = dict(client_session) if isinstance(client_session, dict) else {}
+        if source_view and not isinstance(session_seed.get("sourceView"), dict):
+            session_seed["sourceView"] = source_view
+        if nav and not isinstance(session_seed.get("nav"), dict):
+            session_seed["nav"] = nav
+        session_seed["revision"] = next_version
+        PLAYBACK_STATE["playback_session"] = _sanitize_playback_session(session_seed, now_entry, PLAYBACK_STATE["recent"], next_version)
+        PLAYBACK_STATE["version"] = next_version
 
     save_playback_state_best_effort()
-    return {"ok": True}
+    return {"ok": True, "version": next_version, "revision": next_version}
 
 
 # =========================

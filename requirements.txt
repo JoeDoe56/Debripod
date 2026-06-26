@@ -4,3 +4,5 @@ requests==2.34.2
 Pillow==12.2.0
 aioslsk==1.6.3
 yt-dlp==2026.6.9
+webauthn==2.8.0
+watchdog==6.0.0

@@ -1,10 +1,20 @@
 from __future__ import annotations
 
 import ipaddress
+import json
+import pprint
+import re
+import base64
+import zlib
 import secrets
 import socket
+import time
+import concurrent.futures
+import threading
+from pathlib import Path
+from urllib.parse import unquote
 
-from flask import session
+from flask import g, session, stream_with_context
 
 from . import runtime_downloads as downloads_module
 from . import runtime_route_state as route_state_module
@@ -13,17 +23,35 @@ from .Services import lastfm as lastfm_module
 from .Services import soulseek as soulseek_module
 from .factory import DeferredApp
 from .auth import register_auth
-from .config import _coerce_config_value, ensure_startup_security_config, save_config
+from .config import _coerce_config_value, ensure_startup_security_config, load_default_app_config_overrides, save_config, save_default_app_config_overrides
+from .Library.library_db import load_folder_entries, load_palette, load_palette_for_media, load_visualizer_analysis_for_media, save_folder_entries, save_palette
+from .Library.index import build_index_for_root, set_index_cache
+from .Library.metadata import file_meta_cached
 from .Tasks.manager import task_belongs_to_owner
 from .runtime_state import *
 from .runtime_downloads import *
-from .settings import default_app_settings, executable_status, ensure_app_settings, masked_settings, pick_system_path, save_app_settings
+from .settings import APP_SETTING_KEYS, SECRET_SETTING_KEYS, default_app_settings, executable_status, ensure_app_settings, masked_settings, pick_system_path, save_app_settings, settings_fingerprint
 
 # =========================
 # Flask app and templates
 # =========================
 app = DeferredApp()
 _ACTIVE_SETTINGS_USERNAME = ""
+_ACTIVE_SETTINGS_SIGNATURE: tuple[int, int] = (0, 0)
+_ACTIVE_SETTINGS_DATA: dict[str, Any] = {}
+_RECENT_API_TIMINGS: list[dict[str, Any]] = []
+_FULL_REINDEX_LOCK = threading.Lock()
+_FULL_REINDEX_STATUS: dict[str, Any] = {
+    "running": False,
+    "percent": 0,
+    "phase": "idle",
+    "root": "",
+    "processed_roots": 0,
+    "total_roots": 0,
+    "started_at": 0.0,
+    "finished_at": 0.0,
+    "error": "",
+}
 
 
 from .runtime_route_state import *
@@ -45,6 +73,15 @@ def _current_settings_username() -> str:
         return str(session.get("username") or "").strip()
     except Exception:
         return ""
+
+
+def _default_app_overrides() -> dict[str, Any]:
+    return load_default_app_config_overrides()
+
+
+def _advanced_ui_defaults_from_settings(settings: dict[str, Any]) -> dict[str, Any]:
+    raw = settings.get("ADVANCED_UI_SETTINGS_DEFAULTS") if isinstance(settings, dict) else {}
+    return dict(raw) if isinstance(raw, dict) else {}
 
 
 def _shutdown_soulseek_service() -> None:
@@ -100,7 +137,7 @@ def _start_soulseek_service_for_active_settings() -> None:
 
 
 def _clear_active_user_runtime_settings() -> None:
-    global _ACTIVE_SETTINGS_USERNAME
+    global _ACTIVE_SETTINGS_DATA, _ACTIVE_SETTINGS_SIGNATURE, _ACTIVE_SETTINGS_USERNAME
     if not _ACTIVE_SETTINGS_USERNAME:
         return
     settings = default_app_settings()
@@ -130,13 +167,24 @@ def _clear_active_user_runtime_settings() -> None:
     except Exception:
         pass
     _ACTIVE_SETTINGS_USERNAME = ""
+    _ACTIVE_SETTINGS_SIGNATURE = (0, 0)
+    _ACTIVE_SETTINGS_DATA = {}
 
 
-def _apply_runtime_settings_for_user(username: str) -> dict[str, Any]:
-    global _ACTIVE_SETTINGS_USERNAME
+def _apply_runtime_settings_for_user(username: str, force: bool = False) -> dict[str, Any]:
+    global _ACTIVE_SETTINGS_DATA, _ACTIVE_SETTINGS_SIGNATURE, _ACTIVE_SETTINGS_USERNAME
     if not username:
         return {}
-    settings = ensure_app_settings(username=username)
+    signature = settings_fingerprint(username)
+    if (
+        not force
+        and _ACTIVE_SETTINGS_USERNAME == username
+        and _ACTIVE_SETTINGS_SIGNATURE == signature
+        and _ACTIVE_SETTINGS_DATA
+    ):
+        return dict(_ACTIVE_SETTINGS_DATA)
+    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
+    signature = settings_fingerprint(username)
     modules = (state_module, downloads_module, route_state_module, mcp_routes)
     for key, raw_value in settings.items():
         key_upper = str(key).upper()
@@ -179,16 +227,46 @@ def _apply_runtime_settings_for_user(username: str) -> dict[str, Any]:
         except Exception:
             pass
         _ACTIVE_SETTINGS_USERNAME = username
+    _ACTIVE_SETTINGS_SIGNATURE = signature
+    _ACTIVE_SETTINGS_DATA = dict(settings)
     return settings
 
 
 @app.before_request
 def apply_user_settings_before_request():
+    try:
+        g.dp_request_started_at = time.perf_counter()
+    except Exception:
+        pass
     username = _current_settings_username()
     if username:
         _apply_runtime_settings_for_user(username)
     else:
         _clear_active_user_runtime_settings()
+
+
+def add_request_timing_headers(resp):
+    try:
+        elapsed_ms = (time.perf_counter() - float(getattr(g, "dp_request_started_at", time.perf_counter()))) * 1000.0
+        path = request.path or ""
+        if path.startswith("/static/") and request.args.get("v"):
+            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        if path.startswith("/api/") or path.startswith("/hls/") or path.startswith("/stream/"):
+            resp.headers["X-DebriPod-Request-Ms"] = f"{elapsed_ms:.1f}"
+        if path.startswith("/api/"):
+            _RECENT_API_TIMINGS.append({
+                "method": request.method,
+                "path": path,
+                "status": int(getattr(resp, "status_code", 0) or 0),
+                "ms": round(elapsed_ms, 1),
+                "ts": time.time(),
+            })
+            del _RECENT_API_TIMINGS[:-60]
+        if elapsed_ms >= 750 and path.startswith("/api/"):
+            app.logger.info("slow endpoint %s %.1fms", path, elapsed_ms)
+    except Exception:
+        pass
+    return resp
 
 
 @app.context_processor
@@ -201,7 +279,9 @@ def render_shell(autorefresh: int = 0, **ctx) -> str:
         hostport = request.host
     except Exception:
         hostport = f"localhost:{PORT}"
-    info_json = json.dumps({"version": VERSION, "host": HOST, "port": PORT})
+    version_info = dict(VERSION_INFO)
+    version_info.update({"version": VERSION, "host": HOST, "port": PORT})
+    info_json = json.dumps(version_info)
     return render_template(
         "shell.html",
         hostport=hostport,
@@ -210,10 +290,47 @@ def render_shell(autorefresh: int = 0, **ctx) -> str:
         autorefresh=autorefresh,
         tasks_poll_ms=TASKS_POLL_MS,
         icon_v=ICON_VERSION,
+        asset_v=ASSET_VERSION,
         info_json=info_json,
         **ctx,
     )
 register_shell_routes(app, render_shell)
+
+
+def _pwa_shell_assets() -> list[str]:
+    base = [
+        "/",
+        f"/site.webmanifest?v={ICON_VERSION}",
+        f"/favicon.ico?v={ICON_VERSION}",
+        f"/apple-touch-icon.png?v={ICON_VERSION}",
+        f"/apple-touch-icon-precomposed.png?v={ICON_VERSION}",
+        f"/static/debripod.css?v={ASSET_VERSION}",
+        f"/static/debripod.js?v={ASSET_VERSION}",
+        f"/static/liquidGL.js?v={ASSET_VERSION}",
+        f"/static/vendor/hls-local.js?v={ASSET_VERSION}",
+        f"/static/fonts/inter-4.1/InterVariable.woff2?v={ASSET_VERSION}",
+        f"/static/fonts/inter-4.1/InterVariable-Italic.woff2?v={ASSET_VERSION}",
+    ]
+    js_dir = Path(__file__).resolve().parent / "static" / "js"
+    try:
+        for path in sorted(js_dir.glob("*.js")):
+            base.append(f"/static/js/{path.name}?v={ASSET_VERSION}")
+    except Exception:
+        pass
+    return base
+
+
+@app.route("/debripod-sw.js", methods=["GET"])
+def debripod_service_worker():
+    path = Path(__file__).resolve().parent / "static" / "debripod-sw.js"
+    text = path.read_text(encoding="utf-8")
+    text = text.replace("__DEBRIPOD_ASSET_VERSION__", str(ASSET_VERSION))
+    text = text.replace("__DEBRIPOD_ICON_VERSION__", str(ICON_VERSION))
+    text = text.replace("__DEBRIPOD_SHELL_ASSETS__", json.dumps(_pwa_shell_assets(), ensure_ascii=False))
+    resp = Response(text, mimetype="application/javascript")
+    resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    resp.headers["Service-Worker-Allowed"] = "/"
+    return resp
 
 
 def _search_knaben_cached(q: str, page: int = 1) -> Tuple[List[dict], str, str, str, str]:
@@ -433,19 +550,152 @@ def api_libsearch_combined():
     if not q:
         return jsonify(ok=False, error="Missing query", results=[], result_count=0, cache_key="")
     combined_cache_key = _make_search_cache_key("combined", q, {})
-    knaben_results, knaben_err, _, _, _ = _search_knaben_cached(q, 1)
-    slsk_users, slsk_total_results, dir_count, _, slsk_err = _search_soulseek_cached(q)
-    youtube_results, youtube_err, _ = _search_youtube_cached(q)
-    results = _standardize_youtube_results(youtube_results) + _standardize_soulseek_results(slsk_users) + _standardize_knaben_results(knaben_results)
-    results.sort(key=lambda x: (int(x.get("_score") or 0), int(x.get("size") or 0), str(x.get("title") or "").lower()), reverse=True)
-    for r in results:
-        r.pop("_score", None)
+    if str(request.args.get("stream") or "").strip().lower() in {"1", "true", "yes"}:
+        def gen():
+            yield json.dumps({"event": "start", "ok": True, "q": q, "cache_key": combined_cache_key, "sources": ["youtube", "soulseek", "knaben"]}, ensure_ascii=False) + "\n"
+            payloads: dict[str, dict[str, Any]] = {}
+            with concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="dp-search") as executor:
+                future_map = {executor.submit(_libsearch_source_payload, source, q): source for source in ("youtube", "soulseek", "knaben")}
+                for future in concurrent.futures.as_completed(future_map):
+                    source = future_map[future]
+                    try:
+                        payload = future.result()
+                    except Exception as exc:
+                        payload = {"source": source, "source_label": source.title(), "results": [], "result_count": 0, "error": "Search failed", "duration_ms": 0}
+                        try:
+                            app.logger.info("libsearch source failed %s: %s", source, exc)
+                        except Exception:
+                            pass
+                    payloads[source] = payload
+                    yield json.dumps({"event": "source", **payload}, ensure_ascii=False) + "\n"
+            final_payload = _combined_search_response_payload(q, combined_cache_key, payloads)
+            try:
+                record_search_history(q, "combined", combined_cache_key)
+            except Exception:
+                pass
+            yield json.dumps({"event": "done", **final_payload}, ensure_ascii=False) + "\n"
+        return Response(stream_with_context(gen()), mimetype="application/x-ndjson")
+
+    payloads = _run_combined_search_sources(q)
+    response_payload = _combined_search_response_payload(q, combined_cache_key, payloads)
     try:
         record_search_history(q, "combined", combined_cache_key)
     except Exception:
         pass
-    err = "; ".join([x for x in [youtube_err, slsk_err, knaben_err] if x])
-    return jsonify(ok=True, q=q, cache_key=combined_cache_key, results=results, result_count=len(results), knaben_results=knaben_results, slsk_users=slsk_users, youtube_results=youtube_results, dir_count=dir_count, file_count=slsk_total_results, error=err)
+    return jsonify(response_payload)
+
+
+def _libsearch_source_payload(source: str, q: str) -> dict[str, Any]:
+    started = time.perf_counter()
+    src = str(source or "").strip().lower()
+    try:
+        if src == "youtube":
+            raw_results, err, cache_key = _search_youtube_cached(q)
+            results = _standardize_youtube_results(raw_results)
+            return {
+                "ok": True,
+                "source": "youtube",
+                "source_label": "YouTube",
+                "cache_key": cache_key,
+                "results": results,
+                "youtube_results": raw_results,
+                "result_count": len(results),
+                "error": err,
+                "duration_ms": round((time.perf_counter() - started) * 1000.0, 1),
+            }
+        if src == "soulseek":
+            slsk_users, slsk_total_results, dir_count, cache_key, err = _search_soulseek_cached(q)
+            results = _standardize_soulseek_results(slsk_users)
+            return {
+                "ok": not bool(err),
+                "source": "soulseek",
+                "source_label": "Soulseek",
+                "cache_key": cache_key,
+                "results": results,
+                "slsk_users": slsk_users,
+                "result_count": len(results),
+                "file_count": int(slsk_total_results or 0),
+                "dir_count": int(dir_count or 0),
+                "error": err,
+                "duration_ms": round((time.perf_counter() - started) * 1000.0, 1),
+            }
+        knaben_results, err, remaining, reset, cache_key = _search_knaben_cached(q, 1)
+        results = _standardize_knaben_results(knaben_results)
+        return {
+            "ok": not bool(err),
+            "source": "knaben",
+            "source_label": "Knaben",
+            "cache_key": cache_key,
+            "results": results,
+            "knaben_results": knaben_results,
+            "result_count": len(results),
+            "rate_remaining": remaining,
+            "rate_reset": reset,
+            "error": err,
+            "duration_ms": round((time.perf_counter() - started) * 1000.0, 1),
+        }
+    except Exception:
+        return {
+            "ok": False,
+            "source": src or "unknown",
+            "source_label": (src or "unknown").title(),
+            "cache_key": "",
+            "results": [],
+            "result_count": 0,
+            "error": "Search failed",
+            "duration_ms": round((time.perf_counter() - started) * 1000.0, 1),
+        }
+
+
+def _run_combined_search_sources(q: str) -> dict[str, dict[str, Any]]:
+    out: dict[str, dict[str, Any]] = {}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="dp-search") as executor:
+        future_map = {executor.submit(_libsearch_source_payload, source, q): source for source in ("youtube", "soulseek", "knaben")}
+        for future in concurrent.futures.as_completed(future_map):
+            source = future_map[future]
+            try:
+                out[source] = future.result()
+            except Exception:
+                out[source] = {"ok": False, "source": source, "source_label": source.title(), "results": [], "result_count": 0, "error": "Search failed", "duration_ms": 0}
+    return out
+
+
+def _combined_search_response_payload(q: str, combined_cache_key: str, payloads: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    results: list[dict[str, Any]] = []
+    source_status: list[dict[str, Any]] = []
+    errors: list[str] = []
+    for source in ("youtube", "soulseek", "knaben"):
+        payload = payloads.get(source) or {}
+        results.extend([dict(x) for x in (payload.get("results") or []) if isinstance(x, dict)])
+        err = str(payload.get("error") or "").strip()
+        if err:
+            errors.append(f"{payload.get('source_label') or source}: {err}")
+        source_status.append({
+            "source": source,
+            "label": str(payload.get("source_label") or source.title()),
+            "ok": bool(payload.get("ok", not bool(err))),
+            "error": err,
+            "result_count": int(payload.get("result_count") or len(payload.get("results") or []) or 0),
+            "duration_ms": float(payload.get("duration_ms") or 0),
+        })
+    results.sort(key=lambda x: (int(x.get("_score") or 0), int(x.get("size") or 0), str(x.get("title") or "").lower()), reverse=True)
+    for r in results:
+        r.pop("_score", None)
+    slsk_payload = payloads.get("soulseek") or {}
+    return {
+        "ok": True,
+        "q": q,
+        "cache_key": combined_cache_key,
+        "results": results,
+        "result_count": len(results),
+        "source_status": source_status,
+        "knaben_results": (payloads.get("knaben") or {}).get("knaben_results") or [],
+        "slsk_users": slsk_payload.get("slsk_users") or [],
+        "youtube_results": (payloads.get("youtube") or {}).get("youtube_results") or [],
+        "dir_count": int(slsk_payload.get("dir_count") or 0),
+        "file_count": int(slsk_payload.get("file_count") or 0),
+        "error": "; ".join(errors),
+    }
 
 
 def _removed_route(*args, **kwargs):
@@ -973,7 +1223,7 @@ def api_rd_enqueue_selected():
 def api_soulseek_enqueue():
     svc = SOULSEEK_SERVICE
     if not svc or not svc.is_ready():
-        return jsonify({"ok": False, "error": "Soulseek is not configured or failed to start"}), 400
+        return jsonify({"ok": False, "error": "Soulseek is configured but not connected. Check username, password, and listening port in Services."}), 400
 
     try:
         data = request.get_json(force=True, silent=False) or {}
@@ -1088,8 +1338,18 @@ def cancel():
 @app.route("/api/library/config", methods=["GET"])
 def api_library_config():
     rts = []
+    versions = library_root_versions()
     for rid, name, ap, mode in roots():
-        rts.append({"id": rid, "name": name, "mode": mode})
+        if mode in {"meta", "metadata"}:
+            try:
+                ensure_index_async(rid, os.path.abspath(ap), mode=mode)
+            except Exception:
+                pass
+        try:
+            library_watch_root(rid, os.path.abspath(ap), mode=mode)
+        except Exception:
+            pass
+        rts.append({"id": rid, "name": name, "mode": mode, "version": int(versions.get(rid) or 0)})
     return jsonify(
         {
             "roots": rts,
@@ -1098,21 +1358,76 @@ def api_library_config():
             "lastfm_enabled": bool(lastfm_enabled()),
             "wheel_rotation_max_degrees": float(WHEEL_ROTATION_MAX_DEGREES),
             "playback_streaming_mode": str(PLAYBACK_STREAMING_MODE or "http").strip().lower() or "http",
+            "library_versions": versions,
         }
     )
 
 
 @app.route("/api/library/reindex", methods=["POST"])
 def api_library_reindex():
-    clear_index_cache()
-    return jsonify({"ok": True})
+    def snapshot() -> dict[str, Any]:
+        with _FULL_REINDEX_LOCK:
+            return dict(_FULL_REINDEX_STATUS)
+
+    with _FULL_REINDEX_LOCK:
+        if _FULL_REINDEX_STATUS.get("running"):
+            return jsonify({"ok": True, "status": dict(_FULL_REINDEX_STATUS)})
+        _FULL_REINDEX_STATUS.update(
+            {
+                "running": True,
+                "percent": 0,
+                "phase": "starting",
+                "root": "",
+                "processed_roots": 0,
+                "total_roots": 0,
+                "started_at": time.time(),
+                "finished_at": 0.0,
+                "error": "",
+            }
+        )
+
+    def set_status(**updates: Any) -> None:
+        with _FULL_REINDEX_LOCK:
+            _FULL_REINDEX_STATUS.update(updates)
+
+    def run_full_reindex() -> None:
+        try:
+            root_rows = [(rid, name, os.path.abspath(path), mode) for rid, name, path, mode in roots()]
+            total_roots = max(1, len(root_rows))
+            set_status(total_roots=len(root_rows), phase="clearing cache", percent=1)
+            clear_index_cache()
+            for idx, (rid, name, root_abs, mode) in enumerate(root_rows):
+                base = (idx / total_roots) * 100.0
+                span = 100.0 / total_roots
+                set_status(processed_roots=idx, root=name or rid, phase="scan", percent=int(base))
+
+                def progress(done: int, total: int, phase: str) -> None:
+                    pct = base + span * 0.92 * (max(0, min(done, total)) / max(1, total))
+                    set_status(root=name or rid, phase=phase, percent=int(max(0, min(99, pct))))
+
+                data = build_index_for_root(root_abs, full_video_sync=True, progress=progress)
+                set_status(root=name or rid, phase="saving index", percent=int(max(0, min(99, base + span * 0.96))))
+                set_index_cache(rid, data)
+                set_status(processed_roots=idx + 1, root=name or rid, phase="root complete", percent=int(max(0, min(99, base + span))))
+            set_status(running=False, phase="complete", percent=100, root="", processed_roots=len(root_rows), finished_at=time.time())
+        except Exception as exc:
+            set_status(running=False, phase="error", error=str(exc), finished_at=time.time())
+
+    threading.Thread(target=run_full_reindex, daemon=True).start()
+    return jsonify({"ok": True, "status": snapshot()})
+
+
+@app.route("/api/library/reindex/status", methods=["GET"])
+def api_library_reindex_status():
+    with _FULL_REINDEX_LOCK:
+        return jsonify({"ok": True, "status": dict(_FULL_REINDEX_STATUS)})
 
 
 @app.route("/api/settings", methods=["GET"])
 def api_settings_get():
     cfg = ensure_startup_security_config()
     username = _current_settings_username()
-    settings = _apply_runtime_settings_for_user(username) if username else ensure_app_settings()
+    settings = _apply_runtime_settings_for_user(username) if username else ensure_app_settings(defaults_overrides=_default_app_overrides())
     soulseek_service = getattr(state_module, "SOULSEEK_SERVICE", None)
     soulseek_status = soulseek_service.startup_status() if soulseek_service and hasattr(soulseek_service, "startup_status") else {}
     connections = {
@@ -1140,6 +1455,7 @@ def api_settings_get():
             "MCP_TOKEN_SET": bool(str(cfg.get("MCP_TOKEN") or "").strip()),
         },
         "settings": masked_settings(settings),
+        "advanced_ui_defaults": _advanced_ui_defaults_from_settings(settings),
         "tools": {
             "ffmpeg": executable_status(str(settings.get("FFMPEG_PATH") or "ffmpeg")),
             "ffprobe": executable_status(str(settings.get("FFPROBE_PATH") or "ffprobe")),
@@ -1147,6 +1463,244 @@ def api_settings_get():
         "connections": connections,
         "picker_available": True,
     })
+
+
+def _setup_skipped_services(settings: dict[str, Any]) -> dict[str, str]:
+    raw = settings.get("SETUP_SKIPPED_SERVICES")
+    out: dict[str, str] = {}
+    if isinstance(raw, dict):
+        for key, value in raw.items():
+            k = str(key or "").strip().lower()
+            if k in {"library", "real_debrid", "soulseek", "lastfm", "youtube", "ffmpeg", "ffprobe", "ytdlp", "downloads", "knaben"}:
+                out[k] = "skipped" if str(value or "").strip().lower() == "skipped" else str(value or "").strip().lower()
+    return out
+
+
+def _kick_library_indexes_from_settings(settings: dict[str, Any]) -> None:
+    folders = settings.get("LIBRARY_FOLDERS") if isinstance(settings.get("LIBRARY_FOLDERS"), list) else []
+    for folder in folders:
+        try:
+            if isinstance(folder, dict):
+                path = str(folder.get("path") or "")
+                mode = str(folder.get("mode") or "folders")
+            else:
+                raw = str(folder or "")
+                path = raw
+                mode = "folders"
+                if ":" in raw:
+                    maybe_path, suffix = raw.rsplit(":", 1)
+                    if suffix.strip().lower() in {"meta", "metadata", "m"}:
+                        path = maybe_path
+                        mode = "metadata"
+                    elif suffix.strip().lower() in {"list", "folders", "folder", "l"}:
+                        path = maybe_path
+                        mode = "folders"
+            path = path.strip().strip('"').strip("'")
+            if path and os.path.isabs(path):
+                rid = sha1_text(os.path.abspath(path))
+                ensure_index_async(rid, os.path.abspath(path), mode=mode)
+                library_watch_root(rid, os.path.abspath(path), mode=mode)
+        except Exception:
+            pass
+
+
+def _service_status_payload(settings: dict[str, Any]) -> dict[str, Any]:
+    tools = {
+        "ffmpeg": executable_status(str(settings.get("FFMPEG_PATH") or "ffmpeg")),
+        "ffprobe": executable_status(str(settings.get("FFPROBE_PATH") or "ffprobe")),
+        "yt_dlp": executable_status(str(settings.get("YTDLP_CMD") or "yt-dlp")),
+    }
+    soulseek_service = getattr(state_module, "SOULSEEK_SERVICE", None)
+    soulseek_status = soulseek_service.startup_status() if soulseek_service and hasattr(soulseek_service, "startup_status") else {}
+    skipped = _setup_skipped_services(settings)
+    return {
+        "skipped": skipped,
+        "real_debrid": {
+            "configured": bool(str(settings.get("REAL_DEBRID_API_KEY") or "").strip()),
+            "status": skipped.get("real_debrid") or ("configured" if str(settings.get("REAL_DEBRID_API_KEY") or "").strip() else "not_configured"),
+        },
+        "soulseek": {
+            "configured": bool(str(settings.get("SOULSEEK_USERNAME") or "").strip() and str(settings.get("SOULSEEK_PASSWORD") or "").strip()),
+            "connected": bool(soulseek_service and soulseek_service.is_ready()),
+            "listening_port": soulseek_status.get("listening_port"),
+            "obfuscated_port": soulseek_status.get("obfuscated_port"),
+            "warning": str(soulseek_status.get("warning") or ""),
+            "error": str(soulseek_service.start_error() or "") if soulseek_service else "",
+            "status": skipped.get("soulseek") or ("connected" if soulseek_service and soulseek_service.is_ready() else ("not_connected" if str(settings.get("SOULSEEK_USERNAME") or "").strip() and str(settings.get("SOULSEEK_PASSWORD") or "").strip() else "not_configured")),
+        },
+        "lastfm": {
+            "api_configured": bool(str(settings.get("LASTFM_API_KEY") or "").strip() and str(settings.get("LASTFM_API_SECRET") or "").strip()),
+            "session_user": lastfm_username(),
+            "status": skipped.get("lastfm") or ("logged_in" if lastfm_username() else ("configured" if str(settings.get("LASTFM_API_KEY") or "").strip() and str(settings.get("LASTFM_API_SECRET") or "").strip() else "not_configured")),
+        },
+        "knaben": {
+            "api_key_configured": bool(str(settings.get("KNABEN_API_KEY") or "").strip()),
+            "status": skipped.get("knaben") or ("configured" if str(settings.get("KNABEN_API_KEY") or "").strip() else "optional"),
+        },
+        "youtube": {
+            "tool": tools["yt_dlp"],
+            "download_dir": str(settings.get("YOUTUBE_DOWNLOAD_DIR") or ""),
+            "status": skipped.get("youtube") or ("tool_found" if tools["yt_dlp"].get("ok") else "tool_missing"),
+        },
+        "ffmpeg": tools["ffmpeg"],
+        "ffprobe": tools["ffprobe"],
+        "ytdlp": tools["yt_dlp"],
+    }
+
+
+def _setup_status_for_user(username: str, settings: dict[str, Any]) -> dict[str, Any]:
+    folders = settings.get("LIBRARY_FOLDERS") if isinstance(settings.get("LIBRARY_FOLDERS"), list) else []
+    skipped = _setup_skipped_services(settings)
+    required_complete = bool(folders)
+    has_optional_setup = any(
+        str(settings.get(key) or "").strip()
+        for key in (
+            "REAL_DEBRID_API_KEY",
+            "SOULSEEK_USERNAME",
+            "SOULSEEK_PASSWORD",
+            "LASTFM_API_KEY",
+            "LASTFM_API_SECRET",
+            "LASTFM_SESSION_KEY",
+            "FFMPEG_PATH",
+            "FFPROBE_PATH",
+            "YTDLP_CMD",
+            "DOWNLOAD_DIR",
+            "SOULSEEK_DOWNLOAD_DIR",
+            "YOUTUBE_DOWNLOAD_DIR",
+        )
+    )
+    should_show = not bool(settings.get("SETUP_WIZARD_COMPLETE")) and not (folders and has_optional_setup)
+    services = _service_status_payload(settings)
+    tools = {
+        "ffmpeg": services.get("ffmpeg") or executable_status(str(settings.get("FFMPEG_PATH") or "ffmpeg")),
+        "ffprobe": services.get("ffprobe") or executable_status(str(settings.get("FFPROBE_PATH") or "ffprobe")),
+        "ytdlp": services.get("ytdlp") or executable_status(str(settings.get("YTDLP_CMD") or "yt-dlp")),
+    }
+    setup = {
+        "library_configured": bool(folders),
+        "youtube_download_folder_configured": bool(str(settings.get("YOUTUBE_DOWNLOAD_DIR") or "").strip()),
+        "soulseek_username_configured": bool(str(settings.get("SOULSEEK_USERNAME") or "").strip()),
+        "soulseek_password_configured": bool(str(settings.get("SOULSEEK_PASSWORD") or "").strip()),
+        "soulseek_download_folder_configured": bool(str(settings.get("SOULSEEK_DOWNLOAD_DIR") or "").strip()),
+        "lastfm_api_key_configured": bool(str(settings.get("LASTFM_API_KEY") or "").strip()),
+        "lastfm_secret_configured": bool(str(settings.get("LASTFM_API_SECRET") or "").strip()),
+        "lastfm_session_configured": bool(lastfm_session_key()),
+        "real_debrid_token_configured": bool(str(settings.get("REAL_DEBRID_API_KEY") or "").strip()),
+        "real_debrid_download_folder_configured": bool(str(settings.get("DOWNLOAD_DIR") or "").strip()),
+    }
+    setup["tools_complete"] = bool(tools["ffmpeg"].get("ok") and tools["ffprobe"].get("ok") and tools["ytdlp"].get("ok") and setup["youtube_download_folder_configured"])
+    setup["soulseek_lastfm_complete"] = bool(
+        setup["soulseek_username_configured"]
+        and setup["soulseek_password_configured"]
+        and setup["soulseek_download_folder_configured"]
+        and setup["lastfm_api_key_configured"]
+        and setup["lastfm_secret_configured"]
+        and setup["lastfm_session_configured"]
+    )
+    setup["real_debrid_complete"] = bool(setup["real_debrid_token_configured"] and setup["real_debrid_download_folder_configured"])
+    return {
+        "ok": True,
+        "username": username,
+        "setup_complete": bool(settings.get("SETUP_WIZARD_COMPLETE")),
+        "should_show": bool(should_show),
+        "required_complete": bool(required_complete),
+        "library_folder_count": len(folders),
+        "library_folders": folders,
+        "skipped": skipped,
+        "tools": tools,
+        "settings": {
+            "YOUTUBE_DOWNLOAD_DIR": str(settings.get("YOUTUBE_DOWNLOAD_DIR") or ""),
+            "SOULSEEK_DOWNLOAD_DIR": str(settings.get("SOULSEEK_DOWNLOAD_DIR") or ""),
+            "DOWNLOAD_DIR": str(settings.get("DOWNLOAD_DIR") or ""),
+        },
+        "setup": setup,
+        "services": services,
+    }
+
+
+@app.route("/api/setup/status", methods=["GET"])
+def api_setup_status():
+    username = _current_settings_username()
+    settings = _apply_runtime_settings_for_user(username) if username else ensure_app_settings(defaults_overrides=_default_app_overrides())
+    return jsonify(_setup_status_for_user(username, settings))
+
+
+@app.route("/api/setup/skip", methods=["POST"])
+def api_setup_skip():
+    data = request.get_json(silent=True) or {}
+    service = str(data.get("service") or "").strip().lower()
+    allowed = {"library", "real_debrid", "soulseek", "lastfm", "youtube", "ffmpeg", "ffprobe", "ytdlp", "downloads", "knaben"}
+    if service not in allowed:
+        return jsonify({"ok": False, "error": "Unknown setup step"}), 400
+    username = _current_settings_username()
+    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
+    skipped = _setup_skipped_services(settings)
+    skipped[service] = "skipped"
+    saved = save_app_settings({"SETUP_SKIPPED_SERVICES": skipped}, username=username, defaults_overrides=_default_app_overrides())
+    if username:
+        saved = _apply_runtime_settings_for_user(username, force=True)
+    return jsonify(_setup_status_for_user(username, saved))
+
+
+@app.route("/api/setup/finish", methods=["POST"])
+def api_setup_finish():
+    username = _current_settings_username()
+    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
+    status = _setup_status_for_user(username, settings)
+    if not status.get("required_complete"):
+        return jsonify({"ok": False, "error": "Add a library folder before finishing setup."}), 400
+    saved = save_app_settings({"SETUP_WIZARD_COMPLETE": True}, username=username, defaults_overrides=_default_app_overrides())
+    if username:
+        saved = _apply_runtime_settings_for_user(username, force=True)
+    _kick_library_indexes_from_settings(saved)
+    return jsonify(_setup_status_for_user(username, saved))
+
+
+@app.route("/api/services/status", methods=["GET"])
+def api_services_status():
+    username = _current_settings_username()
+    settings = _apply_runtime_settings_for_user(username) if username else ensure_app_settings(defaults_overrides=_default_app_overrides())
+    return jsonify({"ok": True, "services": _service_status_payload(settings)})
+
+
+@app.route("/api/settings/export", methods=["GET"])
+def api_settings_export():
+    username = _current_settings_username()
+    include_secrets = (request.args.get("include_secrets") or "").strip() == "1"
+    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
+    payload = {}
+    for key in sorted(APP_SETTING_KEYS):
+        if key in {"SETUP_SKIPPED_SERVICES", "SETUP_WIZARD_COMPLETE"}:
+            payload[key] = settings.get(key)
+            continue
+        if key in SECRET_SETTING_KEYS and not include_secrets:
+            continue
+        payload[key] = settings.get(key)
+    return jsonify({"ok": True, "version": 1, "username": username, "include_secrets": include_secrets, "settings": payload})
+
+
+@app.route("/api/settings/import", methods=["POST"])
+def api_settings_import():
+    data = request.get_json(silent=True) or {}
+    raw_settings = data.get("settings")
+    if not isinstance(raw_settings, dict):
+        return jsonify({"ok": False, "error": "Import file must contain a settings object."}), 400
+    include_secrets = bool(data.get("include_secrets"))
+    clean = {}
+    for key, value in raw_settings.items():
+        key_upper = str(key).upper()
+        if key_upper not in APP_SETTING_KEYS:
+            continue
+        if key_upper in SECRET_SETTING_KEYS and not include_secrets:
+            continue
+        clean[key_upper] = value
+    username = _current_settings_username()
+    saved = save_app_settings(clean, username=username, defaults_overrides=_default_app_overrides())
+    if username:
+        _apply_runtime_settings_for_user(username, force=True)
+    if "LIBRARY_FOLDERS" in clean:
+        _kick_library_indexes_from_settings(saved)
+    return jsonify({"ok": True, "settings": masked_settings(saved), "imported_keys": sorted(clean.keys())})
 
 
 @app.route("/api/settings/save", methods=["POST"])
@@ -1162,7 +1716,7 @@ def api_settings_save():
             continue
         clean_settings[key_upper] = value
     username = _current_settings_username()
-    saved = save_app_settings(clean_settings, username=username)
+    saved = save_app_settings(clean_settings, username=username, defaults_overrides=_default_app_overrides())
 
     cfg = ensure_startup_security_config()
     if "PORT" in startup_updates:
@@ -1181,6 +1735,8 @@ def api_settings_save():
             globals()[key] = _coerce_config_value(key, value)
     if username:
         _apply_runtime_settings_for_user(username)
+    if "LIBRARY_FOLDERS" in clean_settings:
+        _kick_library_indexes_from_settings(saved)
     return jsonify({"ok": True, "settings": masked_settings(saved), "restart_required": True})
 
 
@@ -1206,10 +1762,549 @@ def api_settings_pick_path():
     return jsonify({"ok": True, "path": path})
 
 
+def _coerce_glass_defaults(raw: Any) -> dict[str, Any]:
+    keys = ["libraryList", "wheel", "pathPill", "infoPill", "listPills", "selectedRow"]
+    labels = {
+        "libraryList": "Library list",
+        "wheel": "Wheel",
+        "pathPill": "Path pill",
+        "infoPill": "Info pill",
+        "listPills": "List pills",
+        "selectedRow": "Selected row",
+    }
+    numeric_limits = {
+        "glassTint": (0.0, 2.0),
+        "resolution": (0.25, 3.0),
+        "refraction": (0.0, 0.25),
+        "bevelDepth": (0.0, 0.35),
+        "bevelWidth": (0.0, 0.5),
+        "frost": (0.0, 5.0),
+        "refractionFill": (0.0, 1.0),
+        "magnify": (0.001, 3.0),
+    }
+    source = raw if isinstance(raw, dict) else {}
+    out: dict[str, Any] = {}
+    if "infoPill" not in source and isinstance(source.get("pathPill"), dict):
+        source = dict(source)
+        source["infoPill"] = source["pathPill"]
+    elif "infoPill" not in source and isinstance(source.get("nowPlayingPill"), dict):
+        source = dict(source)
+        source["infoPill"] = source["nowPlayingPill"]
+    for key in keys:
+        item = source.get(key) if isinstance(source.get(key), dict) else {}
+        mode = str(item.get("mode") or "clear").strip().lower()
+        if mode not in {"clear", "light", "dark"}:
+            mode = "clear"
+        clean: dict[str, Any] = {"label": labels[key], "mode": mode}
+        for field, (min_value, max_value) in numeric_limits.items():
+            try:
+                value = float(item.get(field, 1.0 if field in {"glassTint", "magnify"} else 0.0))
+            except Exception:
+                value = 1.0 if field in {"glassTint", "magnify"} else 0.0
+            clean[field] = round(max(min_value, min(max_value, value)), 4)
+        clean["specular"] = bool(item.get("specular"))
+        clean["shadow"] = bool(item.get("shadow"))
+        out[key] = clean
+    return out
+
+
+def _coerce_advanced_ui_defaults(raw: Any, glass: dict[str, Any]) -> dict[str, Any]:
+    source = raw if isinstance(raw, dict) else {}
+
+    def clamp_num(key: str, fallback: float, min_value: float, max_value: float) -> float:
+        try:
+            value = float(source.get(key, fallback))
+        except Exception:
+            value = fallback
+        return round(max(min_value, min(max_value, value)), 4)
+
+    text_defaults = {
+        "wheelLabels": "transparent",
+        "pathPill": "transparent",
+        "infoPill": "transparent",
+        "rows": "transparent",
+        "rowPills": "transparent",
+        "selectedRow": "contrast",
+        "selectedRowPills": "contrast",
+    }
+    text_modes_raw = source.get("textModes") if isinstance(source.get("textModes"), dict) else {}
+    text_modes = {}
+    for key, fallback in text_defaults.items():
+        inherited = text_modes_raw.get("pathPill") if key == "infoPill" and "infoPill" not in text_modes_raw else fallback
+        value = str(text_modes_raw.get(key, inherited)).strip().lower()
+        text_modes[key] = value if value in {"black", "white", "engraved", "contrast", "transparent"} else fallback
+
+    fps_defaults = {
+        "selectedRow": 60,
+        "wheelTilt": 60,
+        "libraryList": 60,
+        "infoPill": 60,
+        "albumArtTransition": 60,
+        "pageTransition": 60,
+        "pathPill": 60,
+    }
+    fps_raw = source.get("animationFps") if isinstance(source.get("animationFps"), dict) else {}
+    animation_fps = {}
+    for key, fallback in fps_defaults.items():
+        try:
+            inherited = fps_raw.get("pathPill") if key == "infoPill" and "infoPill" not in fps_raw else fallback
+            value = int(fps_raw.get(key, inherited))
+        except Exception:
+            value = fallback
+        animation_fps[key] = value if value in {30, 60, 120} else fallback
+
+    preset = str(source.get("visualizerPreset") or "album").strip().lower()
+    if preset not in {"album", "aurora", "ember", "prism", "sonar", "cascade", "nova", "lattice"}:
+        preset = "album"
+    legacy_strength = str(source.get("visualizerStrength") or "high").strip().lower()
+    legacy_brightness = {"low": 35, "medium": 50, "high": 60}.get(legacy_strength, 60)
+    try:
+        brightness = int(source.get("visualizerMaxBrightnessPct", legacy_brightness))
+    except Exception:
+        brightness = legacy_brightness
+    brightness = max(0, min(200, brightness))
+    try:
+        fps_lock = int(source.get("visualizerFpsLock", 60))
+    except Exception:
+        fps_lock = 60
+    if fps_lock not in {30, 60, 120}:
+        fps_lock = 60
+
+    return {
+        "visualizer": bool(source.get("visualizer", True)),
+        "visualizerMaxBrightnessPct": brightness,
+        "visualizerPreset": preset,
+        "visualizerFpsLock": fps_lock,
+        "textModes": text_modes,
+        "textTransparency": clamp_num("textTransparency", 0.68, 0.0, 1.0),
+        "animationFps": animation_fps,
+        "performanceOverlayButton": bool(source.get("performanceOverlayButton", False)),
+        "performanceOverlayText": bool(source.get("performanceOverlayText", False)),
+        "liquidGlassElements": "__LIQUID_GLASS_DEFAULTS__",
+        "centerBounceAmount": clamp_num("centerBounceAmount", 0.075, 0.0, 0.3),
+        "centerBounceDuration": clamp_num("centerBounceDuration", 240.0, 0.0, 1000.0),
+        "centerBounceOvershoot": clamp_num("centerBounceOvershoot", 0.9, 0.0, 1.4),
+        "wheelClickTiltAmount": clamp_num("wheelClickTiltAmount", 0.5, 0.0, 1.0),
+        "wheelTiltRampDuration": clamp_num("wheelTiltRampDuration", 90.0, 0.0, 1000.0),
+        "wheelTiltReleaseDuration": clamp_num("wheelTiltReleaseDuration", 360.0, 0.0, 1200.0),
+        "infoPillDarkMultiplier": clamp_num("infoPillDarkMultiplier", 1.0, 0.0, 4.0),
+        "infoPillLightMultiplier": clamp_num("infoPillLightMultiplier", 1.0, 0.0, 4.0),
+    }
+
+
+def _replace_js_const_object(text: str, const_name: str, replacement: str) -> str:
+    needle = f"  const {const_name} = "
+    start = text.find(needle)
+    if start < 0:
+        raise ValueError(f"{const_name} not found")
+    brace_start = text.find("{", start)
+    if brace_start < 0:
+        raise ValueError(f"{const_name} opening brace not found")
+    depth = 0
+    in_string: str | None = None
+    escaped = False
+    for idx in range(brace_start, len(text)):
+        ch = text[idx]
+        if in_string:
+            if escaped:
+                escaped = False
+            elif ch == "\\":
+                escaped = True
+            elif ch == in_string:
+                in_string = None
+            continue
+        if ch in {"'", '"', "`"}:
+            in_string = ch
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                semi = text.find(";", idx)
+                if semi < 0:
+                    raise ValueError(f"{const_name} semicolon not found")
+                return text[:start] + f"  const {const_name} = {replacement};" + text[semi + 1 :]
+    raise ValueError(f"{const_name} closing brace not found")
+
+
+def _advanced_ui_defaults_js(defaults: dict[str, Any]) -> str:
+    json_text = json.dumps(defaults, indent=4)
+    json_text = json_text.replace('"__LIQUID_GLASS_DEFAULTS__"', "cloneGlassElementSettings(DEFAULT_LIQUID_GLASS_ELEMENT_SETTINGS)")
+    return json_text.replace("\n", "\n  ")
+
+
+def _replace_py_const_object(text: str, name: str, replacement: str) -> str:
+    start = text.find(name)
+    if start < 0:
+        raise ValueError(f"{name} not found")
+    eq = text.find("=", start)
+    brace_start = text.find("{", eq)
+    if eq < 0 or brace_start < 0:
+        raise ValueError(f"{name} opening brace not found")
+    depth = 0
+    in_string: str | None = None
+    escaped = False
+    for idx in range(brace_start, len(text)):
+        ch = text[idx]
+        if in_string:
+          if escaped:
+              escaped = False
+          elif ch == "\\":
+              escaped = True
+          elif ch == in_string:
+              in_string = None
+          continue
+        if ch in {"'", '"'}:
+            in_string = ch
+            continue
+        if ch == "{":
+            depth += 1
+        elif ch == "}":
+            depth -= 1
+            if depth == 0:
+                return text[:brace_start] + replacement + text[idx + 1 :]
+    raise ValueError(f"{name} closing brace not found")
+
+
+def _coerce_app_default_overrides(raw: Any) -> dict[str, Any]:
+    source = raw if isinstance(raw, dict) else {}
+    skip = set(SECRET_SETTING_KEYS) | {
+        "ADVANCED_UI_SETTINGS_DEFAULTS",
+        "LIBRARY_FOLDERS",
+        "SETUP_SKIPPED_SERVICES",
+        "SETUP_WIZARD_COMPLETE",
+    }
+    path_like_suffixes = ("_DIR", "_PATH")
+    out: dict[str, Any] = {}
+    for key, value in source.items():
+        key_upper = str(key).upper()
+        if key_upper not in APP_SETTING_KEYS or key_upper in skip or key_upper.endswith(path_like_suffixes):
+            continue
+        if value == "***":
+            continue
+        try:
+            out[key_upper] = _coerce_config_value(key_upper, value)
+        except Exception:
+            pass
+    return out
+
+
+def _commit_app_defaults(settings: dict[str, Any]) -> None:
+    path = Path(__file__).resolve().parent / "settings.py"
+    text = path.read_text(encoding="utf-8")
+    rendered = pprint.pformat(settings, width=120, sort_dicts=False)
+    text = _replace_py_const_object(text, "DEFAULT_APP_SETTINGS", rendered)
+    path.write_text(text, encoding="utf-8")
+
+
+def _commit_startup_defaults(startup: Any) -> None:
+    if not isinstance(startup, dict):
+        return
+    path = Path(__file__).resolve().parent / "config.py"
+    text = path.read_text(encoding="utf-8")
+    if "PORT" in startup:
+        try:
+            port = max(1, min(65535, int(startup.get("PORT"))))
+            text = re.sub(r'("PORT":\s*)[^,\n]+', r"\g<1>" + str(port), text, count=1)
+        except Exception:
+            pass
+    if "ENABLE_MCP" in startup:
+        enabled = "True" if bool(startup.get("ENABLE_MCP")) else "False"
+        text = re.sub(r'("ENABLE_MCP":\s*)[^,\n]+', r"\g<1>" + enabled, text, count=1)
+    path.write_text(text, encoding="utf-8")
+
+
+@app.route("/api/ui/advanced_defaults/commit", methods=["POST"])
+def api_ui_advanced_defaults_commit():
+    return jsonify({"ok": False, "error": "Source rewriting is disabled. Use /api/ui/advanced_defaults/save."}), 410
+
+
+@app.route("/api/ui/advanced_defaults/save", methods=["POST"])
+def api_ui_advanced_defaults_save():
+    data = request.get_json(silent=True) or {}
+    try:
+        glass = _coerce_glass_defaults(data.get("liquidGlassElements"))
+        defaults = _coerce_advanced_ui_defaults(data.get("uiSettings"), glass)
+        defaults["liquidGlassElements"] = glass
+        next_defaults = load_default_app_config_overrides()
+        next_defaults.update(_coerce_app_default_overrides(data.get("appSettings")))
+        next_defaults["ADVANCED_UI_SETTINGS_DEFAULTS"] = defaults
+        path = save_default_app_config_overrides(next_defaults)
+    except Exception as exc:
+        target = str(getattr(save_default_app_config_overrides, "__defaults_path__", "") or (Path(__file__).resolve().parent.parent / "config" / "debripod.defaults.json"))
+        return jsonify({"ok": False, "error": f"Failed to write defaults config: {target}: {exc}", "path": target}), 500
+    username = _current_settings_username()
+    if username:
+        _apply_runtime_settings_for_user(username, force=True)
+    return jsonify({
+        "ok": True,
+        "path": str(path),
+        "saved_keys": sorted(next_defaults.keys()),
+        "advanced_ui_defaults": defaults,
+        "skipped_secret_defaults": sorted(SECRET_SETTING_KEYS),
+    })
+
+
+@app.route("/api/ui/advanced_defaults/reset", methods=["POST"])
+def api_ui_advanced_defaults_reset():
+    try:
+        next_defaults = load_default_app_config_overrides()
+        removed = "ADVANCED_UI_SETTINGS_DEFAULTS" in next_defaults
+        next_defaults.pop("ADVANCED_UI_SETTINGS_DEFAULTS", None)
+        path = save_default_app_config_overrides(next_defaults)
+    except Exception as exc:
+        target = str(Path(__file__).resolve().parent.parent / "config" / "debripod.defaults.json")
+        return jsonify({"ok": False, "error": f"Failed to write defaults config: {target}: {exc}", "path": target}), 500
+    username = _current_settings_username()
+    if username:
+        _apply_runtime_settings_for_user(username, force=True)
+    return jsonify({"ok": True, "path": str(path), "removed": removed, "saved_keys": sorted(next_defaults.keys())})
+
+
 @app.route("/api/library/building", methods=["GET"])
 def api_library_building():
     any_building, roots_status = index_building_status()
-    return jsonify({"ok": True, "any_building": any_building, "roots": roots_status})
+    return jsonify({"ok": True, "any_building": any_building, "roots": roots_status, "versions": library_root_versions()})
+
+
+@app.route("/api/client-state", methods=["GET"])
+def api_client_state():
+    for rid, _, root_abs, mode in roots():
+        try:
+            ensure_index_async(rid, root_abs, mode=mode)
+            library_watch_root(rid, root_abs, mode=mode)
+        except Exception:
+            pass
+    any_building, roots_status = index_building_status()
+    username = _current_settings_username()
+    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
+    search_history_items = _load_search_history()
+    with PLAYBACK_STATE_LOCK:
+        playback_recent = PLAYBACK_STATE.get("recent") or []
+        playback_version = int(PLAYBACK_STATE.get("version") or len(playback_recent) or 0)
+    services = _service_status_payload(settings)
+    return jsonify({
+        "ok": True,
+        "user": username,
+        "app_version": str(VERSION_INFO.get("display_version") or VERSION),
+        "short_commit": str(VERSION_INFO.get("short_commit") or ""),
+        "asset_version": str(ASSET_VERSION),
+        "icon_version": str(ICON_VERSION),
+        "settings_version": abs(hash(json.dumps(masked_settings(settings), sort_keys=True, default=str))) % 1000000007,
+        "library_versions": library_root_versions(),
+        "search_history_version": int(max([float(x.get("ts") or 0) for x in search_history_items] + [0])),
+        "playback_version": playback_version,
+        "service_status_version": abs(hash(json.dumps(services, sort_keys=True, default=str))) % 1000000007,
+        "setup_complete": bool(settings.get("SETUP_WIZARD_COMPLETE")),
+        "library_building": any_building,
+        "library_building_roots": roots_status,
+    })
+
+
+@app.route("/api/performance", methods=["GET"])
+def api_performance():
+    username = _current_settings_username()
+    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
+    any_building, roots_status = index_building_status()
+    services = _service_status_payload(settings)
+    service_summary = {}
+    for key, value in services.items():
+        if isinstance(value, dict):
+            service_summary[key] = {
+                "status": str(value.get("status") or ""),
+                "configured": bool(value.get("configured") or value.get("api_configured") or value.get("set")),
+                "connected": bool(value.get("connected")),
+                "error": str(value.get("error") or value.get("warning") or ""),
+            }
+    return jsonify({
+        "ok": True,
+        "library_versions": library_root_versions(),
+        "indexing": {"any_building": bool(any_building), "roots": roots_status, "enrichment": enrichment_status()},
+        "services": service_summary,
+        "api_timings": list(_RECENT_API_TIMINGS[-30:]),
+        "version": {
+            "display": str(VERSION_INFO.get("display_version") or VERSION),
+            "source": str(VERSION_INFO.get("source") or ""),
+            "short_commit": str(VERSION_INFO.get("short_commit") or ""),
+            "dirty": bool(VERSION_INFO.get("dirty")),
+            "asset_version": str(ASSET_VERSION),
+            "icon_version": str(ICON_VERSION),
+        },
+        "server_time": time.time(),
+    })
+
+
+@app.route("/api/sync", methods=["GET"])
+def api_sync():
+    username = _current_settings_username()
+    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
+    try:
+        since = json.loads(request.args.get("since") or "{}")
+    except Exception:
+        since = {}
+    if not isinstance(since, dict):
+        since = {}
+    since_roots = since.get("library_versions") if isinstance(since.get("library_versions"), dict) else {}
+    root_payload = [{"id": rid, "name": name, "mode": mode, "version": int(library_root_versions().get(rid) or 0)} for rid, name, _, mode in roots()]
+    library_changes = []
+    deleted = []
+    for rid, _, root_abs, mode in roots():
+        try:
+            ensure_index_async(rid, root_abs, mode=mode)
+        except Exception:
+            pass
+        old_v = int(since_roots.get(rid) or 0)
+        manifest = library_manifest(rid, since_version=old_v)
+        if manifest:
+            items = manifest.get("items") or []
+            library_changes.extend([dict(item, root_id=rid) for item in items if not item.get("deleted")])
+            deleted.extend([dict(item, root_id=rid) for item in items if item.get("deleted")])
+    with PLAYBACK_STATE_LOCK:
+        now = PLAYBACK_STATE.get("now")
+        recent = PLAYBACK_STATE.get("recent") or []
+        version = int(PLAYBACK_STATE.get("version") or len(recent) or 0)
+        playback = {"now": dict(now) if isinstance(now, dict) else None, "recent": [dict(x) for x in recent if isinstance(x, dict)][:100], "session": dict(PLAYBACK_STATE.get("playback_session") or {}), "version": version}
+    for item in playback.get("recent") or []:
+        for key in ["_key", "_sess", "_stream_item"]:
+            item.pop(key, None)
+    if isinstance(playback.get("now"), dict):
+        for key in ["_key", "_sess", "_stream_item"]:
+            playback["now"].pop(key, None)
+    state_payload = {
+        "ok": True,
+        "server_version": int(time.time()),
+        "user": username,
+        "asset_version": str(ASSET_VERSION),
+        "icon_version": str(ICON_VERSION),
+        "roots": root_payload,
+        "library_versions": library_root_versions(),
+        "library_changes": library_changes,
+        "deleted": deleted,
+        "settings": masked_settings(settings),
+        "advanced_ui_defaults": _advanced_ui_defaults_from_settings(settings),
+        "search_history": _load_search_history(),
+        "playback": playback,
+        "services": _service_status_payload(settings),
+        "setup_complete": bool(settings.get("SETUP_WIZARD_COMPLETE")),
+    }
+    return jsonify(state_payload)
+
+
+@app.route("/api/library/manifest", methods=["GET"])
+def api_library_manifest():
+    root_id = (request.args.get("root_id") or "").strip()
+    try:
+        since_version = int(request.args.get("since_version") or 0)
+    except Exception:
+        since_version = 0
+    r = root_by_id(root_id)
+    if not r:
+        abort(404)
+    _, _, root_abs, mode = r
+    try:
+        ensure_index_async(root_id, root_abs, mode=mode)
+    except Exception:
+        pass
+    manifest = library_manifest(root_id, since_version=max(0, since_version))
+    if manifest is None:
+        return jsonify({"ok": True, "root_id": root_id, "version": 0, "items": [], "building": True, "stale": True})
+    return jsonify({"ok": True, **manifest, "building": bool(index_building_status()[1].get(root_id)), "stale": False})
+
+
+@app.route("/api/library/palette", methods=["GET", "POST"])
+def api_library_palette():
+    if request.method == "GET":
+        cache_key = (request.args.get("key") or "").strip()
+        if not cache_key:
+            return jsonify({"ok": False, "error": "Missing palette key"}), 400
+        palette = load_palette(cache_key)
+        if palette is None:
+            palette = _palette_from_art_cache_key(cache_key)
+        return jsonify({"ok": True, "palette": palette})
+
+    data = request.get_json(silent=True) or {}
+    cache_key = str(data.get("key") or "").strip()
+    palette = data.get("palette")
+    if not cache_key or not isinstance(palette, dict):
+        return jsonify({"ok": False, "error": "Missing palette key or palette"}), 400
+    save_palette(
+        cache_key,
+        palette,
+        source_kind=str(data.get("source_kind") or ""),
+        source_identity=str(data.get("source_identity") or ""),
+        root_id=str(data.get("root_id") or ""),
+        rel=str(data.get("rel") or ""),
+    )
+    return jsonify({"ok": True})
+
+
+def _palette_from_art_cache_key(cache_key: str) -> dict | None:
+    try:
+        path_part = str(cache_key or "").split("|", 1)[0]
+        marker = "/art/"
+        if marker not in path_part:
+            return None
+        suffix = path_part.split(marker, 1)[1].strip("/")
+        if not suffix or "/" not in suffix:
+            return None
+        root_id, rel_encoded = suffix.split("/", 1)
+        root_id = unquote(root_id)
+        rel = unquote(rel_encoded)
+        if not root_id or not rel:
+            return None
+        return load_palette_for_media(root_id, rel)
+    except Exception:
+        return None
+
+
+@app.route("/api/library/analysis", methods=["GET"])
+def api_library_analysis():
+    root_id = (request.args.get("root_id") or "").strip()
+    rel = (request.args.get("rel") or "").strip()
+    if not root_id or not rel:
+        return jsonify({"ok": False, "error": "Missing root_id or rel"}), 400
+    r = root_by_id(root_id)
+    if not r:
+        abort(404)
+    analysis = load_visualizer_analysis_for_media(root_id, rel)
+    def start_video_analysis_warm() -> bool:
+        try:
+            _, _, root_abs, _mode = r
+            abs_path = safe_path_join(root_abs, rel)
+            if not os.path.isfile(abs_path) or not is_video(abs_path):
+                return False
+            meta = file_meta_cached(abs_path)
+            return queue_video_analysis_warm(
+                abs_path,
+                root_id=root_id,
+                rel=rel,
+                media_id=f"{root_id}:{rel}",
+                duration=meta.get("duration") if isinstance(meta, dict) else None,
+            )
+        except Exception:
+            return False
+    try:
+        meta = analysis.get("metadata") if isinstance(analysis, dict) else {}
+        if isinstance(meta, dict) and meta.get("video_palette_pending"):
+            start_video_analysis_warm()
+    except Exception:
+        pass
+    if not analysis:
+        warming = start_video_analysis_warm()
+        return jsonify({"ok": True, "analysis": None, "stale": True, "warming": bool(warming)})
+    blob = analysis.pop("feature_blob", b"")
+    storage_compression = str(analysis.get("compression") or "none")
+    if storage_compression == "zlib":
+        try:
+            blob = zlib.decompress(blob)
+            analysis["storage_compression"] = storage_compression
+            analysis["compression"] = "none"
+        except Exception:
+            return jsonify({"ok": True, "analysis": None, "stale": True, "error": "Analysis cache is unreadable"})
+    analysis["feature_blob_b64"] = base64.b64encode(blob).decode("ascii")
+    analysis["feature_blob_encoding"] = "base64-raw"
+    return jsonify({"ok": True, "analysis": analysis, "stale": False})
 
 
 
@@ -1253,13 +2348,22 @@ def api_library_browse():
     r = root_by_id(root_id)
     if not r:
         abort(404)
-    _, _, root_abs, _ = r
+    _, _, root_abs, mode = r
     try:
         abs_path = safe_path_join(root_abs, rel)
     except ValueError:
         abort(400)
     if not os.path.isdir(abs_path):
         abort(404)
+
+    try:
+        ensure_index_async(root_id, root_abs, mode=mode)
+    except Exception:
+        pass
+
+    cached = load_folder_entries(root_id, rel, abs_path)
+    if cached is not None:
+        return jsonify(cached)
 
     entries = []
     try:
@@ -1292,7 +2396,9 @@ def api_library_browse():
         p = os.path.join(abs_path, f)
         media = "video" if is_video(p) else ("audio" if is_audio(p) else "")
         entries.append({"type": "file", "name": f, "rel": relp, "media": media})
-    return jsonify({"entries": entries})
+    version = save_folder_entries(root_id, rel, abs_path, entries)
+    building = bool(index_building_status()[1].get(root_id))
+    return jsonify({"entries": entries, "version": version, "building": building, "stale": False})
 
 
 @app.route("/api/library/metadata", methods=["GET"])
@@ -1304,13 +2410,13 @@ def api_library_metadata():
     r = root_by_id(root_id)
     if not r:
         abort(404)
-    _, _, root_abs, _ = r
+    _, _, root_abs, mode = r
 
     if level == "playlists":
         items = scan_root_playlists(root_abs)
         if not items:
             items = [{"kind": "info", "label": "No playlists found"}]
-        return jsonify({"items": items})
+        return jsonify({"items": items, "version": library_root_version(root_id), "stale": False})
 
     if level == "playlist_tracks":
         if is_smart_playlist_rel(value):
@@ -1319,10 +2425,11 @@ def api_library_metadata():
             items = playlist_tracks_for_root(root_abs, value)
         if not items:
             items = [{"kind": "info", "label": "No playable tracks found in playlist"}]
-        return jsonify({"items": items})
+        return jsonify({"items": items, "version": library_root_version(root_id), "stale": False})
 
-    ensure_index_async(root_id, root_abs)
+    ensure_index_async(root_id, root_abs, mode=mode)
     data = get_index(root_id)
+    building = bool(index_building_status()[1].get(root_id))
     if data is None:
         if level == "top":
             cats = [
@@ -1335,11 +2442,23 @@ def api_library_metadata():
                 {"key": "videos", "label": "Videos"},
                 {"key": "folders", "label": "Folders"},
             ]
-            return jsonify({"categories": cats, "building": True})
-        return jsonify({"items": [{"kind": "info", "label": "Indexing media files..."}], "building": True})
+            return jsonify({"categories": cats, "building": True, "version": 0, "stale": True})
+        return jsonify({"items": [{"kind": "info", "label": "Indexing media files..."}], "building": True, "version": 0, "stale": True})
 
     tracks = data.get("tracks") or []
     vids = data.get("videos") or []
+    version_value = int(data.get("version") or library_root_version(root_id))
+    facets = library_metadata_facets(root_id) or {}
+    response_meta = {"building": building, "version": version_value, "stale": building}
+
+    def facet_items(name: str, empty_label: str) -> list[dict]:
+        payload = facets.get(name)
+        if isinstance(payload, list):
+            return payload or [{"kind": "info", "label": empty_label}]
+        return []
+
+    def track_facet_key(*, artist: str = "", album: str = "", genre: str = "") -> str:
+        return json.dumps({"artist": artist, "album": album, "genre": genre}, ensure_ascii=False, sort_keys=True)
 
     if level == "top":
         cats = [
@@ -1352,15 +2471,26 @@ def api_library_metadata():
             {"key": "videos", "label": "Videos"},
             {"key": "folders", "label": "Folders"},
         ]
-        return jsonify({"categories": cats, "building": False})
+        return jsonify({"categories": cats, **response_meta})
 
     if level == "artists":
+        items = facet_items("artists", "No artist tags found")
+        if items:
+            return jsonify({"items": items, **response_meta})
         s = sorted({(t.get("artist") or "").strip() for t in tracks if (t.get("artist") or "").strip()}, key=lambda x: x.lower())
         items = [{"kind": "artist", "label": a, "value": a} for a in s] or [{"kind": "info", "label": "No artist tags found"}]
-        return jsonify({"items": items})
+        return jsonify({"items": items, **response_meta})
 
     if level == "albums":
         artist_filter = value
+        if artist_filter and isinstance(facets.get("albums_by_artist"), dict):
+            payload = facets.get("albums_by_artist", {}).get(artist_filter)
+            if isinstance(payload, list):
+                return jsonify({"items": payload or [{"kind": "info", "label": "No albums found"}], **response_meta})
+        if not artist_filter:
+            payload = facet_items("albums", "No albums found")
+            if payload:
+                return jsonify({"items": payload, **response_meta})
         albums = []
         seen = set()
         for t in tracks:
@@ -1385,7 +2515,7 @@ def api_library_metadata():
 
         if not albums:
             albums = [{"kind": "info", "label": "No albums found"}]
-        return jsonify({"items": albums})
+        return jsonify({"items": albums, **response_meta})
 
     if level == "tracks":
         try:
@@ -1397,7 +2527,11 @@ def api_library_metadata():
         genre = (sel.get("genre") or "").strip()
         liked_only = bool(sel.get("liked") or sel.get("loved") or sel.get("liked_only"))
         if liked_only and not lastfm_enabled():
-            return jsonify({"items": [{"kind": "info", "label": "Last.fm not configured"}]})
+            return jsonify({"items": [{"kind": "info", "label": "Last.fm is not configured. Add API credentials or skip Last.fm features."}], **response_meta})
+        if not liked_only and isinstance(facets.get("tracks_by_key"), dict):
+            payload = facets.get("tracks_by_key", {}).get(track_facet_key(artist=artist, album=album, genre=genre))
+            if isinstance(payload, list):
+                return jsonify({"items": payload or [{"kind": "info", "label": "No tracks found"}], **response_meta})
         tr = []
         for t in tracks:
             if artist and (t.get("artist") or "").strip() != artist:
@@ -1417,12 +2551,12 @@ def api_library_metadata():
         tr.sort(key=lambda x: track_sort_key(x.get("badge") or "") + (x.get("label") or "",))
         if not tr:
             tr = [{"kind": "info", "label": "No tracks found"}]
-        return jsonify({"items": tr})
+        return jsonify({"items": tr, **response_meta})
 
 
     if level == "liked_songs":
         if not lastfm_enabled():
-            return jsonify({"items": [{"kind": "info", "label": "Last.fm not configured"}]})
+            return jsonify({"items": [{"kind": "info", "label": "Last.fm is not configured. Add API credentials or skip Last.fm features."}], **response_meta})
         items = []
         for t in tracks:
             a = (t.get("artist") or "").strip()
@@ -1436,23 +2570,33 @@ def api_library_metadata():
         items.sort(key=lambda x: (x.get("label") or "").lower())
         if not items:
             items = [{"kind": "info", "label": "No liked songs found"}]
-        return jsonify({"items": items[:3000]})
+        return jsonify({"items": items[:3000], **response_meta})
 
     if level == "songs":
+        items = facet_items("songs", "No songs found")
+        if items:
+            return jsonify({"items": items, **response_meta})
         s = sorted(tracks, key=lambda x: (x.get("title") or x.get("name") or "").lower())
         items = [{"kind": "track", "label": (t.get("title") or t.get("name") or "Track"), "rel": t.get("rel")} for t in s[:3000]]
         if not items:
             items = [{"kind": "info", "label": "No songs found"}]
-        return jsonify({"items": items})
+        return jsonify({"items": items, **response_meta})
 
     if level == "genres":
+        items = facet_items("genres", "No genre tags found")
+        if items:
+            return jsonify({"items": items, **response_meta})
         s = sorted({(t.get("genre") or "").strip() for t in tracks if (t.get("genre") or "").strip()}, key=lambda x: x.lower())
         items = [{"kind": "genre", "label": g, "value": g} for g in s] or [{"kind": "info", "label": "No genre tags found"}]
 
-        return jsonify({"items": items})
+        return jsonify({"items": items, **response_meta})
 
     if level == "genre_albums":
         genre = value
+        if isinstance(facets.get("genre_albums"), dict):
+            payload = facets.get("genre_albums", {}).get(genre)
+            if isinstance(payload, list):
+                return jsonify({"items": payload or [{"kind": "info", "label": "No tracks found"}], **response_meta})
         albums = []
         seen = set()
         any_match = False
@@ -1482,10 +2626,14 @@ def api_library_metadata():
 
         if not albums:
             albums = [{"kind": "info", "label": "No tracks found"}]
-        return jsonify({"items": albums})
+        return jsonify({"items": albums, **response_meta})
 
     if level == "genre_tracks":
         genre = value
+        if isinstance(facets.get("tracks_by_key"), dict):
+            payload = facets.get("tracks_by_key", {}).get(track_facet_key(genre=genre))
+            if isinstance(payload, list):
+                return jsonify({"items": payload or [{"kind": "info", "label": "No tracks found"}], **response_meta})
         items = []
         for t in tracks:
             if (t.get("genre") or "").strip() != genre:
@@ -1495,17 +2643,20 @@ def api_library_metadata():
         items.sort(key=lambda x: (x.get("label") or "").lower())
         if not items:
             items = [{"kind": "info", "label": "No tracks found"}]
-        return jsonify({"items": items})
+        return jsonify({"items": items, **response_meta})
 
     if level == "videos":
+        items = facet_items("videos", "No videos found")
+        if items:
+            return jsonify({"items": items, **response_meta})
         items = []
         for v in sorted(vids, key=lambda x: (x.get("title") or x.get("name") or "").lower())[:3000]:
             items.append({"kind": "file", "label": v.get("name") or v.get("title") or "Video", "rel": v.get("rel"), "media": "video", "badge": "video"})
         if not items:
             items = [{"kind": "info", "label": "No videos found"}]
-        return jsonify({"items": items})
+        return jsonify({"items": items, **response_meta})
 
-    return jsonify({"items": [{"kind": "info", "label": "Unsupported view"}]})
+    return jsonify({"items": [{"kind": "info", "label": "Unsupported view"}], **response_meta})
 
 
 @app.route("/api/library/playlist_create", methods=["POST"])
@@ -2012,4 +3163,5 @@ def create_app() -> Flask:
     mcp_routes.app.apply_to(real_app)
     app.apply_to(real_app)
     register_auth(real_app)
+    real_app.after_request(add_request_timing_headers)
     return real_app

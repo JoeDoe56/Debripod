@@ -11,16 +11,25 @@
   <meta name="theme-color" content="#000000">
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="DebriPod">
-  <link rel="preconnect" href="https://fonts.googleapis.com">
-  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-  <link href="https://fonts.googleapis.com/css2?family=Open+Sans:wght@400;600;700&display=swap" rel="stylesheet">
   {% if autorefresh %}
   <meta http-equiv="refresh" content="{{ autorefresh }}">
   {% endif %}
-    <link rel="stylesheet" href="{{ url_for('static', filename='debripod.css') }}?v={{ icon_v }}">
+    <link rel="stylesheet" href="{{ url_for('static', filename='debripod.css') }}?v={{ asset_v }}">
 
 </head>
 <body>
+  <div class="passkeyGate" id="passkeyGate" hidden>
+    <div class="passkeyGatePanel">
+      <div class="passkeyGateKicker">Account security</div>
+      <h1>Create a passkey?</h1>
+      <p>Use this device or your system credential manager to sign in faster next time. Your DebriPod password will still work.</p>
+      <div class="passkeyGateError" id="passkeyGateError" role="status"></div>
+      <div class="passkeyGateActions">
+        <button type="button" id="passkeyGateAdd">Create Passkey</button>
+        <button type="button" class="secondary" id="passkeyGateSkip">Not Now</button>
+      </div>
+    </div>
+  </div>
   <div class="wrap" id="divwrap">
     <canvas class="visualizerBg off" id="visualizerBg" aria-hidden="true"></canvas>
     <div style="margin-top:0;">
@@ -29,43 +38,25 @@
           <div class="topPills">
             <div class="pathPill" id="libHeader">
               <div class="pathPillGlass liquidGlass" aria-hidden="true"></div>
-              <span class="pathPillText hScrollText" id="libHeaderText" data-liquid-ignore>Library</span>
+              <div class="pathPillRows" data-liquid-ignore>
+                <div class="pathPillRow pathPillPathRow">
+                  <span class="pathPillText hScrollText glassText" id="libHeaderText" data-text="Library" data-liquid-ignore>Library</span>
+                </div>
+                <div class="pathPillRow pathPillNowRow" id="pathPillNowRow">
+                  <span class="pathPillNowText glassText" id="pathPillNowText" data-text="" data-liquid-ignore></span>
+                </div>
+              </div>
             </div>
           </div>
 
           <div class="ipodScreen" id="ipodScreen">
-            <div class="screenGlassFrame liquidGlass" aria-hidden="true"></div>
             <div class="ipodScreenContent">
+              <div id="libListSelectedGlass" class="libListSelectedGlass liquidGlass" aria-hidden="true"></div>
+              <ul class="ipodList liquidGlass" id="libList" data-liquid-list-surface></ul>
 
               <div class="nowPlaying" id="nowPlaying">
-                <img class="npArt" id="npArt" alt="">
-                <img class="npArt npArtSwapLayer npArtSwapHidden" id="npArtSwap" alt="">
-
-                <div class="npOverlayPill" id="npOverlayPill">
-                  <div class="npOverlayGlass liquidGlass" aria-hidden="true"></div>
-                  <div class="npOverlaySurface" id="npOverlaySurface" data-liquid-ignore>
-                    <div class="npTitle" id="npTitle"></div>
-                    <div class="npSub" id="npSub"></div>
-
-                    <div class="npBarArea">
-                      <div class="npProgressWrap" id="npProgressWrap">
-                        <input class="npSeek" id="npSeek" type="range" min="0" max="1000" value="0">
-                        <div class="npSeekIndicator" id="npSeekIndicator"></div>
-                      </div>
-
-                      <div class="npVolumeWrap" id="npVolumeWrap">
-                        <div class="npVolumeBar"><div class="npVolumeFill" id="npVolumeFill"></div></div>
-                      </div>
-                    </div>
-
-                    <div class="npTime">
-                      <div id="npCur">0:00</div>
-                      <div class="npTechInline" id="npTech"></div>
-                      <div id="npDur">0:00</div>
-                    </div>
-                  </div>
-                </div>
-
+                <img class="npArtStill" id="npArtStill" alt="" aria-hidden="true" data-liquid-ignore>
+                <canvas class="npArt" id="npArt" aria-label="Album art" data-liquid-ignore></canvas>
 
                 <div class="npVideoOverlay" id="npVideoOverlay" style="display:none;">
                   <video id="npVideo" controls autoplay playsinline></video>
@@ -73,8 +64,28 @@
 
                 <audio id="audioMain" preload="auto" playsinline></audio>
               </div>
+            </div>
+          </div>
 
-              <ul class="ipodList" id="libList"></ul>
+          <div class="bottomPills" id="bottomPills">
+            <div class="infoPill infoPillHidden" id="infoPill">
+              <div class="infoPillGlass liquidGlass" aria-hidden="true"></div>
+              <div class="infoPillContent" id="infoPillContent" data-liquid-ignore>
+                <div class="npBarArea">
+                  <div class="npProgressWrap" id="npProgressWrap">
+                    <input class="npSeek" id="npSeek" type="range" min="0" max="1000" value="0">
+                    <div class="npSeekIndicator" id="npSeekIndicator"></div>
+                  </div>
+                  <div class="npVolumeWrap" id="npVolumeWrap">
+                    <div class="npVolumeBar"><div class="npVolumeFill" id="npVolumeFill"></div></div>
+                  </div>
+                </div>
+                <div class="npTime">
+                  <div id="npCur">0:00</div>
+                  <div class="npTechInline" id="npTech"></div>
+                  <div id="npDur">0:00</div>
+                </div>
+              </div>
             </div>
           </div>
 
@@ -82,10 +93,10 @@
             <div class="ipodWheelWrap">
               <div class="wheel" id="wheel">
                 <div class="wheelGlassRing liquidGlass" id="wheelGlassRing" aria-hidden="true"></div>
-                <div class="wheelLabel wlTop" data-liquid-ignore><span class="menuWord">MENU</span></div>
-                <div class="wheelLabel wlLeft" data-liquid-ignore><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 7 6 12l5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M18 7l-5 5 5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
-                <div class="wheelLabel wlRight" data-liquid-ignore><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m13 7 5 5-5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="m6 7 5 5-5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
-                <div class="wheelLabel wlBottom" data-liquid-ignore><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5c2 0 3.3 0 4.4.8 1.1.7 2 2 3 3.4 1-1.4 1.9-2.7 3-3.4 1.1-.8 2.4-.8 4.4-.8" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 17h3v-3" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></svg></div>
+                <div class="wheelLabel wlTop" data-liquid-ignore><span class="menuWord glassText" data-text="MENU">MENU</span></div>
+                <div class="wheelLabel wlLeft" data-liquid-ignore><span class="glassGlyph"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 7 6 12l5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M18 7l-5 5 5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 7 6 12l5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M18 7l-5 5 5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M11 7 6 12l5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="M18 7l-5 5 5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
+                <div class="wheelLabel wlRight" data-liquid-ignore><span class="glassGlyph"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m13 7 5 5-5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="m6 7 5 5-5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m13 7 5 5-5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="m6 7 5 5-5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg><svg viewBox="0 0 24 24" aria-hidden="true"><path d="m13 7 5 5-5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/><path d="m6 7 5 5-5 5" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
+                <div class="wheelLabel wlBottom" data-liquid-ignore><span class="glassGlyph"><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5c2 0 3.3 0 4.4.8 1.1.7 2 2 3 3.4 1-1.4 1.9-2.7 3-3.4 1.1-.8 2.4-.8 4.4-.8" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 17h3v-3" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></svg><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5c2 0 3.3 0 4.4.8 1.1.7 2 2 3 3.4 1-1.4 1.9-2.7 3-3.4 1.1-.8 2.4-.8 4.4-.8" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 17h3v-3" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></svg><svg viewBox="0 0 24 24" aria-hidden="true"><path d="M4 9.5c2 0 3.3 0 4.4.8 1.1.7 2 2 3 3.4 1-1.4 1.9-2.7 3-3.4 1.1-.8 2.4-.8 4.4-.8" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 7h3v3" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/><path d="M17 17h3v-3" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round"/></svg></span></div>
 
                 <div class="wheelHit hitTop wheelBtn" id="btnMenu" title="Menu"></div>
                 <div class="wheelHit hitLeft wheelBtn" id="btnRev" title="Previous track"></div>
@@ -106,15 +117,38 @@
 
   
 
-<script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
-<script src="https://cdn.jsdelivr.net/npm/@zumer/snapdom/dist/snapdom.js"></script>
-<script src="{{ url_for('static', filename='liquidGL.js') }}?v={{ icon_v }}"></script>
+<script src="{{ url_for('static', filename='vendor/hls-local.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='liquidGL.js') }}?v={{ asset_v }}"></script>
 <script>
   window.DEBRIPOD_APP_INFO = {{ info_json|safe }};
+  window.DEBRIPOD_ASSET_VERSION = {{ asset_v|tojson }};
+  window.DEBRIPOD_ICON_VERSION = {{ icon_v|tojson }};
   window.DEBRIPOD_TASKS_POLL_MS = {{ tasks_poll_ms }};
   window.DEBRIPOD_CSRF_TOKEN = {{ csrf_token|tojson }};
 </script>
-<script src="{{ url_for('static', filename='debripod.js') }}?v={{ icon_v }}"></script>
+<script src="{{ url_for('static', filename='js/platform.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/api-client.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/passkeys.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/ui-settings.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/frame-scheduler.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/app-state.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/liquid-glue.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/format-utils.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/path-pill.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/playback-loader.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/visualizer-engine.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/album-art-texture.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/now-playing-ui.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/media-session.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/playback-sync.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/list-view.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/settings-ui.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/search-tasks-ui.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/library-browser.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/wheel-controls.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/client-sync.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/performance-overlay.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='debripod.js') }}?v={{ asset_v }}"></script>
 </body>
 </html>
 
