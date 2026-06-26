@@ -1471,7 +1471,7 @@ def _setup_skipped_services(settings: dict[str, Any]) -> dict[str, str]:
     if isinstance(raw, dict):
         for key, value in raw.items():
             k = str(key or "").strip().lower()
-            if k in {"library", "real_debrid", "soulseek", "lastfm", "youtube", "ffmpeg", "ffprobe", "downloads", "knaben"}:
+            if k in {"library", "real_debrid", "soulseek", "lastfm", "youtube", "ffmpeg", "ffprobe", "ytdlp", "downloads", "knaben"}:
                 out[k] = "skipped" if str(value or "").strip().lower() == "skipped" else str(value or "").strip().lower()
     return out
 
@@ -1544,15 +1544,60 @@ def _service_status_payload(settings: dict[str, Any]) -> dict[str, Any]:
         },
         "ffmpeg": tools["ffmpeg"],
         "ffprobe": tools["ffprobe"],
+        "ytdlp": tools["yt_dlp"],
     }
 
 
 def _setup_status_for_user(username: str, settings: dict[str, Any]) -> dict[str, Any]:
     folders = settings.get("LIBRARY_FOLDERS") if isinstance(settings.get("LIBRARY_FOLDERS"), list) else []
-    has_services = any(str(settings.get(key) or "").strip() for key in ("REAL_DEBRID_API_KEY", "SOULSEEK_USERNAME", "SOULSEEK_PASSWORD", "LASTFM_API_KEY", "LASTFM_API_SECRET", "LASTFM_SESSION_KEY"))
     skipped = _setup_skipped_services(settings)
-    required_complete = bool(folders) or skipped.get("library") == "skipped"
-    should_show = not bool(settings.get("SETUP_WIZARD_COMPLETE")) and (not folders and not has_services)
+    required_complete = bool(folders)
+    has_optional_setup = any(
+        str(settings.get(key) or "").strip()
+        for key in (
+            "REAL_DEBRID_API_KEY",
+            "SOULSEEK_USERNAME",
+            "SOULSEEK_PASSWORD",
+            "LASTFM_API_KEY",
+            "LASTFM_API_SECRET",
+            "LASTFM_SESSION_KEY",
+            "FFMPEG_PATH",
+            "FFPROBE_PATH",
+            "YTDLP_CMD",
+            "DOWNLOAD_DIR",
+            "SOULSEEK_DOWNLOAD_DIR",
+            "YOUTUBE_DOWNLOAD_DIR",
+        )
+    )
+    should_show = not bool(settings.get("SETUP_WIZARD_COMPLETE")) and not (folders and has_optional_setup)
+    services = _service_status_payload(settings)
+    tools = {
+        "ffmpeg": services.get("ffmpeg") or executable_status(str(settings.get("FFMPEG_PATH") or "ffmpeg")),
+        "ffprobe": services.get("ffprobe") or executable_status(str(settings.get("FFPROBE_PATH") or "ffprobe")),
+        "ytdlp": services.get("ytdlp") or executable_status(str(settings.get("YTDLP_CMD") or "yt-dlp")),
+    }
+    setup = {
+        "library_configured": bool(folders),
+        "youtube_download_folder_configured": bool(str(settings.get("YOUTUBE_DOWNLOAD_DIR") or "").strip()),
+        "soulseek_username_configured": bool(str(settings.get("SOULSEEK_USERNAME") or "").strip()),
+        "soulseek_password_configured": bool(str(settings.get("SOULSEEK_PASSWORD") or "").strip()),
+        "soulseek_download_folder_configured": bool(str(settings.get("SOULSEEK_DOWNLOAD_DIR") or "").strip()),
+        "lastfm_api_key_configured": bool(str(settings.get("LASTFM_API_KEY") or "").strip()),
+        "lastfm_secret_configured": bool(str(settings.get("LASTFM_API_SECRET") or "").strip()),
+        "lastfm_session_configured": bool(lastfm_session_key()),
+        "real_debrid_token_configured": bool(str(settings.get("REAL_DEBRID_API_KEY") or "").strip()),
+        "real_debrid_download_folder_configured": bool(str(settings.get("DOWNLOAD_DIR") or "").strip()),
+    }
+    setup["tools_complete"] = bool(tools["ffmpeg"].get("ok") and tools["ffprobe"].get("ok") and tools["ytdlp"].get("ok") and setup["youtube_download_folder_configured"])
+    setup["soulseek_lastfm_complete"] = bool(
+        setup["soulseek_username_configured"]
+        and setup["soulseek_password_configured"]
+        and setup["soulseek_download_folder_configured"]
+        and setup["lastfm_api_key_configured"]
+        and setup["lastfm_secret_configured"]
+        and setup["lastfm_session_configured"]
+    )
+    setup["real_debrid_complete"] = bool(setup["real_debrid_token_configured"] and setup["real_debrid_download_folder_configured"])
     return {
         "ok": True,
         "username": username,
@@ -1560,8 +1605,16 @@ def _setup_status_for_user(username: str, settings: dict[str, Any]) -> dict[str,
         "should_show": bool(should_show),
         "required_complete": bool(required_complete),
         "library_folder_count": len(folders),
+        "library_folders": folders,
         "skipped": skipped,
-        "services": _service_status_payload(settings),
+        "tools": tools,
+        "settings": {
+            "YOUTUBE_DOWNLOAD_DIR": str(settings.get("YOUTUBE_DOWNLOAD_DIR") or ""),
+            "SOULSEEK_DOWNLOAD_DIR": str(settings.get("SOULSEEK_DOWNLOAD_DIR") or ""),
+            "DOWNLOAD_DIR": str(settings.get("DOWNLOAD_DIR") or ""),
+        },
+        "setup": setup,
+        "services": services,
     }
 
 
@@ -1576,7 +1629,7 @@ def api_setup_status():
 def api_setup_skip():
     data = request.get_json(silent=True) or {}
     service = str(data.get("service") or "").strip().lower()
-    allowed = {"library", "real_debrid", "soulseek", "lastfm", "youtube", "ffmpeg", "ffprobe", "downloads", "knaben"}
+    allowed = {"library", "real_debrid", "soulseek", "lastfm", "youtube", "ffmpeg", "ffprobe", "ytdlp", "downloads", "knaben"}
     if service not in allowed:
         return jsonify({"ok": False, "error": "Unknown setup step"}), 400
     username = _current_settings_username()
@@ -1584,6 +1637,8 @@ def api_setup_skip():
     skipped = _setup_skipped_services(settings)
     skipped[service] = "skipped"
     saved = save_app_settings({"SETUP_SKIPPED_SERVICES": skipped}, username=username, defaults_overrides=_default_app_overrides())
+    if username:
+        saved = _apply_runtime_settings_for_user(username, force=True)
     return jsonify(_setup_status_for_user(username, saved))
 
 
@@ -1593,8 +1648,10 @@ def api_setup_finish():
     settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
     status = _setup_status_for_user(username, settings)
     if not status.get("required_complete"):
-        return jsonify({"ok": False, "error": "Add a library folder or explicitly skip local library setup first."}), 400
+        return jsonify({"ok": False, "error": "Add a library folder before finishing setup."}), 400
     saved = save_app_settings({"SETUP_WIZARD_COMPLETE": True}, username=username, defaults_overrides=_default_app_overrides())
+    if username:
+        saved = _apply_runtime_settings_for_user(username, force=True)
     _kick_library_indexes_from_settings(saved)
     return jsonify(_setup_status_for_user(username, saved))
 

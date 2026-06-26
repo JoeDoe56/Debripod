@@ -1367,16 +1367,22 @@ if(it.kind === "libtasks_entry"){
     }
 
     if(it.kind === "settings_add_library_folder"){
-      const picked = await settingsPickPath("directory");
-      if(!picked) return;
-      await viewSettingsLibraryMode(picked, -1, true);
+      const setupReturnPage = String(it.setupReturnPage || "");
+      const picked = setupReturnPage && typeof setupPickPath === "function" ? await setupPickPath("directory") : await settingsPickPath("directory");
+      if(!picked){
+        if(setupReturnPage && typeof viewSetupEditor === "function"){
+          await viewSetupEditor({label:"Add folder", value:"", directory:true, libraryPath:true, returnPage:setupReturnPage}, true);
+        }
+        return;
+      }
+      await viewSettingsLibraryMode(picked, -1, true, setupReturnPage);
       return;
     }
 
     if(it.kind === "settings_library_folder"){
       const folders = libraryFolders();
       const f = folders[Number(it.folderIndex || 0)] || {};
-      await viewSettingsLibraryMode(String(f.path || ""), Number(it.folderIndex || 0), true);
+      await viewSettingsLibraryMode(String(f.path || ""), Number(it.folderIndex || 0), true, String(it.setupReturnPage || ""));
       return;
     }
 
@@ -1393,16 +1399,28 @@ if(it.kind === "libtasks_entry"){
       }
       try{
         await settingsSave({LIBRARY_FOLDERS: folders}, {});
-        await goBack();
-        await viewSettingsLibrary(false);
+        const setupReturnPage = String(cur.setupReturnPage || "");
+        if(setupReturnPage && typeof viewSetupWizardPage === "function"){
+          await viewSetupWizardPage(setupReturnPage, false);
+        }else{
+          await goBack();
+          await viewSettingsLibrary(false);
+        }
       }catch(e){
-        alert(String(e && e.message ? e.message : e));
+        const setupReturnPage = String(cur.setupReturnPage || "");
+        if(setupReturnPage && typeof libSetStatus === "function") libSetStatus(String(e && e.message ? e.message : e), "warn");
+        else alert(String(e && e.message ? e.message : e));
       }
       return;
     }
 
     if(it.kind === "settings_library_remove"){
       const cur = state.current || {};
+      const setupReturnPage = String(cur.setupReturnPage || "");
+      if(setupReturnPage && typeof viewSetupRemoveFolderConfirm === "function"){
+        await viewSetupRemoveFolderConfirm(Number(cur.folderIndex), String(cur.folderPath || ""), setupReturnPage, true);
+        return;
+      }
       const idx = Number(cur.folderIndex);
       const folders = libraryFolders();
       if(Number.isFinite(idx) && idx >= 0 && idx < folders.length){
