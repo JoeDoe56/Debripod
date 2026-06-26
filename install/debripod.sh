@@ -33,11 +33,25 @@ yes_or_no() {
   done
 }
 
+run_as_root() {
+  if [ "$(id -u)" = "0" ]; then
+    "$@"
+  elif has_command sudo; then
+    sudo "$@"
+  elif has_command doas; then
+    doas "$@"
+  else
+    die "Installing system packages needs sudo, doas, or a root shell."
+  fi
+}
+
 refresh_homebrew_path() {
   if [ -x "/opt/homebrew/bin/brew" ]; then
     eval "$(/opt/homebrew/bin/brew shellenv)"
   elif [ -x "/usr/local/bin/brew" ]; then
     eval "$(/usr/local/bin/brew shellenv)"
+  elif [ -x "/home/linuxbrew/.linuxbrew/bin/brew" ]; then
+    eval "$(/home/linuxbrew/.linuxbrew/bin/brew shellenv)"
   fi
 }
 
@@ -53,13 +67,21 @@ ensure_homebrew() {
     /bin/bash -c "$(curl -fsSL https://raw.githubusercontent.com/Homebrew/install/HEAD/install.sh)"
     refresh_homebrew_path
   else
-    die "Homebrew is needed to automatically install Git, Python, and ffmpeg."
+    die "Homebrew is needed to automatically install Git, Python, and ffmpeg on macOS."
   fi
 
   has_command brew || die "Homebrew installed, but brew is not available in this terminal. Close Terminal, open it again, and rerun this script."
 }
 
-ensure_system_dependencies() {
+python_venv_ok() {
+  has_command python3 && python3 -c 'import venv' >/dev/null 2>&1
+}
+
+system_dependencies_ok() {
+  has_command git && has_command python3 && python_venv_ok && has_command ffmpeg && has_command ffprobe
+}
+
+ensure_macos_dependencies() {
   ensure_homebrew
 
   missing=""
@@ -68,7 +90,7 @@ ensure_system_dependencies() {
     missing="$missing git"
   fi
 
-  if ! has_command python3; then
+  if ! has_command python3 || ! python_venv_ok; then
     missing="$missing python"
   fi
 
@@ -77,15 +99,137 @@ ensure_system_dependencies() {
   fi
 
   if [ -n "$missing" ]; then
-    say "Installing missing system dependencies:$missing"
+    say "Installing missing system dependencies with Homebrew:$missing"
     brew install $missing || die "Homebrew failed to install required dependencies."
     refresh_homebrew_path
   fi
+}
 
-  has_command git || die "Git is still missing. Close Terminal, open it again, and rerun this script."
-  has_command python3 || die "Python 3 is still missing. Close Terminal, open it again, and rerun this script."
-  has_command ffmpeg || die "ffmpeg is still missing. Close Terminal, open it again, and rerun this script."
-  has_command ffprobe || die "ffprobe is still missing. Close Terminal, open it again, and rerun this script."
+detect_linux_package_manager() {
+  if has_command apt-get; then
+    printf '%s\n' apt
+  elif has_command dnf; then
+    printf '%s\n' dnf
+  elif has_command yum; then
+    printf '%s\n' yum
+  elif has_command pacman; then
+    printf '%s\n' pacman
+  elif has_command zypper; then
+    printf '%s\n' zypper
+  elif has_command apk; then
+    printf '%s\n' apk
+  elif has_command xbps-install; then
+    printf '%s\n' xbps
+  elif has_command emerge; then
+    printf '%s\n' emerge
+  elif has_command nix-env; then
+    printf '%s\n' nix
+  elif has_command brew; then
+    printf '%s\n' brew
+  else
+    printf '%s\n' ""
+  fi
+}
+
+linux_packages_for_manager() {
+  case "$1" in
+    apt) printf '%s\n' "git python3 python3-venv python3-pip ffmpeg" ;;
+    dnf) printf '%s\n' "git python3 python3-pip ffmpeg" ;;
+    yum) printf '%s\n' "git python3 python3-pip ffmpeg" ;;
+    pacman) printf '%s\n' "git python python-pip ffmpeg" ;;
+    zypper) printf '%s\n' "git python3 python3-pip python3-virtualenv ffmpeg" ;;
+    apk) printf '%s\n' "git python3 py3-pip py3-virtualenv ffmpeg" ;;
+    xbps) printf '%s\n' "git python3 python3-pip python3-virtualenv ffmpeg" ;;
+    emerge) printf '%s\n' "dev-vcs/git dev-lang/python media-video/ffmpeg" ;;
+    nix) printf '%s\n' "nixpkgs.git nixpkgs.python312 nixpkgs.ffmpeg" ;;
+    brew) printf '%s\n' "git python ffmpeg" ;;
+    *) printf '%s\n' "" ;;
+  esac
+}
+
+install_linux_packages() {
+  manager="$1"
+  packages=$(linux_packages_for_manager "$manager")
+  [ -n "$packages" ] || die "Unsupported Linux package manager. Install Git, Python 3 with venv, pip, ffmpeg, and ffprobe manually."
+
+  say "Installing or refreshing system dependencies with $manager: $packages"
+
+  case "$manager" in
+    apt)
+      run_as_root apt-get update
+      run_as_root apt-get install -y $packages
+      ;;
+    dnf)
+      run_as_root dnf install -y $packages
+      ;;
+    yum)
+      run_as_root yum install -y $packages
+      ;;
+    pacman)
+      run_as_root pacman -Sy --needed --noconfirm $packages
+      ;;
+    zypper)
+      run_as_root zypper --non-interactive install $packages
+      ;;
+    apk)
+      run_as_root apk add --no-cache $packages
+      ;;
+    xbps)
+      run_as_root xbps-install -Sy $packages
+      ;;
+    emerge)
+      run_as_root emerge --ask=n $packages
+      ;;
+    nix)
+      nix-env -iA $packages
+      ;;
+    brew)
+      brew install $packages
+      refresh_homebrew_path
+      ;;
+    *)
+      die "Unsupported Linux package manager."
+      ;;
+  esac
+}
+
+ensure_linux_dependencies() {
+  refresh_homebrew_path
+
+  if system_dependencies_ok; then
+    return 0
+  fi
+
+  manager=$(detect_linux_package_manager)
+  [ -n "$manager" ] || die "No supported Linux package manager found. Install Git, Python 3 with venv, pip, ffmpeg, and ffprobe manually."
+
+  if yes_or_no "Install missing Linux system dependencies with $manager now?"; then
+    install_linux_packages "$manager"
+  else
+    die "Git, Python 3 with venv, ffmpeg, and ffprobe are required."
+  fi
+}
+
+ensure_system_dependencies() {
+  os_name=$(uname -s 2>/dev/null || printf '%s' unknown)
+
+  case "$os_name" in
+    Darwin)
+      ensure_macos_dependencies
+      ;;
+    Linux)
+      ensure_linux_dependencies
+      ;;
+    *)
+      die "Unsupported OS: $os_name. Use the Windows PowerShell installer or manual install instructions."
+      ;;
+  esac
+
+  has_command git || die "Git is still missing. Close the terminal, open it again, and rerun this script."
+  has_command python3 || die "Python 3 is still missing. Close the terminal, open it again, and rerun this script."
+  python_venv_ok || die "Python venv support is still missing. Install the Python venv package for your distribution and rerun this script."
+  has_command ffmpeg || die "ffmpeg is still missing. Some Linux distributions require an extra multimedia repository. Install ffmpeg manually and rerun this script."
+  has_command ffprobe || die "ffprobe is still missing. Some Linux distributions require an extra multimedia repository. Install ffmpeg manually and rerun this script."
 }
 
 find_debripod_dir() {
