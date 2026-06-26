@@ -58,6 +58,7 @@ from .Library.index import (
     clear_index_cache,
     configure_library_index,
     ensure_index_async,
+    enrichment_status,
     get_index,
     index_building_status,
     library_manifest,
@@ -65,6 +66,7 @@ from .Library.index import (
     library_root_version,
     library_root_versions,
     library_watch_root,
+    queue_video_analysis_warm,
     set_index_cache,
     track_sort_key,
 )

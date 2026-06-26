@@ -26,7 +26,7 @@ from .auth import register_auth
 from .config import _coerce_config_value, ensure_startup_security_config, load_default_app_config_overrides, save_config, save_default_app_config_overrides
 from .Library.library_db import load_folder_entries, load_palette, load_palette_for_media, load_visualizer_analysis_for_media, save_folder_entries, save_palette
 from .Library.index import build_index_for_root, set_index_cache
-from .Library.metadata import file_meta_cached, warm_video_analysis
+from .Library.metadata import file_meta_cached
 from .Tasks.manager import task_belongs_to_owner
 from .runtime_state import *
 from .runtime_downloads import *
@@ -40,8 +40,6 @@ _ACTIVE_SETTINGS_USERNAME = ""
 _ACTIVE_SETTINGS_SIGNATURE: tuple[int, int] = (0, 0)
 _ACTIVE_SETTINGS_DATA: dict[str, Any] = {}
 _RECENT_API_TIMINGS: list[dict[str, Any]] = []
-_ANALYSIS_WARM_LOCK = threading.Lock()
-_ANALYSIS_WARMING: set[str] = set()
 _FULL_REINDEX_LOCK = threading.Lock()
 _FULL_REINDEX_STATUS: dict[str, Any] = {
     "running": False,
@@ -2052,7 +2050,7 @@ def api_performance():
     return jsonify({
         "ok": True,
         "library_versions": library_root_versions(),
-        "indexing": {"any_building": bool(any_building), "roots": roots_status},
+        "indexing": {"any_building": bool(any_building), "roots": roots_status, "enrichment": enrichment_status()},
         "services": service_summary,
         "api_timings": list(_RECENT_API_TIMINGS[-30:]),
         "version": {
@@ -2206,28 +2204,14 @@ def api_library_analysis():
             abs_path = safe_path_join(root_abs, rel)
             if not os.path.isfile(abs_path) or not is_video(abs_path):
                 return False
-            warm_key = f"{root_id}:{rel}"
-            with _ANALYSIS_WARM_LOCK:
-                if warm_key in _ANALYSIS_WARMING:
-                    return True
-                _ANALYSIS_WARMING.add(warm_key)
-            def warm_missing_video_analysis() -> None:
-                try:
-                    meta = file_meta_cached(abs_path)
-                    warm_video_analysis(
-                        abs_path,
-                        root_id=root_id,
-                        rel=rel,
-                        media_id=f"{root_id}:{rel}",
-                        duration=meta.get("duration") if isinstance(meta, dict) else None,
-                    )
-                except Exception:
-                    pass
-                finally:
-                    with _ANALYSIS_WARM_LOCK:
-                        _ANALYSIS_WARMING.discard(warm_key)
-            threading.Thread(target=warm_missing_video_analysis, daemon=True).start()
-            return True
+            meta = file_meta_cached(abs_path)
+            return queue_video_analysis_warm(
+                abs_path,
+                root_id=root_id,
+                rel=rel,
+                media_id=f"{root_id}:{rel}",
+                duration=meta.get("duration") if isinstance(meta, dict) else None,
+            )
         except Exception:
             return False
     try:

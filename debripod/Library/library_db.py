@@ -1007,6 +1007,33 @@ def clear_library_cache() -> None:
         conn.execute("DELETE FROM visualizer_analysis")
 
 
+def update_media_art_identity(root_id: str, rels: list[str], art_identity: str) -> None:
+    clean_rels = [str(rel or "") for rel in (rels or []) if str(rel or "")]
+    identity = str(art_identity or "")
+    if not clean_rels or not identity:
+        return
+    with library_db() as conn:
+        for rel in clean_rels:
+            row = conn.execute(
+                "SELECT metadata_json FROM media_files WHERE root_id = ? AND rel_path = ?",
+                (str(root_id or ""), rel),
+            ).fetchone()
+            if not row:
+                continue
+            try:
+                payload = json.loads(str(row["metadata_json"] or "{}"))
+            except Exception:
+                payload = {}
+            if not isinstance(payload, dict):
+                payload = {}
+            payload["art_identity"] = identity
+            payload["artIdentity"] = identity
+            conn.execute(
+                "UPDATE media_files SET metadata_json = ? WHERE root_id = ? AND rel_path = ?",
+                (json.dumps(payload, ensure_ascii=False, sort_keys=True), str(root_id or ""), rel),
+            )
+
+
 def load_palette(cache_key: str) -> Optional[dict]:
     with library_db() as conn:
         row = conn.execute(
@@ -1023,6 +1050,22 @@ def load_palette(cache_key: str) -> Optional[dict]:
 
 
 def load_palette_for_media(root_id: str, rel: str) -> Optional[dict]:
+    with library_db() as conn:
+        media_row = conn.execute(
+            "SELECT metadata_json FROM media_files WHERE root_id = ? AND rel_path = ?",
+            (str(root_id or ""), str(rel or "")),
+        ).fetchone()
+    if media_row:
+        try:
+            media_payload = json.loads(str(media_row["metadata_json"] or "{}"))
+        except Exception:
+            media_payload = {}
+        if isinstance(media_payload, dict):
+            art_identity = str(media_payload.get("art_identity") or media_payload.get("artIdentity") or "")
+            if art_identity:
+                palette = load_palette(art_identity)
+                if palette is not None:
+                    return palette
     with library_db() as conn:
         row = conn.execute(
             """
