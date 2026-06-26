@@ -523,6 +523,33 @@
         continue;
       }
 
+      if(it.kind === "setup_text_input"){
+        li.className += " editing twoLine settingRow";
+        const inp = document.createElement("input");
+        inp.type = it.secret ? "password" : "text";
+        inp.className = "libInlineInput";
+        inp.placeholder = it.placeholder || "";
+        inp.value = String(it.value == null ? "" : it.value);
+        inp.addEventListener("input", ()=>{
+          try{
+            if(state.current && state.current.kind === "setup_editor") state.current.editorValue = inp.value;
+          }catch(e){}
+        });
+        inp.addEventListener("keydown", (ev)=>{
+          if(ev.key === "Enter"){
+            ev.preventDefault();
+            try{
+              if(state.current && state.current.kind === "setup_editor") state.current.editorValue = inp.value;
+              if(typeof commitSetupEditor === "function") commitSetupEditor();
+            }catch(e){}
+          }
+        });
+        li.appendChild(inp);
+        editInputToFocus = inp;
+        itemsLayer.appendChild(li);
+        continue;
+      }
+
       if(it.kind === "range_editor_slider"){
         const labelWrap = document.createElement("span");
         labelWrap.className = "ipodLabelWrap";

@@ -92,7 +92,7 @@
   async function maybeStartSetupWizard(){
     const js = await setupStatusLoad();
     if(js && js.ok && js.should_show && !(state.current && String(state.current.kind || "").indexOf("setupwizard") === 0)){
-      await viewSetupWizardPage((state.current && state.current.setupPage) || "finish", false);
+      await viewSetupWizardPage("library", false);
     }
   }
 
@@ -373,28 +373,32 @@
     return true;
   }
 
-  async function setupSkip(service, consequence){
-    if(consequence && !confirm(consequence)) return false;
-    const res = await apiPost("/api/setup/skip", {service:service});
-    const js = res && res.json ? res.json : {};
-    if(!res || !res.ok || !js.ok){
-      alert((js && js.error) ? js.error : "Could not skip setup step.");
-      return false;
-    }
-    await viewSetupWizardPage((state.current && state.current.setupPage) || "overview", false);
-    return true;
-  }
-
   async function setupFinish(){
-    if(!confirm("Mark setup complete? Optional skipped services can be configured later from Services.")) return false;
     const res = await apiPost("/api/setup/finish", {});
     const js = res && res.json ? res.json : {};
     if(!res || !res.ok || !js.ok){
-      alert((js && js.error) ? js.error : "Setup is not complete yet.");
-      await viewSetupWizard(false);
+      libSetStatus((js && js.error) ? js.error : "Setup is not complete yet.", "warn");
+      await viewSetupWizardPage("library", false);
       return false;
     }
     await showRoots(true);
+    return true;
+  }
+
+  async function setupSkipMany(services, nextPage){
+    const list = Array.isArray(services) ? services : [services];
+    for(const service of list){
+      const key = String(service || "").trim();
+      if(!key) continue;
+      const res = await apiPost("/api/setup/skip", {service:key});
+      const js = res && res.json ? res.json : {};
+      if(!res || !res.ok || !js.ok){
+        libSetStatus((js && js.error) ? js.error : "Could not skip setup step.", "warn");
+        return false;
+      }
+    }
+    if(nextPage === "finish") return await setupFinish();
+    await viewSetupWizardPage(nextPage || "library", true);
     return true;
   }
 
@@ -452,13 +456,15 @@
     await setView(view, !!push);
   }
 
-  async function viewSettingsLibraryMode(folderPath, folderIndex, push){
+  async function viewSettingsLibraryMode(folderPath, folderIndex, push, setupReturnOverride){
     const isExisting = typeof folderIndex === "number" && folderIndex >= 0;
+    const setupReturnPage = setupReturnOverride ? String(setupReturnOverride) : ((state.current && state.current.setupReturnPage) ? String(state.current.setupReturnPage) : ((state.current && state.current.kind === "setup_editor") ? String(state.current.setupEditorReturnPage || "") : ""));
     const view = {
       kind:"settings_library_mode",
       label:"Folder Type",
       folderPath:String(folderPath || ""),
       folderIndex:isExisting ? folderIndex : -1,
+      setupReturnPage:setupReturnPage,
       load: async function(){
         resetList([
           {
@@ -480,6 +486,81 @@
     await setView(view, !!push);
   }
 
+  async function viewSetupRemoveFolderConfirm(folderIndex, folderPath, returnPage, push){
+    await setView({
+      kind:"setupwizard_confirm",
+      setupPage:"remove_library_folder_confirm",
+      setupReturnPage:String(returnPage || "library"),
+      setupFolderIndex:Number(folderIndex),
+      label:"Remove folder?",
+      load: async function(){
+        resetList([
+          {kind:"info", label:"Remove folder?", sub_label:"This removes the folder from DebriPod setup. It does not delete files from disk.", pills:[{text:"Delete", tone:"warn"}], forceTwoLine:true},
+          {kind:"libinfo_action", label:"Remove folder", action:"setup_remove_library_folder_confirmed", sub_label:String(folderPath || ""), pills:[{text:"Delete", tone:"warn"}], forceTwoLine:true},
+          {kind:"libinfo_action", label:"Go back", action:"setup_remove_library_folder_cancel"}
+        ]);
+      }
+    }, !!push);
+  }
+
+  async function viewSetupLastfmAuthPage(push){
+    await setView({
+      kind:"setupwizard_lastfm_auth",
+      setupPage:"lastfm_auth",
+      label:"Last.fm authorize",
+      load: async function(){
+        const auth = state.setupLastfmAuth || {};
+        const rows = [
+          {kind:"info", label:"Last.fm authorize", sub_label:"DebriPod will open Last.fm for approval. After approving DebriPod in the browser window, return here and select Finish authorization.", pills:[auth.token ? "Opened" : "Authorize"], forceTwoLine:true},
+          {kind:"libinfo_action", label:"Open approval page", action:"setup_lastfm_auth_open", pills:[auth.token ? "Reopen" : "Authorize"]},
+          {kind:"libinfo_action", label:"Finish authorization", action:"setup_lastfm_auth_finish", pills:[auth.token ? "Ready" : {text:"Open first", tone:"warn"}]},
+          {kind:"libinfo_action", label:"Go back", action:"setup_page:soulseek_lastfm"}
+        ];
+        if(auth.message) rows.unshift({kind:"info", label:"Last.fm status", sub_label:String(auth.message || ""), pills:[auth.error ? {text:"Error", tone:"warn"} : "Status"], forceTwoLine:true});
+        resetList(rows);
+      }
+    }, !!push);
+  }
+
+  async function setupLastfmAuthOpen(){
+    state.setupLastfmAuth = {message:"Starting Last.fm authorization...", error:false};
+    try{
+      const r = await fetch("/api/lastfm/auth/start", {method:"GET"});
+      const j = await r.json();
+      if(!j || !j.ok) throw new Error((j && j.error) ? j.error : "Last.fm auth start failed");
+      state.setupLastfmAuth = {token:String(j.token || ""), authUrl:String(j.auth_url || ""), message:"Approval page opened. Approve DebriPod, then finish authorization here.", error:false};
+      try{ if(j.auth_url) window.open(j.auth_url, "_blank", "noopener"); }catch(e){}
+    }catch(e){
+      state.setupLastfmAuth = {message:"Last.fm login failed: " + String(e && e.message ? e.message : e), error:true};
+    }
+    await viewSetupLastfmAuthPage(false);
+    return true;
+  }
+
+  async function setupLastfmAuthFinish(){
+    const auth = state.setupLastfmAuth || {};
+    if(!auth.token){
+      state.setupLastfmAuth = {message:"Open the approval page before finishing authorization.", error:true};
+      await viewSetupLastfmAuthPage(false);
+      return true;
+    }
+    try{
+      const r = await fetch("/api/lastfm/auth/finish", {
+        method:"POST",
+        headers:{"Content-Type":"application/json"},
+        body:JSON.stringify({token:auth.token})
+      });
+      const j = await r.json();
+      if(!j || !j.ok) throw new Error((j && j.error) ? j.error : "Last.fm auth finish failed");
+      state.setupLastfmAuth = {message:"Last.fm login complete.", error:false};
+      await viewSetupWizardPage("soulseek_lastfm", false);
+    }catch(e){
+      state.setupLastfmAuth = {token:auth.token, authUrl:auth.authUrl, message:"Last.fm login failed: " + String(e && e.message ? e.message : e), error:true};
+      await viewSetupLastfmAuthPage(false);
+    }
+    return true;
+  }
+
   async function settingsPickPath(kind){
     const res = await apiPost("/api/settings/pick_path", {kind:kind || "directory"});
     const js = (res && res.json) ? res.json : {};
@@ -487,6 +568,62 @@
     const fallback = prompt("Enter path", "");
     return fallback ? String(fallback).trim() : "";
   }
+
+  async function setupPickPath(kind){
+    const res = await apiPost("/api/settings/pick_path", {kind:kind || "directory"});
+    const js = (res && res.json) ? res.json : {};
+    if(res && res.ok && js && js.ok && js.path) return String(js.path || "");
+    return "";
+  }
+
+  async function viewSetupEditor(opts, push){
+    const options = opts || {};
+    const key = String(options.key || "");
+    const label = String(options.label || key || "Value");
+    const returnPage = String(options.returnPage || "library");
+    const current = options.value == null ? "" : String(options.value);
+    await setView({
+      kind:"setup_editor",
+      label:label,
+      setupEditorKey:key,
+      setupEditorSecret:!!options.secret,
+      setupEditorReturnPage:returnPage,
+      setupEditorIsDirectory:!!options.directory,
+      setupEditorLibraryPath:!!options.libraryPath,
+      editorValue:current,
+      load: async function(){
+        libControlsHide();
+        const rows = [
+          {kind:"info", label:label, sub_label:options.directory ? "Enter a local folder path. This stays inside DebriPod when the system picker is unavailable or canceled." : "Enter the value, then select Save.", pills:[options.secret ? "Secret" : "Edit"], forceTwoLine:true},
+          {kind:"setup_text_input", label:label, value:current, secret:!!options.secret, placeholder:label, forceTwoLine:true},
+          {kind:"libinfo_action", label:"Save", action:"setup_editor_save", pills:["Save"]},
+          {kind:"libinfo_action", label:"Cancel", action:"setup_editor_cancel"}
+        ];
+        resetList(rows);
+      }
+    }, !!push);
+  }
+
+  async function commitSetupEditor(){
+    const cur = state.current || {};
+    if(cur.kind !== "setup_editor") return false;
+    const value = String(cur.editorValue == null ? "" : cur.editorValue).trim();
+    const returnPage = String(cur.setupEditorReturnPage || "library");
+    if(cur.setupEditorLibraryPath){
+      if(!value){
+        libSetStatus("Enter a folder path first.", "warn");
+        return false;
+      }
+      await viewSettingsLibraryMode(value, -1, true);
+      return true;
+    }
+    const key = String(cur.setupEditorKey || "");
+    if(!key) return false;
+    await settingsSave({[key]: value}, {});
+    await viewSetupWizardPage(returnPage, false);
+    return true;
+  }
+  try{ window.commitSetupEditor = commitSetupEditor; }catch(e){}
 
   async function editSettingRow(row){
     const key = String(row.key || "");
@@ -1294,63 +1431,135 @@ async function libDoSearch(engine, q){
   }
 
   async function viewSetupWizard(push){
-    return viewSetupWizardPage("overview", push);
+    return viewSetupWizardPage("library", push);
   }
 
   function setupRequiredPill(status, skipped){
-    return status.library_folder_count ? "Configured" : (skipped.library === "skipped" ? "Skipped" : "Required");
+    return status.library_folder_count ? "Configured" : "Required";
+  }
+
+  function setupToolStatus(status, key){
+    const tools = (status && status.tools) || {};
+    const services = (status && status.services) || {};
+    if(key === "ytdlp") return tools.ytdlp || tools.yt_dlp || (services.youtube && services.youtube.tool) || {};
+    return tools[key] || services[key] || {};
+  }
+
+  function setupConfigured(status, path, fallback){
+    let cur = status || {};
+    String(path || "").split(".").forEach((part)=>{ cur = cur && cur[part]; });
+    if(cur === undefined || cur === null) cur = fallback;
+    return !!cur;
+  }
+
+  function setupDisplayPath(value){
+    return value ? String(value) : "Not set";
+  }
+
+  function setupFolderRows(folders){
+    return (Array.isArray(folders) ? folders : []).map((f, idx)=>{
+      const path = String((f && f.path) || f || "");
+      const mode = String((f && f.mode) || "list").toLowerCase();
+      return {
+        kind:"settings_library_folder",
+        setupReturnPage:"library",
+        label:settingPathBase(path),
+        sub_label:path,
+        folderIndex:idx,
+        pills:[{text: mode === "meta" || mode === "metadata" ? "Metadata" : "List"}],
+        forceTwoLine:true
+      };
+    });
+  }
+
+  function setupPageLabel(page){
+    const p = String(page || "library");
+    if(p === "library") return "Add a library folder (required)";
+    if(p === "tools") return "Optional tools";
+    if(p === "soulseek_lastfm") return "Soulseek and Last.fm";
+    if(p === "realdebrid") return "Real Debrid";
+    if(p === "skip_tools_confirm") return "Skip optional tools?";
+    if(p === "skip_soulseek_lastfm_confirm") return "Skip Soulseek and Last.fm?";
+    if(p === "skip_realdebrid_confirm") return "Skip Real Debrid?";
+    return "Setup";
   }
 
   async function viewSetupWizardPage(page, push){
-    const setupPage = String(page || "overview");
+    const setupPage = String(page || "library");
     showNowPlaying(false);
     await setView({
       kind:"setupwizard",
       setupPage:setupPage,
-      label:setupPage === "overview" ? "Setup" : (setupPage === "library" ? "Library" : (setupPage === "tools" ? "Tools" : (setupPage === "services" ? "Services" : "Finish"))),
+      label:setupPageLabel(setupPage),
       load: async function(){
         libControlsHide();
         const status = await setupStatusLoad();
         const skipped = (status && status.skipped) || {};
-        const services = (status && status.services) || {};
+        const setup = (status && status.setup) || {};
+        const settings = (status && status.settings) || {};
+        const folders = (status && (status.library_folders || status.folders)) || [];
         const items = [];
-        const ffmpeg = (services && services.ffmpeg) || {};
-        const ffprobe = (services && services.ffprobe) || {};
-        const rd = (services && services.real_debrid) || {};
-        const slsk = (services && services.soulseek) || {};
-        const lf = (services && services.lastfm) || {};
-        const yt = (services && services.youtube) || {};
-        if(setupPage === "overview"){
-          items.push({kind:"libinfo_action", label:"Library", sub_label:"Local folders or an explicit skip", action:"setup_page:library", pills:[setupRequiredPill(status, skipped)]});
-          items.push({kind:"libinfo_action", label:"Tools", sub_label:"ffmpeg and ffprobe detection", action:"setup_page:tools", pills:[ffmpeg.ok && ffprobe.ok ? "Detected" : "Review"]});
-          items.push({kind:"libinfo_action", label:"Services", sub_label:"Downloads, debrid, Soulseek, Last.fm, and YouTube", action:"setup_page:services", pills:["Optional"]});
-          items.push({kind:"libinfo_action", label:"Finish", sub_label: status.required_complete ? "Confirm setup completion." : "Add a library folder or skip local library first.", action:"setup_page:finish", pills:[status.required_complete ? "Ready" : {text:"Required", tone:"warn"}]});
-        }else if(setupPage === "library"){
-          items.push({kind:"info", label:"Required setup", sub_label:"Add a local library folder, or explicitly finish without one and rely on Services/Search later."});
-          items.push({kind:"libinfo_action", label:"Library folders", sub_label: status.library_folder_count ? (String(status.library_folder_count) + " configured") : "Local browsing, artwork palettes, precomputed analysis, and playback history stay empty until a folder is added.", action:"setup_library", pills:[setupRequiredPill(status, skipped)]});
-          items.push({kind:"libinfo_action", label:"Skip local library", sub_label:"Finish without local folders. You can add folders later in Library settings.", action:"setup_skip_library", pills:[skipped.library === "skipped" ? "Skipped" : "Optional"]});
+        const ffmpeg = setupToolStatus(status, "ffmpeg");
+        const ffprobe = setupToolStatus(status, "ffprobe");
+        const ytdlp = setupToolStatus(status, "ytdlp");
+        const youtubeFolderSet = setupConfigured(status, "setup.youtube_download_folder_configured", !!settings.YOUTUBE_DOWNLOAD_DIR);
+        const slUser = setupConfigured(status, "setup.soulseek_username_configured", false);
+        const slPass = setupConfigured(status, "setup.soulseek_password_configured", false);
+        const slDir = setupConfigured(status, "setup.soulseek_download_folder_configured", !!settings.SOULSEEK_DOWNLOAD_DIR);
+        const lfKey = setupConfigured(status, "setup.lastfm_api_key_configured", false);
+        const lfSecret = setupConfigured(status, "setup.lastfm_secret_configured", false);
+        const lfSession = setupConfigured(status, "setup.lastfm_session_configured", false);
+        const rdToken = setupConfigured(status, "setup.real_debrid_token_configured", false);
+        const rdDir = setupConfigured(status, "setup.real_debrid_download_folder_configured", !!settings.DOWNLOAD_DIR);
+        const toolsDone = !!ffmpeg.ok && !!ffprobe.ok && !!ytdlp.ok && youtubeFolderSet;
+        const soulLastDone = slUser && slPass && slDir && lfKey && lfSecret && lfSession;
+        const rdDone = rdToken && rdDir;
+        if(setupPage === "library"){
+          items.push({kind:"info", label:"Why this is required", sub_label:"DebriPod needs at least one local folder for initial library indexing. This enables local browsing, artwork palettes, playback history, and precomputed local audio analysis. You can add more folders later from Library settings.", pills:[setupRequiredPill(status, skipped)], forceTwoLine:true});
+          items.push({kind:"settings_add_library_folder", setupReturnPage:"library", label:"Add folder", sub_label:"Choose a folder, then pick Metadata folder or List folder.", pills:["Required"], forceTwoLine:true});
+          setupFolderRows(folders).forEach((row)=>items.push(row));
+          if(status.library_folder_count){
+            items.push({kind:"libinfo_action", label:"Continue", sub_label:"Move to optional tool setup.", action:"setup_page:tools", pills:["Ready"]});
+          }else{
+            items.push({kind:"info", label:"Required", sub_label:"Add at least one local library folder before setup can continue.", pills:[{text:"Required", tone:"warn"}], forceTwoLine:true});
+          }
         }else if(setupPage === "tools"){
-          items.push({kind:"info", label:"Optional tools", sub_label:"Skipping these keeps the app usable, but limits metadata, thumbnails, transcoding, and compatibility conversion."});
-          items.push({kind:"libinfo_action", label:"ffmpeg", sub_label:ffmpeg.ok ? ("Detected: " + String(ffmpeg.found || "")) : "ffmpeg was not found. Set the ffmpeg path in Playback settings.", action:"setup_ffmpeg", pills:[ffmpeg.ok ? "Detected" : (skipped.ffmpeg === "skipped" ? "Skipped" : "Missing")]});
-          if(!ffmpeg.ok) items.push({kind:"libinfo_action", label:"Skip ffmpeg", sub_label:"Transcoding, compatibility conversion, thumbnails, and some precompute may be limited.", action:"setup_skip_ffmpeg", pills:[skipped.ffmpeg === "skipped" ? "Skipped" : "Optional"]});
-          items.push({kind:"libinfo_action", label:"ffprobe", sub_label:ffprobe.ok ? ("Detected: " + String(ffprobe.found || "")) : String(ffprobe.install_hint || "Set the ffprobe path in Playback settings."), action:"setup_ffprobe", pills:[ffprobe.ok ? "Detected" : (skipped.ffprobe === "skipped" ? "Skipped" : "Missing")]});
-          if(!ffprobe.ok) items.push({kind:"libinfo_action", label:"Skip ffprobe", sub_label:"Metadata extraction, technical labels, thumbnails, and some visualizer precompute may be limited.", action:"setup_skip_ffprobe", pills:[skipped.ffprobe === "skipped" ? "Skipped" : "Optional"]});
-        }else if(setupPage === "services"){
-          items.push({kind:"info", label:"Optional services", sub_label:"Every service can be skipped and configured later."});
-          items.push({kind:"libinfo_action", label:"Download paths", sub_label:"Set Real Debrid, Soulseek, and YouTube download folders.", action:"setup_downloads"});
-          items.push({kind:"libinfo_action", label:"Real Debrid", sub_label:"Skipping disables debrid streaming, torrent lookup/download actions, and debrid backed playback until a token is added.", action:"setup_real_debrid", pills:[rd.configured ? "Configured" : (skipped.real_debrid === "skipped" ? "Skipped" : "Optional")]});
-          if(!rd.configured) items.push({kind:"libinfo_action", label:"Skip Real Debrid", action:"setup_skip_real_debrid", pills:[skipped.real_debrid === "skipped" ? "Skipped" : "Optional"]});
-          items.push({kind:"libinfo_action", label:"Soulseek", sub_label:"Skipping disables Soulseek search and downloads until credentials and ports are configured.", action:"setup_soulseek", pills:[slsk.connected ? "Connected" : (slsk.configured ? "Configured" : (skipped.soulseek === "skipped" ? "Skipped" : "Optional"))]});
-          if(!slsk.configured) items.push({kind:"libinfo_action", label:"Skip Soulseek", action:"setup_skip_soulseek", pills:[skipped.soulseek === "skipped" ? "Skipped" : "Optional"]});
-          items.push({kind:"libinfo_action", label:"Last.fm", sub_label:lf.api_configured ? "Skipping disables scrobbling, loved track sync, and Last.fm metadata actions until configured." : "Last.fm is not configured. Add API credentials or skip Last.fm features.", action:"setup_lastfm", pills:[lf.session_user ? ("Logged in " + String(lf.session_user)) : (lf.api_configured ? "API set" : (skipped.lastfm === "skipped" ? "Skipped" : "Optional"))]});
-          if(!lf.api_configured) items.push({kind:"libinfo_action", label:"Skip Last.fm", action:"setup_skip_lastfm", pills:[skipped.lastfm === "skipped" ? "Skipped" : "Optional"]});
-          items.push({kind:"libinfo_action", label:"YouTube", sub_label:"Skipping keeps browsing/streaming where supported, but local YouTube downloads may be limited.", action:"setup_youtube", pills:[yt.status === "skipped" ? "Skipped" : "Optional"]});
-          items.push({kind:"libinfo_action", label:"Skip YouTube downloads", action:"setup_skip_youtube", pills:[skipped.youtube === "skipped" ? "Skipped" : "Optional"]});
-          items.push({kind:"libinfo_action", label:"Service Status", action:"service_status"});
+          items.push({kind:"info", label:"Optional tools", sub_label:"ffmpeg, ffprobe, and yt-dlp improve metadata, thumbnails, transcoding, compatibility conversion, external downloads, and precompute features. The app can still run if they are skipped, but some features will be limited.", pills:["Optional"], forceTwoLine:true});
+          items.push({kind:"libinfo_action", label:"ffmpeg", sub_label:ffmpeg.ok ? ("Detected: " + String(ffmpeg.path || ffmpeg.found || "ffmpeg")) : "Missing. Select to set a command or path.", action:"setup_edit:FFMPEG_PATH:ffmpeg:tools", pills:[ffmpeg.ok ? "Detected" : {text:"Missing", tone:"warn"}], forceTwoLine:true});
+          items.push({kind:"libinfo_action", label:"ffprobe", sub_label:ffprobe.ok ? ("Detected: " + String(ffprobe.path || ffprobe.found || "ffprobe")) : "Missing. Select to set a command or path.", action:"setup_edit:FFPROBE_PATH:ffprobe:tools", pills:[ffprobe.ok ? "Detected" : {text:"Missing", tone:"warn"}], forceTwoLine:true});
+          items.push({kind:"libinfo_action", label:"yt-dlp", sub_label:ytdlp.ok ? ("Detected: " + String(ytdlp.path || ytdlp.found || "yt-dlp")) : "Missing. Select to set a command or path.", action:"setup_edit:YTDLP_CMD:yt-dlp:tools", pills:[ytdlp.ok ? "Detected" : {text:"Missing", tone:"warn"}], forceTwoLine:true});
+          items.push({kind:"libinfo_action", label:"yt-dlp download folder", sub_label:setupDisplayPath(settings.YOUTUBE_DOWNLOAD_DIR), action:"setup_dir:YOUTUBE_DOWNLOAD_DIR:yt-dlp download folder:tools", pills:[youtubeFolderSet ? "Configured" : {text:"Missing", tone:"warn"}], forceTwoLine:true});
+          items.push({kind:"libinfo_action", label:toolsDone ? "Finish tools" : "Skip tools", sub_label:toolsDone ? "Continue to Soulseek and Last.fm." : "Missing tools may limit thumbnails, metadata extraction, transcoding, compatibility conversion, downloads, and precompute.", action:toolsDone ? "setup_page:soulseek_lastfm" : "setup_page:skip_tools_confirm", pills:[toolsDone ? "Finish" : "Optional"], forceTwoLine:true});
+        }else if(setupPage === "soulseek_lastfm"){
+          items.push({kind:"info", label:"Soulseek and Last.fm", sub_label:"Soulseek enables Soulseek search and downloads when credentials are configured. Last.fm enables scrobbling, loved track sync, and metadata actions after API credentials and authorization. Both are optional and can be configured later from Services settings.", pills:["Optional"], forceTwoLine:true});
+          items.push({kind:"libinfo_action", label:"Soulseek username", sub_label:slUser ? "Configured" : "Missing", action:"setup_edit:SOULSEEK_USERNAME:Soulseek username:soulseek_lastfm", pills:[slUser ? "Configured" : {text:"Missing", tone:"warn"}]});
+          items.push({kind:"libinfo_action", label:"Soulseek password", sub_label:slPass ? "Configured" : "Missing", action:"setup_secret:SOULSEEK_PASSWORD:Soulseek password:soulseek_lastfm", pills:[slPass ? "Configured" : {text:"Missing", tone:"warn"}]});
+          items.push({kind:"libinfo_action", label:"Soulseek download folder", sub_label:setupDisplayPath(settings.SOULSEEK_DOWNLOAD_DIR), action:"setup_dir:SOULSEEK_DOWNLOAD_DIR:Soulseek download folder:soulseek_lastfm", pills:[slDir ? "Configured" : {text:"Missing", tone:"warn"}], forceTwoLine:true});
+          items.push({kind:"info", label:"Last.fm setup help", sub_label:"To use Last.fm, create or sign in to a Last.fm account, create an API application, then copy the API key and shared secret into DebriPod. After saving them, use the authorize row to create a session for scrobbling and loved track sync.", pills:["Help"], forceTwoLine:true});
+          items.push({kind:"libinfo_action", label:"Last.fm API key", sub_label:lfKey ? "Configured" : "Missing", action:"setup_secret:LASTFM_API_KEY:Last.fm API key:soulseek_lastfm", pills:[lfKey ? "Configured" : {text:"Missing", tone:"warn"}]});
+          items.push({kind:"libinfo_action", label:"Last.fm secret", sub_label:lfSecret ? "Configured" : "Missing", action:"setup_secret:LASTFM_API_SECRET:Last.fm secret:soulseek_lastfm", pills:[lfSecret ? "Configured" : {text:"Missing", tone:"warn"}]});
+          items.push({kind:"libinfo_action", label:"Last.fm session / authorize", sub_label:lfSession ? "Last.fm session is configured." : "Authorize after saving API key and secret.", action:"setup_lastfm_authorize", pills:[lfSession ? "Authorized" : "Authorize"], forceTwoLine:true});
+          items.push({kind:"libinfo_action", label:soulLastDone ? "Finish Soulseek and Last.fm" : "Skip Soulseek and Last.fm", sub_label:soulLastDone ? "Continue to Real Debrid." : "Skipping keeps these features unavailable until credentials, folders, and authorization are configured.", action:soulLastDone ? "setup_page:realdebrid" : "setup_page:skip_soulseek_lastfm_confirm", pills:[soulLastDone ? "Finish" : "Optional"], forceTwoLine:true});
+        }else if(setupPage === "realdebrid"){
+          items.push({kind:"info", label:"Real Debrid", sub_label:"Real Debrid enables debrid-backed streaming and downloads plus torrent/debrid lookup actions. It is optional and can be configured later, but a token is required for Real Debrid features.", pills:["Optional"], forceTwoLine:true});
+          items.push({kind:"info", label:"How to get a token", sub_label:"Sign in to Real Debrid, open the API token page in your account settings, copy the private API token, and paste it here. Keep it private because it gives access to your Real Debrid account features.", pills:["Help"], forceTwoLine:true});
+          items.push({kind:"libinfo_action", label:"Real Debrid token", sub_label:rdToken ? "Configured" : "Missing", action:"setup_secret:REAL_DEBRID_API_KEY:Real Debrid token:realdebrid", pills:[rdToken ? "Configured" : {text:"Missing", tone:"warn"}]});
+          items.push({kind:"libinfo_action", label:"Real Debrid download folder", sub_label:setupDisplayPath(settings.DOWNLOAD_DIR), action:"setup_dir:DOWNLOAD_DIR:Real Debrid download folder:realdebrid", pills:[rdDir ? "Configured" : {text:"Missing", tone:"warn"}], forceTwoLine:true});
+          items.push({kind:"libinfo_action", label:rdDone ? "Finish setup" : "Skip Real Debrid", sub_label:rdDone ? "Complete setup and start indexing." : "Skipping leaves debrid streaming/downloads and torrent lookup unavailable until configured.", action:rdDone ? "setup_finish" : "setup_page:skip_realdebrid_confirm", pills:[rdDone ? "Finish" : "Optional"], forceTwoLine:true});
+        }else if(setupPage === "skip_tools_confirm"){
+          items.push({kind:"info", label:"Skip optional tools?", sub_label:"Missing tools may limit thumbnails, metadata extraction, transcoding, compatibility conversion, YouTube/local video downloads, and precompute features.", pills:["Optional"], forceTwoLine:true});
+          items.push({kind:"libinfo_action", label:"Skip and continue", action:"setup_skip_tools_confirmed", pills:["Skipped"]});
+          items.push({kind:"libinfo_action", label:"Go back", action:"setup_page:tools"});
+        }else if(setupPage === "skip_soulseek_lastfm_confirm"){
+          items.push({kind:"info", label:"Skip Soulseek and Last.fm?", sub_label:"Soulseek search/downloads remain unavailable until credentials and folders are configured. Scrobbling, loved track sync, and Last.fm metadata actions remain unavailable until credentials and authorization are configured.", pills:["Optional"], forceTwoLine:true});
+          items.push({kind:"libinfo_action", label:"Skip and continue", action:"setup_skip_soulseek_lastfm_confirmed", pills:["Skipped"]});
+          items.push({kind:"libinfo_action", label:"Go back", action:"setup_page:soulseek_lastfm"});
+        }else if(setupPage === "skip_realdebrid_confirm"){
+          items.push({kind:"info", label:"Skip Real Debrid?", sub_label:"Real Debrid streaming/downloads, torrent lookup/download actions, and debrid-backed playback will be unavailable until a token is added. You can configure Real Debrid later from Services settings.", pills:["Optional"], forceTwoLine:true});
+          items.push({kind:"libinfo_action", label:"Skip and finish setup", action:"setup_skip_realdebrid_confirmed", pills:["Finish"]});
+          items.push({kind:"libinfo_action", label:"Go back", action:"setup_page:realdebrid"});
         }else{
-          items.push({kind:"libinfo_action", label:"Library", action:"setup_page:library", pills:[setupRequiredPill(status, skipped)]});
-          items.push({kind:"libinfo_action", label:"Service Status", action:"service_status"});
-          items.push({kind:"libinfo_action", label:"Finish setup", sub_label: status.required_complete ? "Confirm setup completion." : "Add a library folder or skip local library first.", action:"setup_finish", pills:[status.required_complete ? "Ready" : {text:"Required", tone:"warn"}]});
+          items.push({kind:"libinfo_action", label:"Add a library folder (required)", action:"setup_page:library", pills:[setupRequiredPill(status, skipped)]});
         }
         resetList(items);
       }
@@ -1743,7 +1952,33 @@ async function libDoSearch(engine, q){
 
   async function handleLibInfoAction(action){
     if(String(action || "").indexOf("setup_page:") === 0){
-      await viewSetupWizardPage(String(action).split(":")[1] || "overview", true);
+      await viewSetupWizardPage(String(action).split(":")[1] || "library", true);
+      return true;
+    }
+    if(String(action || "").indexOf("setup_edit:") === 0 || String(action || "").indexOf("setup_secret:") === 0){
+      const parts = String(action || "").split(":");
+      const secret = parts[0] === "setup_secret";
+      const key = parts[1] || "";
+      const label = parts[2] || key;
+      const returnPage = parts[3] || "library";
+      await settingsLoad();
+      const value = secret ? "" : String((state.appSettings || {})[key] || "");
+      await viewSetupEditor({key:key, label:label, value:value, secret:secret, returnPage:returnPage}, true);
+      return true;
+    }
+    if(String(action || "").indexOf("setup_dir:") === 0){
+      const parts = String(action || "").split(":");
+      const key = parts[1] || "";
+      const label = parts[2] || key;
+      const returnPage = parts[3] || "library";
+      await settingsLoad();
+      const picked = await setupPickPath("directory");
+      if(picked){
+        await settingsSave({[key]: picked}, {});
+        await viewSetupWizardPage(returnPage, false);
+      }else{
+        await viewSetupEditor({key:key, label:label, value:String((state.appSettings || {})[key] || ""), directory:true, returnPage:returnPage}, true);
+      }
       return true;
     }
     switch(action){
@@ -1788,33 +2023,39 @@ async function libDoSearch(engine, q){
       case "setup_library":
         await viewSettingsLibrary(true);
         return true;
-      case "setup_skip_library":
-        return await setupSkip("library", "Skipping local library means local browsing, local metadata indexing, local artwork palettes, precomputed local audio analysis, and local playback history will be empty until a folder is added.");
-      case "setup_ffmpeg":
-      case "setup_ffprobe":
-        await viewSettingsCategory("playback", true);
+      case "setup_editor_save":
+        return await commitSetupEditor();
+      case "setup_editor_cancel":
+        await viewSetupWizardPage((state.current && state.current.setupEditorReturnPage) || "library", false);
         return true;
-      case "setup_downloads":
-        await viewSettingsCategory("downloads", true);
+      case "setup_remove_library_folder_confirmed": {
+        const cur = state.current || {};
+        const folders = libraryFolders();
+        const idx = Number(cur.setupFolderIndex);
+        if(Number.isFinite(idx) && idx >= 0 && idx < folders.length){
+          folders.splice(idx, 1);
+          await settingsSave({LIBRARY_FOLDERS: folders}, {});
+        }
+        await viewSetupWizardPage(String(cur.setupReturnPage || "library"), false);
         return true;
-      case "setup_real_debrid":
-      case "setup_soulseek":
-      case "setup_lastfm":
-      case "setup_youtube":
-        await viewSettingsCategory("services", true);
+      }
+      case "setup_remove_library_folder_cancel":
+        await viewSetupWizardPage((state.current && state.current.setupReturnPage) || "library", false);
         return true;
-      case "setup_skip_real_debrid":
-        return await setupSkip("real_debrid", "Skipping Real Debrid disables Real Debrid streaming, torrent lookup/download actions, and debrid backed playback until a token is added later.");
-      case "setup_skip_soulseek":
-        return await setupSkip("soulseek", "Skipping Soulseek disables Soulseek search and Soulseek downloads until credentials and ports are configured later.");
-      case "setup_skip_lastfm":
-        return await setupSkip("lastfm", "Skipping Last.fm disables scrobbling, loved track sync, and Last.fm metadata actions until API credentials and login are added later.");
-      case "setup_skip_youtube":
-        return await setupSkip("youtube", "Skipping the YouTube download path allows browsing/streaming where supported, but disables or limits local YouTube downloads until configured.");
-      case "setup_skip_ffmpeg":
-        return await setupSkip("ffmpeg", "Skipping ffmpeg may limit transcoding, compatibility conversion, thumbnails, and some visualizer precompute until the path is fixed.");
-      case "setup_skip_ffprobe":
-        return await setupSkip("ffprobe", "Skipping ffprobe may limit metadata extraction, technical labels, thumbnails, and some visualizer precompute until the path is fixed.");
+      case "setup_lastfm_authorize":
+        await viewSetupLastfmAuthPage(true);
+        return true;
+      case "setup_lastfm_auth_open":
+        return await setupLastfmAuthOpen();
+      case "setup_lastfm_auth_finish":
+        return await setupLastfmAuthFinish();
+        return true;
+      case "setup_skip_tools_confirmed":
+        return await setupSkipMany(["ffmpeg", "ffprobe", "ytdlp", "youtube"], "soulseek_lastfm");
+      case "setup_skip_soulseek_lastfm_confirmed":
+        return await setupSkipMany(["soulseek", "lastfm"], "realdebrid");
+      case "setup_skip_realdebrid_confirmed":
+        return await setupSkipMany(["real_debrid"], "finish");
       case "setup_finish":
         return await setupFinish();
       default:
