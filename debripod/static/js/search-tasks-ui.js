@@ -632,7 +632,9 @@ async function viewHistory(push){
         try{
           const js = await apiGet("/api/playback/recent");
           rec = (js && Array.isArray(js.recent)) ? js.recent : [];
-        }catch(e){ rec = []; }
+        }catch(e){
+          rec = (state.playbackSession && Array.isArray(state.playbackSession.history)) ? state.playbackSession.history : [];
+        }
         const items = [];
         for(const r of rec){
           if(!r || !r.root_id || !r.rel) continue;
@@ -701,6 +703,33 @@ async function viewHistory(push){
   function buildPlaybackQueueItems(){
     const items = [];
     try{
+      const pl = Array.isArray(state.playlist) ? state.playlist : [];
+      if(state.shuffleEnabled && Array.isArray(state.playOrder) && state.playOrder.length && pl.length){
+        const curOrder = Math.max(0, Math.min(state.playOrder.length - 1, Number(state.orderPos || 0)));
+        state.playOrder.forEach((playlistIndex, orderIndex)=>{
+          const item = pl[playlistIndex];
+          if(!item) return;
+          items.push({kind:"queue_item", label:queueItemLabel(item, orderIndex), pills:orderIndex === curOrder ? ["Now", "Shuffle"] : ["Shuffle"], queueKind:"shuffle", queueIndex:playlistIndex, queueOrderPos:orderIndex, media:"audio", queueItem:item});
+        });
+        return items;
+      }
+    }catch(e){}
+    try{
+      const sess = state.playbackSession || {};
+      const q = Array.isArray(sess.queue) ? sess.queue : [];
+      if(q.length){
+        const cur = Math.max(0, Math.min(q.length - 1, Number(sess.queueIndex || 0)));
+        q.forEach((item, index)=>{
+          const media = String(item.media || (sess.now && sess.now.media) || "audio");
+          const pills = [media === "video" ? "video" : "audio"];
+          if(index === cur) pills.unshift("Now");
+          if(item.quality) pills.push(String(item.quality));
+          items.push({kind:"queue_item", label:queueItemLabel(item, index), pills:pills, queueKind:media === "video" ? "video" : "audio", queueIndex:index, media:media, queueItem:item});
+        });
+        return items;
+      }
+    }catch(e){}
+    try{
       if(typeof isSearchStreamActive === "function" && isSearchStreamActive()){
         const q = Array.isArray(state.streamQueue) ? state.streamQueue : [];
         const cur = Math.max(0, Math.min(q.length - 1, Number(state.streamQueueIndex || 0)));
@@ -726,15 +755,6 @@ async function viewHistory(push){
 
     try{
       const pl = Array.isArray(state.playlist) ? state.playlist : [];
-      if(state.shuffleEnabled && Array.isArray(state.playOrder) && state.playOrder.length && pl.length){
-        const curOrder = Math.max(0, Math.min(state.playOrder.length - 1, Number(state.orderPos || 0)));
-        state.playOrder.forEach((playlistIndex, orderIndex)=>{
-          const item = pl[playlistIndex];
-          if(!item) return;
-          items.push({kind:"queue_item", label:queueItemLabel(item, orderIndex), pills:orderIndex === curOrder ? ["Now", "Shuffle"] : ["Shuffle"], queueKind:"shuffle", queueIndex:playlistIndex, queueOrderPos:orderIndex, media:"audio", queueItem:item});
-        });
-        return items;
-      }
       if(pl.length){
         const cur = Math.max(0, Math.min(pl.length - 1, Number(state.playIndex || 0)));
         pl.forEach((item, index)=>{

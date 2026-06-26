@@ -43,6 +43,22 @@
       await showRoots();
       return;
     }
+    try{
+      const nav = (state.now && state.now.nav) || state.nowNavContext || (state.playbackSession && state.playbackSession.nav) || null;
+      if(nav && nav.root_id && nav.kind){
+        await openNavContext(nav);
+        const nowRel = state.now && state.now.rel ? state.now.rel : "";
+        const nowRoot = state.now && state.now.rootId ? state.now.rootId : "";
+        try{
+          const idx = (state.items || []).findIndex(x => x && x.rel === nowRel && x.root && x.root.id === nowRoot);
+          if(idx >= 0){
+            state.sel = idx;
+            renderList();
+          }
+        }catch(e){}
+        return;
+      }
+    }catch(e){}
     const cfg = await loadConfig();
     const root = (cfg.roots || []).find(r => r.id === state.now.rootId);
     if(!root){
@@ -85,6 +101,17 @@
   
   async function resumeFromServerNow(forceShow){
     await syncPlaybackFromServer();
+    try{
+      const sess = state.playbackSession || {};
+      const localNow = sess.now || null;
+      const localRevision = Number(sess.revision || 0);
+      const serverRevision = Number((state.serverNow && state.serverNow.revision) || (state.serverNow && state.serverNow.version) || 0);
+      const shouldPreferLocal = !!(localNow && localNow.rel && (sess.local || !state.serverNow || localRevision >= serverRevision));
+      if(shouldPreferLocal){
+        if(forceShow) showNowPlaying(true);
+        return;
+      }
+    }catch(e){}
     const sn = state.serverNow;
     if(!sn || !sn.root_id || !sn.rel){
       if(forceShow){
@@ -94,9 +121,11 @@
       return;
     }
 
+    const session = state.playbackSession || {};
+    const restoreNav = (session.nav && session.nav.root_id) ? session.nav : (sn.nav || null);
     // restore browsing context first so Menu goes back to where it was started
-    if(sn.nav && sn.nav.root_id){
-      await openNavContext(sn.nav);
+    if(restoreNav && restoreNav.root_id){
+      await openNavContext(restoreNav);
     }
 
     if((sn.media || "") === "video"){
@@ -118,9 +147,10 @@
     let pl = null;
     let idx = -1;
     try{
-      if(sn.playlist && Array.isArray(sn.playlist.items) && sn.playlist.items.length){
-        pl = sn.playlist.items.map(x=>({kind:"file", media:"audio", root:{id:x.root_id}, rel:x.rel, label:x.label || ""})).filter(x=>x.root.id && x.rel);
-        idx = isFinite(sn.playlist.index) ? Number(sn.playlist.index) : 0;
+      const queue = (session && Array.isArray(session.queue) && session.queue.length) ? session.queue : (sn.playlist && Array.isArray(sn.playlist.items) ? sn.playlist.items : null);
+      if(queue && queue.length){
+        pl = queue.map(x=>({kind:"file", media:String(x.media || "audio"), root:{id:x.root_id || x.rootId || (x.root && x.root.id)}, rel:x.rel, label:x.label || "", streamed:!!x.streamed, source:x.source || "", ext:x.ext || "", quality:x.quality || ""})).filter(x=>x.root.id && x.rel);
+        idx = isFinite(session.queueIndex) ? Number(session.queueIndex) : (isFinite(sn.playlist && sn.playlist.index) ? Number(sn.playlist.index) : 0);
       }
     }catch(e){ pl = null; idx = -1; }
 
@@ -284,6 +314,8 @@ async function goBack(){
 
   async function startVideoFromItem(item, forceShow, resumeTime){
     if(typeof forceShow !== "boolean") forceShow = true;
+    const playbackNav = captureNavContext();
+    const sourceView = captureSourceViewContext(item, state.videoPlaylist && state.videoPlaylist.length ? state.videoPlaylist : (state.items || []), state.videoIndex >= 0 ? state.videoIndex : 0);
     if(forceShow) showNowPlaying(true);
 
     try{ if(activeAudio) activeAudio.pause(); }catch(e){}
@@ -317,8 +349,16 @@ async function goBack(){
       }
     }catch(e){}
 
-    state.now = {rootId: rootId, rel: rel, media: "video", streamed: !!item.streamed};
+    state.now = {rootId: rootId, rel: rel, media: "video", streamed: !!item.streamed, nav: playbackNav};
+    state.nowNavContext = playbackNav;
     state.nowMeta = meta;
+    try{
+      let vq = Array.isArray(state.videoPlaylist) && state.videoPlaylist.length ? state.videoPlaylist : buildVideoPlaylistFromItems(state.items || []);
+      if(!vq.length) vq = [item];
+      let vi = vq.findIndex(x => x && x.rel === rel && x.root && x.root.id === rootId);
+      if(vi < 0) vi = state.videoIndex >= 0 ? state.videoIndex : 0;
+      buildPlaybackSessionUpdate({now:Object.assign({}, state.now, {meta:meta}), queue:vq, queueIndex:vi, nav:playbackNav, sourceView:sourceView, media:"video"}, "playback-start");
+    }catch(e){}
     try{ loadVisualizerAnalysisForTrack(rootId, rel, "video", {streamed: !!item.streamed}); }catch(err){}
     visualizerVideoSampleLastTs = 0;
     saveResumeNowPlaying();
@@ -358,6 +398,8 @@ async function goBack(){
 
   async function startAudioFromItem(item, playlist, index, forceShow, resumeTime){
     if(typeof forceShow !== "boolean") forceShow = true;
+    const playbackNav = captureNavContext();
+    const sourceView = captureSourceViewContext(item, playlist || state.playlist || state.items || [], (typeof index === "number" ? index : state.playIndex));
     stopVideoOverlay();
     const rootId = item.root.id;
     const rel = item.rel;
@@ -366,9 +408,13 @@ async function goBack(){
     if(same){
       state.playlist = playlist || state.playlist || [item];
       if(typeof index === "number") state.playIndex = index;
+      try{
+        buildPlaybackSessionUpdate({now:Object.assign({}, state.now, {nav:playbackNav, meta:state.nowMeta || {}}), queue:state.playlist, queueIndex:state.playIndex, nav:playbackNav, sourceView:sourceView, media:"audio"}, "playback-start");
+      }catch(e){}
       ensurePlayOrder(false);
       const hasPlayableSource = !!(activeAudio && (activeAudio.currentSrc || activeAudio.src));
       if(!hasPlayableSource){
+        try{ replaceNowPlaying(null, "explicit-clear"); }catch(e){}
         state.now = null;
         state.nowMeta = null;
       }else{
@@ -411,7 +457,8 @@ async function goBack(){
         position: (activeAudio && isFinite(activeAudio.currentTime)) ? activeAudio.currentTime : 0,
         duration: (activeAudio && activeAudio.duration && isFinite(activeAudio.duration)) ? activeAudio.duration : null,
         playing: (activeAudio && !activeAudio.paused),
-        nav: captureNavContext(),
+        nav: playbackNav,
+        source_view: sourceView,
         event: "time"
       });
 
@@ -458,8 +505,12 @@ async function goBack(){
     state.playIndex = (typeof index === "number") ? index : 0;
     ensurePlayOrder(false);
 
-    state.now = {rootId: rootId, rel: rel, media: "audio", streamed: !!item.streamed};
+    state.now = {rootId: rootId, rel: rel, media: "audio", streamed: !!item.streamed, nav: playbackNav};
+    state.nowNavContext = playbackNav;
     state.nowMeta = meta;
+    try{
+      buildPlaybackSessionUpdate({now:Object.assign({}, state.now, {meta:meta}), queue:state.playlist, queueIndex:state.playIndex, nav:playbackNav, sourceView:sourceView, media:"audio"}, "playback-start");
+    }catch(e){}
     try{ loadVisualizerAnalysisForTrack(rootId, rel, "audio", {streamed: !!item.streamed}); }catch(err){}
     saveResumeNowPlaying();
 
@@ -489,7 +540,8 @@ async function goBack(){
       position: (rt && isFinite(rt)) ? rt : 0,
       duration: (activeAudio && activeAudio.duration && isFinite(activeAudio.duration)) ? activeAudio.duration : (meta && meta.duration ? meta.duration : null),
       playing: true,
-      nav: captureNavContext(),
+      nav: playbackNav,
+      source_view: sourceView,
       event: "start"
     });
 
@@ -619,6 +671,10 @@ async function goBack(){
     const nextOn = !!on;
     if(nextOn){
       try{
+        if((!Array.isArray(state.playlist) || state.playlist.length <= 1) && state.playbackSession && Array.isArray(state.playbackSession.queue) && state.playbackSession.queue.length > 1){
+          state.playlist = state.playbackSession.queue.slice();
+          state.playIndex = Math.max(0, Math.min(state.playlist.length - 1, Number(state.playbackSession.queueIndex || 0)));
+        }
         const needsQueue = !Array.isArray(state.playlist) || state.playlist.length <= 1;
         const canUseCurrentList = !(state.current && (state.current.kind === "history" || state.current.kind === "playback_queue"));
         if(needsQueue && canUseCurrentList && state.now && state.now.media !== "video"){
@@ -640,6 +696,11 @@ async function goBack(){
       state.playOrderPlaylist = null;
     }
     preloadNextAudio();
+    try{
+      if(state.playbackSession && Array.isArray(state.playlist) && state.playlist.length){
+        buildPlaybackSessionUpdate({now:state.playbackSession.now || state.now, queue:state.playlist, queueIndex:state.playIndex, nav:state.nowNavContext || state.playbackSession.nav || null, sourceView:state.playbackSession.sourceView || null, media:"audio"}, "shuffle-toggle");
+      }
+    }catch(e){}
     updateWheelLabels();
   }
 

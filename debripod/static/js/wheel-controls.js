@@ -23,6 +23,10 @@
   }
   function menuButtonPress(){
     if(state.current && state.current.kind === "np_playlist_add") return;
+    if(state.current && (state.current.kind === "history" || state.current.kind === "playback_queue")){
+      showNowPlaying(true);
+      return;
+    }
     if(nowPlaying.style.display === "block") hideNpPillImmediate("menu button");
     if(nowPlaying.style.display === "block" && seekMode && !isVideoActive() && lastfmIsEnabled()){
       lastfmToggleLoved(lastfmState.meta);
