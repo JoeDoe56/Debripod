@@ -524,7 +524,6 @@
         if(key === "libPills") positionLibPillsLiquidCanvas();
         if(renderer && renderer.render && rendererTargetVisible(renderer)) renderer.render(frameState || currentVisualizerFrameState());
       });
-      if(keys.indexOf("default") >= 0 && isPathPillVisible()) forcePathPillGlassRender("visualizer frame", false);
     }catch(e){}
   }
 

@@ -280,12 +280,13 @@ function adjustSeekPreview(dir){
   var m = wheelMedia();
   var d = (m && m.duration) ? m.duration : 0;
   if(d <= 0) return;
+  const pillsWereShown = (typeof isPlaybackPillsShown === "function") ? isPlaybackPillsShown() : false;
   var step = Math.max(2, d / 200);
   seekPreview = Math.max(0, Math.min(d, (seekPreview || 0) + (dir * step)));
   seekChanged = true;
   updateSeekPreviewOnly();
   resetSeekIdle();
-  playbackPillActivity(true, "seek preview");
+  if(!pillsWereShown) playbackPillActivity(true, "seek preview");
 }
 
 
@@ -443,11 +444,17 @@ function setVolume(v){
 
 function adjustVolumeStep(dir){
   var step = 0.03;
+  const pillsWereShown = (typeof isPlaybackPillsShown === "function") ? isPlaybackPillsShown() : false;
+  const wasVolumeMode = npControlMode === "volume";
   setVolume(userVol + (dir * step));
   if(nowPlaying.style.display === "block" && !seekMode){
     showVolumeBar("volume step");
     scheduleHideVolumeBar();
-    playbackPillActivity(false, "volume step");
+    if(!pillsWereShown){
+      playbackPillActivity(false, "volume step");
+    }else if(!wasVolumeMode && typeof scheduleHidePlaybackPills === "function"){
+      scheduleHidePlaybackPills(2500);
+    }
   }
 }
 

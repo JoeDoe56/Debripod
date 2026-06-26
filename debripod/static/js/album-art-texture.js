@@ -1,10 +1,11 @@
+const DEBUG_NP_ART_TEXTURE = false;
+
 var npArtTextureState = {
   canvas: null,
   gl: null,
   program: null,
   buffer: null,
   textures: [null, null],
-  visualizerTexture: null,
   images: [null, null],
   currentSrc: "",
   currentSlot: 0,
@@ -15,6 +16,16 @@ var npArtTextureState = {
   frame: 0,
   missingTexture: null
 };
+
+var npArtTextureDebugState = {
+  postFadeFrames: 0,
+  postFadeSecondStart: 0
+};
+
+function debugNowPlayingArtTexture(message, data){
+  if(!DEBUG_NP_ART_TEXTURE) return;
+  try{ console.debug("[DebriPod album art]", message, data || ""); }catch(e){}
+}
 
 function currentNowPlayingArtTextureSrc(){
   try{
@@ -54,9 +65,7 @@ function npArtCreateProgram(gl){
     "uniform vec2 canvasSize;",
     "uniform vec2 sizeA;",
     "uniform vec2 sizeB;",
-    "uniform sampler2D vizTex;",
     "uniform float mixAmount;",
-    "uniform float vizAmount;",
     "vec2 coverUv(vec2 baseUv, vec2 imgSize){",
     "  vec2 safeSize = max(imgSize, vec2(1.0));",
     "  float canvasAspect = canvasSize.x / max(1.0, canvasSize.y);",
@@ -76,9 +85,7 @@ function npArtCreateProgram(gl){
     "  vec4 a = texture2D(texA, coverUv(uv, sizeA));",
     "  vec4 b = texture2D(texB, coverUv(uv, sizeB));",
     "  vec4 art = mix(a, b, smoothstep(0.0, 1.0, mixAmount));",
-    "  vec3 viz = texture2D(vizTex, vec2(uv.x, 1.0 - uv.y)).rgb;",
-    "  vec3 screened = 1.0 - (1.0 - art.rgb) * (1.0 - viz * 0.74);",
-    "  gl_FragColor = vec4(mix(art.rgb, screened, vizAmount), art.a);",
+    "  gl_FragColor = art;",
     "}"
   ].join("\n"));
   if(!vs || !fs) return null;
@@ -110,8 +117,7 @@ function ensureNowPlayingArtTexture(){
     gl.bindBuffer(gl.ARRAY_BUFFER, buffer);
     gl.bufferData(gl.ARRAY_BUFFER, new Float32Array([-1,-1, 1,-1, -1,1, -1,1, 1,-1, 1,1]), gl.STATIC_DRAW);
     stateObj.textures = [gl.createTexture(), gl.createTexture()];
-    stateObj.visualizerTexture = gl.createTexture();
-    stateObj.textures.concat([stateObj.visualizerTexture]).forEach(tex=>{
+    stateObj.textures.forEach(tex=>{
       gl.bindTexture(gl.TEXTURE_2D, tex);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
       gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
@@ -125,6 +131,14 @@ function ensureNowPlayingArtTexture(){
     return true;
   }catch(e){
     return false;
+  }
+}
+
+function stopNowPlayingArtTextureLoop(){
+  const st = npArtTextureState;
+  if(st && st.frame){
+    cancelAnimationFrame(st.frame);
+    st.frame = 0;
   }
 }
 
@@ -165,6 +179,20 @@ function renderNowPlayingArtTexture(ts){
     st.currentSlot = st.nextSlot;
     st.nextSlot = st.currentSlot ? 0 : 1;
     mixAmount = 1;
+    debugNowPlayingArtTexture("fade complete", {frame: st.frame});
+  }
+  if(DEBUG_NP_ART_TEXTURE && !st.fadeActive){
+    const now = Number(ts || performance.now());
+    if(!npArtTextureDebugState.postFadeSecondStart) npArtTextureDebugState.postFadeSecondStart = now;
+    npArtTextureDebugState.postFadeFrames += 1;
+    if(now - npArtTextureDebugState.postFadeSecondStart >= 1000){
+      debugNowPlayingArtTexture("post-fade render rate", {
+        frames: npArtTextureDebugState.postFadeFrames,
+        frame: st.frame
+      });
+      npArtTextureDebugState.postFadeFrames = 0;
+      npArtTextureDebugState.postFadeSecondStart = now;
+    }
   }
   const aSlot = st.fadeActive ? st.currentSlot : st.currentSlot;
   const bSlot = st.fadeActive ? st.nextSlot : st.currentSlot;
@@ -184,33 +212,16 @@ function renderNowPlayingArtTexture(ts){
   gl.activeTexture(gl.TEXTURE1);
   gl.bindTexture(gl.TEXTURE_2D, st.textures[bSlot]);
   gl.uniform1i(gl.getUniformLocation(st.program, "texB"), 1);
-  let vizAmount = 0;
-  try{
-    const vizCanvas = document.getElementById("visualizerBg");
-    if(vizCanvas && st.visualizerTexture && vizCanvas.width && vizCanvas.height && vizCanvas.classList.contains("active")){
-      gl.activeTexture(gl.TEXTURE2);
-      gl.bindTexture(gl.TEXTURE_2D, st.visualizerTexture);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, vizCanvas);
-      gl.uniform1i(gl.getUniformLocation(st.program, "vizTex"), 2);
-      vizAmount = 0.55;
-    }
-  }catch(e){
-    vizAmount = 0;
-  }
   gl.uniform2f(gl.getUniformLocation(st.program, "canvasSize"), st.canvas.width || 1, st.canvas.height || 1);
   gl.uniform2f(gl.getUniformLocation(st.program, "sizeA"), imgA.naturalWidth || imgA.width || 1, imgA.naturalHeight || imgA.height || 1);
   gl.uniform2f(gl.getUniformLocation(st.program, "sizeB"), imgB.naturalWidth || imgB.width || 1, imgB.naturalHeight || imgB.height || 1);
   gl.uniform1f(gl.getUniformLocation(st.program, "mixAmount"), mixAmount);
-  gl.uniform1f(gl.getUniformLocation(st.program, "vizAmount"), vizAmount);
   gl.drawArrays(gl.TRIANGLES, 0, 6);
-  let keepAnimating = false;
-  try{
-    keepAnimating = !!(document.getElementById("visualizerBg") && document.getElementById("visualizerBg").classList.contains("active"));
-  }catch(e){}
-  if(st.fadeActive || keepAnimating){
+  if(st.fadeActive){
     st.frame = requestAnimationFrame(renderNowPlayingArtTexture);
   }else{
     st.frame = 0;
+    debugNowPlayingArtTexture("render loop stopped", {frame: st.frame});
   }
   return true;
 }
@@ -228,12 +239,16 @@ function setNowPlayingArtTexture(src, opts){
   const nextKey = nowPlayingArtCompareKey(art);
   const curKey = nowPlayingArtCompareKey(st.currentSrc);
   if(nextKey === curKey){
+    stopNowPlayingArtTextureLoop();
     renderNowPlayingArtTexture(performance.now());
     return;
   }
   if(!art){
+    stopNowPlayingArtTextureLoop();
     st.currentSrc = "";
     st.images[st.currentSlot] = null;
+    st.fadeActive = false;
+    st.nextSlot = st.currentSlot ? 0 : 1;
     renderNowPlayingArtTexture(performance.now());
     return;
   }
@@ -248,21 +263,32 @@ function setNowPlayingArtTexture(src, opts){
         st.fadeStart = performance.now();
         st.fadeDuration = Math.max(80, Number(options.duration || 240));
         st.fadeActive = true;
+        npArtTextureDebugState.postFadeFrames = 0;
+        npArtTextureDebugState.postFadeSecondStart = 0;
+        debugNowPlayingArtTexture("fade started", {src: art, duration: st.fadeDuration});
       }else{
         st.currentSlot = targetSlot;
         st.nextSlot = st.currentSlot ? 0 : 1;
         st.fadeActive = false;
       }
       st.currentSrc = art;
-      if(st.frame) cancelAnimationFrame(st.frame);
+      stopNowPlayingArtTextureLoop();
       renderNowPlayingArtTexture(performance.now());
     }catch(e){}
   };
   img.onerror = function(){
+    stopNowPlayingArtTextureLoop();
     st.currentSrc = "";
+    st.fadeActive = false;
+    st.nextSlot = st.currentSlot ? 0 : 1;
     renderNowPlayingArtTexture(performance.now());
   };
   img.src = art;
 }
 
-window.addEventListener("resize", ()=>{ try{ renderNowPlayingArtTexture(performance.now()); }catch(e){} }, {passive:true});
+window.addEventListener("resize", ()=>{
+  try{
+    if(npArtTextureState && npArtTextureState.frame) stopNowPlayingArtTextureLoop();
+    renderNowPlayingArtTexture(performance.now());
+  }catch(e){}
+}, {passive:true});
