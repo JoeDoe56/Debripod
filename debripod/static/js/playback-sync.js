@@ -484,10 +484,13 @@
       const wheelGap = parseFloat(rootStyle.getPropertyValue("--wheelGap")) || 0;
       const minNeeded = Math.ceil(wheelSize + (wheelGap * 2));
       const available = Math.max(0, Math.round(wrapRect.bottom - screenRect.bottom));
-      const target = Math.max(available, minNeeded);
+      const viewportW = Math.max(1, Math.round(window.innerWidth || document.documentElement.clientWidth || minNeeded));
+      const desired = Math.max(minNeeded, viewportW);
+      const target = available > 0 ? Math.max(minNeeded, Math.min(available, desired)) : desired;
       wheelZoneEl.style.height = target + "px";
       wheelZoneEl.style.minHeight = target + "px";
       wheelZoneEl.style.flex = "0 0 " + target + "px";
+      document.documentElement.style.setProperty("--wheelZoneHeight", target + "px");
     }catch(e){}
   }
 
@@ -593,6 +596,7 @@
     }
     else libHeader.textContent = text;
     try{ if(headerTextEl) headerTextEl.scrollLeft = 0; }catch(e){}
+    try{ if(typeof updatePathPillMaxWidth === "function") updatePathPillMaxWidth(); }catch(e){}
     try{ pathPillActivity(false); }catch(e){}
     try{
       const k = state.current ? state.current.kind : "";

@@ -5,6 +5,8 @@
   var playbackPillsHideTimer = null;
   var playbackPillMetadataVisible = false;
   var playbackPillTransitionMs = 220;
+  var pathPillHideFinalTimer = null;
+  var infoPillHideFinalTimer = null;
   try{
     pathPillPinned = (localStorage.getItem("debripod_path_pill_pinned") || "") === "1";
   }catch(e){}
@@ -34,6 +36,7 @@
     const effectivePinned = !!pinned || !!pathPillPinned;
     try{
       if(!libHeader) return;
+      clearPlaybackPillHideFinalTimers();
       libHeader.classList.remove("pathPillHidden");
       setTimeout(()=> startHScrollTextAuto(document.getElementById("libHeaderText")), playbackPillTransitionMs + 20);
       animatePathPillGlassTransition("path pill shown", playbackPillTransitionMs);
@@ -51,18 +54,29 @@
       pathPillHideTimer = setTimeout(()=>{
         try{
           if(!isLibraryTabActive()) return;
+          if(playbackPillsVisible && hasNowPlayingMetadata()) return;
+          if(playbackPillsPinned && hasNowPlayingMetadata()){
+            showPlaybackPills(true, "path hide pinned guard");
+            return;
+          }
           if(pathPillPinned) return;
           const ae = document.activeElement;
           if(ae && (ae.tagName === "INPUT" || ae.tagName === "TEXTAREA" || ae.tagName === "SELECT" || ae.isContentEditable)) return;
           libHeader.classList.add("pathPillHidden");
           animatePathPillGlassTransition("path pill hidden", playbackPillTransitionMs);
-          setTimeout(()=> hidePathPillGlassNow("path pill hidden final"), playbackPillTransitionMs + 40);
+          schedulePathPillHideFinal("path pill hidden final");
         }catch(e){}
       }, (ms || 2500));
     }catch(e){}
   }
 
   function pathPillActivity(pinned){
+    try{
+      if(playbackPillsPinned && hasNowPlayingMetadata()){
+        showPlaybackPills(true, "path activity pinned guard");
+        return;
+      }
+    }catch(e){}
     const effectivePinned = !!pinned || !!pathPillPinned;
     showPathPill(effectivePinned);
     if(!effectivePinned) scheduleHidePathPill(2500);
@@ -237,13 +251,47 @@
     try{
       const content = document.querySelector(".ipodScreenContent");
       const rect = content ? content.getBoundingClientRect() : null;
-      if(rect && rect.width) document.documentElement.style.setProperty("--pathPillMaxWidth", Math.max(1, Math.floor(rect.width)) + "px");
+      const root = document.documentElement;
+      const maxWidth = rect && rect.width ? Math.max(1, Math.floor(rect.width)) : Math.max(1, Math.floor(window.innerWidth || 1) - 24);
+      const rootStyle = getComputedStyle(root);
+      const screenFrame = Math.max(0, parseFloat(rootStyle.getPropertyValue("--screenFrame")) || 0);
+      const infoWidth = Math.max(1, Math.floor(maxWidth - (screenFrame * 2)));
+      root.style.setProperty("--pathPillMaxWidth", maxWidth + "px");
+      root.style.setProperty("--infoPillWidth", infoWidth + "px");
+      root.style.setProperty("--infoPillHeight", "42px");
+      const pathText = document.getElementById("libHeaderText");
+      const padX = Math.max(0, parseFloat(rootStyle.getPropertyValue("--playbackPillPadX")) || 10);
+      const basePadX = 12;
+      const pathWidth = pathText ? Math.ceil(pathText.scrollWidth || pathText.offsetWidth || 0) : 0;
+      const nowWidth = (libHeader && libHeader.classList.contains("pathPillExpanded") && pathPillNowText)
+        ? Math.ceil(pathPillNowText.scrollWidth || pathPillNowText.offsetWidth || 0)
+        : 0;
+      const expanded = !!(libHeader && libHeader.classList.contains("pathPillExpanded"));
+      const targetPad = expanded ? padX : basePadX;
+      const measured = Math.max(pathWidth, nowWidth) + targetPad * 2;
+      const minWidth = expanded ? Math.min(maxWidth, 150) : Math.min(maxWidth, 72);
+      const target = Math.max(1, Math.min(maxWidth, Math.max(minWidth, measured || minWidth)));
+      root.style.setProperty("--pathPillTargetWidth", target + "px");
+    }catch(e){}
+  }
+  try{ window.updatePathPillMaxWidth = updatePathPillMaxWidth; }catch(e){}
+
+  function refreshPlaybackPillTextLayer(reason, force){
+    try{
+      if(typeof updateGlassTextUnderColors === "function"){
+        updateGlassTextUnderColors({reason:reason || "playback pill text", force:force !== false});
+      }
+    }catch(e){}
+    try{
+      const scheduler = (window.DebriPod && window.DebriPod.frameScheduler) ? window.DebriPod.frameScheduler : null;
+      if(scheduler && scheduler.mark) scheduler.mark({textContrast:true, render:true});
     }catch(e){}
   }
 
   function forcePathPillGlassRender(reason, refreshSource){
     try{
       updatePathPillMaxWidth();
+      refreshPlaybackPillTextLayer(reason || "path pill", false);
       const renderer = liquidGlassRendererByKey("default");
       if(!renderer) return;
       if(renderer.setVisible) renderer.setVisible(true);
@@ -313,10 +361,48 @@
           forcePathPillGlassRender(reason || "path pill transition", !didRefresh);
           didRefresh = true;
           if(elapsed < dur) requestAnimationFrame(tick);
-          else forcePathPillGlassRender((reason || "path pill transition") + " end", false);
+          else{
+            forcePathPillGlassRender((reason || "path pill transition") + " end", false);
+            refreshPlaybackPillTextLayer((reason || "path pill transition") + " text end", true);
+          }
         }catch(e){}
       };
       requestAnimationFrame(tick);
+    }catch(e){}
+  }
+
+  function schedulePathPillHideFinal(reason){
+    try{
+      if(pathPillHideFinalTimer) clearTimeout(pathPillHideFinalTimer);
+      pathPillHideFinalTimer = setTimeout(()=>{
+        pathPillHideFinalTimer = null;
+        try{
+          if(isPathPillVisible() || (libHeader && libHeader.classList.contains("playbackPillVisible"))) return;
+          hidePathPillGlassNow(reason || "path pill hidden final");
+        }catch(e){}
+      }, playbackPillTransitionMs + 40);
+    }catch(e){}
+  }
+
+  function scheduleInfoPillHideFinal(reason){
+    try{
+      if(infoPillHideFinalTimer) clearTimeout(infoPillHideFinalTimer);
+      infoPillHideFinalTimer = setTimeout(()=>{
+        infoPillHideFinalTimer = null;
+        try{
+          if(isInfoPillVisible() || (infoPill && infoPill.classList.contains("playbackPillVisible"))) return;
+          hideInfoPillGlassNow(reason || "info pill hide final");
+        }catch(e){}
+      }, playbackPillTransitionMs + 40);
+    }catch(e){}
+  }
+
+  function clearPlaybackPillHideFinalTimers(){
+    try{
+      if(pathPillHideFinalTimer) clearTimeout(pathPillHideFinalTimer);
+      if(infoPillHideFinalTimer) clearTimeout(infoPillHideFinalTimer);
+      pathPillHideFinalTimer = null;
+      infoPillHideFinalTimer = null;
     }catch(e){}
   }
 
@@ -341,6 +427,7 @@
   function forceInfoPillGlassRender(reason, refreshSource){
     try{
       updatePathPillMaxWidth();
+      refreshPlaybackPillTextLayer(reason || "info pill", false);
       const renderer = liquidGlassRendererByKey("default");
       if(!renderer) return;
       if(renderer.setVisible) renderer.setVisible(true);
@@ -410,7 +497,10 @@
           forceInfoPillGlassRender(reason || "info pill transition", !didRefresh);
           didRefresh = true;
           if(elapsed < dur) requestAnimationFrame(tick);
-          else forceInfoPillGlassRender((reason || "info pill transition") + " end", false);
+          else{
+            forceInfoPillGlassRender((reason || "info pill transition") + " end", false);
+            refreshPlaybackPillTextLayer((reason || "info pill transition") + " text end", true);
+          }
         }catch(e){}
       };
       requestAnimationFrame(tick);
@@ -421,7 +511,15 @@
     playbackPillsPinned = !!on;
     try{ localStorage.setItem("debripod_playback_pills_pinned", playbackPillsPinned ? "1" : "0"); }catch(e){}
     if(playbackPillsPinned) showPlaybackPills(true, "pin");
-    else playbackPillActivity(false, "unpin");
+    else hidePlaybackPillsImmediate("unpin", false);
+  }
+
+  function setPlaybackPillVisibleClass(on){
+    try{
+      if(libHeader) libHeader.classList.toggle("playbackPillVisible", !!on);
+      if(infoPill) infoPill.classList.toggle("playbackPillVisible", !!on);
+      if(on) refreshPlaybackPillTextLayer("playback pill visible class", true);
+    }catch(e){}
   }
 
   function showPlaybackPills(pinned, reason){
@@ -435,9 +533,12 @@
     }
     try{ if(playbackPillsHideTimer) clearTimeout(playbackPillsHideTimer); }catch(e){}
     playbackPillsHideTimer = null;
+    clearPlaybackPillHideFinalTimers();
     showPathPill(true);
     try{
       if(libHeader) libHeader.classList.add("pathPillExpanded");
+      setPlaybackPillVisibleClass(true);
+      updatePathPillMaxWidth();
       if(infoPill){
         const wasHidden = infoPill.classList.contains("infoPillHidden");
         infoPill.classList.remove("infoPillHidden");
@@ -455,21 +556,29 @@
     if(typeof pinnedValue === "boolean"){
       playbackPillsPinned = !!pinnedValue;
       try{ localStorage.setItem("debripod_playback_pills_pinned", playbackPillsPinned ? "1" : "0"); }catch(e){}
+      if(playbackPillsPinned && hasNowPlayingMetadata()){
+        showPlaybackPills(true, reason || "pinned guard");
+        return;
+      }
+    }else if(playbackPillsPinned && hasNowPlayingMetadata()){
+      showPlaybackPills(true, reason || "pinned guard");
+      return;
     }
     try{ if(playbackPillsHideTimer) clearTimeout(playbackPillsHideTimer); }catch(e){}
     playbackPillsHideTimer = null;
     playbackPillsVisible = false;
     try{
+      setPlaybackPillVisibleClass(false);
       if(infoPill){
         infoPill.classList.add("infoPillHidden");
         infoPill.style.pointerEvents = "none";
         animateInfoPillGlassTransition(reason || "info pill hide", playbackPillTransitionMs);
-        setTimeout(()=> hideInfoPillGlassNow(reason || "info pill hide final"), playbackPillTransitionMs + 40);
+        scheduleInfoPillHideFinal(reason || "info pill hide final");
       }
       if(!pathPillPinned && libHeader) {
         libHeader.classList.add("pathPillHidden");
         animatePathPillGlassTransition(reason || "playback path hide", playbackPillTransitionMs);
-        setTimeout(()=> hidePathPillGlassNow(reason || "playback path hide final"), playbackPillTransitionMs + 40);
+        schedulePathPillHideFinal(reason || "playback path hide final");
       }
     }catch(e){}
   }
@@ -512,11 +621,13 @@
 
   function togglePlaybackPillsFromArt(){
     if(!hasNowPlayingMetadata()) return;
-    if(playbackPillsPinned){
-      hidePlaybackPillsImmediate("art toggle", false);
-    }else{
-      setPlaybackPillsPinned(true);
-    }
+    try{
+      const now = performance.now();
+      if(togglePlaybackPillsFromArt._lastTs && now - togglePlaybackPillsFromArt._lastTs < 180) return;
+      togglePlaybackPillsFromArt._lastTs = now;
+    }catch(e){}
+    if(playbackPillsPinned) hidePlaybackPillsImmediate("art unpin", false);
+    else setPlaybackPillsPinned(true);
   }
   window.addEventListener("resize", ()=>{
     wheelGlassTiltRect = null;

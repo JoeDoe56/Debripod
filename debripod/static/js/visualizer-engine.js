@@ -1220,7 +1220,8 @@ function updateVisualizerAlbumBrightnessFromPalette(colors){
 function currentVisualizerBrightnessScale(){
   const pct = normalizeVisualizerMaxBrightnessPct(uiSettings.visualizerMaxBrightnessPct);
   if(pct <= 0) return 0;
-  return Math.max(0.18, Math.max(0, pct / 100) * visualizerAlbumBrightness);
+  const remappedPct = pct * (230 / 60);
+  return Math.max(0.18, Math.max(0, remappedPct / 100) * visualizerAlbumBrightness);
 }
 
 function rgbaFrom(rgb, a){
@@ -1299,6 +1300,7 @@ function setVisualizerActive(on){
     visualizerBg.classList.toggle("active", !!on);
     visualizerBg.classList.toggle("off", !on);
     renderVisualizerWebGL(performance.now());
+    try{ if(typeof renderNowPlayingArtTexture === "function") renderNowPlayingArtTexture(performance.now()); }catch(e){}
     if(on && visualizerFrameTimer){
       clearTimeout(visualizerFrameTimer);
       visualizerFrameTimer = 0;

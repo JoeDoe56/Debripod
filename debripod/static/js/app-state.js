@@ -10,6 +10,7 @@ var VISUALIZER_BAND_LABELS = DebriPod.uiSettings.VISUALIZER_BAND_LABELS;
 var DEFAULT_UI_SETTINGS = DebriPod.uiSettings.DEFAULT_UI_SETTINGS;
 var clampNumber = DebriPod.uiSettings.clampNumber;
 var normalizeVisualizerStrength = DebriPod.uiSettings.normalizeVisualizerStrength;
+var normalizeVisualizerMaxBrightnessPct = DebriPod.uiSettings.normalizeVisualizerMaxBrightnessPct;
 var normalizeVisualizerPreset = DebriPod.uiSettings.normalizeVisualizerPreset;
 var normalizeVisualizerFpsLock = DebriPod.uiSettings.normalizeVisualizerFpsLock;
 var normalizeTextMode = DebriPod.uiSettings.normalizeTextMode;
