@@ -31,51 +31,98 @@
   }
 
   const dpRowHeightCache = new Map();
-  const dpViewRowMetrics = new Map();
+  const dpVirtualMetrics = {
+    descriptor: "",
+    byKey: new Map(),
+    byIndexType: new Map(),
+    fallback: 56,
+    prefix: null,
+    prefixSignature: ""
+  };
 
-  function rowHeightViewKey(){
+  function virtualViewDescriptor(){
     try{
       const cur = state && state.current ? state.current : {};
-      return [cur.kind || "", cur.root && cur.root.id || cur.root_id || "", cur.level || "", cur.value || "", cur.rel || "", state && state.items ? state.items.length : 0].join("|");
+      return [
+        cur.kind || "",
+        cur.root && cur.root.id || cur.root_id || "",
+        cur.level || "",
+        cur.value || "",
+        cur.rel || "",
+        cur.label || ""
+      ].join("|");
     }catch(e){
       return "default";
     }
   }
 
   function rowViewMetrics(){
-    const key = rowHeightViewKey();
-    let entry = dpViewRowMetrics.get(key);
-    if(!entry){
-      entry = {byIndex: new Map(), fallback: 56};
-      dpViewRowMetrics.set(key, entry);
+    const descriptor = virtualViewDescriptor();
+    if(dpVirtualMetrics.descriptor !== descriptor){
+      dpVirtualMetrics.descriptor = descriptor;
+      dpVirtualMetrics.byKey.clear();
+      dpVirtualMetrics.byIndexType.clear();
+      dpVirtualMetrics.fallback = 56;
+      dpVirtualMetrics.prefix = null;
+      dpVirtualMetrics.prefixSignature = "";
     }
-    while(dpViewRowMetrics.size > 24){
-      const first = dpViewRowMetrics.keys().next();
-      if(first.done) break;
-      dpViewRowMetrics.delete(first.value);
-    }
-    return entry;
+    return dpVirtualMetrics;
   }
 
-  function rowHeightCacheKey(item){
+  function virtualRowType(item){
     try{
-      const cur = state && state.current ? state.current : {};
-      const viewKey = [cur.kind || "", cur.root && cur.root.id || cur.root_id || "", cur.level || "", cur.value || "", cur.rel || ""].join("|");
-      const itemKey = [item && item.kind || "", item && item.media || "", item && item.forceTwoLine ? "two" : "", item && item.settingRow ? "setting" : "", item && item.sub_label ? "sub" : "", Array.isArray(item && item.pills) ? item.pills.length : 0].join("|");
-      return viewKey + "::" + itemKey;
+      if(!item) return "empty";
+      const flags = [
+        item.kind || "",
+        item.media || "",
+        item.forceTwoLine ? "two" : "",
+        item.settingRow ? "setting" : "",
+        item.sub_label ? "sub" : "",
+        Array.isArray(item.pills) ? "p" + item.pills.length : "p0"
+      ];
+      return flags.join(":");
     }catch(e){
-      return "default";
+      return "unknown";
     }
   }
 
-  function cachedItemHeight(item){
+  function virtualItemIdentity(item, index){
+    try{
+      if(!item) return "idx:" + String(index || 0);
+      const rootId = item.root && item.root.id || item.rootId || item.root_id || "";
+      const stable = item.rel || item.value || item.cat || item.action || item.task_id || item.result_id || "";
+      if(stable) return [rootId, stable].join("/");
+      if(item.queueKind || item.queueIndex != null) return ["queue", item.queueKind || "", item.queueIndex == null ? index : item.queueIndex].join("/");
+      return "idx:" + String(index || 0);
+    }catch(e){
+      return "idx:" + String(index || 0);
+    }
+  }
+
+  function virtualMetricKey(index, item){
+    return virtualRowType(item) + "|" + virtualItemIdentity(item, index);
+  }
+
+  function rowHeightCacheKey(index, item){
+    return virtualViewDescriptor() + "::" + virtualMetricKey(index, item);
+  }
+
+  function invalidateVirtualPrefix(){
+    try{
+      dpVirtualMetrics.prefix = null;
+      dpVirtualMetrics.prefixSignature = "";
+    }catch(e){}
+  }
+
+  function cachedItemHeight(index, item){
     try{
       const metrics = rowViewMetrics();
-      if(metrics && metrics._lookupIndex != null){
-        const byIndex = metrics.byIndex.get(metrics._lookupIndex);
-        if(byIndex && byIndex > 0) return byIndex;
-      }
-      const cached = dpRowHeightCache.get(rowHeightCacheKey(item));
+      const key = virtualMetricKey(index, item);
+      const byKey = metrics.byKey.get(key);
+      if(byKey && byKey > 0) return byKey;
+      const byIndex = metrics.byIndexType.get(String(index) + "|" + virtualRowType(item));
+      if(byIndex && byIndex > 0) return byIndex;
+      const cached = dpRowHeightCache.get(rowHeightCacheKey(index, item));
       if(cached && cached > 0) return cached;
       if(metrics && metrics.fallback) return Math.max(estimatedItemHeight(item), metrics.fallback);
     }catch(e){}
@@ -84,14 +131,52 @@
 
   function virtualHeightForIndex(index){
     try{
-      const metrics = rowViewMetrics();
-      metrics._lookupIndex = index;
-      const h = cachedItemHeight(state.items[index]);
-      metrics._lookupIndex = null;
-      return h;
+      return cachedItemHeight(index, state.items[index]);
     }catch(e){
       return estimatedItemHeight(state.items[index]);
     }
+  }
+
+  function virtualPrefixSignature(){
+    try{
+      const items = state && Array.isArray(state.items) ? state.items : [];
+      const parts = [String(items.length)];
+      for(let i = 0; i < items.length; i++){
+        parts.push(virtualMetricKey(i, items[i]));
+      }
+      return parts.join("\n");
+    }catch(e){
+      return "";
+    }
+  }
+
+  function virtualPrefixHeights(){
+    const count = state && Array.isArray(state.items) ? state.items.length : 0;
+    const metrics = rowViewMetrics();
+    const signature = virtualPrefixSignature();
+    if(metrics.prefix && metrics.prefixSignature === signature && metrics.prefix.length === count + 1){
+      return metrics.prefix;
+    }
+    const prefix = new Array(count + 1);
+    prefix[0] = 0;
+    for(let i = 0; i < count; i++){
+      prefix[i + 1] = prefix[i] + Math.max(1, virtualHeightForIndex(i));
+    }
+    metrics.prefix = prefix;
+    metrics.prefixSignature = signature;
+    return prefix;
+  }
+
+  function virtualLowerBound(prefix, target){
+    let lo = 0;
+    let hi = prefix.length;
+    const needle = Math.max(0, Number(target || 0));
+    while(lo < hi){
+      const mid = (lo + hi) >> 1;
+      if(prefix[mid] < needle) lo = mid + 1;
+      else hi = mid;
+    }
+    return lo;
   }
 
   function measureRenderedRowHeights(){
@@ -106,14 +191,18 @@
         const h = row.getBoundingClientRect ? row.getBoundingClientRect().height : row.offsetHeight;
         if(h > 0){
           const safeH = Math.max(24, h);
-          dpRowHeightCache.set(rowHeightCacheKey(state.items[idx]), safeH);
-          metrics.byIndex.set(idx, safeH);
+          const item = state.items[idx];
+          const key = virtualMetricKey(idx, item);
+          dpRowHeightCache.set(rowHeightCacheKey(idx, item), safeH);
+          metrics.byKey.set(key, safeH);
+          metrics.byIndexType.set(String(idx) + "|" + virtualRowType(item), safeH);
           total += safeH;
           count += 1;
         }
       });
       if(count){
         metrics.fallback = Math.max(metrics.fallback || 0, Math.ceil(total / count));
+        invalidateVirtualPrefix();
       }
       while(dpRowHeightCache.size > 600){
         const first = dpRowHeightCache.keys().next();
@@ -195,16 +284,35 @@
   function canVirtualizeList(){
     try{
       if(!libList || !state || !Array.isArray(state.items)) return false;
-      return false;
       if(state.items.length < 220) return false;
+      const cur = state.current || {};
+      const kind = String(cur.kind || "");
+      const stableViews = new Set([
+        "folder",
+        "metatop",
+        "metalist",
+        "history",
+        "playback_queue",
+        "libsearch_history"
+      ]);
+      if(!stableViews.has(kind) && cur.readOnly !== true) return false;
+      const active = document.activeElement;
+      if(active && libList.contains(active) && /^(INPUT|TEXTAREA|SELECT|BUTTON)$/i.test(active.tagName || "")) return false;
       return !state.items.some((item)=> item && (
+        item.settingRow ||
         item.kind === "range_editor_input" ||
+        item.kind === "range_editor_slider" ||
         item.kind === "smart_playlist_rules_text" ||
         item.kind === "libsearch_query" ||
         item.kind === "libsearch_filter" ||
         item.kind === "playlist_create" ||
         item.kind === "smart_playlist_create" ||
-        item.kind === "playlist_edit_name"
+        item.kind === "playlist_edit_name" ||
+        item.kind === "setting_value" ||
+        item.kind === "settings_library_folder" ||
+        item.kind === "settings_library_mode_choice" ||
+        item.kind === "settings_library_remove" ||
+        item.kind === "libui_action"
       ));
     }catch(e){
       return false;
@@ -215,31 +323,18 @@
     const count = state && Array.isArray(state.items) ? state.items.length : 0;
     const enabled = canVirtualizeList();
     if(!enabled) return {enabled:false, start:0, end:count, top:0, bottom:0, visible:count, total:count};
-    const heights = [];
-    let total = 0;
-    for(let i = 0; i < count; i++){
-      const h = virtualHeightForIndex(i);
-      heights.push(h);
-      total += h;
-    }
+    const prefix = virtualPrefixHeights();
+    const totalHeight = prefix[count] || 0;
     const viewportTop = Math.max(0, libList.scrollTop || 0);
     const viewportBottom = viewportTop + Math.max(1, libList.clientHeight || 1);
     const overscan = Math.max(280, (libList.clientHeight || 360) * 0.8);
-    let y = 0;
-    let start = 0;
-    while(start < count && y + heights[start] < viewportTop - overscan){
-      y += heights[start];
-      start += 1;
-    }
-    let end = start;
-    let visibleY = y;
-    while(end < count && visibleY < viewportBottom + overscan){
-      visibleY += heights[end];
-      end += 1;
-    }
-    const top = y;
-    const bottom = Math.max(0, total - visibleY);
-    return {enabled:true, start, end, top, bottom, visible:end - start, total:count};
+    const startTarget = Math.max(0, viewportTop - overscan);
+    const endTarget = Math.min(totalHeight, viewportBottom + overscan);
+    const start = Math.max(0, Math.min(count, virtualLowerBound(prefix, startTarget) - 1));
+    const end = Math.max(start + 1, Math.min(count, virtualLowerBound(prefix, endTarget) + 1));
+    const top = prefix[start] || 0;
+    const bottom = Math.max(0, totalHeight - (prefix[end] || top));
+    return {enabled:true, start, end, top, bottom, visible:end - start, total:count, height:totalHeight};
   }
 
   function appendVirtualSpacer(layer, height, pos){
@@ -250,6 +345,26 @@
     spacer.dataset.virtualSpacer = pos || "";
     spacer.style.height = Math.max(0, height).toFixed(1) + "px";
     layer.appendChild(spacer);
+  }
+
+  function syncVirtualSpacerHeights(virtual){
+    try{
+      if(!libList || !virtual || !virtual.enabled) return virtual;
+      const prefix = virtualPrefixHeights();
+      const count = state && Array.isArray(state.items) ? state.items.length : 0;
+      const top = prefix[virtual.start] || 0;
+      const bottom = Math.max(0, (prefix[count] || 0) - (prefix[virtual.end] || top));
+      const topSpacer = libList.querySelector('.ipodVirtualSpacer[data-virtual-spacer="top"]');
+      const bottomSpacer = libList.querySelector('.ipodVirtualSpacer[data-virtual-spacer="bottom"]');
+      if(topSpacer) topSpacer.style.height = Math.max(0, top).toFixed(1) + "px";
+      if(bottomSpacer) bottomSpacer.style.height = Math.max(0, bottom).toFixed(1) + "px";
+      virtual.top = top;
+      virtual.bottom = bottom;
+      virtual.height = prefix[count] || 0;
+      return virtual;
+    }catch(e){
+      return virtual;
+    }
   }
 
   function appendListEndSpacer(layer){
@@ -280,19 +395,38 @@
   function virtualOffsetForIndex(index){
     try{
       const n = Math.max(0, Math.min((state.items.length || 1) - 1, Number(index || 0)));
-      let y = 0;
-      for(let i = 0; i < n; i++) y += virtualHeightForIndex(i);
-      return y;
+      const prefix = virtualPrefixHeights();
+      return prefix[n] || 0;
     }catch(e){
       return 0;
     }
   }
 
-  function renderList(){
+  function renderList(options){
+    const renderOptions = options || {};
     const prevScroll = (libList ? libList.scrollTop : 0);
     let editInputToFocus = null;
-    try{ if(typeof hideTransientListGlass === "function") hideTransientListGlass("before list render"); }catch(e){}
-    libList.innerHTML = "";
+    const finishRenderingList = ()=>{
+      try{
+        if(!libList) return;
+        libList._dpRenderingList = false;
+        libList._dpRenderGuardFrame = 0;
+        if(libList._dpVirtualScrollPending && libList._dpVirtualized){
+          libList._dpVirtualScrollPending = false;
+          scheduleVirtualListRender("pending scroll");
+        }
+      }catch(e){}
+    };
+    if(libList){
+      libList._dpRenderingList = true;
+      libList.style.overflowAnchor = "none";
+      if(libList._dpRenderGuardFrame){
+        try{ cancelAnimationFrame(libList._dpRenderGuardFrame); }catch(e){}
+        libList._dpRenderGuardFrame = 0;
+      }
+    }
+    try{
+    try{ if(!renderOptions.virtualScroll && typeof hideTransientListGlass === "function") hideTransientListGlass("before list render"); }catch(e){}
     const itemsLayer = document.createDocumentFragment();
     const virtual = listVirtualWindow();
     if(libList) libList._dpVirtualized = !!virtual.enabled;
@@ -870,15 +1004,42 @@
       itemsLayer.appendChild(li);
     }
     appendListEndSpacer(itemsLayer);
-    libList.appendChild(itemsLayer);
+    if(libList.replaceChildren) libList.replaceChildren(itemsLayer);
+    else {
+      libList.innerHTML = "";
+      libList.appendChild(itemsLayer);
+    }
     measureRenderedRowHeights();
+    syncVirtualSpacerHeights(virtual);
+    if(libList){
+      libList._dpLastVirtualWindow = {
+        start: Number(virtual.start || 0),
+        end: Number(virtual.end || 0),
+        top: Number(virtual.top || 0),
+        bottom: Number(virtual.bottom || 0),
+        height: Number(virtual.height || 0),
+        visible: Number(virtual.visible || 0)
+      };
+    }
 
     // restore scroll position first, then ensure selection is visible without jumping to top
     try{
       if(libList) libList.scrollTop = prevScroll;
     }catch(e){}
+    if(renderOptions.virtualScroll && libList){
+      const wantedScroll = prevScroll;
+      requestAnimationFrame(()=>{
+        try{
+          if(!libList || !libList._dpVirtualized) return;
+          if(Math.abs((libList.scrollTop || 0) - wantedScroll) > 1){
+            libList.scrollTop = wantedScroll;
+            scheduleVirtualListRender("scroll restore");
+          }
+        }catch(e){}
+      });
+    }
     const selEl = libList.querySelector(".ipodItem.sel");
-    if(selEl){
+    if(selEl && !renderOptions.virtualScroll){
       ensureLibItemVisible(selEl);
     }
     if(editInputToFocus){
@@ -905,6 +1066,33 @@
       document.documentElement.style.setProperty("--dp-visible-row-count", String(virtual.visible || 0));
       document.documentElement.style.setProperty("--dp-total-row-count", String(virtual.total || 0));
     }catch(e){}
+    }finally{
+      if(libList){
+        libList._dpRenderGuardFrame = requestAnimationFrame(finishRenderingList);
+      }
+    }
+  }
+
+  function scheduleVirtualListRender(reason){
+    try{
+      if(!libList || !libList._dpVirtualized) return;
+      if(libList._dpRenderingList){
+        libList._dpVirtualScrollPending = true;
+        return;
+      }
+      if(libList._dpVirtualFrame) cancelAnimationFrame(libList._dpVirtualFrame);
+      libList._dpVirtualFrame = requestAnimationFrame(()=>{
+        libList._dpVirtualFrame = 0;
+        if(!libList || !libList._dpVirtualized) return;
+        if(libList._dpRenderingList){
+          libList._dpVirtualScrollPending = true;
+          return;
+        }
+        try{ renderList({virtualScroll:true, reason:reason || "virtual scroll"}); }catch(e){}
+        try{ if(typeof reconcileLibPillGlassTargets === "function") reconcileLibPillGlassTargets(reason || "virtual scroll render"); }catch(e){}
+        try{ if(typeof scheduleLiquidGlassRender === "function") scheduleLiquidGlassRender(); }catch(e){}
+      });
+    }catch(e){}
   }
 
   try{
@@ -915,12 +1103,13 @@
           const renderer = (typeof liquidGlassRendererByKey === "function") ? liquidGlassRendererByKey("libPills") : null;
           if(renderer) renderer._metricsDirty = true;
           if(libList._dpVirtualized){
-            if(libList._dpVirtualFrame) cancelAnimationFrame(libList._dpVirtualFrame);
-            libList._dpVirtualFrame = requestAnimationFrame(()=>{
-              libList._dpVirtualFrame = 0;
-              try{ renderList(); }catch(e){}
-              try{ if(typeof reconcileLibPillGlassTargets === "function") reconcileLibPillGlassTargets("virtual scroll render"); }catch(e){}
-            });
+            scheduleVirtualListRender("virtual scroll render");
+            if(libList._dpLiquidPillScrollTimer) clearTimeout(libList._dpLiquidPillScrollTimer);
+            libList._dpLiquidPillScrollTimer = setTimeout(()=>{
+              libList._dpLiquidPillScrollTimer = 0;
+              try{ if(typeof reconcileLibPillGlassTargets === "function") reconcileLibPillGlassTargets("list scroll settled"); }catch(e){}
+            }, 90);
+            return;
           }
           if(typeof invalidateLibPillGlass === "function") invalidateLibPillGlass("list scroll");
           if(libList._dpLiquidPillScrollTimer) clearTimeout(libList._dpLiquidPillScrollTimer);
@@ -1238,7 +1427,15 @@ function vibeTick(){
         return {
           visible:Number(virtual.visible || 0),
           total:Number(virtual.total || (state && state.items ? state.items.length : 0) || 0),
-          virtualized:!!virtual.enabled
+          start:Number(virtual.start || 0),
+          end:Number(virtual.end || 0),
+          top:Number(virtual.top || 0),
+          bottom:Number(virtual.bottom || 0),
+          virtualized:!!virtual.enabled,
+          virtualHeight:Number(virtual.height || (libList ? libList.scrollHeight : 0) || 0),
+          scrollTop:Number((libList && libList.scrollTop) || 0),
+          scrollHeight:Number((libList && libList.scrollHeight) || 0),
+          rendering:!!(libList && libList._dpRenderingList)
         };
       }
     };

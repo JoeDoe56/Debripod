@@ -893,6 +893,7 @@
       transform: translateY(0);
       transition: opacity .22s ease, transform .22s ease, background .45s ease, border-color .45s ease;
       will-change: opacity, transform;
+      overflow-anchor: none;
       -webkit-mask-image: linear-gradient(to bottom, transparent 0, black 18px, black calc(100% - 18px), transparent 100%);
       mask-image: linear-gradient(to bottom, transparent 0, black 18px, black calc(100% - 18px), transparent 100%);
     }
@@ -909,6 +910,7 @@
       margin:0;
       border:0;
       pointer-events:none;
+      overflow-anchor:none;
     }
     .ipodListEndSpacer{
       display:block;
