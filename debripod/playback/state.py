@@ -191,8 +191,10 @@ def save_playback_state_best_effort() -> None:
 def _media_key(media: str, root_id: str, rel: str) -> str:
     return f"{(media or '').strip().lower()}::{(root_id or '').strip()}::{(rel or '').strip()}"
 
-def _trim_recent(recent: list, max_items: int = 60) -> list:
-    out = recent[:max_items] if isinstance(recent, list) else []
+def _trim_recent(recent: list, max_items: int = 0) -> list:
+    out = recent if isinstance(recent, list) else []
+    if max_items and max_items > 0:
+        return out[:max_items]
     return out
 
 def _public_entry(value: Any) -> Any:
@@ -256,7 +258,7 @@ def _sanitize_playback_session(raw: Any, now_entry: Optional[dict], recent: list
     return {
         "now": _public_entry(src.get("now") if isinstance(src.get("now"), dict) else now_entry),
         "queue": queue,
-        "history": _public_entry(_trim_recent(recent, 100)),
+        "history": _public_entry(_trim_recent(recent)),
         "queueIndex": queue_index,
         "nav": _public_entry(nav),
         "sourceView": _public_entry(source_view),

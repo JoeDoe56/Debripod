@@ -1,7 +1,22 @@
   var pathPillPinned = false;
   var pathPillHideTimer = null;
+  var playbackPillsPinned = false;
+  var playbackPillsVisible = false;
+  var playbackPillsHideTimer = null;
+  var playbackPillMetadataVisible = false;
   try{
     pathPillPinned = (localStorage.getItem("debripod_path_pill_pinned") || "") === "1";
+  }catch(e){}
+  try{
+    const savedPlayback = localStorage.getItem("debripod_playback_pills_pinned");
+    if(savedPlayback === null){
+      const savedNowPlaying = localStorage.getItem("debripod_np_pill_pinned");
+      if(savedNowPlaying !== null) playbackPillsPinned = savedNowPlaying === "1";
+      else playbackPillsPinned = (localStorage.getItem("debripod_path_pill_pinned") || "") === "1";
+      localStorage.setItem("debripod_playback_pills_pinned", playbackPillsPinned ? "1" : "0");
+    }else{
+      playbackPillsPinned = savedPlayback === "1";
+    }
   }catch(e){}
 
   function isLibraryTabActive(){
@@ -185,8 +200,10 @@
   var npPageFadeToken = 0;
   var nowPlaying = document.getElementById("nowPlaying");
   var npArt = document.getElementById("npArt");
-  var npTitle = document.getElementById("npTitle");
-  var npSub = document.getElementById("npSub");
+  var pathPillNowRow = document.getElementById("pathPillNowRow");
+  var pathPillNowText = document.getElementById("pathPillNowText");
+  var infoPill = document.getElementById("infoPill");
+  var infoPillContent = document.getElementById("infoPillContent");
   var npSeek = document.getElementById("npSeek");
   var npCur = document.getElementById("npCur");
   var npDur = document.getElementById("npDur");
@@ -197,11 +214,10 @@
   var npVolumeWrap = document.getElementById("npVolumeWrap");
   var npVolumeFill = document.getElementById("npVolumeFill");
   var npSeekIndicator = document.getElementById("npSeekIndicator");
-  var npOverlayPill = document.getElementById("npOverlayPill");
-  if(npOverlayPill){
-    npOverlayPill.addEventListener("transitionend", ()=>{ scheduleNpOverlayGlassRender(); }, {passive:true});
+  if(infoPill){
+    infoPill.addEventListener("transitionend", ()=>{ forceInfoPillGlassRender("info pill transition", false); }, {passive:true});
     try{
-      new MutationObserver(()=>{ scheduleNpOverlayGlassRender(); }).observe(npOverlayPill, {
+      new MutationObserver(()=>{ forceInfoPillGlassRender("info pill mutation", false); }).observe(infoPill, {
         attributes: true,
         attributeFilter: ["class"]
       });
@@ -302,24 +318,229 @@
       requestAnimationFrame(tick);
     }catch(e){}
   }
+
+  function hasNowPlayingMetadata(){
+    try{
+      if(state && state.now) return true;
+      if(state && state.nowMeta && typeof state.nowMeta === "object" && Object.keys(state.nowMeta).length) return true;
+      return !!(pathPillNowText && String(pathPillNowText.dataset.text || pathPillNowText.textContent || "").trim());
+    }catch(e){
+      return false;
+    }
+  }
+
+  function isInfoPillVisible(){
+    try{
+      return !!(infoPill && !infoPill.classList.contains("infoPillHidden"));
+    }catch(e){
+      return false;
+    }
+  }
+
+  function forceInfoPillGlassRender(reason, refreshSource){
+    try{
+      updatePathPillMaxWidth();
+      const renderer = liquidGlassRendererByKey("default");
+      if(!renderer) return;
+      if(renderer.setVisible) renderer.setVisible(true);
+      renderer._metricsDirty = true;
+      let touched = false;
+      if(renderer.lenses && renderer.lenses.length){
+        renderer.lenses.forEach((lens)=>{
+          try{
+            if(!lens || !lens.el || !lens.el.classList || !lens.el.classList.contains("infoPillGlass")) return;
+            touched = true;
+            lens.rectPx = null;
+            if(lens.updateMetrics) lens.updateMetrics();
+            lens.revealTypeIndex = 1;
+            lens._revealProgress = isInfoPillVisible() ? infoPillRenderOpacity() : 0;
+          }catch(e){}
+        });
+      }
+      if(refreshSource !== false) refreshLiquidGlassVisualizerSources(reason || "info pill", {keys:["default"]});
+      if(touched && renderer.render) renderer.render(currentVisualizerFrameState());
+    }catch(e){}
+  }
+
+  function hideInfoPillGlassNow(reason){
+    try{
+      const renderer = liquidGlassRendererByKey("default");
+      if(!renderer || !renderer.lenses) return;
+      renderer.lenses.forEach((lens)=>{
+        try{
+          if(!lens || !lens.el || !lens.el.classList || !lens.el.classList.contains("infoPillGlass")) return;
+          lens.revealTypeIndex = 1;
+          lens._revealProgress = 0;
+          lens.rectPx = null;
+        }catch(e){}
+      });
+      if(renderer.render) renderer.render(currentVisualizerFrameState());
+    }catch(e){}
+  }
+
+  function infoPillRenderOpacity(){
+    try{
+      const value = parseFloat(window.getComputedStyle(infoPill).opacity || "1");
+      return Number.isFinite(value) ? Math.max(0, Math.min(1, value)) : 1;
+    }catch(e){
+      return 1;
+    }
+  }
+
+  function animateInfoPillGlassTransition(reason, durationMs){
+    try{
+      const dur = Math.max(80, Number(durationMs || 240));
+      const token = ((animateInfoPillGlassTransition._token || 0) + 1);
+      animateInfoPillGlassTransition._token = token;
+      const started = performance.now();
+      let didRefresh = false;
+      let lastTick = 0;
+      const tick = (now)=>{
+        try{
+          if(animateInfoPillGlassTransition._token !== token) return;
+          const frameNow = Number(now || performance.now());
+          const interval = (typeof animationFrameIntervalMs === "function") ? animationFrameIntervalMs("infoPill") : (1000 / 60);
+          if(lastTick && frameNow - lastTick < interval - 1){
+            requestAnimationFrame(tick);
+            return;
+          }
+          lastTick = frameNow;
+          const elapsed = frameNow - started;
+          forceInfoPillGlassRender(reason || "info pill transition", !didRefresh);
+          didRefresh = true;
+          if(elapsed < dur) requestAnimationFrame(tick);
+          else forceInfoPillGlassRender((reason || "info pill transition") + " end", false);
+        }catch(e){}
+      };
+      requestAnimationFrame(tick);
+    }catch(e){}
+  }
+
+  function setPlaybackPillsPinned(on){
+    playbackPillsPinned = !!on;
+    try{ localStorage.setItem("debripod_playback_pills_pinned", playbackPillsPinned ? "1" : "0"); }catch(e){}
+    if(playbackPillsPinned) showPlaybackPills(true, "pin");
+    else playbackPillActivity(false, "unpin");
+  }
+
+  function showPlaybackPills(pinned, reason){
+    const effectivePinned = !!pinned || !!playbackPillsPinned;
+    playbackPillsVisible = hasNowPlayingMetadata();
+    if(!playbackPillsVisible){
+      hidePlaybackPillsImmediate(reason || "no media");
+      try{ if(libHeader) libHeader.classList.remove("pathPillExpanded"); }catch(e){}
+      showPathPill(!!pathPillPinned);
+      return;
+    }
+    try{ if(playbackPillsHideTimer) clearTimeout(playbackPillsHideTimer); }catch(e){}
+    playbackPillsHideTimer = null;
+    showPathPill(true);
+    try{
+      if(libHeader) libHeader.classList.add("pathPillExpanded");
+      if(infoPill){
+        const wasHidden = infoPill.classList.contains("infoPillHidden");
+        infoPill.classList.remove("infoPillHidden");
+        infoPill.style.pointerEvents = "";
+        if(wasHidden) animateInfoPillGlassTransition(reason || "info pill show", 240);
+        else forceInfoPillGlassRender(reason || "info pill visible", false);
+      }
+      animatePathPillGlassTransition(reason || "playback pills show", 240);
+      setTimeout(()=> startHScrollTextAuto(pathPillNowText), 260);
+    }catch(e){}
+    if(!effectivePinned) scheduleHidePlaybackPills(2500);
+  }
+
+  function hidePlaybackPillsImmediate(reason, pinnedValue){
+    if(typeof pinnedValue === "boolean"){
+      playbackPillsPinned = !!pinnedValue;
+      try{ localStorage.setItem("debripod_playback_pills_pinned", playbackPillsPinned ? "1" : "0"); }catch(e){}
+    }
+    try{ if(playbackPillsHideTimer) clearTimeout(playbackPillsHideTimer); }catch(e){}
+    playbackPillsHideTimer = null;
+    playbackPillsVisible = false;
+    try{
+      if(infoPill){
+        infoPill.classList.add("infoPillHidden");
+        infoPill.style.pointerEvents = "none";
+        animateInfoPillGlassTransition(reason || "info pill hide", 220);
+        setTimeout(()=> hideInfoPillGlassNow(reason || "info pill hide final"), 260);
+      }
+      if(!pathPillPinned && libHeader) {
+        libHeader.classList.add("pathPillHidden");
+        animatePathPillGlassTransition(reason || "playback path hide", 220);
+        setTimeout(()=> hidePathPillGlassNow(reason || "playback path hide final"), 260);
+      }
+    }catch(e){}
+  }
+
+    function scheduleHidePlaybackPills(ms){
+    try{
+      try{ if(playbackPillsHideTimer) clearTimeout(playbackPillsHideTimer); }catch(e){}
+      playbackPillsHideTimer = setTimeout(()=>{
+        try{
+          if(playbackPillsPinned) return;
+          if(seekMode) return;
+          const m = (typeof wheelMedia === "function") ? wheelMedia() : null;
+          if(m && m.paused) return;
+          hidePlaybackPillsImmediate("auto hide");
+        }catch(e){}
+      }, (ms || 2500));
+    }catch(e){}
+  }
+
+  function playbackPillActivity(pinned, reason){
+    const effectivePinned = !!pinned || !!playbackPillsPinned;
+    if(!hasNowPlayingMetadata()) return;
+    if(!isPlaybackPillsShown()){
+      showPlaybackPills(effectivePinned, reason || "activity");
+    }else if(effectivePinned){
+      try{ if(playbackPillsHideTimer) clearTimeout(playbackPillsHideTimer); }catch(e){}
+      playbackPillsHideTimer = null;
+    }else{
+      scheduleHidePlaybackPills(2500);
+    }
+  }
+
+  function isPlaybackPillsShown(){
+    try{
+      return !!(playbackPillsVisible && hasNowPlayingMetadata() && infoPill && !infoPill.classList.contains("infoPillHidden"));
+    }catch(e){
+      return false;
+    }
+  }
+
+  function togglePlaybackPillsFromArt(){
+    if(!hasNowPlayingMetadata()) return;
+    if(playbackPillsPinned){
+      hidePlaybackPillsImmediate("art toggle", false);
+    }else{
+      setPlaybackPillsPinned(true);
+    }
+  }
   window.addEventListener("resize", ()=>{
     wheelGlassTiltRect = null;
     visualizerArtBounds = null;
     visualizerArtBoundsLastTs = 0;
-    scheduleNpOverlayGlassRender();
+    forcePathPillGlassRender("resize", true);
+    forceInfoPillGlassRender("resize", true);
   }, {passive:true});
   if(window.visualViewport){
     window.visualViewport.addEventListener("resize", ()=>{
       wheelGlassTiltRect = null;
       visualizerArtBounds = null;
       visualizerArtBoundsLastTs = 0;
-      scheduleNpOverlayGlassRender();
+      forcePathPillGlassRender("visual viewport resize", true);
+      forceInfoPillGlassRender("visual viewport resize", true);
     }, {passive:true});
     window.visualViewport.addEventListener("scroll", ()=>{
       wheelGlassTiltRect = null;
       visualizerArtBounds = null;
       visualizerArtBoundsLastTs = 0;
-      scheduleNpOverlayGlassRender();
+      forcePathPillGlassRender("visual viewport scroll", true);
+      forceInfoPillGlassRender("visual viewport scroll", true);
     }, {passive:true});
   }
-  setTimeout(()=>{ scheduleNpOverlayGlassRender(); }, 0);
+  setTimeout(()=>{
+    forcePathPillGlassRender("initial path pill", true);
+    forceInfoPillGlassRender("initial info pill", true);
+  }, 0);

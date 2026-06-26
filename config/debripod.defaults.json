@@ -2,8 +2,8 @@
   "ADVANCED_UI_SETTINGS_DEFAULTS": {
     "animationFps": {
       "albumArtTransition": 60,
+      "infoPill": 60,
       "libraryList": 60,
-      "nowPlayingPill": 60,
       "pageTransition": 60,
       "pathPill": 60,
       "selectedRow": 60,
@@ -43,18 +43,18 @@
         "shadow": true,
         "specular": false
       },
-      "nowPlayingPill": {
+      "infoPill": {
         "bevelDepth": 0.136,
         "bevelWidth": 0.076,
         "frost": 2.0,
         "glassTint": 1.0,
-        "label": "Now playing pill",
+        "label": "Info pill",
         "magnify": 1.0,
         "mode": "clear",
         "refraction": 0.047,
         "refractionFill": 0.0,
-        "resolution": 1.0,
-        "shadow": false,
+        "resolution": 0.25,
+        "shadow": true,
         "specular": false
       },
       "pathPill": {
@@ -74,7 +74,7 @@
       "selectedRow": {
         "bevelDepth": 0.01,
         "bevelWidth": 0.07,
-        "frost": 4.0,
+        "frost": 5.0,
         "glassTint": 1.0,
         "label": "Selected row",
         "magnify": 1.0,
@@ -100,9 +100,10 @@
         "specular": false
       }
     },
-    "performanceOverlayButton": true,
+    "performanceOverlayButton": false,
     "performanceOverlayText": false,
-    "textModes": {
+      "textModes": {
+      "infoPill": "transparent",
       "pathPill": "transparent",
       "rowPills": "transparent",
       "rows": "transparent",
@@ -110,11 +111,11 @@
       "selectedRowPills": "contrast",
       "wheelLabels": "transparent"
     },
-    "textTransparency": 0.68,
+    "textTransparency": 0.12,
     "visualizer": true,
     "visualizerFpsLock": 30,
+    "visualizerMaxBrightnessPct": 60,
     "visualizerPreset": "album",
-    "visualizerStrength": "high",
     "wheelClickTiltAmount": 0.5,
     "wheelTiltRampDuration": 90.0,
     "wheelTiltReleaseDuration": 360.0

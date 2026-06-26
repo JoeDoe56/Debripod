@@ -175,7 +175,7 @@ async function goBack(){
       return;
     }
     if(nowPlaying.style.display === "block"){
-      hideNpPillImmediate("go back");
+      if(!playbackPillsPinned) hidePlaybackPillsImmediate("go back", false);
       showNowPlaying(false);
       await waitNowPlayingFade(220);
       return;
@@ -264,7 +264,7 @@ async function goBack(){
       try{ loadVisualizerAnalysisForTrack(rootId, rel, "audio", {streamed: !!item.streamed}); }catch(err){}
       saveResumeNowPlaying();
       await updateNowPlayingDisplay(meta, item.label || "Track", {animateArt: true, animatePill: true});
-      npPillActivity(false);
+      playbackPillActivity(false, "audio metadata");
       updateMediaSession({title: meta.title, artist: meta.artist, album: meta.album, art: meta.art});
       try{ syncMediaSessionControls(); }catch(e){}
       lastfmOnTrack(meta);
@@ -833,7 +833,7 @@ async function goBack(){
       if(canMediaSession()) navigator.mediaSession.playbackState = "playing";
       try{ syncMediaSessionControls(); }catch(e){}
       try{ syncMediaSessionPosition(); }catch(e){}
-      npPillActivity(false);
+      playbackPillActivity(false, "audio play");
     });
     el.addEventListener("pause", ()=>{
       if(el !== activeAudio) return;
@@ -841,7 +841,7 @@ async function goBack(){
       if(canMediaSession()) navigator.mediaSession.playbackState = "paused";
       try{ syncMediaSessionControls(); }catch(e){}
       try{ syncMediaSessionPosition(); }catch(e){}
-      showNpPill(true);
+      showPlaybackPills(true, "audio pause");
       try{
         if(state.now && state.now.rootId && state.now.rel){
           const d = (activeAudio && activeAudio.duration && isFinite(activeAudio.duration)) ? activeAudio.duration : 0;
@@ -886,7 +886,7 @@ async function goBack(){
       updateVisualizerState();
       try{ syncMediaSessionControls(); }catch(e){}
       try{ syncMediaSessionPosition(); }catch(e){}
-      npPillActivity(false);
+      playbackPillActivity(false, "video play");
     });
 
     npVideo.addEventListener("pause", ()=>{
@@ -894,7 +894,7 @@ async function goBack(){
       updateVisualizerState();
       try{ syncMediaSessionControls(); }catch(e){}
       try{ syncMediaSessionPosition(); }catch(e){}
-      showNpPill(true);
+      showPlaybackPills(true, "video pause");
       try{
         if(state.now && state.now.media === "video" && state.now.rootId && state.now.rel){
           const d = (npVideo && npVideo.duration && isFinite(npVideo.duration)) ? npVideo.duration : 0;

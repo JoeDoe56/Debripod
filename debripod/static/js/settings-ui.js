@@ -1584,7 +1584,7 @@ async function libDoSearch(engine, q){
   }
 
   async function viewLibUiSettings(push){
-    showNowPlaying(false);
+    showNowPlaying(false, {immediate:true});
     const restoreSel = (!push && state.current && state.current.kind === "libuisettings") ? state.sel : null;
     const restoreScroll = (!push && state.current && state.current.kind === "libuisettings" && libList) ? libList.scrollTop : null;
     await setView({
@@ -1596,7 +1596,15 @@ async function libDoSearch(engine, q){
         libControlsHide();
         const items = [];
         items.push({kind:"libui_action", label:"Visualizer", action:"toggle_visualizer", pills:[visualizerEnabled ? "On" : "Off"]});
-        items.push({kind:"libui_action", label:"Visualizer Strength", action:"cycle_visualizer_strength", pills:[titleCaseSetting(visualizerStrength)]});
+        items.push({
+          kind:"libui_action",
+          label:"Max visualizer brightness",
+          sub_label:"At 100%, the brightest visualizer output is capped to the measured album cover brightness.",
+          action:"set_visualizer_max_brightness",
+          pills:[String(normalizeVisualizerMaxBrightnessPct(uiSettings.visualizerMaxBrightnessPct)) + "% of album cover"],
+          forceTwoLine:true,
+          settingRow:true
+        });
         items.push({kind:"libui_action", label:"Visualizer Preset", action:"cycle_visualizer_preset", pills:[visualizerPresetLabel(visualizerPresetName)]});
         items.push({kind:"libui_action", label:"FPS Lock", action:"cycle_visualizer_fps_lock", pills:[String(normalizeVisualizerFpsLock(visualizerFpsLock)) + " FPS"]});
         items.push({kind:"info", label:"Estimated Tempo", pills:[String(Math.round(visualizerBpm || 120)) + " BPM"]});
@@ -1742,7 +1750,7 @@ async function libDoSearch(engine, q){
       {key:"selectedRow", label:"Selected row animations"},
       {key:"wheelTilt", label:"Wheel tilt animations"},
       {key:"libraryList", label:"Library list moving animation"},
-      {key:"nowPlayingPill", label:"Now Playing pill animations"},
+      {key:"infoPill", label:"Info pill animations"},
       {key:"albumArtTransition", label:"Album art transition animation"},
       {key:"pageTransition", label:"Page transition animation"},
       {key:"pathPill", label:"Path pill animations"}
@@ -2392,7 +2400,8 @@ async function libDoSearch(engine, q){
           uiSettings[key] = clampNumber(Number(value), current, min, max);
           saveUiSettings();
           applyUiTuningCss();
-          forceNpOverlayGlassRender("ui tuning", true);
+          try{ if(typeof forcePathPillGlassRender === "function") forcePathPillGlassRender("ui tuning", true); }catch(e){}
+          try{ if(typeof forceInfoPillGlassRender === "function") forceInfoPillGlassRender("ui tuning", true); }catch(e){}
         },
         onReturn: async function(){
           await viewLibAdvancedCategory(returnCategory, false);
@@ -2523,9 +2532,18 @@ async function libDoSearch(engine, q){
         setVisualizerEnabled(!visualizerEnabled);
         await viewLibUiSettings(false);
         return true;
-      case "cycle_visualizer_strength":
-        cycleVisualizerStrength();
-        await viewLibUiSettings(false);
+      case "set_visualizer_max_brightness":
+        await viewRangeEditor({
+          label:"Max visualizer brightness",
+          current:normalizeVisualizerMaxBrightnessPct(uiSettings.visualizerMaxBrightnessPct),
+          meta:{min:0, max:200, step:1, integer:true},
+          onCommit: async function(value){
+            setVisualizerMaxBrightnessPct(value);
+          },
+          onReturn: async function(){
+            await viewLibUiSettings(false);
+          }
+        }, true);
         return true;
       case "cycle_visualizer_preset":
         cycleVisualizerPreset();

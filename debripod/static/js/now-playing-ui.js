@@ -1,8 +1,6 @@
 function currentNowPlayingArtSrc(){
   try{
-    if(window.DebriPod && DebriPod.albumArtTexture && DebriPod.albumArtTexture.currentSource){
-      return nowPlayingArtSrcValue(DebriPod.albumArtTexture.currentSource() || "");
-    }
+    if(npArt && npArt.tagName === "IMG") return nowPlayingArtSrcValue(npArt.getAttribute("src") || "");
   }catch(e){
   }
   return "";
@@ -15,62 +13,9 @@ function setNowPlayingArtSrc(src, opts){
     const prevKey = nowPlayingArtCompareKey(currentNowPlayingArtSrc());
     const nextKey = nowPlayingArtCompareKey(v);
     const artChanged = prevKey !== nextKey;
-    if(artChanged){
-      try{
-        const renderer = typeof liquidGlassRendererByKey === "function" ? liquidGlassRendererByKey("npOverlay") : null;
-        if(renderer){
-          renderer._npOverlaySourceKey = "";
-          renderer._npOverlayFrameId = 0;
-          renderer._npOverlayLastUploadedMix = 0;
-          renderer._npOverlayLastUploadedTransitioning = false;
-          renderer._albumSourceKey = "";
-          renderer._albumFrameId = 0;
-          renderer._albumUploadedCurrentSrc = "";
-          renderer._albumUploadedNextSrc = "";
-          renderer._albumMix = 0;
-          renderer._albumTransitioning = false;
-        }
-      }catch(e){}
-    }
-    const sourceImg = document.getElementById("npArtLiquidSource");
-    if(sourceImg && !sourceImg.__npLiquidSourceBound){
-      sourceImg.__npLiquidSourceBound = true;
-      try{ sourceImg.crossOrigin = "anonymous"; }catch(e){}
-      sourceImg.addEventListener("load", ()=>{
-        try{
-          if(typeof forceNpOverlayGlassRender === "function") forceNpOverlayGlassRender("np art image loaded", true);
-          else if(typeof scheduleNpOverlayGlassRender === "function") scheduleNpOverlayGlassRender();
-        }catch(e){}
-      }, {passive:true});
-      sourceImg.addEventListener("error", ()=>{
-        try{
-          if(typeof forceNpOverlayGlassRender === "function") forceNpOverlayGlassRender("np art image unavailable", true);
-          else if(typeof scheduleNpOverlayGlassRender === "function") scheduleNpOverlayGlassRender();
-        }catch(e){}
-      }, {passive:true});
-    }
-    if(sourceImg && !v && sourceImg.getAttribute("src")){
-      sourceImg.removeAttribute("src");
-      try{
-        if(typeof scheduleNpOverlayGlassRender === "function") scheduleNpOverlayGlassRender();
-      }catch(e){}
-    }else if(sourceImg && v && (sourceImg.getAttribute("src") || "") !== v) sourceImg.src = v;
-    else if(sourceImg && sourceImg.complete && sourceImg.naturalWidth && sourceImg.naturalHeight){
-      try{
-        if(typeof forceNpOverlayGlassRender === "function") forceNpOverlayGlassRender("np art image ready", true);
-        else if(typeof scheduleNpOverlayGlassRender === "function") scheduleNpOverlayGlassRender();
-      }catch(e){}
-    }
-    if(window.DebriPod && DebriPod.albumArtTexture && DebriPod.albumArtTexture.setSource){
-      DebriPod.albumArtTexture.setSource(v, opts || {});
-    }
-    recaptureLiquidGlassElement(npArt);
-    if(artChanged){
-      try{
-        if(typeof forceNpOverlayGlassRender === "function") forceNpOverlayGlassRender("np art changed", true);
-        else if(typeof scheduleNpOverlayGlassRender === "function") scheduleNpOverlayGlassRender();
-      }catch(e){}
-    }
+    if(!v && npArt.getAttribute("src")) npArt.removeAttribute("src");
+    else if(v && (npArt.getAttribute("src") || "") !== v) npArt.src = v;
+    if(artChanged) sampleThemeFromArt(v);
   }catch(e){}
 }
 
@@ -83,51 +28,43 @@ function escapeHtml(s){
     .replace(/'/g, "&#39;");
 }
 
-function artistAlbumHtml(artist, album){
-  var a = String(artist || "").trim();
-  var b = String(album || "").trim();
-  if(a && b) return '<span class="artistStrong">' + escapeHtml(a) + '</span>   ' + escapeHtml(b);
-  if(a) return '<span class="artistStrong">' + escapeHtml(a) + '</span>';
-  return escapeHtml(b);
+function playbackTitleHtml(meta, fallbackLabel){
+  var m = meta || {};
+  const title = String((m && m.title) || fallbackLabel || "Track").trim();
+  const artist = String((m && m.artist) || "").trim();
+  const album = String((m && m.album) || "").trim();
+  const main = artist ? (escapeHtml(title) + " - " + escapeHtml(artist)) : escapeHtml(title);
+  return "<strong>" + main + "</strong>" + (album ? " <em>" + escapeHtml(album) + "</em>" : "");
 }
 
-function setNowPlayingOverlayText(meta, fallbackLabel){
+function playbackTitlePlain(meta, fallbackLabel){
   var m = meta || {};
-  try{ npTitle.textContent = m.title || fallbackLabel || "Track"; }catch(e){}
-  try{ npSub.innerHTML = artistAlbumHtml(m.artist || "", m.album || ""); }catch(e){}
+  const title = String((m && m.title) || fallbackLabel || "Track").trim();
+  const artist = String((m && m.artist) || "").trim();
+  const album = String((m && m.album) || "").trim();
+  return (artist ? (title + " - " + artist) : title) + (album ? (" " + album) : "");
+}
+
+function setPlaybackPillMetadata(meta, fallbackLabel){
+  var m = meta || {};
+  try{
+    const plain = playbackTitlePlain(m, fallbackLabel);
+    if(pathPillNowText){
+      pathPillNowText.innerHTML = playbackTitleHtml(m, fallbackLabel);
+      pathPillNowText.dataset.text = plain;
+      pathPillNowText.classList.remove("pathPillNowTextSmall");
+      requestAnimationFrame(()=>{
+        try{
+          pathPillNowText.classList.toggle("pathPillNowTextSmall", pathPillNowText.scrollWidth > pathPillNowText.clientWidth + 1);
+        }catch(e){}
+      });
+    }
+    playbackPillMetadataVisible = !!plain.trim();
+    if(libHeader) libHeader.classList.toggle("pathPillExpanded", hasNowPlayingMetadata());
+    if(!hasNowPlayingMetadata() && infoPill) infoPill.classList.add("infoPillHidden");
+  }catch(e){}
   try{ if(npTech) npTech.textContent = m.tech || ""; }catch(e){}
   try{ if(nowPlaying && nowPlaying.style.display === "block") setHeader(); }catch(e){}
-  scheduleLiquidGlassRender();
-}
-
-function refreshNowPlayingSurfaceAfterDisplay(reason){
-  try{
-    if(!nowPlaying || nowPlaying.style.display !== "block") return;
-    const run = ()=>{
-      try{
-        if(window.DebriPod && DebriPod.albumArtTexture){
-          if(DebriPod.albumArtTexture.renderToCanvas) DebriPod.albumArtTexture.renderToCanvas(npArt);
-        }
-      }catch(e){}
-      try{ recaptureLiquidGlassElement(npArt); }catch(e){}
-      try{
-        if(typeof forceNpOverlayGlassRender === "function") forceNpOverlayGlassRender(reason || "np display refresh", true);
-        else if(typeof scheduleNpOverlayGlassRender === "function") scheduleNpOverlayGlassRender();
-      }catch(e){}
-      try{ scheduleLiquidGlassRender(); }catch(e){}
-    };
-    requestAnimationFrame(()=> requestAnimationFrame(run));
-    setTimeout(run, 90);
-    setTimeout(run, 240);
-  }catch(e){}
-}
-
-function isNpPillShown(){
-  try{
-    return !!(npOverlayPill && npPillVisible && !npOverlayPill.classList.contains("npPillHidden"));
-  }catch(e){
-    return false;
-  }
 }
 
 async function updateNowPlayingDisplay(meta, fallbackLabel, opts){
@@ -138,90 +75,45 @@ async function updateNowPlayingDisplay(meta, fallbackLabel, opts){
   var currentArtKey = nowPlayingArtCompareKey(currentArt);
   var nextArtKey = nowPlayingArtCompareKey(nextArt);
   var animateArt = !!(options.animateArt && npArt && currentArtKey && nextArtKey && currentArtKey !== nextArtKey);
-  var animatePill = false;
   sampleThemeFromArt(nextArt);
-  var swapMs = 220;
-
-  try{ if(npPillSwapTimer) clearTimeout(npPillSwapTimer); }catch(e){}
-  npPillSwapTimer = null;
-
-  if(animatePill){
-    try{
-      npOverlayPill.classList.add("npPillSwapHidden");
-      scheduleNpOverlayGlassRender();
-      animateNpOverlayGlassTransition("np pill swap out", swapMs);
-    }catch(e){}
-  }
-
-  setNowPlayingArtSrc(nextArt, {animate: animateArt, duration: swapMs});
-
-  if(animatePill){
-    npPillSwapTimer = setTimeout(()=>{
-      try{ setNowPlayingOverlayText(m, fallbackLabel); }catch(e){}
-      requestAnimationFrame(()=>{
-        try{
-          if(npOverlayPill) npOverlayPill.classList.remove("npPillSwapHidden");
-          scheduleNpOverlayGlassRender();
-          animateNpOverlayGlassTransition("np pill swap in", swapMs);
-        }catch(e){}
-      });
-      npPillSwapTimer = null;
-    }, swapMs);
-  }else{
-    setNowPlayingOverlayText(m, fallbackLabel);
-  }
-  refreshNowPlayingSurfaceAfterDisplay("np display updated");
-}
-
-function showNpPill(pinned, reason){
-  var effectivePinned = !!pinned || !!npPillPinned;
-  setNpPillVisible(true, reason || "show", pinned ? true : undefined);
-  if(effectivePinned){
-    try{ if(npPillHideTimer) clearTimeout(npPillHideTimer); }catch(e){}
-    npPillHideTimer = null;
-  }
+  setNowPlayingArtSrc(nextArt, {animate: animateArt, duration: 220});
+  setPlaybackPillMetadata(m, fallbackLabel);
 }
 
 
-function scheduleHideNpPill(ms){
+var npControlMode = "progress";
+
+function setInfoPillControlMode(mode, reason){
+  const next = mode === "volume" ? "volume" : "progress";
+  if(npControlMode === next) return false;
+  npControlMode = next;
+  if(npProgressWrap) npProgressWrap.style.display = next === "progress" ? "block" : "none";
+  if(npVolumeWrap) npVolumeWrap.style.display = next === "volume" ? "block" : "none";
+  return true;
+}
+
+function updateVolumeFillOnly(){
   try{
-    if(!npOverlayPill) return;
-    try{ if(npPillHideTimer) clearTimeout(npPillHideTimer); }catch(e){}
-    npPillHideTimer = setTimeout(()=>{
-      try{
-        if(nowPlaying.style.display !== "block") return;
-        if(seekMode) return;
-        if(npPillPinned) return;
-        const m = wheelMedia();
-        if(!m) return;
-        if(m.paused) return;
-        setNpPillVisible(false, "auto hide", false);
-      }catch(e){}
-    }, (ms || 2500));
-  }catch(e){}
-}
-
-function npPillActivity(pinned){
-  var effectivePinned = !!pinned || !!npPillPinned;
-  showNpPill(effectivePinned, pinned ? "activity pinned" : "activity");
-  if(!effectivePinned) scheduleHideNpPill(2500);
-}
-
-
-function showProgressBar(){
-  try{
-    npProgressWrap.style.display = "block";
-    npVolumeWrap.style.display = "none";
-    scheduleNpOverlayGlassRender();
-  }catch(e){}
-}
-
-function showVolumeBar(){
-  try{
-    npProgressWrap.style.display = "none";
-    npVolumeWrap.style.display = "block";
     if(npVolumeFill) npVolumeFill.style.width = Math.round(userVol * 100) + "%";
-    scheduleNpOverlayGlassRender();
+  }catch(e){}
+}
+
+function updateSeekPreviewOnly(){
+  updateSeekIndicator();
+}
+
+function showProgressBar(reason){
+  try{
+    const changed = setInfoPillControlMode("progress", reason || "progress");
+    if(changed && !isPlaybackPillsShown()) showPlaybackPills(false, reason || "progress mode show");
+  }catch(e){}
+}
+
+function showVolumeBar(reason){
+  try{
+    const changed = setInfoPillControlMode("volume", reason || "volume");
+    updateVolumeFillOnly();
+    if(changed && !isPlaybackPillsShown()) showPlaybackPills(false, reason || "volume mode show");
   }catch(e){}
 }
 
@@ -230,7 +122,7 @@ function scheduleHideVolumeBar(){
     if(volBarTimer) clearTimeout(volBarTimer);
     volBarTimer = setTimeout(()=>{
       if(!seekMode && nowPlaying.style.display === "block"){
-        showProgressBar();
+        showProgressBar("volume timeout");
       }
     }, 700);
   }catch(e){}
@@ -262,15 +154,15 @@ function enterSeekMode(){
   if(nowPlaying.style.display !== "block") return;
   seekMode = true;
   seekChanged = false;
-  showNpPill(true);
+  showPlaybackPills(true, "seek mode");
   var m = wheelMedia();
   seekPreview = (m && m.currentTime) ? m.currentTime : 0;
-  showProgressBar();
+  showProgressBar("seek mode");
   try{ npSeekIndicator.style.display = "block"; }catch(e){}
   updateSeekIndicator();
   resetSeekIdle();
   updateWheelLabels();
-  scheduleHideNpPill(2000);
+  scheduleHidePlaybackPills(2000);
 }
 
 function cancelSeekMode(){
@@ -280,7 +172,7 @@ function cancelSeekMode(){
   try{ if(seekIdleTimer) clearTimeout(seekIdleTimer); }catch(e){}
   seekIdleTimer = null;
   try{ npSeekIndicator.style.display = "none"; }catch(e){}
-  showProgressBar();
+  showProgressBar("seek cancel");
   updateWheelLabels();
 }
 
@@ -389,8 +281,9 @@ function adjustSeekPreview(dir){
   var step = Math.max(2, d / 200);
   seekPreview = Math.max(0, Math.min(d, (seekPreview || 0) + (dir * step)));
   seekChanged = true;
-  updateSeekIndicator();
+  updateSeekPreviewOnly();
   resetSeekIdle();
+  playbackPillActivity(true, "seek preview");
 }
 
 
@@ -550,9 +443,9 @@ function adjustVolumeStep(dir){
   var step = 0.03;
   setVolume(userVol + (dir * step));
   if(nowPlaying.style.display === "block" && !seekMode){
-    showVolumeBar();
+    showVolumeBar("volume step");
     scheduleHideVolumeBar();
-    npPillActivity(false);
+    playbackPillActivity(false, "volume step");
   }
 }
 

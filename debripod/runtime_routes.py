@@ -1763,12 +1763,12 @@ def api_settings_pick_path():
 
 
 def _coerce_glass_defaults(raw: Any) -> dict[str, Any]:
-    keys = ["libraryList", "wheel", "pathPill", "nowPlayingPill", "listPills", "selectedRow"]
+    keys = ["libraryList", "wheel", "pathPill", "infoPill", "listPills", "selectedRow"]
     labels = {
         "libraryList": "Library list",
         "wheel": "Wheel",
         "pathPill": "Path pill",
-        "nowPlayingPill": "Now playing pill",
+        "infoPill": "Info pill",
         "listPills": "List pills",
         "selectedRow": "Selected row",
     }
@@ -1784,6 +1784,12 @@ def _coerce_glass_defaults(raw: Any) -> dict[str, Any]:
     }
     source = raw if isinstance(raw, dict) else {}
     out: dict[str, Any] = {}
+    if "infoPill" not in source and isinstance(source.get("pathPill"), dict):
+        source = dict(source)
+        source["infoPill"] = source["pathPill"]
+    elif "infoPill" not in source and isinstance(source.get("nowPlayingPill"), dict):
+        source = dict(source)
+        source["infoPill"] = source["nowPlayingPill"]
     for key in keys:
         item = source.get(key) if isinstance(source.get(key), dict) else {}
         mode = str(item.get("mode") or "clear").strip().lower()
@@ -1815,6 +1821,7 @@ def _coerce_advanced_ui_defaults(raw: Any, glass: dict[str, Any]) -> dict[str, A
     text_defaults = {
         "wheelLabels": "transparent",
         "pathPill": "transparent",
+        "infoPill": "transparent",
         "rows": "transparent",
         "rowPills": "transparent",
         "selectedRow": "contrast",
@@ -1823,14 +1830,15 @@ def _coerce_advanced_ui_defaults(raw: Any, glass: dict[str, Any]) -> dict[str, A
     text_modes_raw = source.get("textModes") if isinstance(source.get("textModes"), dict) else {}
     text_modes = {}
     for key, fallback in text_defaults.items():
-        value = str(text_modes_raw.get(key, fallback)).strip().lower()
+        inherited = text_modes_raw.get("pathPill") if key == "infoPill" and "infoPill" not in text_modes_raw else fallback
+        value = str(text_modes_raw.get(key, inherited)).strip().lower()
         text_modes[key] = value if value in {"black", "white", "engraved", "contrast", "transparent"} else fallback
 
     fps_defaults = {
         "selectedRow": 60,
         "wheelTilt": 60,
         "libraryList": 60,
-        "nowPlayingPill": 60,
+        "infoPill": 60,
         "albumArtTransition": 60,
         "pageTransition": 60,
         "pathPill": 60,
@@ -1839,7 +1847,8 @@ def _coerce_advanced_ui_defaults(raw: Any, glass: dict[str, Any]) -> dict[str, A
     animation_fps = {}
     for key, fallback in fps_defaults.items():
         try:
-            value = int(fps_raw.get(key, fallback))
+            inherited = fps_raw.get("pathPill") if key == "infoPill" and "infoPill" not in fps_raw else fallback
+            value = int(fps_raw.get(key, inherited))
         except Exception:
             value = fallback
         animation_fps[key] = value if value in {30, 60, 120} else fallback
@@ -1847,9 +1856,13 @@ def _coerce_advanced_ui_defaults(raw: Any, glass: dict[str, Any]) -> dict[str, A
     preset = str(source.get("visualizerPreset") or "album").strip().lower()
     if preset not in {"album", "aurora", "ember", "prism", "sonar", "cascade", "nova", "lattice"}:
         preset = "album"
-    strength = str(source.get("visualizerStrength") or "high").strip().lower()
-    if strength not in {"low", "medium", "high"}:
-        strength = "high"
+    legacy_strength = str(source.get("visualizerStrength") or "high").strip().lower()
+    legacy_brightness = {"low": 35, "medium": 50, "high": 60}.get(legacy_strength, 60)
+    try:
+        brightness = int(source.get("visualizerMaxBrightnessPct", legacy_brightness))
+    except Exception:
+        brightness = legacy_brightness
+    brightness = max(0, min(200, brightness))
     try:
         fps_lock = int(source.get("visualizerFpsLock", 60))
     except Exception:
@@ -1859,7 +1872,7 @@ def _coerce_advanced_ui_defaults(raw: Any, glass: dict[str, Any]) -> dict[str, A
 
     return {
         "visualizer": bool(source.get("visualizer", True)),
-        "visualizerStrength": strength,
+        "visualizerMaxBrightnessPct": brightness,
         "visualizerPreset": preset,
         "visualizerFpsLock": fps_lock,
         "textModes": text_modes,
