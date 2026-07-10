@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from .runtime_state import *
 from .runtime_downloads import *
+from .Services.debrid import get_active_provider
 
 class _DropStaticAccessLogFilter(logging.Filter):
     def filter(self, record: logging.LogRecord) -> bool:
@@ -139,22 +140,13 @@ def _search_stream_get_or_restore(rel: str) -> Optional[Dict[str, Any]]:
     return _search_stream_get(rel) or restored
 
 
-def _rd_wait_for_selected_links(torrent_id: str, selected_ids: List[int], timeout_seconds: int = MAX_TORRENT_WAIT_SECONDS) -> Tuple[dict, List[str]]:
-    wanted = [int(x) for x in (selected_ids or []) if str(x).strip()]
-    end_time = time.time() + max(30, int(timeout_seconds or 0))
-    while time.time() < end_time:
-        info = rd_torrent_info(torrent_id)
-        links = info.get("links") or []
-        if info.get("status") == "downloaded" and isinstance(links, list) and links:
-            if wanted and len(links) == len(wanted):
-                return info, [str(x) for x in links]
-            if not wanted:
-                return info, [str(x) for x in links]
-        status = str(info.get("status") or "")
-        if status in {"error", "virus", "dead"}:
-            raise RuntimeError(f"Real Debrid reported status: {status}")
-        time.sleep(POLL_INTERVAL_SECONDS)
-    raise RuntimeError("Timed out waiting for Real Debrid stream links")
+def _active_debrid_provider():
+    keys = (
+        "DEBRID_PROVIDER", "REAL_DEBRID_API_KEY", "RD_BASE",
+        "ALLDEBRID_API_KEY", "ALLDEBRID_BASE", "PREMIUMIZE_API_KEY", "PREMIUMIZE_BASE",
+        "TORBOX_API_KEY", "TORBOX_BASE", "SEARCH_STREAM_SESSION_TTL_SECONDS",
+    )
+    return get_active_provider({key: globals().get(key) for key in keys}, int(REQUEST_TIMEOUT_SECONDS or 25))
 
 
 def _engine_prepare_stream_session(payload: dict) -> dict:
@@ -216,34 +208,46 @@ def _engine_prepare_stream_session(payload: dict) -> dict:
         return {'session_id': session_id, 'title': title, 'items': out_items}
     if src != "knaben":
         raise RuntimeError("Streaming is not available for this source")
-    torrent_id = str(payload.get("torrent_id") or "").strip()
+    provider_task_id = str(payload.get("debrid_task_id") or "").strip()
     selected = payload.get("selected") or []
     title = str(payload.get("title") or payload.get("directory_title") or payload.get("directory") or "Search stream").strip() or "Search stream"
-    if not torrent_id:
-        raise RuntimeError("Missing torrent id")
+    if not provider_task_id:
+        raise RuntimeError("Missing debrid task id")
     clean_ids = []
     selected_by_id = {}
     for it in selected:
         if not isinstance(it, dict):
             continue
-        try:
-            fid = int(it.get("file_id"))
-        except Exception:
+        fid = str(it.get("file_id") or "").strip()
+        if not fid:
             continue
         clean_ids.append(fid)
         selected_by_id[fid] = it
     if not clean_ids:
         raise RuntimeError("No files selected")
-    rd_select_files(torrent_id, clean_ids)
-    _info, links = _rd_wait_for_selected_links(torrent_id, clean_ids)
+    provider = _active_debrid_provider()
+    requested_provider = str(payload.get("provider") or "").strip().lower()
+    if requested_provider and requested_provider != provider.id:
+        raise RuntimeError("The preview provider is no longer active. Preview the result again.")
+    prepared = provider.prepare_selected_files(
+        magnet=str(payload.get("magnet") or ""),
+        provider_task_id=provider_task_id,
+        selected_file_ids=clean_ids,
+        timeout_seconds=int(MAX_TORRENT_WAIT_SECONDS or 1800),
+        poll_interval_seconds=int(POLL_INTERVAL_SECONDS or 4),
+    )
+    prepared_by_id = {str(item.file_id): item for item in prepared}
     items = []
-    for idx, fid in enumerate(clean_ids):
+    for fid in clean_ids:
         meta = selected_by_id.get(fid) or {}
         name = str(meta.get("name") or meta.get("title") or f"File {fid}")
         media = _guess_media_from_name(name)
         if media not in ("audio", "video"):
             continue
-        un = rd_unrestrict(str(links[idx]))
+        file = prepared_by_id.get(fid)
+        if not file:
+            continue
+        resolved = provider.resolve_file_url(file)
         item_id = uuid.uuid4().hex[:12]
         items.append({
             "item_id": item_id,
@@ -254,13 +258,16 @@ def _engine_prepare_stream_session(payload: dict) -> dict:
             "artist": "",
             "album": title,
             "art": "",
-            "size": int(meta.get("size") or 0),
+            "size": int(resolved.size or file.bytes or meta.get("size") or 0),
             "source": src,
+            "provider": provider.id,
+            "provider_label": provider.label,
             "streamed": True,
             "ext": str(meta.get("ext") or os.path.splitext(name)[1].lstrip('.')).lower(),
             "quality": str(meta.get("quality") or meta.get("bitrate") or ""),
-            "url": str(un.get("download") or ""),
-            "mime": str(un.get("mimeType") or un.get("mime_type") or ""),
+            "url": resolved.url,
+            "mime": resolved.mime,
+            "trusted_provider_stream": True,
         })
     if not items:
         raise RuntimeError("No selected files were streamable")

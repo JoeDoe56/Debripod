@@ -78,6 +78,8 @@
         item.forceTwoLine ? "two" : "",
         item.settingRow ? "setting" : "",
         item.sub_label ? "sub" : "",
+        item.expanded ? "expanded" : "",
+        item.sub_row ? JSON.stringify(item.sub_row) : "",
         Array.isArray(item.pills) ? "p" + item.pills.length : "p0"
       ];
       return flags.join(":");
@@ -271,14 +273,54 @@
   function estimatedItemHeight(item){
     try{
       if(!item) return 44;
+      if(item.expanded && item.sub_row) return 88;
       if(item.kind === "smart_playlist_rules_text") return 236;
       if(item.kind === "range_editor_input" || item.kind === "range_editor_slider") return 76;
       if(item.sub_label) return 68;
-      if(item.forceTwoLine || item.settingRow || item.kind === "setting_value" || item.kind === "settings_library_folder" || item.kind === "settings_library_mode_choice" || item.kind === "settings_library_remove") return 76;
+      if(item.forceTwoLine || item.settingRow || item.kind === "setting_value" || item.kind === "settings_library_folder" || item.kind === "settings_library_remove") return 76;
       if(item.kind === "libsearch_result" || item.kind === "libsearch_file" || item.kind === "libtask_file") return 76;
       if(item.kind === "song" || item.kind === "track" || item.kind === "file" || item.kind === "liked_song" || item.media === "audio") return item.pills && item.pills.length > 2 ? 64 : 56;
     }catch(e){}
     return 44;
+  }
+
+  function makeInlineLoader(label){
+    const loader = document.createElement("span");
+    loader.className = "dpInlineLoader";
+    loader.setAttribute("role", "status");
+    loader.setAttribute("aria-label", String(label || "Loading"));
+    loader.setAttribute("title", String(label || "Loading"));
+    return loader;
+  }
+
+  function appendExpandedSubRow(li, item){
+    const sub = item && item.expanded && item.sub_row;
+    if(!li || !sub) return;
+    li.classList.add("isExpandedRow");
+    const main = document.createElement("span");
+    main.className = "ipodExpandedMain";
+    while(li.firstChild) main.appendChild(li.firstChild);
+    li.appendChild(main);
+    const row = document.createElement("span");
+    row.className = "ipodExpandedSub";
+    const subText = String(sub.text || sub.label || "");
+    if(sub.loading) row.appendChild(makeInlineLoader(subText || "Loading"));
+    const label = document.createElement("span");
+    label.className = "ipodExpandedSubLabel";
+    setGlassText(label, subText);
+    row.appendChild(label);
+    if(Array.isArray(sub.pills)){
+      const pills = document.createElement("span");
+      pills.className = "ipodPills";
+      for(const value of sub.pills){
+        const pill = document.createElement("span");
+        pill.className = "ipodPill" + (typeof value === "object" && value.tone ? " " + String(value.tone) : "");
+        prepareGlassPill(pill, typeof value === "object" ? String(value.text || "") : String(value || ""));
+        pills.appendChild(pill);
+      }
+      row.appendChild(pills);
+    }
+    li.appendChild(row);
   }
 
   function virtualizableViewKind(kind){
@@ -289,6 +331,7 @@
       "history",
       "playback_queue",
       "libsearch_history",
+      "libsearch",
       "libsearch_files",
       "libsearch_result_list",
       "libtasks"
@@ -310,14 +353,11 @@
         item.kind === "range_editor_input" ||
         item.kind === "range_editor_slider" ||
         item.kind === "smart_playlist_rules_text" ||
-        item.kind === "libsearch_query" ||
-        item.kind === "libsearch_filter" ||
         item.kind === "playlist_create" ||
         item.kind === "smart_playlist_create" ||
         item.kind === "playlist_edit_name" ||
         item.kind === "setting_value" ||
         item.kind === "settings_library_folder" ||
-        item.kind === "settings_library_mode_choice" ||
         item.kind === "settings_library_remove" ||
         item.kind === "libui_action"
       ));
@@ -449,11 +489,15 @@
         it.settingRow ||
         it.kind === "setting_value" ||
         it.kind === "settings_library_folder" ||
-        it.kind === "settings_library_mode_choice" ||
         it.kind === "settings_library_remove"
       );
       const twoLine = (settingsTall || it.kind === "libsearch_result" || it.kind === "libsearch_file" || it.kind === "libtask_file");
-      li.className = "ipodItem" + (isSel ? " sel" : "") + (it.kind === "info" ? " info" : "") + (it.kind === "random" ? " random" : "") + (twoLine ? " twoLine" : "") + (settingsTall ? " settingRow" : "");
+      li.className = "ipodItem" + (isSel ? " sel" : "") + ((it.kind === "info" || it.kind === "loading") ? " info" : "") + (it.kind === "random" ? " random" : "") + (twoLine ? " twoLine" : "") + (settingsTall ? " settingRow" : "");
+      if(it.kind === "loading") it.disabled = true;
+      if(it.disabled){
+        li.classList.add("disabled");
+        li.setAttribute("aria-disabled", "true");
+      }
       if(isSel) li.setAttribute("data-selected-row", "");
 
       if(it.kind === "range_editor_input"){
@@ -601,6 +645,81 @@
         });
         li.appendChild(ta);
         editInputToFocus = ta;
+        itemsLayer.appendChild(li);
+        continue;
+      }
+
+      if(it.kind === "debrid_token"){
+        const view = state.current || {};
+        const editing = !!(isSel && view.debridTokenEditing);
+        if(editing){
+          li.className += " editing";
+          const inp = document.createElement("input");
+          inp.type = "text";
+          inp.autocomplete = "off";
+          inp.autocapitalize = "none";
+          inp.spellcheck = false;
+          inp.className = "libInlineInput";
+          inp.value = String(view.debridTokenValue || "");
+          inp.placeholder = String(it.placeholder || "Paste debrid token");
+          inp.addEventListener("input", ()=>{ view.debridTokenValue = inp.value || ""; });
+          inp.addEventListener("keydown", (ev)=>{
+            if(ev.key === "Enter"){
+              ev.preventDefault();
+              view.debridTokenValue = inp.value || "";
+              try{ if(typeof connectDebridToken === "function") connectDebridToken(inp.value || ""); }catch(e){}
+            }else if(ev.key === "Escape"){
+              ev.preventDefault();
+              view.debridTokenEditing = false;
+              view.debridTokenValue = "";
+              renderList();
+            }
+          });
+          inp.addEventListener("blur", ()=>{
+            if(view.debridTokenSubmitting) return;
+            view.debridTokenEditing = false;
+            view.debridTokenValue = "";
+            renderList();
+          });
+          li.appendChild(inp);
+          if(view.debridTokenSubmitting || view.debridTokenError){
+            const status = document.createElement("span");
+            status.className = "ipodPills";
+            const pill = document.createElement("span");
+            pill.className = "ipodPill " + (view.debridTokenError ? "warn" : "");
+            prepareGlassPill(pill, view.debridTokenError ? String(view.debridTokenError) : "Connecting");
+            status.appendChild(pill);
+            li.appendChild(status);
+          }
+          editInputToFocus = inp;
+        }else{
+          li.className += " twoLine";
+          const labelWrap = document.createElement("span");
+          labelWrap.className = "ipodLabelWrap";
+          const label = document.createElement("span");
+          label.className = "ipodLabel hScrollText";
+          setGlassText(label, String(it.label || "Debrid token"));
+          labelWrap.appendChild(label);
+          const prompt = document.createElement("span");
+          prompt.className = "ipodSubLabel hScrollText";
+          setGlassText(prompt, String(it.placeholder || "Paste debrid token"));
+          labelWrap.appendChild(prompt);
+          li.appendChild(labelWrap);
+          const pills = document.createElement("span");
+          pills.className = "ipodPills";
+          for(const p of (it.pills || [])){
+            const pill = document.createElement("span");
+            const tone = typeof p === "object" ? String(p.tone || "") : "";
+            pill.className = "ipodPill" + (tone ? " " + tone : "");
+            prepareGlassPill(pill, typeof p === "object" ? String(p.text || "") : String(p || ""));
+            pills.appendChild(pill);
+          }
+          li.appendChild(pills);
+        }
+        li.addEventListener("click", ()=>{
+          state.sel = i;
+          if(!view.debridTokenEditing && typeof beginDebridTokenEdit === "function") beginDebridTokenEdit();
+        });
         itemsLayer.appendChild(li);
         continue;
       }
@@ -773,19 +892,7 @@
                 ? ((state.playlistEdit && typeof state.playlistEdit.editNameValue === "string") ? state.playlistEdit.editNameValue : ((state.playlistEdit && state.playlistEdit.label) ? state.playlistEdit.label : ""))
                 : ((state.libSearch && typeof state.libSearch[field] === "string") ? state.libSearch[field] : "")));
           setGlassText(labelSpan, (v && v.trim()) ? v : placeholder);
-          if(!isPlaylistCreate && !isSmartPlaylistCreate && !isPlaylistRename && field === "q" && v && String(v).trim() && state.libSearch && state.libSearch.searching){
-            const searchTextWrap = document.createElement("span");
-            searchTextWrap.className = "libSearchQueryText";
-            searchTextWrap.appendChild(labelSpan);
-            const loader = document.createElement("span");
-            loader.className = "libSearchInlineLoader";
-            loader.setAttribute("aria-label", "Searching");
-            loader.setAttribute("title", "Searching");
-            searchTextWrap.appendChild(loader);
-            li.appendChild(searchTextWrap);
-          }else{
-            li.appendChild(labelSpan);
-          }
+          li.appendChild(labelSpan);
 
           const wrap = document.createElement("span");
           wrap.className = "ipodPills";
@@ -811,6 +918,8 @@
           }
           li.appendChild(wrap);
         }
+
+        appendExpandedSubRow(li, it);
 
         li.addEventListener("click", ()=>{
           const wasSel = (state.sel === i);
@@ -1009,6 +1118,11 @@
         }
         li.appendChild(wrap);
       }
+
+      if(it.loading && !it.expanded){
+        labelWrap.appendChild(makeInlineLoader(it.label || "Loading"));
+      }
+      appendExpandedSubRow(li, it);
 
       li.addEventListener("click", ()=>{
         setSelectionFast(i);

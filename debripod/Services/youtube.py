@@ -697,6 +697,7 @@ def _standardize_youtube_results(raw_results: List[dict]) -> List[dict]:
             "leechers": 0,
             "browse_available": bool(channel_id),
             "stream_available": True,
+            "download_available": True,
             "files_loaded": False,
             "files": [],
             "video_id": video_id,
@@ -709,7 +710,6 @@ def _standardize_youtube_results(raw_results: List[dict]) -> List[dict]:
             "length": length,
             "thumbnail": str(r.get("thumbnail") or ""),
             "description": str(r.get("description") or ""),
-            "_score": 1,
         })
     return out
 

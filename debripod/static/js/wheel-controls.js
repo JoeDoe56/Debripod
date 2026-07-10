@@ -236,6 +236,44 @@
       }catch(e){}
     });
   }
+
+  if(libList && !libList._dpDirectTapBound){
+    libList._dpDirectTapBound = true;
+    let listPointer = null;
+    const activateListRow = async (target)=>{
+      if(keyboardInputTarget(target)) return;
+      const row = rowFromEventTarget(target);
+      if(!row || !row.dataset || row.dataset.index == null) return;
+      const index = Number(row.dataset.index);
+      if(!Number.isFinite(index) || index < 0 || index >= (state.items || []).length) return;
+      const item = state.items[index];
+      if(!item || item.disabled) return;
+      setSelectionFast(index);
+      try{ if(typeof selectItem === "function") await selectItem(item); }catch(e){}
+    };
+    libList.addEventListener("pointerdown", (ev)=>{
+      if(ev.pointerType !== "touch" && ev.pointerType !== "pen") return;
+      if(keyboardInputTarget(ev.target)) return;
+      listPointer = {id:ev.pointerId, x:ev.clientX, y:ev.clientY, moved:false, target:ev.target};
+    }, {passive:true});
+    libList.addEventListener("pointermove", (ev)=>{
+      if(!listPointer || ev.pointerId !== listPointer.id) return;
+      if(Math.abs(ev.clientX - listPointer.x) > 9 || Math.abs(ev.clientY - listPointer.y) > 9) listPointer.moved = true;
+    }, {passive:true});
+    libList.addEventListener("pointerup", (ev)=>{
+      if(!listPointer || ev.pointerId !== listPointer.id) return;
+      const gesture = listPointer;
+      listPointer = null;
+      if(gesture.moved) return;
+      libList._dpIgnoreDirectClickUntil = Date.now() + 450;
+      activateListRow(ev.target || gesture.target);
+    }, {passive:true});
+    libList.addEventListener("pointercancel", ()=>{ listPointer = null; }, {passive:true});
+    libList.addEventListener("click", (ev)=>{
+      if(Date.now() < Number(libList._dpIgnoreDirectClickUntil || 0)) return;
+      activateListRow(ev.target);
+    });
+  }
   if(document && !document._dpStageContextMenuBound){
     document._dpStageContextMenuBound = true;
     document.addEventListener("contextmenu", (ev)=>{

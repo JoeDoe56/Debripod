@@ -12,12 +12,24 @@
     }
     state.current = state.rootView;
     const roots = cfg.roots || [];
-    const items = [{kind:"libsearch_entry", label:"Search"},{kind:"libtasks_entry", label:"Tasks"}].concat(roots.map(r=>({kind:"root", label:r.name, root:r})));
+    const aggregateRoot = cfg.aggregate_root || {id:"__all__", name:"Library", mode:"metadata"};
+    const items = [
+      {kind:"libsearch_entry", label:"Search"},
+      {kind:"libtasks_entry", label:"Tasks"},
+      {kind:"nowplaying", label:"Now Playing", disabled:!(state.now || state.serverNow)},
+      {kind:"metacat", label:"Artists", cat:"artists", root:aggregateRoot},
+      {kind:"metacat", label:"Albums", cat:"albums", root:aggregateRoot},
+      {kind:"metacat", label:"Songs", cat:"songs", root:aggregateRoot},
+      {kind:"metacat", label:"Liked Songs", cat:"liked_songs", root:aggregateRoot},
+      {kind:"metacat", label:"Genres", cat:"genres", root:aggregateRoot},
+      {kind:"metacat", label:"Playlists", cat:"playlists", root:aggregateRoot},
+      {kind:"metacat", label:"Movies", cat:"movies", root:aggregateRoot},
+      {kind:"metacat", label:"Shows", cat:"shows", root:aggregateRoot},
+      {kind:"metacat", label:"Videos", cat:"videos", root:aggregateRoot},
+      {kind:"folder_sources", label:"Folders", root:aggregateRoot}
+    ];
     if(!roots.length){
       items.push({kind:"info", label:"No library folders yet. Add one in Library settings or run setup."});
-    }
-    if(state.now || state.serverNow){
-      items.push({kind:"nowplaying", label:"Now Playing"});
     }
     items.push({kind:"libinfo_entry", label:"Info"});
     resetList(items);
@@ -145,6 +157,13 @@
     return Array.isArray(s.LIBRARY_FOLDERS) ? s.LIBRARY_FOLDERS.slice() : [];
   }
 
+  const DEBRID_PROVIDER_ROWS = [
+    {id:"real_debrid", label:"Real Debrid", key:"REAL_DEBRID_API_KEY"},
+    {id:"alldebrid", label:"AllDebrid", key:"ALLDEBRID_API_KEY"},
+    {id:"premiumize", label:"Premiumize", key:"PREMIUMIZE_API_KEY"},
+    {id:"torbox", label:"TorBox", key:"TORBOX_API_KEY"}
+  ];
+
   function settingRowsForCategory(cat){
     const s = state.appSettings || {};
     const startup = state.startupSettings || {};
@@ -160,20 +179,23 @@
         {key:"TASKS_POLL_MS", label:"Task refresh", type:"number", value:s.TASKS_POLL_MS, advanced:true}
       ],
       downloads: [
-        {key:"DOWNLOAD_DIR", label:"Real Debrid folder", type:"directory", value:s.DOWNLOAD_DIR},
+        {key:"DOWNLOAD_DIR", label:"Debrid folder", type:"directory", value:s.DOWNLOAD_DIR},
         {key:"SOULSEEK_DOWNLOAD_DIR", label:"Soulseek folder", type:"directory", value:s.SOULSEEK_DOWNLOAD_DIR},
         {key:"YOUTUBE_DOWNLOAD_DIR", label:"YouTube folder", type:"directory", value:s.YOUTUBE_DOWNLOAD_DIR},
         {key:"REPLACE_ORIGINAL", label:"Replace original", type:"bool", value:s.REPLACE_ORIGINAL, advanced:true}
       ],
       services: [
-        {key:"REAL_DEBRID_API_KEY", label:"Real Debrid token", type:"secret", value:s.REAL_DEBRID_API_KEY},
-        {key:"KNABEN_API_KEY", label:"Knaben API key", type:"secret", value:s.KNABEN_API_KEY, advanced:true},
+        {key:"DOWNLOAD_DIR", label:"Debrid folder", type:"directory", value:s.DOWNLOAD_DIR},
+        {key:"KNABEN_API_KEY", label:"Knaben API key", type:"secret", value:s.KNABEN_API_KEY},
         {key:"SOULSEEK_USERNAME", label:"Soulseek username", type:"secret", value:s.SOULSEEK_USERNAME},
         {key:"SOULSEEK_PASSWORD", label:"Soulseek password", type:"secret", value:s.SOULSEEK_PASSWORD, sub_label: slsk.set ? (slsk.connected ? "Soulseek is connected for this account." : "Soulseek is configured but not connected. Check username, password, and listening port in Services.") : "Set username and password to connect Soulseek for this account."},
         {key:"LASTFM_API_KEY", label:"Last.fm API key", type:"secret", value:s.LASTFM_API_KEY},
         {key:"LASTFM_API_SECRET", label:"Last.fm secret", type:"secret", value:s.LASTFM_API_SECRET},
         {key:"LASTFM_SESSION_KEY", label:"Last.fm session key", type:"secret", value:s.LASTFM_SESSION_KEY, sub_label: lf.set ? ("Last.fm session is set for this account" + (lf.username ? (": " + lf.username) : ".")) : "Last.fm is not configured. Add API credentials or skip Last.fm features.", advanced:true},
-        {key:"YTDLP_CMD", label:"yt-dlp command", type:"text", value:s.YTDLP_CMD, advanced:true}
+        {key:"YTDLP_CMD", label:"yt-dlp command", type:"text", value:s.YTDLP_CMD},
+        {key:"YOUTUBE_DOWNLOAD_DIR", label:"YouTube folder", type:"directory", value:s.YOUTUBE_DOWNLOAD_DIR},
+        {key:"FFMPEG_PATH", label:"ffmpeg", type:"tool_path", value:s.FFMPEG_PATH, tool:"ffmpeg", toolStatus:ffmpeg, sub_label: ffmpeg.ok ? ("Detected: " + (ffmpeg.found || "ffmpeg")) : "ffmpeg was not found."},
+        {key:"FFPROBE_PATH", label:"ffprobe", type:"tool_path", value:s.FFPROBE_PATH, tool:"ffprobe", toolStatus:ffprobe, sub_label: ffprobe.ok ? ("Detected: " + (ffprobe.found || "ffprobe")) : (ffprobe.install_hint || "Install ffprobe or set a path.")}
       ],
       playback: [
         {key:"PLAYBACK_STREAMING_MODE", label:"Streaming mode", type:"choice", choices:["http","hls"], value:s.PLAYBACK_STREAMING_MODE},
@@ -210,6 +232,9 @@
       {key:"AUTO_TRANSCODE_FOR_BROWSER_COMPATIBILITY", label:"Auto browser transcode", type:"bool", value:s.AUTO_TRANSCODE_FOR_BROWSER_COMPATIBILITY},
       {key:"PRELOAD_NEXT_CHUNK_BYTES", label:"Preload chunk bytes", type:"number", value:s.PRELOAD_NEXT_CHUNK_BYTES},
       {key:"RD_BASE", label:"Real Debrid API base", type:"text", value:s.RD_BASE},
+      {key:"ALLDEBRID_BASE", label:"AllDebrid API base", type:"text", value:s.ALLDEBRID_BASE},
+      {key:"PREMIUMIZE_BASE", label:"Premiumize API base", type:"text", value:s.PREMIUMIZE_BASE},
+      {key:"TORBOX_BASE", label:"TorBox API base", type:"text", value:s.TORBOX_BASE},
       {key:"LASTFM_CALLBACK_URL", label:"Last.fm callback URL", type:"text", value:s.LASTFM_CALLBACK_URL},
       {key:"LASTFM_API_ROOT", label:"Last.fm API root", type:"text", value:s.LASTFM_API_ROOT},
       {key:"LASTFM_REQUEST_TIMEOUT_SECONDS", label:"Last.fm timeout", type:"number", value:s.LASTFM_REQUEST_TIMEOUT_SECONDS},
@@ -306,42 +331,6 @@
     return {text: ok ? goodText : badText, tone: ok ? "ok" : "warn"};
   }
 
-  async function viewServiceStatusPanel(push){
-    showNowPlaying(false);
-    await setView({
-      kind:"servicestatus",
-      label:"Service Status",
-      load: async function(){
-        libControlsHide();
-        let services = {};
-        try{
-          const js = await apiGet("/api/services/status");
-          services = (js && js.services) || {};
-        }catch(e){}
-        const items = [];
-        const rd = services.real_debrid || {};
-        items.push({kind:"info", label:"Real Debrid", sub_label: rd.status === "skipped" ? "Skipped during setup. Add a token in Services to enable debrid streaming and downloads." : "", pills:[serviceStatusPill(!!rd.configured, "Configured", rd.status === "skipped" ? "Skipped" : "Missing token")]});
-        const slsk = services.soulseek || {};
-        const slskPills = [serviceStatusPill(!!slsk.configured, slsk.connected ? "Connected" : "Configured", slsk.status === "skipped" ? "Skipped" : "Missing credentials")];
-        if(slsk.listening_port != null) slskPills.push("Port " + String(slsk.listening_port));
-        if(slsk.obfuscated_port != null) slskPills.push("Obf " + String(slsk.obfuscated_port));
-        items.push({kind:"info", label:"Soulseek", sub_label:slsk.configured && !slsk.connected ? "Soulseek is configured but not connected. Check username, password, and listening port in Services." : String(slsk.error || slsk.warning || ""), pills:slskPills});
-        const lf = services.lastfm || {};
-        items.push({kind:"info", label:"Last.fm", sub_label:lf.api_configured ? "" : "Last.fm is not configured. Add API credentials or skip Last.fm features.", pills:[serviceStatusPill(!!lf.api_configured, lf.session_user ? ("Logged in " + String(lf.session_user)) : "API set", lf.status === "skipped" ? "Skipped" : "Missing API")]});
-        const kb = services.knaben || {};
-        items.push({kind:"info", label:"Knaben", pills:[{text:kb.api_key_configured ? "API key set" : "Optional"}]});
-        const yt = services.youtube || {};
-        const ytTool = yt.tool || {};
-        items.push({kind:"info", label:"YouTube", sub_label:String(yt.download_dir || ""), pills:[serviceStatusPill(!!ytTool.ok, "yt-dlp found", yt.status === "skipped" ? "Skipped" : "yt-dlp missing")]});
-        const ffmpeg = services.ffmpeg || {};
-        items.push({kind:"info", label:"ffmpeg", sub_label:ffmpeg.ok ? String(ffmpeg.found || "") : "ffmpeg was not found. Set the ffmpeg path in Playback settings.", pills:[serviceStatusPill(!!ffmpeg.ok, "Detected", "Missing")]});
-        const ffprobe = services.ffprobe || {};
-        items.push({kind:"info", label:"ffprobe", sub_label:String(ffprobe.install_hint || ""), pills:[serviceStatusPill(!!ffprobe.ok, "Detected", "Missing")]});
-        resetList(items);
-      }
-    }, !!push);
-  }
-
   async function exportUserSettings(includeSecrets){
     const js = await apiGet("/api/settings/export?include_secrets=" + (includeSecrets ? "1" : "0"));
     const text = JSON.stringify(js, null, 2);
@@ -410,6 +399,13 @@
       label:labels[category] || "Settings",
       load: async function(){
         await settingsLoad();
+        let services = {};
+        if(category === "services"){
+          try{ const js = await apiGet("/api/services/status"); services = (js && js.services) || {}; }catch(e){}
+        }
+        const debrid = (services && services.debrid) || (state.connectionStatus && state.connectionStatus.DEBRID) || {};
+        const activeProvider = String(debrid.active_provider || "");
+        const activeInfo = (debrid.providers || {})[activeProvider] || {};
         const rows = settingRowsForCategory(category).map(r=>({
           kind:"setting_value",
           label:r.label,
@@ -420,16 +416,69 @@
           value:r.value,
           tool:r.tool || "",
           toolStatus:r.toolStatus || null,
+          provider:r.provider || "",
+          disabled:!!(r.provider && activeProvider && r.provider !== activeProvider),
           pills:(settingConnectionPills(r) || [{text:settingValueLabel(r.value)}]).concat([settingSavePill(r)])
         }));
         if(category === "services"){
-          rows.unshift({kind:"libinfo_action", label:"Service Status", action:"service_status"});
+          const connectedLabel = String(activeInfo.label || activeProvider || "");
+          rows.unshift({
+            kind:"debrid_token",
+            label:"Debrid token",
+            placeholder:"Paste RealDebrid, AllDebrid, Torbox, or Premiumize token",
+            pills:[activeProvider ? {text:"✓ Connected to " + connectedLabel, tone:"ok"} : {text:"× Not connected", tone:"warn"}]
+          });
+          const slsk = services.soulseek || {};
+          rows.push({kind:"info", label:"Soulseek status", sub_label:[slsk.connected ? "Connected" : "Not connected", slsk.listening_port != null ? ("Listening port " + slsk.listening_port) : "", slsk.obfuscated_port != null ? ("Obfuscated port " + slsk.obfuscated_port) : "", slsk.warning || "", slsk.error || ""].filter(Boolean).join("  "), forceTwoLine:true});
+          const lastfm = services.lastfm || {};
+          rows.push({kind:"info", label:"Last.fm status", sub_label:lastfm.session_user ? ("Session user: " + lastfm.session_user) : (lastfm.api_configured ? "API configured" : "Not configured"), forceTwoLine:true});
+          const youtube = services.youtube || {};
+          rows.push({kind:"info", label:"YouTube status", sub_label:(youtube.tool && youtube.tool.ok) ? ("yt-dlp detected: " + String(youtube.tool.found || "yt-dlp")) : "yt-dlp was not found.", forceTwoLine:true});
         }
         resetList(rows);
       }
     };
     await setView(view, !!push);
   }
+
+  function beginDebridTokenEdit(){
+    const view = state.current || {};
+    view.debridTokenEditing = true;
+    view.debridTokenValue = "";
+    view.debridTokenError = "";
+    renderList();
+    requestAnimationFrame(()=>{
+      try{
+        const input = libList && libList.querySelector(".ipodItem.sel .libInlineInput");
+        if(input){ input.focus(); input.click(); }
+      }catch(e){}
+    });
+  }
+  try{ window.beginDebridTokenEdit = beginDebridTokenEdit; }catch(e){}
+
+  async function connectDebridToken(value){
+    const token = String(value || "").trim();
+    if(!token) return;
+    const view = state.current || {};
+    view.debridTokenSubmitting = true;
+    view.debridTokenError = "";
+    renderList();
+    try{
+      const res = await apiPost("/api/debrid/connect_token", {token:token});
+      const js = (res && res.json) ? res.json : {};
+      if(!res || !res.ok || !js.ok) throw new Error(String(js.error || "Could not connect the debrid token."));
+      view.debridTokenValue = "";
+      view.debridTokenEditing = false;
+      await viewSettingsCategory("services", false);
+    }catch(e){
+      view.debridTokenSubmitting = false;
+      view.debridTokenEditing = true;
+      view.debridTokenValue = token;
+      view.debridTokenError = String((e && e.message) || e || "Could not connect the debrid token.");
+      renderList();
+    }
+  }
+  try{ window.connectDebridToken = connectDebridToken; }catch(e){}
 
   async function viewSettingsLibrary(push){
     const view = {
@@ -440,13 +489,12 @@
         const folders = libraryFolders();
         const items = [{kind:"settings_add_library_folder", label:"Add folder"}];
         folders.forEach((f, idx)=>{
-          const mode = String((f && f.mode) || "list").toLowerCase();
           items.push({
             kind:"settings_library_folder",
             label:settingPathBase(f && f.path),
             sub_label:String((f && f.path) || ""),
             folderIndex:idx,
-            pills:[{text: mode === "meta" ? "Metadata" : "List"}]
+            pills:["Indexed"]
           });
         });
         if(!folders.length) items.push({kind:"info", label:"No library folders yet. Add one in Library settings or run setup."});
@@ -456,29 +504,18 @@
     await setView(view, !!push);
   }
 
-  async function viewSettingsLibraryMode(folderPath, folderIndex, push, setupReturnOverride){
+  async function viewSettingsLibraryDetail(folderPath, folderIndex, push, setupReturnOverride){
     const isExisting = typeof folderIndex === "number" && folderIndex >= 0;
     const setupReturnPage = setupReturnOverride ? String(setupReturnOverride) : ((state.current && state.current.setupReturnPage) ? String(state.current.setupReturnPage) : ((state.current && state.current.kind === "setup_editor") ? String(state.current.setupEditorReturnPage || "") : ""));
     const view = {
-      kind:"settings_library_mode",
-      label:"Folder Type",
+      kind:"settings_library_detail",
+      label:"Library folder",
       folderPath:String(folderPath || ""),
       folderIndex:isExisting ? folderIndex : -1,
       setupReturnPage:setupReturnPage,
       load: async function(){
         resetList([
-          {
-            kind:"settings_library_mode_choice",
-            mode:"meta",
-            label:"Metadata folder",
-            sub_label:"Indexes tags for Artists, Albums, Songs, Genres, liked songs, and richer browsing."
-          },
-          {
-            kind:"settings_library_mode_choice",
-            mode:"list",
-            label:"List folder",
-            sub_label:"Uses simple folder-by-folder browsing without tag indexing."
-          },
+          {kind:"info", label:"Indexed library folder", sub_label:String(folderPath || ""), forceTwoLine:true},
           ...(isExisting ? [{kind:"settings_library_remove", label:"Remove folder", sub_label:String(folderPath || ""), pills:[{text:"Delete", tone:"warn"}]}] : [])
         ]);
       }
@@ -590,6 +627,8 @@
       setupEditorReturnPage:returnPage,
       setupEditorIsDirectory:!!options.directory,
       setupEditorLibraryPath:!!options.libraryPath,
+      setupEditorExtraSettings:options.extraSettings || {},
+      setupEditorProvider:String(options.provider || ""),
       editorValue:current,
       load: async function(){
         libControlsHide();
@@ -614,18 +653,25 @@
         libSetStatus("Enter a folder path first.", "warn");
         return false;
       }
-      await viewSettingsLibraryMode(value, -1, true);
+      const folders = libraryFolders();
+      if(!folders.some(item=>String((item && item.path) || "").toLowerCase() === value.toLowerCase())) folders.push({path:value, mode:"meta"});
+      await settingsSave({LIBRARY_FOLDERS:folders}, {});
+      await viewSetupWizardPage(returnPage, false);
       return true;
     }
     const key = String(cur.setupEditorKey || "");
     if(!key) return false;
-    await settingsSave({[key]: value}, {});
+    const updates = {[key]: value};
+    if(cur.setupEditorProvider) updates.DEBRID_PROVIDER = String(cur.setupEditorProvider);
+    Object.assign(updates, cur.setupEditorExtraSettings || {});
+    await settingsSave(updates, {});
     await viewSetupWizardPage(returnPage, false);
     return true;
   }
   try{ window.commitSetupEditor = commitSetupEditor; }catch(e){}
 
   async function editSettingRow(row){
+    if(row && row.disabled) return;
     const key = String(row.key || "");
     const type = String(row.settingType || "text");
     if(!key) return;
@@ -727,7 +773,12 @@
     if(raw == null) return;
     let value = raw;
     if(type === "startup_number") await settingsSave({}, {[key]: value});
-    else await settingsSave({[key]: value}, {});
+    else{
+      const updates = {[key]: value};
+      const currentDebrid = state.connectionStatus && state.connectionStatus.DEBRID;
+      if(row.provider && !(currentDebrid && currentDebrid.active_provider)) updates.DEBRID_PROVIDER = String(row.provider);
+      await settingsSave(updates, {});
+    }
     await refreshAfterSettingEdit();
   }
 
@@ -741,22 +792,10 @@
 
   function libSetStatus(msg, tone){
     try{
-      if(!state.libSearch) state.libSearch = {q:"", filter:"", engine:"combined", cache_key:"", result_source:"combined", last_count:0, results:[], knaben_results:[], slsk_users:[]};
+      if(!state.libSearch) state.libSearch = {q:"", filter:"", engine:"combined", cache_key:"", result_source:"combined", last_count:0, results:[], knaben_results:[], slsk_users:[], sourceStatus:{}, searching:false, cached:false, showSourceStatus:false};
       state.libSearch.status_msg = msg ? String(msg) : "";
       state.libSearch.status_tone = tone ? String(tone) : "";
     }catch(e){}
-    // legacy element (if present)
-    const el = document.getElementById("libSearchStatus");
-    if(!el) return;
-    if(!msg){
-      el.style.display = "none";
-      el.textContent = "";
-      el.className = "ipodPill";
-      return;
-    }
-    el.style.display = "inline-flex";
-    el.textContent = String(msg);
-    el.className = "ipodPill" + (tone ? (" " + tone) : "");
   }
 
   function libSetFileStatus(msg, tone){
@@ -764,7 +803,7 @@
     if(view){
       view._fileStatus = msg ? String(msg) : "";
       view._fileStatusTone = tone ? String(tone) : "";
-      const target = (view._searchResult || view._rd || view._slsk || view._slskbrowse || null);
+      const target = (view._searchResult || view._slsk || view._slskbrowse || null);
       if(target && typeof target.buildItems === "function"){
         try{ libSearchRebuildFilesList(target.buildItems()); }catch(e){}
       }
@@ -781,6 +820,7 @@
       if(t === "source:knaben" || t === "src:knaben"){ out.source = "knaben"; continue; }
       else if(t === "source:soulseek" || t === "src:soulseek" || t === "source:slsk" || t === "src:slsk"){ out.source = "soulseek"; continue; }
       else if(t === "source:youtube" || t === "src:youtube" || t === "source:yt" || t === "src:yt"){ out.source = "youtube"; continue; }
+      else if(t === "source:library" || t === "src:library" || t === "source:local" || t === "src:local" || t === "library" || t === "local"){ out.source = "library"; continue; }
       else if(t === "source:combined" || t === "src:combined"){ out.source = "combined"; continue; }
       if(t === "flac" || t === ".flac") out.exts.add("flac");
       else if(t === "mp3" || t === ".mp3") out.exts.add("mp3");
@@ -855,23 +895,31 @@
     if(stMsg){
       qPills.push({text: stMsg, tone: stTone || ""});
     }
-    if(state.libSearch && Array.isArray(state.libSearch.source_status)){
-      for(const src of state.libSearch.source_status){
+    const sourceRows = Object.values((state.libSearch && state.libSearch.sourceStatus) || {});
+    const sourcePills = [];
+    if(sourceRows.length){
+      for(const src of sourceRows){
         if(!src) continue;
         const label = String(src.label || src.source || "");
         const count = Number(src.result_count || 0);
         const err = String(src.error || "");
-        if(err) qPills.push({text: label + " error", tone:"warn"});
-        else if(label) qPills.push({text: label + " " + String(count), tone: src.done === false ? "" : "ok"});
+        if(err) sourcePills.push({text: label + " error", tone:"warn"});
+        else if(label) sourcePills.push({text: label + (src.done === false ? " searching" : " ready") + (count ? " · " + String(count) : ""), tone: src.done === false ? "" : "ok"});
       }
     }
-    items.push({kind:"libsearch_query", label:"Enter query", pills: qPills});
+    items.push({
+      kind:"libsearch_query",
+      label:"Enter query",
+      pills: qPills,
+      expanded: !!(state.libSearch && (state.libSearch.searching || state.libSearch.showSourceStatus)),
+      sub_row: (state.libSearch && (state.libSearch.searching || state.libSearch.showSourceStatus)) ? {loading:!!state.libSearch.searching, label:libSearchCombinedStatusText(sourceRows), pills:sourcePills} : null
+    });
     items.push({kind:"libsearch_filter", label:"Enter filters"});
 
     items.push({kind:"libsearch_action", label:"Clear"});
     items.push({kind:"libsearch_action", label:"Search history"});
-    if(state.libSearch && Array.isArray(state.libSearch.source_status)){
-      for(const src of state.libSearch.source_status){
+    if(sourceRows.length){
+      for(const src of sourceRows){
         const err = String((src && src.error) || "").trim();
         if(err){
           items.push({kind:"info", label:String(src.label || src.source || "Source") + ": " + err});
@@ -925,10 +973,21 @@
       }else if(source === "youtube"){
         if(r.length) pills.push({text: String(r.length)});
         if(r.published) pills.push({text: String(r.published)});
+      }else if(source === "library"){
+        if(r.media) pills.push({text:String(r.media)});
+        if(r.quality) pills.push({text:String(r.quality)});
+        if(Number(r.completion || 0) > 0) pills.push({text:String(Math.round(Number(r.completion || 0))) + "%"});
       }
 
-      const primary = user ? ('<span class="artistStrong">' + escapeHtml(user) + '</span>') : ('<span class="artistStrong">' + escapeHtml(title) + '</span>');
-      const sub = user ? title : String(r.directory_title || r.directory || r.category || "");
+      let primary = user ? ('<span class="artistStrong">' + escapeHtml(user) + '</span>') : ('<span class="artistStrong">' + escapeHtml(title) + '</span>');
+      let sub = user ? title : String(r.directory_title || r.directory || r.category || "");
+      if(source === "library" && String(r.media || "") === "audio"){
+        primary = (user ? '<span class="artistStrong">' + escapeHtml(user) + '</span>   ' : "") + escapeHtml(title);
+        sub = [String(r.album || ""), String(r.quality || "")].filter(Boolean).join(" · ");
+      }else if(source === "library" && String(r.media || "") === "video"){
+        primary = '<span class="artistStrong">' + escapeHtml(title) + '</span>';
+        sub = String(r.directory || r.name || "");
+      }
 
       items.push({
         kind:"libsearch_result",
@@ -1037,7 +1096,7 @@ function libTasksBuildItems(){
   for(const t of tasks){
     const id = String(t.id || "");
     const title = String(t.title || "Task");
-    const src = String(t.source || "rd").toLowerCase();
+    const src = String(t.source || "debrid").toLowerCase();
     const stLower = String(t.state || "").toLowerCase();
     const pills = [];
     pills.push(src === "soulseek" ? "Soulseek" : (src === "youtube" ? "YouTube" : "Debrid"));
@@ -1104,11 +1163,12 @@ function libTasksRefreshList(preserveSel){
 }
 
 function libTaskFilesForTask(t){
-  var src = String((t && t.source) || "rd").toLowerCase();
+  var src = String((t && t.source) || "debrid").toLowerCase();
   if(src === "soulseek"){
     return Array.isArray(t.slsk_files) ? t.slsk_files : [];
   }
-  return Array.isArray(t.rd_files) ? t.rd_files : [];
+  if(src === "youtube") return Array.isArray(t.youtube_files) ? t.youtube_files : [];
+  return Array.isArray(t.debrid_files) ? t.debrid_files : [];
 }
 
 function libTaskBuildItemsForView(view){
@@ -1121,6 +1181,8 @@ function libTaskBuildItemsForView(view){
   items.push({kind:"libtask_action", label:"Cancel selected", action:"cancel_selected", badge: selCount ? String(selCount) : ""});
   items.push({kind:"libtask_action", label:"Select all", action:"selectall"});
   items.push({kind:"libtask_action", label:"Clear task", action:"clear_task"});
+  const libraryNav = (t && t.library_nav) || {};
+  items.push({kind:"libtask_action", label:"Open library location", action:"open_library_location", library_nav:libraryNav, disabled:!libraryNav.available, pills:libraryNav.available ? [] : [{text:"Not indexed", tone:"warn"}]});
 
   var msg = String((t && t.message) || "");
   if(msg){
@@ -1230,7 +1292,8 @@ async function libTasksPollTick(){
       message:t.message || "",
       overall_done:t.overall_done || 0,
       overall_total:t.overall_total || 0,
-      rd_files:(t.rd_files || []).map(f=>[f.file_id, f.state, f.done, f.total]),
+      debrid_files:(t.debrid_files || []).map(f=>[f.file_id, f.state, f.done, f.total]),
+      youtube_files:(t.youtube_files || []).map(f=>[f.file_id, f.state, f.done, f.total]),
       slsk_files:(t.slsk_files || []).map(f=>[f.file_id, f.state, f.done, f.total])
     })));
     if(state.libTasks && state.libTasks.lastSignature === signature) return;
@@ -1299,7 +1362,9 @@ async function libDoSearch(engine, q){
     const searchToken = Date.now() + ":" + Math.random().toString(16).slice(2);
     state.libSearch.search_token = searchToken;
     state.libSearch.searching = true;
-    state.libSearch.source_status = [];
+    state.libSearch.sourceStatus = {};
+    state.libSearch.cached = false;
+    state.libSearch.showSourceStatus = true;
     libSetStatus("Searching", "");
     libRefreshList(true);
     try{
@@ -1315,8 +1380,12 @@ async function libDoSearch(engine, q){
       state.libSearch.slsk_users = js.slsk_users || [];
       state.libSearch.last_count = Number(js.result_count || state.libSearch.results.length || 0);
       state.libSearch.searching = false;
-      state.libSearch.source_status = Array.isArray(js.source_status) ? js.source_status : state.libSearch.source_status;
-      libSetStatus(String(state.libSearch.last_count) + " results", "ok");
+      if(Array.isArray(js.source_status)){
+      state.libSearch.sourceStatus = {};
+        js.source_status.forEach(row=>{ if(row && row.source) state.libSearch.sourceStatus[String(row.source)] = Object.assign({state:row.error ? "error" : "ready", done:true}, row); });
+      }
+      state.libSearch.cached = !!js.cached;
+      libSetStatus(String(state.libSearch.last_count) + " results" + (state.libSearch.cached ? " · Cached" : ""), "ok");
       libRefreshList(true);
     }catch(e){
       state.libSearch.searching = false;
@@ -1341,12 +1410,12 @@ async function libDoSearch(engine, q){
           for(const h of hist){
             const q = h.q || "";
             const engine = h.engine || "";
-            const when = h.when || "";
+            const when = Number(h.ts || 0) > 0 ? new Date(Number(h.ts) * 1000).toLocaleString() : "";
             const lbl = q ? q : "(empty)";
             const pills = [];
             if(engine) pills.push(engine);
             if(when) pills.push(String(when));
-            items.push({kind:"libsearch_history_entry", label: lbl, engine: engine, q: q, pills: pills});
+            items.push({kind:"libsearch_history_entry", label: lbl, engine: engine, q: q, cache_key:String(h.cache_key || ""), pills: pills});
           }
           if(!items.length){
             items.push({kind:"info", label:"No search history"});
@@ -1394,24 +1463,7 @@ async function libDoSearch(engine, q){
         items.push({kind:"libinfo_action", label:"Visualizer", action:"ui_settings_menu"});
         items.push({kind:"libinfo_action", label:"Library", action:"settings_library"});
         items.push({kind:"libinfo_action", label:"Downloads", action:"settings_downloads"});
-        const svcPills = [];
-        try{
-          const settings = state.appSettings || {};
-          const connections = state.connectionStatus || {};
-          const tools = state.toolStatus || {};
-          const slsk = connections.SOULSEEK || {};
-          const lf = connections.LASTFM_SESSION || {};
-          const rd = connections.REAL_DEBRID_API_KEY || {};
-          const knaben = connections.KNABEN_API_KEY || {};
-          svcPills.push({text: rd.set ? "Debrid set" : "Debrid unset", tone: rd.set ? "ok" : "warn"});
-          svcPills.push({text: slsk.set ? (slsk.connected ? "Soulseek connected" : "Soulseek not connected") : "Soulseek unset", tone: slsk.set && slsk.connected ? "ok" : "warn"});
-          svcPills.push({text: lf.set ? (lf.username ? ("Last.fm " + String(lf.username)) : "Last.fm set") : "Last.fm unset", tone: lf.set ? "ok" : "warn"});
-          svcPills.push({text: knaben.set ? "Knaben set" : "Knaben optional", tone: knaben.set ? "ok" : ""});
-          svcPills.push({text: settings.YTDLP_CMD ? "YouTube tool" : "YouTube default"});
-          if(tools.ffmpeg && tools.ffmpeg.ok === false) svcPills.push({text:"ffmpeg missing", tone:"warn"});
-        }catch(e){}
-        items.push({kind:"libinfo_action", label:"Services", action:"settings_services", pills:svcPills});
-        items.push({kind:"libinfo_action", label:"Service Status", action:"service_status"});
+        items.push({kind:"libinfo_action", label:"Services", action:"settings_services"});
         items.push({kind:"libinfo_action", label:"Playback", action:"settings_playback"});
         items.push({kind:"libinfo_action", label:"Advanced", action:"settings_advanced"});
 
@@ -1459,14 +1511,13 @@ async function libDoSearch(engine, q){
   function setupFolderRows(folders){
     return (Array.isArray(folders) ? folders : []).map((f, idx)=>{
       const path = String((f && f.path) || f || "");
-      const mode = String((f && f.mode) || "list").toLowerCase();
       return {
         kind:"settings_library_folder",
         setupReturnPage:"library",
         label:settingPathBase(path),
         sub_label:path,
         folderIndex:idx,
-        pills:[{text: mode === "meta" || mode === "metadata" ? "Metadata" : "List"}],
+        pills:["Indexed"],
         forceTwoLine:true
       };
     });
@@ -1477,10 +1528,10 @@ async function libDoSearch(engine, q){
     if(p === "library") return "Add a library folder (required)";
     if(p === "tools") return "Optional tools";
     if(p === "soulseek_lastfm") return "Soulseek and Last.fm";
-    if(p === "realdebrid") return "Real Debrid";
+    if(p === "debrid") return "Debrid";
     if(p === "skip_tools_confirm") return "Skip optional tools?";
     if(p === "skip_soulseek_lastfm_confirm") return "Skip Soulseek and Last.fm?";
-    if(p === "skip_realdebrid_confirm") return "Skip Real Debrid?";
+    if(p === "skip_debrid_confirm") return "Skip Debrid?";
     return "Setup";
   }
 
@@ -1509,14 +1560,16 @@ async function libDoSearch(engine, q){
         const lfKey = setupConfigured(status, "setup.lastfm_api_key_configured", false);
         const lfSecret = setupConfigured(status, "setup.lastfm_secret_configured", false);
         const lfSession = setupConfigured(status, "setup.lastfm_session_configured", false);
-        const rdToken = setupConfigured(status, "setup.real_debrid_token_configured", false);
-        const rdDir = setupConfigured(status, "setup.real_debrid_download_folder_configured", !!settings.DOWNLOAD_DIR);
+        const debrid = (status && status.debrid) || ((status && status.services) ? status.services.debrid : {}) || {};
+        const activeProvider = String(debrid.active_provider || setup.debrid_provider || "");
+        const providerRows = debrid.providers || {};
+        const anyProviderConfigured = !!activeProvider || DEBRID_PROVIDER_ROWS.some(p=>providerRows[p.id] && providerRows[p.id].configured);
+        const debridDir = setupConfigured(status, "setup.debrid_download_folder_configured", !!settings.DOWNLOAD_DIR);
         const toolsDone = !!ffmpeg.ok && !!ffprobe.ok && !!ytdlp.ok && youtubeFolderSet;
         const soulLastDone = slUser && slPass && slDir && lfKey && lfSecret && lfSession;
-        const rdDone = rdToken && rdDir;
         if(setupPage === "library"){
           items.push({kind:"info", label:"Why this is required", sub_label:"DebriPod needs at least one local folder for initial library indexing. This enables local browsing, artwork palettes, playback history, and precomputed local audio analysis. You can add more folders later from Library settings.", pills:[setupRequiredPill(status, skipped)], forceTwoLine:true});
-          items.push({kind:"settings_add_library_folder", setupReturnPage:"library", label:"Add folder", sub_label:"Choose a folder, then pick Metadata folder or List folder.", pills:["Required"], forceTwoLine:true});
+          items.push({kind:"settings_add_library_folder", setupReturnPage:"library", label:"Add folder", sub_label:"Choose a folder to index for music, movies, shows, videos, and folder browsing.", pills:["Required"], forceTwoLine:true});
           setupFolderRows(folders).forEach((row)=>items.push(row));
           if(status.library_folder_count){
             items.push({kind:"libinfo_action", label:"Continue", sub_label:"Move to optional tool setup.", action:"setup_page:tools", pills:["Ready"]});
@@ -1539,13 +1592,19 @@ async function libDoSearch(engine, q){
           items.push({kind:"libinfo_action", label:"Last.fm API key", sub_label:lfKey ? "Configured" : "Missing", action:"setup_secret:LASTFM_API_KEY:Last.fm API key:soulseek_lastfm", pills:[lfKey ? "Configured" : {text:"Missing", tone:"warn"}]});
           items.push({kind:"libinfo_action", label:"Last.fm secret", sub_label:lfSecret ? "Configured" : "Missing", action:"setup_secret:LASTFM_API_SECRET:Last.fm secret:soulseek_lastfm", pills:[lfSecret ? "Configured" : {text:"Missing", tone:"warn"}]});
           items.push({kind:"libinfo_action", label:"Last.fm session / authorize", sub_label:lfSession ? "Last.fm session is configured." : "Authorize after saving API key and secret.", action:"setup_lastfm_authorize", pills:[lfSession ? "Authorized" : "Authorize"], forceTwoLine:true});
-          items.push({kind:"libinfo_action", label:soulLastDone ? "Finish Soulseek and Last.fm" : "Skip Soulseek and Last.fm", sub_label:soulLastDone ? "Continue to Real Debrid." : "Skipping keeps these features unavailable until credentials, folders, and authorization are configured.", action:soulLastDone ? "setup_page:realdebrid" : "setup_page:skip_soulseek_lastfm_confirm", pills:[soulLastDone ? "Finish" : "Optional"], forceTwoLine:true});
-        }else if(setupPage === "realdebrid"){
-          items.push({kind:"info", label:"Real Debrid", sub_label:"Real Debrid enables debrid-backed streaming and downloads plus torrent/debrid lookup actions. It is optional and can be configured later, but a token is required for Real Debrid features.", pills:["Optional"], forceTwoLine:true});
-          items.push({kind:"info", label:"How to get a token", sub_label:"Sign in to Real Debrid, open the API token page in your account settings, copy the private API token, and paste it here. Keep it private because it gives access to your Real Debrid account features.", pills:["Help"], forceTwoLine:true});
-          items.push({kind:"libinfo_action", label:"Real Debrid token", sub_label:rdToken ? "Configured" : "Missing", action:"setup_secret:REAL_DEBRID_API_KEY:Real Debrid token:realdebrid", pills:[rdToken ? "Configured" : {text:"Missing", tone:"warn"}]});
-          items.push({kind:"libinfo_action", label:"Real Debrid download folder", sub_label:setupDisplayPath(settings.DOWNLOAD_DIR), action:"setup_dir:DOWNLOAD_DIR:Real Debrid download folder:realdebrid", pills:[rdDir ? "Configured" : {text:"Missing", tone:"warn"}], forceTwoLine:true});
-          items.push({kind:"libinfo_action", label:rdDone ? "Finish setup" : "Skip Real Debrid", sub_label:rdDone ? "Complete setup and start indexing." : "Skipping leaves debrid streaming/downloads and torrent lookup unavailable until configured.", action:rdDone ? "setup_finish" : "setup_page:skip_realdebrid_confirm", pills:[rdDone ? "Finish" : "Optional"], forceTwoLine:true});
+          items.push({kind:"libinfo_action", label:soulLastDone ? "Finish Soulseek and Last.fm" : "Skip Soulseek and Last.fm", sub_label:soulLastDone ? "Continue to Debrid." : "Skipping keeps these features unavailable until credentials, folders, and authorization are configured.", action:soulLastDone ? "setup_page:debrid" : "setup_page:skip_soulseek_lastfm_confirm", pills:[soulLastDone ? "Finish" : "Optional"], forceTwoLine:true});
+        }else if(setupPage === "debrid"){
+          items.push({kind:"info", label:"Debrid", sub_label:"Choose one debrid provider for streaming and downloads. Only one provider can be active at a time.", forceTwoLine:true});
+          const activeLabel = String(((providerRows[activeProvider] || {}).label) || activeProvider);
+          DEBRID_PROVIDER_ROWS.forEach((p)=>{
+            const info = providerRows[p.id] || {};
+            const isActive = p.id === activeProvider;
+            const isConfigured = !!info.configured;
+            const isDisabled = !!activeProvider && !isActive;
+            items.push({kind:"libinfo_action", label:p.label + " token", sub_label:isActive ? "Active provider" : (isDisabled ? ("Disabled because " + activeLabel + " is active.") : (isConfigured ? "Configured" : "Missing")), action:isDisabled ? "" : ("setup_debrid_provider:" + p.id + ":" + p.key + ":" + p.label), disabled:isDisabled, forceTwoLine:true});
+          });
+          items.push({kind:"libinfo_action", label:"Debrid folder", sub_label:setupDisplayPath(settings.DOWNLOAD_DIR), action:"setup_dir:DOWNLOAD_DIR:Debrid folder:debrid", pills:[debridDir ? "Configured" : {text:"Missing", tone:"warn"}], forceTwoLine:true});
+          items.push(anyProviderConfigured ? {kind:"libinfo_action", label:"Finish setup", action:"setup_finish", forceTwoLine:true} : {kind:"libinfo_action", label:"Skip Debrid", action:"setup_page:skip_debrid_confirm", forceTwoLine:true});
         }else if(setupPage === "skip_tools_confirm"){
           items.push({kind:"info", label:"Skip optional tools?", sub_label:"Missing tools may limit thumbnails, metadata extraction, transcoding, compatibility conversion, YouTube/local video downloads, and precompute features.", pills:["Optional"], forceTwoLine:true});
           items.push({kind:"libinfo_action", label:"Skip and continue", action:"setup_skip_tools_confirmed", pills:["Skipped"]});
@@ -1554,10 +1613,10 @@ async function libDoSearch(engine, q){
           items.push({kind:"info", label:"Skip Soulseek and Last.fm?", sub_label:"Soulseek search/downloads remain unavailable until credentials and folders are configured. Scrobbling, loved track sync, and Last.fm metadata actions remain unavailable until credentials and authorization are configured.", pills:["Optional"], forceTwoLine:true});
           items.push({kind:"libinfo_action", label:"Skip and continue", action:"setup_skip_soulseek_lastfm_confirmed", pills:["Skipped"]});
           items.push({kind:"libinfo_action", label:"Go back", action:"setup_page:soulseek_lastfm"});
-        }else if(setupPage === "skip_realdebrid_confirm"){
-          items.push({kind:"info", label:"Skip Real Debrid?", sub_label:"Real Debrid streaming/downloads, torrent lookup/download actions, and debrid-backed playback will be unavailable until a token is added. You can configure Real Debrid later from Services settings.", pills:["Optional"], forceTwoLine:true});
-          items.push({kind:"libinfo_action", label:"Skip and finish setup", action:"setup_skip_realdebrid_confirmed", pills:["Finish"]});
-          items.push({kind:"libinfo_action", label:"Go back", action:"setup_page:realdebrid"});
+        }else if(setupPage === "skip_debrid_confirm"){
+          items.push({kind:"info", label:"Skip Debrid?", sub_label:"Debrid streaming, downloads, and torrent lookup actions will remain unavailable until a provider token is configured in Services.", pills:["Optional"], forceTwoLine:true});
+          items.push({kind:"libinfo_action", label:"Skip and finish setup", action:"setup_skip_debrid_confirmed", pills:["Finish"]});
+          items.push({kind:"libinfo_action", label:"Go back", action:"setup_page:debrid"});
         }else{
           items.push({kind:"libinfo_action", label:"Add a library folder (required)", action:"setup_page:library", pills:[setupRequiredPill(status, skipped)]});
         }
@@ -1970,6 +2029,14 @@ async function libDoSearch(engine, q){
       await viewSetupWizardPage(String(action).split(":")[1] || "library", true);
       return true;
     }
+    if(String(action || "").indexOf("setup_debrid_provider:") === 0){
+      const parts = String(action).split(":");
+      const provider = parts[1] || "";
+      const key = parts[2] || "";
+      const label = parts.slice(3).join(":") || "Debrid provider";
+      await viewSetupEditor({key:key, label:label + " token", returnPage:"debrid", secret:true, provider:provider}, true);
+      return true;
+    }
     if(String(action || "").indexOf("setup_edit:") === 0 || String(action || "").indexOf("setup_secret:") === 0){
       const parts = String(action || "").split(":");
       const secret = parts[0] === "setup_secret";
@@ -2020,9 +2087,6 @@ async function libDoSearch(engine, q){
       case "settings_services":
         await viewSettingsCategory("services", true);
         return true;
-      case "service_status":
-        await viewServiceStatusPanel(true);
-        return true;
       case "settings_playback":
         await viewSettingsCategory("playback", true);
         return true;
@@ -2068,9 +2132,9 @@ async function libDoSearch(engine, q){
       case "setup_skip_tools_confirmed":
         return await setupSkipMany(["ffmpeg", "ffprobe", "ytdlp", "youtube"], "soulseek_lastfm");
       case "setup_skip_soulseek_lastfm_confirmed":
-        return await setupSkipMany(["soulseek", "lastfm"], "realdebrid");
-      case "setup_skip_realdebrid_confirmed":
-        return await setupSkipMany(["real_debrid"], "finish");
+        return await setupSkipMany(["soulseek", "lastfm"], "debrid");
+      case "setup_skip_debrid_confirmed":
+        return await setupSkipMany(["debrid"], "finish");
       case "setup_finish":
         return await setupFinish();
       default:
@@ -2080,24 +2144,42 @@ async function libDoSearch(engine, q){
 
   function libSearchSortResults(results){
     const arr = (Array.isArray(results) ? results : []).map(x=> Object.assign({}, x || {}));
-    arr.sort((a,b)=>{
-      const as = Number(a._score || 0);
-      const bs = Number(b._score || 0);
-      if(bs !== as) return bs - as;
-      const az = Number(a.size || 0);
-      const bz = Number(b.size || 0);
-      if(bz !== az) return bz - az;
-      return String(a.title || "").localeCompare(String(b.title || ""));
-    });
-    arr.forEach(x=>{ try{ delete x._score; }catch(e){} });
+    const normalize = value=>String(value || "").normalize("NFKD").replace(/[\u0300-\u036f]/g, "").toLowerCase().replace(/[^a-z0-9]+/g, " ").trim();
+    const query = normalize((state.libSearch && state.libSearch.q) || "");
+    const tokens = query ? query.split(/\s+/).filter(Boolean) : [];
+    const music = /\b(song|track|album|artist|band|discography|flac|mp3|lossless|remaster|lyrics)\b/.test(query);
+    const movie = /\b(movie|film|show|series|season|episode|1080p|2160p|720p|4k|bluray|webrip|webdl|hdtv|x264|x265|hevc|hdr|s\d{1,2}e\d+)\b/.test(query) || /\b(?:19|20)\d{2}\b/.test(query);
+    const video = /\b(tutorial|review|explained|interview|podcast|trailer|clip|performance|news|walkthrough|guide)\b/.test(query);
+    const sourceBoosts = music
+      ? {library:180, soulseek:150, youtube:95, knaben:30}
+      : (movie ? {library:180, knaben:150, youtube:90, soulseek:25}
+        : (video ? {library:180, youtube:150, soulseek:55, knaben:55} : {library:160, youtube:70, soulseek:65, knaben:60}));
+    const score = item=>{
+      const title = normalize(item.title || item.directory_title || item.name || "");
+      const artistTitle = normalize(String(item.artist || item.user || "") + " " + title);
+      const fields = normalize([title, artistTitle, item.album, item.directory, item.name].join(" "));
+      let match = 0;
+      if(query && (query === title || query === artistTitle)) match = 1000;
+      else if(query && fields.includes(query)) match = 800;
+      else if(tokens.length){
+        const present = tokens.filter(token=>fields.split(/\s+/).includes(token)).length;
+        const coverage = present / tokens.length;
+        match = coverage === 1 ? 650 + Math.min(100, tokens.length * 10) : (present ? 350 + 250 * coverage : 0);
+        if(present === 1 && tokens.length > 1) match = Math.min(250, match);
+      }
+      const source = String(item.source || "").toLowerCase();
+      const localPriority = source === "library" && match >= 650 ? 2000 : 0;
+      return match * 10 + localPriority + Number(sourceBoosts[source] || 0);
+    };
+    arr.sort((a,b)=>score(b) - score(a) || String(a.title || a.name || "").localeCompare(String(b.title || b.name || "")) || String(a.result_id || "").localeCompare(String(b.result_id || "")));
     return arr;
   }
 
   function libSearchCombinedStatusText(status){
-    const list = Array.isArray(status) ? status : [];
+    const list = Array.isArray(status) ? status : Object.values(status || {});
     if(!list.length) return "Searching";
     const done = list.filter(x=>x && x.done !== false).length;
-    const total = Math.max(3, list.length);
+    const total = Math.max(4, list.length);
     const count = list.reduce((n, x)=> n + Number((x && x.result_count) || 0), 0);
     return String(done) + "/" + String(total) + " sources, " + String(count) + " results";
   }
@@ -2125,7 +2207,7 @@ async function libDoSearch(engine, q){
     const reader = res.body.getReader();
     let buffer = "";
     const sourceResults = {};
-    const sourceStatus = [];
+    const sourceStatus = {};
     let finalPayload = null;
     function upsertStatus(payload, done){
       const source = String(payload.source || "");
@@ -2137,11 +2219,10 @@ async function libDoSearch(engine, q){
         error:String(payload.error || ""),
         result_count:Number(payload.result_count || (Array.isArray(payload.results) ? payload.results.length : 0) || 0),
         duration_ms:Number(payload.duration_ms || 0),
+        state:String(payload.error || "") ? "error" : (done !== false ? "ready" : "searching"),
         done:done !== false
       };
-      const idx = sourceStatus.findIndex(x=>x && x.source === source);
-      if(idx >= 0) sourceStatus[idx] = row;
-      else sourceStatus.push(row);
+      sourceStatus[source] = row;
     }
     function applyProgress(){
       if(state.libSearch.search_token !== searchToken) return;
@@ -2151,8 +2232,8 @@ async function libDoSearch(engine, q){
       });
       state.libSearch.results = libSearchSortResults(merged);
       state.libSearch.last_count = state.libSearch.results.length;
-      state.libSearch.source_status = sourceStatus.slice();
-      libSetStatus(libSearchCombinedStatusText(sourceStatus), sourceStatus.some(x=>x && x.error) ? "warn" : "");
+      state.libSearch.sourceStatus = Object.assign({}, sourceStatus);
+      libSetStatus(libSearchCombinedStatusText(sourceStatus), Object.values(sourceStatus).some(x=>x && x.error) ? "warn" : "");
       libRefreshList(true);
     }
     function handleLine(line){
@@ -2164,12 +2245,26 @@ async function libDoSearch(engine, q){
         sourceResults[String(ev.source || "")] = Array.isArray(ev.results) ? ev.results : [];
         upsertStatus(ev, true);
         applyProgress();
+      }else if(ev.event === "cached"){
+        finalPayload = ev;
+        state.libSearch.cached = true;
+        state.libSearch.results = Array.isArray(ev.results) ? ev.results.slice() : [];
+        state.libSearch.last_count = state.libSearch.results.length;
+        if(Array.isArray(ev.source_status)){
+          ev.source_status.forEach(row=>{ if(row && row.source) sourceStatus[String(row.source)] = Object.assign({state:row.error ? "error" : "ready", done:true}, row); });
+        }
+        state.libSearch.sourceStatus = Object.assign({}, sourceStatus);
+        libSetStatus(String(state.libSearch.last_count) + " results · Cached", "ok");
+        libRefreshList(true);
       }else if(ev.event === "done"){
         finalPayload = ev;
       }else if(ev.event === "start"){
-        const sources = Array.isArray(ev.sources) ? ev.sources : ["youtube", "soulseek", "knaben"];
-        state.libSearch.source_status = sources.map(src=>({source:String(src), label:String(src), result_count:0, done:false, error:""}));
-        libSetStatus("Searching", "");
+        const sources = Array.isArray(ev.sources) ? ev.sources : ["library", "soulseek", "knaben", "youtube"];
+        const sourceLabels = {library:"Library", soulseek:"Soulseek", knaben:"Knaben", youtube:"YouTube"};
+        sources.forEach(src=>{ sourceStatus[String(src)] = {source:String(src), label:sourceLabels[String(src)] || String(src), state:"searching", result_count:0, done:false, error:""}; });
+        state.libSearch.sourceStatus = Object.assign({}, sourceStatus);
+        state.libSearch.cached = !!ev.cached;
+        libSetStatus(ev.cached ? "Loading cached results" : "Searching", "");
         libRefreshList(true);
       }
     }
@@ -2189,7 +2284,7 @@ async function libDoSearch(engine, q){
       cache_key:"",
       results:state.libSearch.results || [],
       result_count:(state.libSearch.results || []).length,
-      source_status:sourceStatus
+      source_status:Object.values(sourceStatus)
     };
   }
 

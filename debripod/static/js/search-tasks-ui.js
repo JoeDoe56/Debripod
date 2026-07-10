@@ -1,87 +1,3 @@
-  function libBuildFileItemsFromRD(preview, title, magnet){
-    const torrentId = preview.torrent_id || "";
-    const files = preview.files || [];
-    const view = state.current;
-    view._rd = {title: title, magnet: magnet, torrent_id: torrentId, files: files, selected: new Set(), filter: ((state.libSearch && state.libSearch.filter) ? state.libSearch.filter : "")};
-
-    const build = ()=>{
-      const f = libParseFilter(view._rd.filter || "");
-      const items = [];
-      const selCount = view._rd.selected.size;
-      const statusMsg = String(view._fileStatus || "");
-
-      if(statusMsg) items.push({kind:"info", label: statusMsg});
-      items.push({kind:"libsearch_file_action", label:"Download selected", action:"rd_download", badge: selCount ? String(selCount) : ""});
-      items.push({kind:"libsearch_file_action", label:"Select all", action:"rd_selectall"});
-      items.push({kind:"libsearch_file_action", label:"Clear selection", action:"rd_clear"});
-
-      for(const ff of files){
-        const name = ff.path || "";
-        const guess = libGuessFromName(name);
-        const ft = (name || "").toLowerCase();
-        if(f.rest.length && !libTextHasAllTokens(ft, f.rest)) continue;
-        if(f.exts.size){
-          if(!guess.ext || !f.exts.has(guess.ext)) continue;
-        }
-        if(f.bitDepth){
-          if(!guess.bitDepth || guess.bitDepth !== f.bitDepth) continue;
-        }
-        if(f.sampleRate){
-          if(!guess.sampleRate || guess.sampleRate !== f.sampleRate) continue;
-        }
-
-        const id = String(ff.id);
-        const pills = [];
-        if(guess.ext) pills.push(guess.ext);
-        if(ff.bytes) pills.push(humanBytes(ff.bytes));
-        items.push({
-          kind:"libsearch_file",
-          label:name,
-          source:"knaben",
-          file_id:id,
-          selectable:true,
-          selected:view._rd.selected.has(id),
-          pills:pills,
-          onToggle: ()=>{
-            if(view._rd.selected.has(id)) view._rd.selected.delete(id);
-            else view._rd.selected.add(id);
-          }
-        });
-      }
-      return items;
-    };
-    view._rd.buildItems = build;
-    return build();
-  }
-
-  async function viewLibSearchKnabenFiles(push, item){
-    showNowPlaying(false);
-    await setView({
-      kind:"libsearch_files",
-      label:"Files",
-      source:"knaben",
-      load: async function(){
-        const title = item.label || "Knaben item";
-        const magnet = item.magnet || "";
-        resetList([{kind:"info", label:"Loading files"}]);
-        libSetFileStatus("", "");
-        try{
-          const res = await apiPost("/api/rd/preview_files", {magnet: magnet});
-          const js = (res && res.json) ? res.json : {};
-          if(!res || !res.ok || !js.ok){
-            throw new Error((js && js.error) ? js.error : "Failed to load files");
-          }
-          libSetFileStatus("", "");
-          resetList(libBuildFileItemsFromRD(js, title, magnet));
-        }catch(e){
-          libSetFileStatus("Error", "warn");
-          resetList([{kind:"info", label:"Failed to load files"}]);
-          alert(String(e && e.message ? e.message : e));
-        }
-      }
-    }, push);
-  }
-
   function libStandardizePreviewFilesForKnaben(preview){
     const out = [];
     const files = Array.isArray(preview && preview.files) ? preview.files : [];
@@ -104,6 +20,8 @@
         bit_depth: bitDepth,
         sample_rate: sampleRate,
         source: "knaben",
+        provider: String((preview && preview.provider) || ""),
+        debrid_task_id: String((preview && preview.debrid_task_id) || ""),
         selectable: true
       });
     }
@@ -157,7 +75,9 @@
       if(rr.stream_available){
         items.push({kind:"libsearch_file_action", label:"Stream selected", action:"result_stream", pills: streamPills});
       }
-      items.push({kind:"libsearch_file_action", label:"Download selected", action:"result_download", pills: downloadPills});
+      if(rr.download_available !== false){
+        items.push({kind:"libsearch_file_action", label:"Download selected", action:"result_download", pills: downloadPills});
+      }
       items.push({kind:"libsearch_file_action", label:"Select all", action:"result_selectall"});
       items.push({kind:"libsearch_file_action", label:"Clear selection", action:"result_clear"});
 
@@ -175,7 +95,7 @@
         if(f.bitDepth && (!bd || bd !== f.bitDepth)) continue;
         if(f.sampleRate && (!sr || sr !== f.sampleRate)) continue;
         visibleFileCount += 1;
-        const key = src === "knaben" ? ("file:" + String(ff.file_id || name)) : (src === "youtube" ? ("itag:" + String(ff.itag || ff.file_id || name)) : (String(ff.remote_path || name)));
+        const key = src === "knaben" ? ("file:" + String(ff.file_id || name)) : (src === "youtube" ? ("itag:" + String(ff.itag || ff.file_id || name)) : (src === "library" ? ("library:" + String(ff.root_id || rr.root_id || "") + ":" + String(ff.rel || "")) : (String(ff.remote_path || name))));
         const dlState = normalizeSlskDownloadState(String(ff.download_state || ""));
         const pills = [];
         if(fileSource) pills.push({text:fileSource});
@@ -194,11 +114,20 @@
           remote_path: String(ff.remote_path || ""),
           file_id: String(ff.file_id || ""),
           size: Number(ff.size || 0),
+          root_id: String(ff.root_id || rr.root_id || ""),
+          rel: String(ff.rel || ""),
+          media: String(ff.media || rr.media || ""),
+          ext: ext,
+          quality: String(ff.quality || ""),
+          bitrate: String(ff.bitrate || ""),
+          direct_url: String(ff.direct_url || ""),
+          itag: String(ff.itag || ff.format_id || ff.file_id || ""),
+          format_id: String(ff.format_id || ff.itag || ff.file_id || ""),
           source: fileSource || src,
           onToggle: ()=>{
             if(dlState) return;
             if(target.selected.has(key)) target.selected.delete(key);
-            else target.selected.set(key, {key:key, remote_path:String(ff.remote_path || ""), file_id:String(ff.file_id || ""), itag:String(ff.itag || ff.format_id || ff.file_id || ""), format_id:String(ff.format_id || ff.itag || ff.file_id || ""), size:Number(ff.size || 0), name:name, source:String(ff.source || src || ""), ext:String(ff.ext || ""), quality:String(ff.quality || ""), bitrate:String(ff.bitrate || ""), media:String(ff.media || ""), direct_url:String(ff.direct_url || ""), url:String((target.result && target.result.url) || "")});
+            else target.selected.set(key, {key:key, remote_path:String(ff.remote_path || ""), file_id:String(ff.file_id || ""), itag:String(ff.itag || ff.format_id || ff.file_id || ""), format_id:String(ff.format_id || ff.itag || ff.file_id || ""), size:Number(ff.size || 0), name:name, label:name, source:String(ff.source || src || ""), ext:String(ff.ext || ""), quality:String(ff.quality || ""), bitrate:String(ff.bitrate || ""), media:String(ff.media || rr.media || ""), root_id:String(ff.root_id || rr.root_id || ""), rel:String(ff.rel || ""), direct_url:String(ff.direct_url || ""), url:String((target.result && target.result.url) || "")});
           }
         });
       }
@@ -277,17 +206,19 @@
       source:String(item.source || ""),
       load: async function(){
         const raw = Object.assign({}, item.raw || {});
-        resetList([{kind:"info", label:"Loading files"}]);
+        resetList([{kind:"loading", label:"Loading files", loading:true}]);
         libSetFileStatus("", "");
         try{
           if(String(raw.source || item.source || "") === "knaben" && !raw.files_loaded){
-            const res = await apiPost("/api/rd/preview_files", {magnet: raw.magnet || ""});
+            const res = await apiPost("/api/debrid/preview_files", {magnet: raw.magnet || ""});
             const js = (res && res.json) ? res.json : {};
             if(!res || !res.ok || !js.ok){
               throw new Error((js && js.error) ? js.error : "Failed to load files");
             }
             raw.preview = js;
-            raw.torrent_id = js.torrent_id || raw.torrent_id || "";
+            raw.provider = js.provider || "";
+            raw.provider_label = js.provider_label || "";
+            raw.debrid_task_id = js.debrid_task_id || "";
             raw.files = libStandardizePreviewFilesForKnaben(js);
             raw.file_count = raw.files.length;
             raw.files_loaded = true;
@@ -545,6 +476,7 @@
       load: async function(){
         const browseUser = user || "";
         const wantedDir = String(selectedDir || "");
+        resetList([{kind:"loading", label:"Loading user shares", loading:true}]);
         libSetFileStatus("Loading shares", "");
         try{
           const js = await apiGet("/api/soulseek/browse_user?user=" + encodeURIComponent(browseUser) + "&selected_dir=" + encodeURIComponent(wantedDir));
@@ -579,7 +511,7 @@
       label:"Channel",
       source:"youtube",
       load: async function(){
-        resetList([{kind:"info", label:"Loading channel"}]);
+        resetList([{kind:"loading", label:"Loading channel", loading:true}]);
         try{
           const js = await apiGet("/api/youtube/channel?channel_id=" + encodeURIComponent(item.channel_id || ""));
           if(!js || !js.ok){

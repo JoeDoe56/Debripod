@@ -11,7 +11,7 @@ from typing import Any, Iterator, Optional
 
 from ..paths import cache_dir
 
-SCHEMA_VERSION = 2
+SCHEMA_VERSION = 3
 ANALYSIS_ALGORITHM_VERSION = 2
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
 
@@ -229,6 +229,14 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
 
         CREATE INDEX IF NOT EXISTS idx_search_history_recent ON search_history(ts DESC);
 
+        CREATE TABLE IF NOT EXISTS show_aliases (
+          root_id TEXT NOT NULL,
+          alias_key TEXT NOT NULL,
+          show_key TEXT NOT NULL,
+          updated_at REAL NOT NULL,
+          PRIMARY KEY(root_id, alias_key)
+        );
+
         CREATE TABLE IF NOT EXISTS user_passkeys (
           id INTEGER PRIMARY KEY AUTOINCREMENT,
           username TEXT NOT NULL,
@@ -380,6 +388,27 @@ def root_versions() -> dict[str, int]:
     return {str(row["root_id"]): int(row["version"] or 0) for row in rows}
 
 
+def load_show_aliases(root_id: str) -> dict[str, str]:
+    with library_db() as conn:
+        rows = conn.execute("SELECT alias_key, show_key FROM show_aliases WHERE root_id = ?", (str(root_id or ""),)).fetchall()
+    return {str(row["alias_key"]): str(row["show_key"]) for row in rows if str(row["alias_key"] or "") and str(row["show_key"] or "")}
+
+
+def save_show_aliases(root_id: str, aliases: dict[str, str]) -> None:
+    clean = {str(alias): str(show) for alias, show in (aliases or {}).items() if str(alias or "") and str(show or "")}
+    if not clean:
+        return
+    with library_db() as conn:
+        conn.executemany(
+            """
+            INSERT INTO show_aliases(root_id, alias_key, show_key, updated_at)
+            VALUES(?, ?, ?, ?)
+            ON CONFLICT(root_id, alias_key) DO UPDATE SET show_key=excluded.show_key, updated_at=excluded.updated_at
+            """,
+            [(str(root_id or ""), alias, show, time.time()) for alias, show in clean.items()],
+        )
+
+
 def _track_sort_tuple(track_s: str) -> tuple[int, str]:
     s = (track_s or "").strip()
     if not s:
@@ -501,6 +530,8 @@ def _build_metadata_facets(data: dict) -> dict[str, Any]:
             {"kind": "file", "label": v.get("name") or v.get("title") or "Video", "rel": v.get("rel"), "media": "video", "badge": "video"}
             for v in sorted(videos, key=lambda x: str(x.get("title") or x.get("name") or "").lower())[:3000]
         ],
+        "movies": list(data.get("movies") or []),
+        "shows": list(data.get("shows") or []),
     }
 
 
@@ -535,6 +566,10 @@ def load_index_snapshot(root_id: str, root_abs: str) -> Optional[dict]:
         if not isinstance(payload, dict):
             payload = {}
         if str(item["media_type"] or "") == "video":
+            # Video parser changes are not backward-compatible with old
+            # snapshots; rebuild instead of presenting stale release names.
+            if int(payload.get("parse_version") or 0) != 2:
+                return None
             videos.append(payload)
         else:
             tracks.append(payload)
@@ -559,7 +594,8 @@ def save_index_snapshot(root_id: str, root_abs: str, data: dict, *, mode: str = 
         ).fetchall()
         old = {str(row["rel"]): (int(row["size"] or 0), int(row["mtime_ns"] or 0), int(row["deleted"] or 0)) for row in existing}
         next_items: dict[str, tuple[str, str, int, int]] = {}
-        for media_type, items in (("audio", payload_data.get("tracks") or []), ("video", payload_data.get("videos") or [])):
+        persisted_videos = payload_data.get("video_records") or payload_data.get("videos") or []
+        for media_type, items in (("audio", payload_data.get("tracks") or []), ("video", persisted_videos)):
             for item in items:
                 if not isinstance(item, dict):
                     continue
@@ -625,7 +661,7 @@ def save_index_snapshot(root_id: str, root_abs: str, data: dict, *, mode: str = 
                 """,
                 (root_id, rel, abs_path, media_type, ext, size, mtime_ns, changed_at),
             )
-        for media_type, items in (("audio", payload_data.get("tracks") or []), ("video", payload_data.get("videos") or [])):
+        for media_type, items in (("audio", payload_data.get("tracks") or []), ("video", persisted_videos)):
             for item in items:
                 if not isinstance(item, dict):
                     continue

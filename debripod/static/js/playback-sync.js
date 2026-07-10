@@ -11,7 +11,12 @@
     videoPlaylist: [],
     videoIndex: -1,
     now: null,
-    libSearch: {q: "", filter: "", engine: "combined", cache_key: "", result_source: "combined", last_count: 0, results: [], knaben_results: [], slsk_users: [], editField: "", editValue: ""},
+    libSearch: {q: "", filter: "", engine: "combined", cache_key: "", result_source: "combined", last_count: 0, results: [], knaben_results: [], slsk_users: [], sourceStatus: {
+      library:{source:"library", label:"Library", state:"idle", result_count:0, error:"", done:false},
+      soulseek:{source:"soulseek", label:"Soulseek", state:"idle", result_count:0, error:"", done:false},
+      knaben:{source:"knaben", label:"Knaben", state:"idle", result_count:0, error:"", done:false},
+      youtube:{source:"youtube", label:"YouTube", state:"idle", result_count:0, error:"", done:false}
+    }, searching: false, cached: false, showSourceStatus: false, editField: "", editValue: ""},
     playlistCreate: {editing: false, editValue: "", submitting: false},
     playlistEdit: {rel: "", label: "", editingName: false, editNameValue: "", submitting: false},
     libTasks: {tasks: []},

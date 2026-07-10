@@ -50,16 +50,8 @@ def _default_playback_state() -> dict:
             "session_id": "",
             "last_activity_ts": 0.0,   # updated while playing
             "last_stop_ts": 0.0,       # updated on pause/stop/ended
-            # legacy key kept for backward compatibility
-            "last_play_ts": 0.0,
         },
         "video_session": {
-            "session_id": "",
-            "last_activity_ts": 0.0,
-            "last_stop_ts": 0.0,
-        },
-        # legacy unified key kept so older files still load, but it is not used anymore
-        "session": {
             "session_id": "",
             "last_activity_ts": 0.0,
             "last_stop_ts": 0.0,
@@ -74,6 +66,9 @@ def _default_playback_state() -> dict:
             "updatedAt": 0,
             "revision": 0,
         },
+        # Durable resume/completion data for every local video, keyed by
+        # root_id + relative path. This is separate from Now Playing/recent.
+        "media_progress": {},
         "version": 0,
         "ver": 3,
         "updated": 0.0,
@@ -95,6 +90,8 @@ def load_playback_state() -> None:
                 # recent must be a list
                 if not isinstance(base.get("recent"), list):
                     base["recent"] = []
+                if not isinstance(base.get("media_progress"), dict):
+                    base["media_progress"] = {}
 
                 # normalize audio_session
                 a = base.get("audio_session")
@@ -102,14 +99,8 @@ def load_playback_state() -> None:
                     a = {}
                 if "session_id" not in a:
                     a["session_id"] = ""
-                # support old schema: last_play_ts used instead of last_activity_ts
-                if "last_play_ts" not in a:
-                    a["last_play_ts"] = 0.0
                 if "last_activity_ts" not in a:
-                    try:
-                        a["last_activity_ts"] = float(a.get("last_play_ts") or 0.0)
-                    except Exception:
-                        a["last_activity_ts"] = 0.0
+                    a["last_activity_ts"] = 0.0
                 if "last_stop_ts" not in a:
                     a["last_stop_ts"] = 0.0
                 base["audio_session"] = a
@@ -126,17 +117,6 @@ def load_playback_state() -> None:
                     v["last_stop_ts"] = 0.0
                 base["video_session"] = v
 
-                # keep legacy unified session if present, but do not rely on it
-                sess = base.get("session")
-                if not isinstance(sess, dict):
-                    sess = {"session_id": "", "last_activity_ts": 0.0, "last_stop_ts": 0.0}
-                if "session_id" not in sess:
-                    sess["session_id"] = ""
-                if "last_activity_ts" not in sess:
-                    sess["last_activity_ts"] = 0.0
-                if "last_stop_ts" not in sess:
-                    sess["last_stop_ts"] = 0.0
-                base["session"] = sess
                 ps = base.get("playback_session")
                 if not isinstance(ps, dict):
                     ps = {}
@@ -190,6 +170,52 @@ def save_playback_state_best_effort() -> None:
 
 def _media_key(media: str, root_id: str, rel: str) -> str:
     return f"{(media or '').strip().lower()}::{(root_id or '').strip()}::{(rel or '').strip()}"
+
+
+def media_progress_key(root_id: str, rel: str) -> str:
+    return f"{str(root_id or '').strip()}::{str(rel or '').replace(chr(92), '/').strip('/')}"
+
+
+def completion_percent(position: Any, duration: Any, ended: bool = False) -> int:
+    try:
+        dur = max(0.0, float(duration or 0))
+    except Exception:
+        dur = 0.0
+    try:
+        pos = max(0.0, float(position or 0))
+    except Exception:
+        pos = 0.0
+    if dur <= 0:
+        return 0
+    if ended or pos >= max(0.0, dur - 30.0):
+        return 100
+    return max(0, min(100, int((pos / dur) * 100.0)))
+
+
+def media_progress_for(root_id: str, rel: str) -> dict:
+    key = media_progress_key(root_id, rel)
+    with PLAYBACK_STATE_LOCK:
+        raw = (PLAYBACK_STATE.get("media_progress") or {}).get(key)
+        out = dict(raw) if isinstance(raw, dict) else {}
+    out.setdefault("position", 0.0)
+    out.setdefault("duration", 0.0)
+    out.setdefault("updated", 0.0)
+    out.setdefault("ended", False)
+    out["completion_percent"] = completion_percent(out.get("position"), out.get("duration"), bool(out.get("ended")))
+    return out
+
+
+def media_progress_snapshot() -> dict[str, dict]:
+    with PLAYBACK_STATE_LOCK:
+        raw = dict(PLAYBACK_STATE.get("media_progress") or {})
+    out: dict[str, dict] = {}
+    for key, value in raw.items():
+        if not isinstance(value, dict):
+            continue
+        item = dict(value)
+        item["completion_percent"] = completion_percent(item.get("position"), item.get("duration"), bool(item.get("ended")))
+        out[str(key)] = item
+    return out
 
 def _trim_recent(recent: list, max_items: int = 0) -> list:
     out = recent if isinstance(recent, list) else []
@@ -336,7 +362,11 @@ def playback_snapshot_public() -> dict:
             out_now.pop("_list", None)
             out_now.pop("_stream_item", None)
         session = _sanitize_playback_session(PLAYBACK_STATE.get("playback_session"), out_now, rp, version)
-        return {"now": out_now, "recent": rp, "session": session, "version": version}
+        progress = {str(key): dict(value) for key, value in (PLAYBACK_STATE.get("media_progress") or {}).items() if isinstance(value, dict)}
+        for value in progress.values():
+            if isinstance(value, dict):
+                value["completion_percent"] = completion_percent(value.get("position"), value.get("duration"), bool(value.get("ended")))
+        return {"now": out_now, "recent": rp, "session": session, "media_progress": progress, "version": version}
 
 def playback_update_from_client(payload: dict) -> dict:
     # payload fields (best-effort):
@@ -479,7 +509,8 @@ def playback_update_from_client(payload: dict) -> dict:
             "item_id", "queue_index", "queue_count", "session_title",
             "media", "name", "title", "artist", "album", "art", "size",
             "source", "streamed", "ext", "quality", "url", "youtube_url",
-            "format_id", "itag", "mime", "requires_local_mux"
+            "format_id", "itag", "mime", "requires_local_mux", "provider", "provider_label",
+            "trusted_provider_stream"
         )
         now_entry["_stream_item"] = {k: stream_item.get(k) for k in keep_keys if k in stream_item}
 
@@ -496,6 +527,20 @@ def playback_update_from_client(payload: dict) -> dict:
         if playing is not None:
             now_entry["playing"] = bool(playing)
         PLAYBACK_STATE["now"] = now_entry
+        if media == "video" and root_id != _search_stream_root_id():
+            progress = PLAYBACK_STATE.get("media_progress")
+            if not isinstance(progress, dict):
+                progress = {}
+            ended = ev == "ended"
+            progress[media_progress_key(root_id, rel)] = {
+                "root_id": root_id,
+                "rel": rel,
+                "position": max(0.0, pos_f),
+                "duration": max(0.0, float(dur_f or 0.0)),
+                "updated": time.time(),
+                "ended": bool(ended),
+            }
+            PLAYBACK_STATE["media_progress"] = progress
 
         # recent list
         recent = PLAYBACK_STATE.get("recent") or []
@@ -511,11 +556,7 @@ def playback_update_from_client(payload: dict) -> dict:
         if "session_id" not in sess:
             sess["session_id"] = ""
         if "last_activity_ts" not in sess:
-            # migrate from legacy audio_session key if present
-            try:
-                sess["last_activity_ts"] = float(sess.get("last_play_ts") or 0.0)
-            except Exception:
-                sess["last_activity_ts"] = 0.0
+            sess["last_activity_ts"] = 0.0
         if "last_stop_ts" not in sess:
             sess["last_stop_ts"] = 0.0
 
@@ -539,9 +580,6 @@ def playback_update_from_client(payload: dict) -> dict:
         if is_playing_now:
             sess["last_activity_ts"] = now_ts
             last_act = now_ts
-            # legacy audio key kept up to date
-            if media == "audio":
-                sess["last_play_ts"] = now_ts
         if ev_s in ("pause", "stop", "ended"):
             sess["last_stop_ts"] = now_ts
             last_stop = now_ts

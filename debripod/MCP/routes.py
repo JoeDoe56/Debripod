@@ -4,6 +4,8 @@ from ..factory import DeferredApp
 from ..runtime_state import *
 from ..runtime_downloads import *
 from ..runtime_route_state import *
+from ..Library.download_manifest import write_task_manifest
+from ..Services.debrid import get_active_provider
 
 app = DeferredApp()
 
@@ -336,24 +338,18 @@ def _mcp_search_soulseek(query: str, limit: int) -> dict:
     return {'engine': 'soulseek', 'query': query, 'limit': limit, 'results': out, 'result_count': len(out), 'error': ''}
 
 
-def _mcp_start_rd_download(title: str, magnet: str) -> dict:
+def _mcp_start_debrid_download(title: str, magnet: str) -> dict:
     if not magnet.startswith('magnet:?'):
         raise RuntimeError('Invalid magnet')
-    torrent_id = rd_add_magnet(magnet)
-    info = rd_torrent_info(torrent_id)
-    files = info.get('files') or []
-    file_ids: List[int] = []
-    if isinstance(files, list):
-        for f in files:
-            if not isinstance(f, dict):
-                continue
-            fid = f.get('id')
-            if fid is None:
-                continue
-            try:
-                file_ids.append(int(fid))
-            except Exception:
-                continue
+    if not str(DOWNLOAD_DIR or '').strip():
+        raise RuntimeError('Pick the Debrid folder in Downloads settings before downloading.')
+    keys = (
+        'DEBRID_PROVIDER', 'REAL_DEBRID_API_KEY', 'RD_BASE', 'ALLDEBRID_API_KEY', 'ALLDEBRID_BASE',
+        'PREMIUMIZE_API_KEY', 'PREMIUMIZE_BASE', 'TORBOX_API_KEY', 'TORBOX_BASE', 'SEARCH_STREAM_SESSION_TTL_SECONDS',
+    )
+    provider = get_active_provider({key: globals().get(key) for key in keys}, int(REQUEST_TIMEOUT_SECONDS or 25))
+    preview = provider.preview_magnet(magnet)
+    file_ids = [item.file_id for item in preview.files]
     if not file_ids:
         raise RuntimeError('No files found in torrent')
     task_id = uuid.uuid4().hex
@@ -364,15 +360,18 @@ def _mcp_start_rd_download(title: str, magnet: str) -> dict:
         title=title or 'Knaben item',
         magnet=magnet,
         task_dir=task_dir,
+        source='debrid',
         state='queued',
         message='Queued',
-        torrent_id=torrent_id,
-        rd_selected_file_ids=file_ids,
+        debrid_provider=provider.id,
+        debrid_task_id=preview.provider_task_id,
+        debrid_selected_file_ids=file_ids,
     )
     with TASKS_LOCK:
         TASKS[task_id] = t
+    write_task_manifest(t, original_result_title=title, remote_files=preview.files, selected_file_ids=file_ids, version=str(VERSION))
     threading.Thread(target=worker, args=(task_id,), daemon=True).start()
-    return {'task_id': task_id, 'task_dir': task_dir, 'torrent_id': torrent_id, 'selected_file_count': len(file_ids)}
+    return {'task_id': task_id, 'task_dir': task_dir, 'provider': provider.id, 'debrid_task_id': preview.provider_task_id, 'selected_file_count': len(file_ids)}
 
 
 def _mcp_start_slsk_download(user: str, directory: str, files_in: List[Dict[str, Any]], title: str = '') -> dict:
@@ -430,13 +429,13 @@ def _mcp_start_slsk_download(user: str, directory: str, files_in: List[Dict[str,
         source='soulseek',
         state='queued',
         message='Queued',
-        torrent_id=None,
         slsk_user=user,
         slsk_directory=directory,
         slsk_files=files,
     )
     with TASKS_LOCK:
         TASKS[task_id] = t
+    write_task_manifest(t, original_result_title=title, remote_files=files, selected_file_ids=[item.get('file_id') for item in files], version=str(VERSION))
     svc.enqueue_downloads(task_id, user, remote_paths)
     return {'task_id': task_id, 'task_dir': task_download_dir, 'file_count': len(remote_paths), 'user': user, 'directory': directory}
 
@@ -509,7 +508,7 @@ def _mcp_handle_tool_call(name: str, args: dict) -> dict:
                 text = f"Soulseek download started. Files are downloading to {out.get('task_dir')}."
                 return _mcp_tool_result(data, text)
             if kind == 'knaben_item':
-                out = _mcp_start_rd_download(str(payload.get('title') or 'Knaben item').strip() or 'Knaben item', str(payload.get('magnet') or '').strip())
+                out = _mcp_start_debrid_download(str(payload.get('title') or 'Knaben item').strip() or 'Knaben item', str(payload.get('magnet') or '').strip())
                 data = {'ok': True, 'source': 'knaben', 'status': 'started', **out}
                 text = f"Knaben download started. Files are downloading to {out.get('task_dir')}."
                 return _mcp_tool_result(data, text)

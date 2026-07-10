@@ -8,23 +8,31 @@ from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Optional, Tuple
 
 from .metadata import art_identity_for_media, file_meta_cached, warm_art_palette, warm_audio_analysis, warm_video_audio_analysis, warm_video_frame_palette_analysis
-from .library_db import clear_library_cache, load_index_snapshot, load_library_facets, root_manifest, root_version, root_versions, save_folder_entries, save_index_snapshot, update_media_art_identity
+from .download_manifest import nearest_task_manifest
+from .library_db import clear_library_cache, load_index_snapshot, load_library_facets, load_show_aliases, root_manifest, root_version, root_versions, save_folder_entries, save_index_snapshot, save_show_aliases, update_media_art_identity
+from .roots import source_origin_for_path
+from .video_parse import classify_video_records, completion_percent, duration_text, is_canonical_video, parse_video_filename
+from .tvmaze import enrich_missing_episode_metadata
 from .roots import root_by_id
 from ..media_types import AUDIO_EXTS, VIDEO_EXTS
 from ..utils import sha1_text
 
 _cache_dir_name_provider = lambda: "_debripod_cache"
+_progress_provider = lambda _root_id, _rel: {}
 _ENRICH_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="debripod-enrich")
 _ENRICH_LOCK = threading.Lock()
 _ENRICH_QUEUED: set[str] = set()
 _ENRICH_RUNNING: set[str] = set()
 _ENRICH_STAGE_COUNTS: dict[str, int] = {}
 _ENRICH_LAST: dict[str, object] = {"stage": "", "key": "", "finished_at": 0.0}
+VIDEO_PARSE_VERSION = 2
 
 
-def configure_library_index(*, cache_dir_name_provider) -> None:
-    global _cache_dir_name_provider
+def configure_library_index(*, cache_dir_name_provider, progress_provider=None) -> None:
+    global _cache_dir_name_provider, _progress_provider
     _cache_dir_name_provider = cache_dir_name_provider
+    if progress_provider is not None:
+        _progress_provider = progress_provider
 
 
 def _cache_dir_name() -> str:
@@ -137,22 +145,6 @@ def _queue_index_enrichment(data: dict) -> None:
             f"{record.get('root_id')}:{record.get('rel')}",
             lambda r=dict(record): warm_audio_analysis(str(r.get("abs_path") or ""), root_id=str(r.get("root_id") or ""), rel=str(r.get("rel") or ""), media_id=str(r.get("media_id") or ""), duration=r.get("duration")),
         )
-    for record in jobs.get("video_audio") or []:
-        if not isinstance(record, dict):
-            continue
-        _queue_enrichment(
-            "stage5_video_audio_analysis",
-            f"{record.get('root_id')}:{record.get('rel')}",
-            lambda r=dict(record): warm_video_audio_analysis(str(r.get("abs_path") or ""), root_id=str(r.get("root_id") or ""), rel=str(r.get("rel") or ""), media_id=str(r.get("media_id") or ""), duration=r.get("duration")),
-        )
-    for record in jobs.get("video_frames") or []:
-        if not isinstance(record, dict):
-            continue
-        _queue_enrichment(
-            "stage6_video_frame_palette",
-            f"{record.get('root_id')}:{record.get('rel')}",
-            lambda r=dict(record): warm_video_frame_palette_analysis(str(r.get("abs_path") or ""), root_id=str(r.get("root_id") or ""), rel=str(r.get("rel") or ""), media_id=str(r.get("media_id") or ""), duration=r.get("duration")),
-        )
 
 
 def queue_video_analysis_warm(abs_path: str, *, root_id: str, rel: str, media_id: str = "", duration=None) -> bool:
@@ -180,7 +172,7 @@ def queue_video_analysis_warm(abs_path: str, *, root_id: str, rel: str, media_id
 
 def build_index_for_root(root_abs: str, *, full_video_sync: bool = False, progress=None) -> dict:
     tracks = []
-    videos = []
+    video_records = []
     folder_entries = []
     media_records: list[dict] = []
     root_abs_norm = os.path.abspath(root_abs)
@@ -233,8 +225,6 @@ def build_index_for_root(root_abs: str, *, full_video_sync: bool = False, progre
 
     palette_groups: dict[str, list[dict]] = {}
     music_audio_jobs: list[dict] = []
-    video_audio_jobs: list[dict] = []
-    video_frame_jobs: list[dict] = []
     processed_playable = 0
     for record in sorted(media_records, key=lambda r: str(r.get("rel") or "").lower()):
         abs_p = str(record.get("abs_path") or "")
@@ -247,10 +237,44 @@ def build_index_for_root(root_abs: str, *, full_video_sync: bool = False, progre
         record["media_id"] = media_id
         record["duration"] = duration
         if record.get("media") == "video":
-            videos.append({"rel": rel, "name": fn, "title": (meta.get("title") if isinstance(meta, dict) else "") or fn, "duration": duration})
-            video_audio_jobs.append(dict(record))
-            video_frame_jobs.append(dict(record))
+            manifest = nearest_task_manifest(abs_p, root_abs_norm)
+            source = str(manifest.get("source") or source_origin_for_path(abs_p) or "unknown").strip().lower()
+            if source not in {"youtube", "debrid", "soulseek", "library", "unknown"}:
+                source = "unknown"
+            parent = os.path.dirname(rel).replace("\\", "/")
+            parent_name = os.path.basename(parent)
+            folder_title = os.path.basename(os.path.dirname(parent)) if re.match(r"(?i)^(?:season[ ._-]*\d+|s\d{1,2}|specials)$", parent_name) else parent_name
+            parsed = parse_video_filename(rel, folder_title=folder_title, source=source, metadata=meta)
+            try:
+                file_size = os.path.getsize(abs_p)
+            except OSError:
+                file_size = 0
+            progress_state = _progress_provider(root_id_for_items, rel) or {}
+            generated_copy = bool(re.search(r"(?i)(?:[ ._-](?:browser|transcoded|compatible))\.[^.]+$", fn))
+            video_records.append({
+                "root_id": root_id_for_items,
+                "rel": rel,
+                "name": fn,
+                "title": parsed.get("title") or ((meta.get("title") if isinstance(meta, dict) else "") or fn),
+                "duration": duration,
+                "duration_text": duration_text(duration),
+                "source": source,
+                "manifest": manifest,
+                "parse": parsed,
+                "parse_version": VIDEO_PARSE_VERSION,
+                "quality": parsed.get("quality") or "",
+                "browser_friendly": bool(parsed.get("browser_friendly")),
+                "completion_percent": completion_percent(progress_state, duration),
+                "position": float(progress_state.get("position") or 0),
+                "ended": bool(progress_state.get("ended")),
+                "canonical": is_canonical_video(rel, size=file_size, duration=duration),
+                "generated_copy": generated_copy,
+                "size": file_size,
+                "meta": dict(meta) if isinstance(meta, dict) else {},
+            })
         else:
+            audio_manifest = nearest_task_manifest(abs_p, root_abs_norm)
+            audio_source = str(audio_manifest.get("source") or source_origin_for_path(abs_p) or "unknown").strip().lower()
             title = (meta.get("title") if isinstance(meta, dict) else "") or os.path.splitext(fn)[0]
             artist = ((meta.get("artist") if isinstance(meta, dict) else "") or "").strip()
             album_artist = ((meta.get("album_artist") if isinstance(meta, dict) else "") or artist or "").strip()
@@ -260,6 +284,7 @@ def build_index_for_root(root_abs: str, *, full_video_sync: bool = False, progre
             track = ((meta.get("track") if isinstance(meta, dict) else "") or "").strip()
             tracks.append(
                 {
+                    "root_id": root_id_for_items,
                     "rel": rel,
                     "name": fn,
                     "title": title,
@@ -274,6 +299,8 @@ def build_index_for_root(root_abs: str, *, full_video_sync: bool = False, progre
                     "bit_depth": meta.get("bit_depth") if isinstance(meta, dict) else None,
                     "sample_rate": meta.get("sample_rate") if isinstance(meta, dict) else None,
                     "bitrate": meta.get("bitrate") if isinstance(meta, dict) else None,
+                    "source": audio_source if audio_source in {"youtube", "debrid", "soulseek", "library", "unknown"} else "unknown",
+                    "manifest": audio_manifest,
                 }
             )
             music_audio_jobs.append(dict(record))
@@ -285,15 +312,22 @@ def build_index_for_root(root_abs: str, *, full_video_sync: bool = False, progre
             except Exception:
                 pass
 
+    # Metadata probing above only inspects stream headers.  It never invokes
+    # video transcoding/analysis; that work remains playback-triggered.
+    enrich_missing_episode_metadata(video_records)
+    aliases = load_show_aliases(root_id_for_items)
+    movies, shows, videos, next_aliases = classify_video_records(video_records, aliases=aliases)
+    save_show_aliases(root_id_for_items, next_aliases)
     return {
         "tracks": tracks,
         "videos": videos,
+        "movies": movies,
+        "shows": shows,
+        "video_records": video_records,
         "folder_entries": folder_entries,
         "_enrichment_jobs": {
             "palette_groups": palette_groups,
             "music_audio": music_audio_jobs,
-            "video_audio": video_audio_jobs,
-            "video_frames": video_frame_jobs,
         },
     }
 
@@ -311,6 +345,13 @@ def _load_index_from_sqlite(root_id: str, root_abs: str) -> Optional[dict]:
     try:
         data = load_index_snapshot(root_id, root_abs)
         if data is not None:
+            raw_videos = list(data.get("videos") or [])
+            movies, shows, videos, aliases = classify_video_records(raw_videos, aliases=load_show_aliases(root_id))
+            data["video_records"] = raw_videos
+            data["movies"] = movies
+            data["shows"] = shows
+            data["videos"] = videos
+            save_show_aliases(root_id, aliases)
             return data
     except Exception:
         pass

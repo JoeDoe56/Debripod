@@ -2,7 +2,7 @@
 
 DebriPod is a local Flask media app for browsing, streaming, downloading, organizing, and playing media from your own computer. It opens in your browser at a local address, usually `http://127.0.0.1:8083`.
 
-DebriPod supports local audio and video libraries, metadata browsing, playlists, YouTube, Soulseek, Knaben, Real Debrid, Last.fm, local accounts, passkeys, a first run setup wizard, task tracking, per user settings, SQLite backed library caches, cached client state, a PWA service worker, LiquidGL glass UI, a WebGL visualizer, and optional MCP access.
+DebriPod supports local audio and video libraries, unified metadata and folder browsing, playlists, YouTube, Soulseek, Knaben, multiple debrid providers, Last.fm, local accounts, passkeys, a first run setup wizard, task tracking, per user settings, SQLite backed library caches, cached client state, a PWA service worker, LiquidGL glass UI, a WebGL visualizer, and optional MCP access.
 
 ## Quick install
 
@@ -54,9 +54,9 @@ After the app starts, open this address.
 http://127.0.0.1:8083
 ```
 
-On first run, DebriPod asks you to create the first local admin account. After login, the setup wizard guides the current user through a required library folder step, optional playback and YouTube tools, Soulseek and Last.fm, and Real Debrid. The required step is adding at least one library folder. Optional services can be skipped and configured later from Settings.
+On first run, DebriPod asks you to create the first local admin account. After login, the setup wizard guides the current user through a required library folder step, optional playback and YouTube tools, Soulseek and Last.fm, and Debrid. The required step is adding at least one library folder. Optional services can be skipped and configured later from Settings.
 
-The optional tools page checks ffmpeg, ffprobe, and yt-dlp and lets you set the YouTube download folder. The Soulseek and Last.fm page covers Soulseek username, password, download folder, Last.fm API key, Last.fm API secret, and Last.fm authorization. The Real Debrid page covers the token and Real Debrid download folder.
+The optional tools page checks ffmpeg, ffprobe, and yt-dlp and lets you set the YouTube download folder. The Soulseek and Last.fm page covers Soulseek username, password, download folder, Last.fm API key, Last.fm API secret, and Last.fm authorization. The Debrid page supports Real Debrid, AllDebrid, Premiumize, and TorBox, with one active provider per user and one neutral Debrid download folder.
 
 DebriPod binds to `127.0.0.1` by default. For access from phones, tablets, laptops, or devices outside the host computer, use a private tunnel or service layer instead of exposing Flask directly. Tailscale setup is documented in [remote_access.md](install/remote_access.md).
 
@@ -64,9 +64,9 @@ DebriPod binds to `127.0.0.1` by default. For access from phones, tablets, lapto
 
 ### Local library
 
-DebriPod supports folder browsing and metadata browsing. Folder browsing shows your real directory tree and works best for mixed downloads, video folders, unsorted files, and folders where you want DebriPod to behave like a file browser. Metadata browsing builds music views from tags such as artist, album, album artist, genre, track number, duration, codec, bitrate, bit depth, and sample rate.
+Every configured library folder is indexed and also available through its real directory tree. Unified Library views organize audio by tags such as artist, album, album artist, genre, track number, duration, codec, bitrate, bit depth, and sample rate, and organize videos into Movies, Shows, and Videos.
 
-Add each folder that contains music, videos, downloads, or playlists during setup or later in Settings. Use list mode for folders where the real folder structure matters. Use metadata mode for organized music folders where tags should drive browsing.
+Add each folder that contains music, videos, downloads, or playlists during setup or later in Settings. Folder additions save immediately and are always indexed.
 
 Supported audio formats include MP3, M4A, AAC, WAV, FLAC, OGG, OPUS, WMA, AIFF, and ALAC. Supported video formats include MP4, MKV, WEBM, MOV, M4V, AVI, TS, and M2TS. Supported playlist formats include M3U, M3U8, and PLS.
 
@@ -78,11 +78,11 @@ ffmpeg and ffprobe are used for metadata, artwork extraction, muxing, transcodin
 
 ### Search, downloads, and tasks
 
-DebriPod combines YouTube, Soulseek, and Knaben results into one search flow. YouTube results can be streamed or downloaded. Soulseek results are grouped by user and folder. Knaben magnet results can be sent to Real Debrid.
+DebriPod combines the indexed local library, Soulseek, Knaben, and YouTube into one intent-aware search flow. Local results play directly, YouTube results can be streamed or downloaded, Soulseek results are grouped by user and folder, and Knaben magnet results use the active debrid provider.
 
-Long running work appears in the task panel. Real Debrid downloads, Soulseek downloads, YouTube downloads, and video processing jobs can show queued, active, paused, failed, canceled, and completed states. Search history and cache data are stored locally.
+Long running work appears in the task panel. Debrid, Soulseek, YouTube, and video processing jobs can show queued, active, paused, failed, canceled, and completed states. Search history and completed combined search payloads are cached locally.
 
-YouTube support uses `yt-dlp`, installed from `requirements.txt`. Set `YOUTUBE_DOWNLOAD_DIR` to the folder where YouTube downloads should be saved. Soulseek support uses `aioslsk`; set `SOULSEEK_USERNAME`, `SOULSEEK_PASSWORD`, and `SOULSEEK_DOWNLOAD_DIR`, then restart DebriPod after changing credentials so the client starts with the new settings. Real Debrid needs `REAL_DEBRID_API_KEY` and `DOWNLOAD_DIR`. Knaben can work without an API key when the public free tier is available.
+YouTube support uses `yt-dlp`, installed from `requirements.txt`. Set `YOUTUBE_DOWNLOAD_DIR` to the folder where YouTube downloads should be saved. Soulseek support uses `aioslsk`; set `SOULSEEK_USERNAME`, `SOULSEEK_PASSWORD`, and `SOULSEEK_DOWNLOAD_DIR`, then restart DebriPod after changing credentials so the client starts with the new settings. Configure one supported debrid provider token, select it with `DEBRID_PROVIDER`, and set `DOWNLOAD_DIR`. Knaben can work without an API key when the public free tier is available.
 
 ### Playlists and smart playlists
 
@@ -143,7 +143,7 @@ debripod/
   Library/                library index, SQLite cache, metadata, and search helpers
   MCP/                    optional MCP HTTP and SSE route helpers
   Routes/                 modular Flask route groups
-  Services/               Real Debrid, Knaben, Soulseek, and Last.fm helpers
+  Services/               Debrid providers, Knaben, Soulseek, and Last.fm helpers
   Tasks/                  task model and task manager helpers
   playback/               streaming, range responses, ffprobe, and command helpers
   static/                 browser UI, JS modules, LiquidGL, visualizer, service worker, fonts
@@ -241,9 +241,9 @@ python -m pip install -e .
 
 Confirm the username and password are correct. Restart DebriPod after changing Soulseek settings. If your network blocks incoming connections, search may still work differently from downloads or browsing. Try a different listening port only if you know the current port is blocked or already in use.
 
-### Real Debrid downloads do not start
+### Debrid downloads do not start
 
-Confirm `REAL_DEBRID_API_KEY` is set. Confirm your Real Debrid account is active. Try a different Knaben result because not every torrent will be cached or available.
+Confirm one supported provider token is set, that `DEBRID_PROVIDER` names that provider, and that the provider account is active. Try a different Knaben result because not every torrent will be cached or available.
 
 ### YouTube streaming or downloading fails
 
@@ -302,4 +302,4 @@ Attributions for direct runtime dependencies:
 | watchdog | File watching support | Apache 2.0 |
 | ffmpeg and ffprobe | Metadata, muxing, transcoding, and compatibility checks | License depends on the installed build |
 
-DebriPod interacts with external services including YouTube, Soulseek, Real Debrid, Knaben, and Last.fm. Users are responsible for following the terms of the services they enable and for only downloading or streaming media they are allowed to access.
+DebriPod interacts with external services including YouTube, Soulseek, Knaben, Real Debrid, AllDebrid, Premiumize, TorBox, and Last.fm. Users are responsible for following the terms of the services they enable and for only downloading or streaming media they are allowed to access.

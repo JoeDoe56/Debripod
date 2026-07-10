@@ -27,6 +27,11 @@ from .config import _coerce_config_value, ensure_startup_security_config, load_d
 from .Library.library_db import load_folder_entries, load_palette, load_palette_for_media, load_visualizer_analysis_for_media, save_folder_entries, save_palette
 from .Library.index import build_index_for_root, set_index_cache
 from .Library.metadata import file_meta_cached
+from .Library.video_parse import duration_text, normalize_show_key, show_keys_close
+from .Library.library_db import load_show_aliases, save_show_aliases
+from .Library.search_ranker import infer_query_intent, normalize_search_text, rank_combined_results, source_priority_for_intent
+from .Library.download_manifest import write_task_manifest
+from .Services.debrid import DebridAuthError, DebridProviderError, get_active_provider, get_provider, provider_specs, provider_status as debrid_provider_status
 from .Tasks.manager import task_belongs_to_owner
 from .runtime_state import *
 from .runtime_downloads import *
@@ -484,6 +489,7 @@ def _standardize_knaben_results(raw_results: List[dict]) -> List[dict]:
             "leechers": int(leechers) if isinstance(leechers, int) else 0,
             "browse_available": False,
             "stream_available": True,
+            "download_available": True,
             "files_loaded": False,
             "files": [],
             "magnet": str(r.get("magnet") or ""),
@@ -491,7 +497,6 @@ def _standardize_knaben_results(raw_results: List[dict]) -> List[dict]:
             "category": str(r.get("category") or ""),
             "verified": bool(r.get("verified")),
             "href": str(r.get("href") or ""),
-            "_score": int(seeders) if isinstance(seeders, int) else 0,
         })
     return out
 
@@ -537,11 +542,112 @@ def _standardize_soulseek_results(slsk_users: List[Dict[str, Any]]) -> List[dict
                 "leechers": 0,
                 "browse_available": True,
                 "stream_available": False,
+                "download_available": True,
                 "files_loaded": True,
                 "files": files_std,
-                "_score": speed if speed > 0 else len(files_std),
             })
     return out
+
+
+COMBINED_SEARCH_SOURCES = ("library", "soulseek", "knaben", "youtube")
+
+
+def _library_file_payload(record: dict, media: str) -> dict:
+    rel = str(record.get("rel") or "")
+    name = str(record.get("name") or os.path.basename(rel))
+    ext = os.path.splitext(name)[1].lstrip(".").lower()
+    return {
+        "name": name, "title": str(record.get("title") or name), "root_id": str(record.get("root_id") or ""),
+        "rel": rel, "media": media, "source": "library", "ext": ext,
+        "quality": str(record.get("quality") or _quality_text_from_attrs(record.get("bit_depth"), record.get("sample_rate"), record.get("bitrate"))),
+        "codec": str(record.get("codec") or ""), "bit_depth": record.get("bit_depth") or 0,
+        "sample_rate": record.get("sample_rate") or 0, "bitrate": record.get("bitrate") or 0,
+        "size": int(record.get("size") or 0),
+    }
+
+
+def _standardize_library_record(record: dict, media: str) -> dict:
+    file = _library_file_payload(record, media)
+    title = str(record.get("title") or record.get("name") or "")
+    artist = str(record.get("artist") or "") if media == "audio" else ""
+    album = str(record.get("album") or "") if media == "audio" else ""
+    rel, root_id = file["rel"], file["root_id"]
+    progress = media_progress_for(root_id, rel) if media == "video" else {}
+    return {
+        "result_id": "library:" + root_id + ":" + sha1_text(rel), "source": "library", "source_label": "Library",
+        "root_id": root_id, "rel": rel, "media": media, "title": title, "directory_title": title or file["name"],
+        "directory": os.path.dirname(rel).replace("\\", "/"), "user": artist, "artist": artist, "album": album,
+        "name": file["name"], "size": int(record.get("size") or 0), "speed": 0, "seeders": 0, "leechers": 0,
+        "browse_available": False, "stream_available": True, "download_available": False, "files_loaded": True,
+        "file_count": 1, "quality": file["quality"], "files": [file],
+        "position": float(progress.get("position") or record.get("position") or 0), "duration": float(progress.get("duration") or record.get("duration") or 0),
+        "completion": float(progress.get("completion_percent") or record.get("completion_percent") or 0), "browser_label": str(record.get("browser_label") or title),
+    }
+
+
+def _search_library_indexed(q: str) -> tuple[list[dict], str]:
+    qnorm = normalize_search_text(q)
+    tokens = set(qnorm.split())
+    audio_candidates: list[dict] = []
+    video_candidates: list[dict] = []
+    albums: dict[tuple[str, str, str], list[dict]] = {}
+    for root in root_objects():
+        root_id, root_abs = str(root.get("id") or ""), str(root.get("path") or "")
+        snapshot = get_index(root_id)
+        if snapshot is None:
+            ensure_index_async(root_id, root_abs, mode="metadata")
+            continue
+        for track in snapshot.get("tracks") or []:
+            if not isinstance(track, dict):
+                continue
+            item = dict(track); item["root_id"] = root_id
+            title = normalize_search_text(item.get("title") or item.get("name") or "")
+            artist = normalize_search_text(item.get("artist") or item.get("album_artist") or "")
+            album = normalize_search_text(item.get("album") or "")
+            artist_title = normalize_search_text(f"{artist} {title}")
+            album_artist = normalize_search_text(f"{artist} {album}")
+            artist_words = set(artist.split())
+            artist_match = bool(qnorm and (qnorm == artist or (tokens and tokens.issubset(artist_words))))
+            album_match = bool(qnorm and (qnorm in album_artist or (tokens and tokens.issubset(set(album_artist.split())))))
+            # Artist/album searches should surface albums.  Individual tracks
+            # are reserved for exact or near-exact song searches, avoiding a
+            # wall of songs when the user asks for an artist.
+            if artist_match or album_match:
+                albums.setdefault((root_id, str(item.get("artist") or ""), str(item.get("album") or "")), []).append(item)
+            song_close = bool(qnorm and (
+                qnorm == title or qnorm == artist_title or
+                (len(tokens) > 1 and (qnorm in title or qnorm in artist_title))
+            ))
+            if song_close:
+                audio_candidates.append(item)
+        all_videos: list[dict] = list(snapshot.get("videos") or []) + list(snapshot.get("movies") or [])
+        for show in snapshot.get("shows") or []:
+            if isinstance(show, dict):
+                all_videos.extend(show.get("episodes") or [])
+        for video in all_videos:
+            if not isinstance(video, dict):
+                continue
+            item = dict(video); item["root_id"] = root_id
+            parsed = item.get("parse") if isinstance(item.get("parse"), dict) else {}
+            haystack = normalize_search_text(" ".join(str(value or "") for value in (item.get("title"), item.get("name"), item.get("rel"), parsed.get("show_title"), parsed.get("episode_title"), parsed.get("year"))))
+            if qnorm in haystack or (tokens and tokens.intersection(haystack.split())):
+                video_candidates.append(item)
+    results: list[dict] = []
+    for (root_id, artist, album), tracks in albums.items():
+        if not album or qnorm not in normalize_search_text(f"{artist} {album}") or len(tracks) < 2:
+            continue
+        ordered = sorted(tracks, key=lambda item: track_sort_key(str(item.get("track") or "")) + (str(item.get("title") or ""),))
+        files = [_library_file_payload(item, "audio") for item in ordered]
+        results.append({
+            "result_id": "library:" + root_id + ":album:" + sha1_text(artist + "|" + album), "source": "library",
+            "source_label": "Library", "root_id": root_id, "rel": "", "media": "audio", "title": album,
+            "directory_title": album, "directory": "", "user": artist, "artist": artist, "album": album, "name": album,
+            "size": 0, "speed": 0, "seeders": 0, "leechers": 0, "browse_available": False,
+            "stream_available": True, "download_available": False, "files_loaded": True, "file_count": len(files), "files": files,
+        })
+    results.extend(_standardize_library_record(item, "audio") for item in audio_candidates[:200])
+    results.extend(_standardize_library_record(item, "video") for item in video_candidates[:200])
+    return results, _make_search_cache_key("library", q, {"roots": library_root_versions()})
 
 
 @app.route("/api/libsearch/combined", methods=["GET"])
@@ -550,12 +656,42 @@ def api_libsearch_combined():
     if not q:
         return jsonify(ok=False, error="Missing query", results=[], result_count=0, cache_key="")
     combined_cache_key = _make_search_cache_key("combined", q, {})
+    debug = str(request.args.get("debug") or "").strip().lower() in {"1", "true", "yes"}
+    with _SEARCH_DISK_LOCK:
+        cached_entry = _disk_cache_get(combined_cache_key)
+    cached_payload = dict((cached_entry or {}).get("payload") or {}) if cached_entry else {}
+    if not (
+        cached_payload.get("ok")
+        and isinstance(cached_payload.get("results"), list)
+        and isinstance(cached_payload.get("source_status"), list)
+        and {str(item.get("source") or "") for item in cached_payload.get("source_status") if isinstance(item, dict)} == set(COMBINED_SEARCH_SOURCES)
+    ):
+        cached_payload = {}
+    if cached_payload:
+        cached_payload.pop("intent", None)
+        cached_payload.pop("source_priority", None)
+        cached_payload.update({"ok": True, "q": q, "cache_key": combined_cache_key, "cached": True})
+        if debug:
+            intent = infer_query_intent(q, library_hits=[item for item in cached_payload.get("results") or [] if item.get("source") == "library"])
+            cached_payload["intent"] = intent
+            cached_payload["source_priority"] = source_priority_for_intent(intent)
     if str(request.args.get("stream") or "").strip().lower() in {"1", "true", "yes"}:
         def gen():
-            yield json.dumps({"event": "start", "ok": True, "q": q, "cache_key": combined_cache_key, "sources": ["youtube", "soulseek", "knaben"]}, ensure_ascii=False) + "\n"
+            yield json.dumps({
+                "event": "start", "ok": True, "q": q, "cache_key": combined_cache_key,
+                "sources": list(COMBINED_SEARCH_SOURCES), "cached": bool(cached_payload),
+            }, ensure_ascii=False) + "\n"
+            if cached_payload:
+                try:
+                    record_search_history(q, "combined", combined_cache_key)
+                except Exception:
+                    pass
+                yield json.dumps({"event": "cached", **cached_payload}, ensure_ascii=False) + "\n"
+                yield json.dumps({"event": "done", **cached_payload}, ensure_ascii=False) + "\n"
+                return
             payloads: dict[str, dict[str, Any]] = {}
-            with concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="dp-search") as executor:
-                future_map = {executor.submit(_libsearch_source_payload, source, q): source for source in ("youtube", "soulseek", "knaben")}
+            with concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="dp-search") as executor:
+                future_map = {executor.submit(_libsearch_source_payload, source, q): source for source in COMBINED_SEARCH_SOURCES}
                 for future in concurrent.futures.as_completed(future_map):
                     source = future_map[future]
                     try:
@@ -568,7 +704,12 @@ def api_libsearch_combined():
                             pass
                     payloads[source] = payload
                     yield json.dumps({"event": "source", **payload}, ensure_ascii=False) + "\n"
-            final_payload = _combined_search_response_payload(q, combined_cache_key, payloads)
+            final_payload = _combined_search_response_payload(q, combined_cache_key, payloads, debug=debug)
+            cache_payload = dict(final_payload)
+            cache_payload.pop("intent", None)
+            cache_payload.pop("source_priority", None)
+            with _SEARCH_DISK_LOCK:
+                _disk_cache_set(combined_cache_key, "combined", q, {}, cache_payload)
             try:
                 record_search_history(q, "combined", combined_cache_key)
             except Exception:
@@ -576,8 +717,19 @@ def api_libsearch_combined():
             yield json.dumps({"event": "done", **final_payload}, ensure_ascii=False) + "\n"
         return Response(stream_with_context(gen()), mimetype="application/x-ndjson")
 
+    if cached_payload:
+        try:
+            record_search_history(q, "combined", combined_cache_key)
+        except Exception:
+            pass
+        return jsonify(cached_payload)
     payloads = _run_combined_search_sources(q)
-    response_payload = _combined_search_response_payload(q, combined_cache_key, payloads)
+    response_payload = _combined_search_response_payload(q, combined_cache_key, payloads, debug=debug)
+    cache_payload = dict(response_payload)
+    cache_payload.pop("intent", None)
+    cache_payload.pop("source_priority", None)
+    with _SEARCH_DISK_LOCK:
+        _disk_cache_set(combined_cache_key, "combined", q, {}, cache_payload)
     try:
         record_search_history(q, "combined", combined_cache_key)
     except Exception:
@@ -589,6 +741,13 @@ def _libsearch_source_payload(source: str, q: str) -> dict[str, Any]:
     started = time.perf_counter()
     src = str(source or "").strip().lower()
     try:
+        if src == "library":
+            results, cache_key = _search_library_indexed(q)
+            return {
+                "ok": True, "source": "library", "source_label": "Library", "cache_key": cache_key,
+                "results": results, "result_count": len(results), "error": "",
+                "duration_ms": round((time.perf_counter() - started) * 1000.0, 1),
+            }
         if src == "youtube":
             raw_results, err, cache_key = _search_youtube_cached(q)
             results = _standardize_youtube_results(raw_results)
@@ -649,8 +808,8 @@ def _libsearch_source_payload(source: str, q: str) -> dict[str, Any]:
 
 def _run_combined_search_sources(q: str) -> dict[str, dict[str, Any]]:
     out: dict[str, dict[str, Any]] = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=3, thread_name_prefix="dp-search") as executor:
-        future_map = {executor.submit(_libsearch_source_payload, source, q): source for source in ("youtube", "soulseek", "knaben")}
+    with concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="dp-search") as executor:
+        future_map = {executor.submit(_libsearch_source_payload, source, q): source for source in COMBINED_SEARCH_SOURCES}
         for future in concurrent.futures.as_completed(future_map):
             source = future_map[future]
             try:
@@ -660,11 +819,17 @@ def _run_combined_search_sources(q: str) -> dict[str, dict[str, Any]]:
     return out
 
 
-def _combined_search_response_payload(q: str, combined_cache_key: str, payloads: dict[str, dict[str, Any]]) -> dict[str, Any]:
+def _combined_search_response_payload(
+    q: str,
+    combined_cache_key: str,
+    payloads: dict[str, dict[str, Any]],
+    *,
+    debug: bool = False,
+) -> dict[str, Any]:
     results: list[dict[str, Any]] = []
     source_status: list[dict[str, Any]] = []
     errors: list[str] = []
-    for source in ("youtube", "soulseek", "knaben"):
+    for source in COMBINED_SEARCH_SOURCES:
         payload = payloads.get(source) or {}
         results.extend([dict(x) for x in (payload.get("results") or []) if isinstance(x, dict)])
         err = str(payload.get("error") or "").strip()
@@ -678,11 +843,10 @@ def _combined_search_response_payload(q: str, combined_cache_key: str, payloads:
             "result_count": int(payload.get("result_count") or len(payload.get("results") or []) or 0),
             "duration_ms": float(payload.get("duration_ms") or 0),
         })
-    results.sort(key=lambda x: (int(x.get("_score") or 0), int(x.get("size") or 0), str(x.get("title") or "").lower()), reverse=True)
-    for r in results:
-        r.pop("_score", None)
+    intent = infer_query_intent(q, library_hits=[item for item in results if item.get("source") == "library"])
+    results = rank_combined_results(results, q, intent=intent)
     slsk_payload = payloads.get("soulseek") or {}
-    return {
+    response = {
         "ok": True,
         "q": q,
         "cache_key": combined_cache_key,
@@ -695,16 +859,14 @@ def _combined_search_response_payload(q: str, combined_cache_key: str, payloads:
         "dir_count": int(slsk_payload.get("dir_count") or 0),
         "file_count": int(slsk_payload.get("file_count") or 0),
         "error": "; ".join(errors),
+        "cached": False,
     }
+    if debug:
+        response["intent"] = intent
+        response["source_priority"] = source_priority_for_intent(intent)
+    return response
 
 
-def _removed_route(*args, **kwargs):
-    def deco(fn):
-        return fn
-    return deco
-
-
-@_removed_route("/api/libsearch/knaben", methods=["GET"])
 def api_libsearch_knaben():
     q = (request.args.get("q") or "").strip()
     try:
@@ -744,7 +906,6 @@ def api_libsearch_knaben():
 
 
 
-@_removed_route("/api/libsearch/soulseek_start", methods=["GET"])
 def api_libsearch_soulseek_start():
     q = (request.args.get("q") or "").strip()
     if not q:
@@ -795,7 +956,6 @@ def api_libsearch_soulseek_start():
 
     return jsonify(ok=True, q=q, cache_key=cache_key, sid=sid, rev=0, done=False, slsk_users=[], file_count=0, dir_count=0, error="", changed=True)
 
-@_removed_route("/api/libsearch/soulseek_poll", methods=["GET"])
 def api_libsearch_soulseek_poll():
     sid = (request.args.get("sid") or "").strip()
     if not sid:
@@ -853,7 +1013,6 @@ def api_libsearch_soulseek_poll():
         dir_count=dir_count,
     )
 
-@_removed_route("/api/libsearch/soulseek", methods=["GET"])
 def api_libsearch_soulseek():
     q = (request.args.get("q") or "").strip()
     if not q:
@@ -980,28 +1139,6 @@ def api_soulseek_browse_user():
     return jsonify(ok=True, user=user, dirs=dirs, selected_dir=selected_dir, file_count=sum(int(d.get("total_files") or 0) for d in dirs), dir_count=len(dirs))
 
 
-@app.route("/enqueue", methods=["POST"])
-def enqueue():
-    title = (request.form.get("title") or "").strip() or "Knaben item"
-    magnet = (request.form.get("magnet") or "").strip()
-    if not magnet.startswith("magnet:?"):
-        abort(400)
-
-    task_id = uuid.uuid4().hex
-    task_dir = build_task_dir(task_id, title)
-    os.makedirs(task_dir, exist_ok=True)
-
-    t = Task(id=task_id, title=title, magnet=magnet, task_dir=task_dir, owner=_current_settings_username(), state="queued", message="Queued")
-    with TASKS_LOCK:
-        TASKS[task_id] = t
-
-    th = threading.Thread(target=worker, args=(task_id,), daemon=True)
-    th.start()
-
-    ref = request.headers.get("Referer") or ""
-    return redirect(ref or url_for("index", tab="search"))
-
-
 @app.route("/api/libsearch/youtube", methods=["GET"])
 def api_libsearch_youtube():
     q = (request.args.get('q') or '').strip()
@@ -1052,6 +1189,8 @@ def api_youtube_enqueue():
     selected = data.get('selected') or []
     if not url:
         return jsonify(ok=False, error='Missing URL'), 400
+    if not str(YOUTUBE_DOWNLOAD_DIR or "").strip():
+        return jsonify(ok=False, error='Pick the YouTube folder in Downloads settings before downloading.'), 400
     entries: List[Dict[str, Any]] = []
     for i, it in enumerate(selected):
         if not isinstance(it, dict):
@@ -1087,10 +1226,11 @@ def api_youtube_enqueue():
     folder = sanitize_folder_name(f"{stamp}_{base}_{task_id[:6]}")
     task_dir = os.path.join(youtube_root, folder)
     os.makedirs(task_dir, exist_ok=True)
-    t = Task(id=task_id, title=title, magnet=url, task_dir=task_dir, owner=_current_settings_username(), source='youtube', state='queued', message='Queued', rd_files=entries)
+    t = Task(id=task_id, title=title, magnet=url, task_dir=task_dir, owner=_current_settings_username(), source='youtube', state='queued', message='Queued', youtube_files=entries)
     with TASKS_LOCK:
         TASKS[task_id] = t
-    th = threading.Thread(target=worker, args=(task_id,), daemon=True)
+    write_task_manifest(t, original_result_title=title, remote_files=entries, selected_file_ids=[item.get('file_id') for item in entries], version=str(VERSION))
+    th = threading.Thread(target=youtube_worker, args=(task_id,), daemon=True)
     th.start()
     return jsonify(ok=True, task_id=task_id)
 
@@ -1100,9 +1240,7 @@ def api_search_history():
     try:
         with _SEARCH_DISK_LOCK:
             items = _load_search_history()
-        # hide internal keys from the UI
-        out = [{"q": it.get("q") or "", "engine": it.get("engine") or ""} for it in items]
-        return jsonify({"ok": True, "items": out})
+        return jsonify({"ok": True, "items": items})
     except Exception:
         return jsonify({"ok": False, "error": "Failed to browse channel", "items": []})
 
@@ -1129,8 +1267,52 @@ def api_libsearch_stream_selected():
         return jsonify({"ok": False, "error": "Failed to prepare stream"}), 400
 
 
-@app.route("/api/rd/preview_files", methods=["POST"])
-def api_rd_preview_files():
+@app.route("/api/debrid/providers", methods=["GET"])
+def api_debrid_providers():
+    settings = ensure_app_settings(username=_current_settings_username(), defaults_overrides=_default_app_overrides())
+    return jsonify({"ok": True, **debrid_provider_status(settings)})
+
+
+@app.route("/api/debrid/connect_token", methods=["POST"])
+def api_debrid_connect_token():
+    data = request.get_json(silent=True) or {}
+    token = str(data.get("token") or "").strip()
+    if not token:
+        return jsonify({"ok": False, "error": "Paste a debrid token first."}), 400
+    settings = ensure_app_settings(username=_current_settings_username(), defaults_overrides=_default_app_overrides())
+    timeout_seconds = int(settings.get("REQUEST_TIMEOUT_SECONDS") or 25)
+    matched_id = ""
+    matched_label = ""
+    failures: dict[str, str] = {}
+    for provider_id, spec in provider_specs().items():
+        candidate = dict(settings)
+        candidate[spec.token_setting_key] = token
+        try:
+            get_provider(provider_id, candidate, timeout_seconds).validate_token()
+            matched_id, matched_label = provider_id, spec.label
+            break
+        except (DebridAuthError, DebridProviderError) as exc:
+            failures[provider_id] = str(exc)
+            continue
+        except Exception as exc:
+            failures[provider_id] = str(exc)
+            continue
+    if not matched_id:
+        details = [str(value).strip() for value in failures.values() if str(value).strip() and "rejected" not in str(value).lower()]
+        suffix = (" " + details[-1]) if details else ""
+        return jsonify({"ok": False, "error": "That token could not be verified with Real Debrid, AllDebrid, Premiumize, or TorBox." + suffix}), 400
+    updates = {spec.token_setting_key: "" for spec in provider_specs().values()}
+    updates[provider_specs()[matched_id].token_setting_key] = token
+    updates["DEBRID_PROVIDER"] = matched_id
+    saved = save_app_settings(updates, username=_current_settings_username(), defaults_overrides=_default_app_overrides())
+    if _current_settings_username():
+        saved = _apply_runtime_settings_for_user(_current_settings_username(), force=True)
+    return jsonify({"ok": True, "provider": matched_id, "label": matched_label, **debrid_provider_status(saved)})
+
+
+@app.route("/api/debrid/preview_files", methods=["POST"])
+@app.route("/api/debrid/load_files", methods=["POST"])
+def api_debrid_preview_files():
     try:
         data = request.get_json(force=True) or {}
     except Exception:
@@ -1139,61 +1321,61 @@ def api_rd_preview_files():
     if not magnet.startswith("magnet:?"):
         return jsonify({"ok": False, "error": "Invalid magnet"}), 400
     try:
-        torrent_id = rd_add_magnet(magnet)
-        info = rd_torrent_info(torrent_id)
-        files = info.get("files") or []
-        out: List[Dict[str, Any]] = []
-        if isinstance(files, list):
-            for f in files:
-                if not isinstance(f, dict):
-                    continue
-                fid = f.get("id")
-                if fid is None:
-                    continue
-                path = f.get("path") or f.get("file_path") or f.get("filename") or ""
-                b = f.get("bytes")
-                if b is None:
-                    b = f.get("size") or f.get("filesize") or 0
-                try:
-                    out.append({"id": int(fid), "path": str(path), "bytes": int(b or 0)})
-                except Exception:
-                    continue
-        return jsonify({"ok": True, "torrent_id": str(torrent_id), "files": out})
+        settings = ensure_app_settings(username=_current_settings_username(), defaults_overrides=_default_app_overrides())
+        status = debrid_provider_status(settings)
+        if not status.get("configured"):
+            return jsonify({"ok": False, "error": "No debrid provider is configured."}), 400
+        provider = get_active_provider(settings, int(settings.get("REQUEST_TIMEOUT_SECONDS") or 25))
+        preview = provider.preview_magnet(magnet)
+        files = [{"id": item.file_id, "file_id": item.file_id, "path": item.path, "bytes": item.bytes} for item in preview.files]
+        return jsonify({
+            "ok": True,
+            "provider": provider.id,
+            "provider_label": provider.label,
+            "debrid_task_id": preview.provider_task_id,
+            "files": files,
+        })
+    except DebridProviderError as exc:
+        return jsonify({"ok": False, "error": str(exc) or "Failed to preview files"}), 400
     except Exception:
         return jsonify({"ok": False, "error": "Failed to preview files"}), 500
 
 
-
-
-@app.route("/api/rd/load_files", methods=["POST"])
-def api_rd_load_files():
-    # Backwards compatible alias for older frontends.
-    return api_rd_preview_files()
-
-@app.route("/api/rd/enqueue_selected", methods=["POST"])
-def api_rd_enqueue_selected():
+@app.route("/api/debrid/enqueue_selected", methods=["POST"])
+def api_debrid_enqueue_selected():
     try:
         data = request.get_json(force=True) or {}
     except Exception:
         data = {}
     title = str(data.get("title") or "").strip() or "Knaben item"
     magnet = str(data.get("magnet") or "").strip()
-    torrent_id = str(data.get("torrent_id") or "").strip()
+    provider_task_id = str(data.get("debrid_task_id") or "").strip()
     file_ids = data.get("file_ids") or []
 
-    if not torrent_id:
-        return jsonify({"ok": False, "error": "Missing torrent id"}), 400
+    if not provider_task_id:
+        return jsonify({"ok": False, "error": "Missing debrid task id"}), 400
+    if not str(DOWNLOAD_DIR or "").strip():
+        return jsonify({"ok": False, "error": "Pick the Debrid folder in Downloads settings before downloading."}), 400
 
-    clean_ids: List[int] = []
+    clean_ids: List[str] = []
     if isinstance(file_ids, list):
         for x in file_ids:
             try:
-                clean_ids.append(int(x))
+                clean_ids.append(str(x))
             except Exception:
                 continue
 
     if not clean_ids:
         return jsonify({"ok": False, "error": "No files selected"}), 400
+
+    settings = ensure_app_settings(username=_current_settings_username(), defaults_overrides=_default_app_overrides())
+    status = debrid_provider_status(settings)
+    provider_id = str(status.get("active_provider") or "")
+    if not provider_id:
+        return jsonify({"ok": False, "error": "No debrid provider is configured."}), 400
+    requested_provider = str(data.get("provider") or "").strip().lower()
+    if requested_provider and requested_provider != provider_id:
+        return jsonify({"ok": False, "error": "The preview provider is no longer active. Preview the result again."}), 409
 
     task_id = uuid.uuid4().hex
     task_dir = build_task_dir(task_id, title)
@@ -1205,14 +1387,16 @@ def api_rd_enqueue_selected():
         magnet=magnet,
         task_dir=task_dir,
         owner=_current_settings_username(),
+        source="debrid",
         state="queued",
         message="Queued",
-        torrent_id=torrent_id,
-        rd_selected_file_ids=clean_ids,
+        debrid_provider=provider_id,
+        debrid_task_id=provider_task_id,
+        debrid_selected_file_ids=clean_ids,
     )
     with TASKS_LOCK:
         TASKS[task_id] = t
-
+    write_task_manifest(t, original_result_title=title, selected_file_ids=clean_ids, version=str(VERSION))
     th = threading.Thread(target=worker, args=(task_id,), daemon=True)
     th.start()
 
@@ -1221,6 +1405,8 @@ def api_rd_enqueue_selected():
 
 @app.route("/api/soulseek/enqueue", methods=["POST"])
 def api_soulseek_enqueue():
+    if not str(SOULSEEK_DOWNLOAD_DIR or "").strip():
+        return jsonify({"ok": False, "error": "Pick the Soulseek folder in Downloads settings before downloading."}), 400
     svc = SOULSEEK_SERVICE
     if not svc or not svc.is_ready():
         return jsonify({"ok": False, "error": "Soulseek is configured but not connected. Check username, password, and listening port in Services."}), 400
@@ -1299,13 +1485,13 @@ def api_soulseek_enqueue():
         source="soulseek",
         state="queued",
         message="Queued",
-        torrent_id=None,
         slsk_user=user,
         slsk_directory=directory,
         slsk_files=files,
     )
     with TASKS_LOCK:
         TASKS[task_id] = t
+    write_task_manifest(t, original_result_title=title, remote_files=files, selected_file_ids=[item.get("file_id") for item in files], version=str(VERSION))
 
     try:
         svc.enqueue_downloads(task_id, user, remote_paths)
@@ -1339,6 +1525,7 @@ def cancel():
 def api_library_config():
     rts = []
     versions = library_root_versions()
+    source_by_id = {str(item.get("id") or ""): str(item.get("source") or "library") for item in root_objects()}
     for rid, name, ap, mode in roots():
         if mode in {"meta", "metadata"}:
             try:
@@ -1349,10 +1536,11 @@ def api_library_config():
             library_watch_root(rid, os.path.abspath(ap), mode=mode)
         except Exception:
             pass
-        rts.append({"id": rid, "name": name, "mode": mode, "version": int(versions.get(rid) or 0)})
+        rts.append({"id": rid, "name": name, "mode": mode, "source": source_by_id.get(rid, "library"), "version": int(versions.get(rid) or 0)})
     return jsonify(
         {
             "roots": rts,
+            "aggregate_root": {"id": LIBRARY_ALL_ROOT_ID, "name": "Library", "mode": "metadata"},
             "preload_enabled": bool(PRELOAD_NEXT_FOR_GAPLESS),
             "preload_bytes": int(PRELOAD_NEXT_CHUNK_BYTES),
             "lastfm_enabled": bool(lastfm_enabled()),
@@ -1432,7 +1620,12 @@ def api_settings_get():
     soulseek_status = soulseek_service.startup_status() if soulseek_service and hasattr(soulseek_service, "startup_status") else {}
     connections = {
         "current_user": username,
+        "DEBRID": debrid_provider_status(settings),
+        "DEBRID_PROVIDER": {"value": debrid_provider_status(settings)["active_provider"], "set": bool(debrid_provider_status(settings)["active_provider"])},
         "REAL_DEBRID_API_KEY": {"set": bool(str(settings.get("REAL_DEBRID_API_KEY") or "").strip())},
+        "ALLDEBRID_API_KEY": {"set": bool(str(settings.get("ALLDEBRID_API_KEY") or "").strip())},
+        "PREMIUMIZE_API_KEY": {"set": bool(str(settings.get("PREMIUMIZE_API_KEY") or "").strip())},
+        "TORBOX_API_KEY": {"set": bool(str(settings.get("TORBOX_API_KEY") or "").strip())},
         "KNABEN_API_KEY": {"set": bool(str(settings.get("KNABEN_API_KEY") or "").strip())},
         "SOULSEEK_USERNAME": {"set": bool(str(settings.get("SOULSEEK_USERNAME") or "").strip())},
         "SOULSEEK_PASSWORD": {"set": bool(str(settings.get("SOULSEEK_PASSWORD") or "").strip())},
@@ -1471,33 +1664,18 @@ def _setup_skipped_services(settings: dict[str, Any]) -> dict[str, str]:
     if isinstance(raw, dict):
         for key, value in raw.items():
             k = str(key or "").strip().lower()
-            if k in {"library", "real_debrid", "soulseek", "lastfm", "youtube", "ffmpeg", "ffprobe", "ytdlp", "downloads", "knaben"}:
+            if k in {"library", "debrid", "soulseek", "lastfm", "youtube", "ffmpeg", "ffprobe", "ytdlp", "downloads", "knaben"}:
                 out[k] = "skipped" if str(value or "").strip().lower() == "skipped" else str(value or "").strip().lower()
     return out
 
 
 def _kick_library_indexes_from_settings(settings: dict[str, Any]) -> None:
-    folders = settings.get("LIBRARY_FOLDERS") if isinstance(settings.get("LIBRARY_FOLDERS"), list) else []
-    for folder in folders:
+    for root in root_objects():
         try:
-            if isinstance(folder, dict):
-                path = str(folder.get("path") or "")
-                mode = str(folder.get("mode") or "folders")
-            else:
-                raw = str(folder or "")
-                path = raw
-                mode = "folders"
-                if ":" in raw:
-                    maybe_path, suffix = raw.rsplit(":", 1)
-                    if suffix.strip().lower() in {"meta", "metadata", "m"}:
-                        path = maybe_path
-                        mode = "metadata"
-                    elif suffix.strip().lower() in {"list", "folders", "folder", "l"}:
-                        path = maybe_path
-                        mode = "folders"
-            path = path.strip().strip('"').strip("'")
+            path = str(root.get("path") or "").strip()
+            mode = "metadata"
             if path and os.path.isabs(path):
-                rid = sha1_text(os.path.abspath(path))
+                rid = str(root.get("id") or sha1_text(os.path.abspath(path)))
                 ensure_index_async(rid, os.path.abspath(path), mode=mode)
                 library_watch_root(rid, os.path.abspath(path), mode=mode)
         except Exception:
@@ -1513,11 +1691,15 @@ def _service_status_payload(settings: dict[str, Any]) -> dict[str, Any]:
     soulseek_service = getattr(state_module, "SOULSEEK_SERVICE", None)
     soulseek_status = soulseek_service.startup_status() if soulseek_service and hasattr(soulseek_service, "startup_status") else {}
     skipped = _setup_skipped_services(settings)
+    debrid_status = debrid_provider_status(settings)
     return {
         "skipped": skipped,
-        "real_debrid": {
-            "configured": bool(str(settings.get("REAL_DEBRID_API_KEY") or "").strip()),
-            "status": skipped.get("real_debrid") or ("configured" if str(settings.get("REAL_DEBRID_API_KEY") or "").strip() else "not_configured"),
+        "debrid": {
+            "configured": bool(debrid_status["configured"]),
+            "active_provider": debrid_status["active_provider"],
+            "providers": debrid_status["providers"],
+            "download_dir": str(settings.get("DOWNLOAD_DIR") or ""),
+            "status": skipped.get("debrid") or ("configured" if debrid_status["configured"] else "not_configured"),
         },
         "soulseek": {
             "configured": bool(str(settings.get("SOULSEEK_USERNAME") or "").strip() and str(settings.get("SOULSEEK_PASSWORD") or "").strip()),
@@ -1556,6 +1738,9 @@ def _setup_status_for_user(username: str, settings: dict[str, Any]) -> dict[str,
         str(settings.get(key) or "").strip()
         for key in (
             "REAL_DEBRID_API_KEY",
+            "ALLDEBRID_API_KEY",
+            "PREMIUMIZE_API_KEY",
+            "TORBOX_API_KEY",
             "SOULSEEK_USERNAME",
             "SOULSEEK_PASSWORD",
             "LASTFM_API_KEY",
@@ -1569,7 +1754,7 @@ def _setup_status_for_user(username: str, settings: dict[str, Any]) -> dict[str,
             "YOUTUBE_DOWNLOAD_DIR",
         )
     )
-    should_show = not bool(settings.get("SETUP_WIZARD_COMPLETE")) and not (folders and has_optional_setup)
+    should_show = not bool(settings.get("SETUP_WIZARD_COMPLETE"))
     services = _service_status_payload(settings)
     tools = {
         "ffmpeg": services.get("ffmpeg") or executable_status(str(settings.get("FFMPEG_PATH") or "ffmpeg")),
@@ -1585,9 +1770,12 @@ def _setup_status_for_user(username: str, settings: dict[str, Any]) -> dict[str,
         "lastfm_api_key_configured": bool(str(settings.get("LASTFM_API_KEY") or "").strip()),
         "lastfm_secret_configured": bool(str(settings.get("LASTFM_API_SECRET") or "").strip()),
         "lastfm_session_configured": bool(lastfm_session_key()),
-        "real_debrid_token_configured": bool(str(settings.get("REAL_DEBRID_API_KEY") or "").strip()),
-        "real_debrid_download_folder_configured": bool(str(settings.get("DOWNLOAD_DIR") or "").strip()),
     }
+    debrid_status = debrid_provider_status(settings)
+    setup["debrid_provider"] = debrid_status["active_provider"]
+    setup["debrid_provider_configured"] = bool(debrid_status["configured"])
+    setup["debrid_download_folder_configured"] = bool(str(settings.get("DOWNLOAD_DIR") or "").strip())
+    setup["debrid_complete"] = bool(setup["debrid_provider_configured"] and setup["debrid_download_folder_configured"])
     setup["tools_complete"] = bool(tools["ffmpeg"].get("ok") and tools["ffprobe"].get("ok") and tools["ytdlp"].get("ok") and setup["youtube_download_folder_configured"])
     setup["soulseek_lastfm_complete"] = bool(
         setup["soulseek_username_configured"]
@@ -1597,7 +1785,6 @@ def _setup_status_for_user(username: str, settings: dict[str, Any]) -> dict[str,
         and setup["lastfm_secret_configured"]
         and setup["lastfm_session_configured"]
     )
-    setup["real_debrid_complete"] = bool(setup["real_debrid_token_configured"] and setup["real_debrid_download_folder_configured"])
     return {
         "ok": True,
         "username": username,
@@ -1615,6 +1802,7 @@ def _setup_status_for_user(username: str, settings: dict[str, Any]) -> dict[str,
         },
         "setup": setup,
         "services": services,
+        "debrid": debrid_status,
     }
 
 
@@ -1629,7 +1817,7 @@ def api_setup_status():
 def api_setup_skip():
     data = request.get_json(silent=True) or {}
     service = str(data.get("service") or "").strip().lower()
-    allowed = {"library", "real_debrid", "soulseek", "lastfm", "youtube", "ffmpeg", "ffprobe", "ytdlp", "downloads", "knaben"}
+    allowed = {"library", "debrid", "soulseek", "lastfm", "youtube", "ffmpeg", "ffprobe", "ytdlp", "downloads", "knaben"}
     if service not in allowed:
         return jsonify({"ok": False, "error": "Unknown setup step"}), 400
     username = _current_settings_username()
@@ -1734,10 +1922,13 @@ def api_settings_save():
         if key in CONFIG_KEYS:
             globals()[key] = _coerce_config_value(key, value)
     if username:
-        _apply_runtime_settings_for_user(username)
-    if "LIBRARY_FOLDERS" in clean_settings:
+        saved = _apply_runtime_settings_for_user(username, force=True)
+    library_setting_keys = {"LIBRARY_FOLDERS", "DOWNLOAD_DIR", "SOULSEEK_DOWNLOAD_DIR", "YOUTUBE_DOWNLOAD_DIR"}
+    if library_setting_keys.intersection(clean_settings):
+        clear_index_cache()
         _kick_library_indexes_from_settings(saved)
-    return jsonify({"ok": True, "settings": masked_settings(saved), "restart_required": True})
+    restart_required = bool(set(startup_updates).intersection({"PORT", "ENABLE_MCP"}))
+    return jsonify({"ok": True, "settings": masked_settings(saved), "restart_required": restart_required, "library_versions": library_root_versions()})
 
 
 @app.route("/api/settings/mcp_reset_token", methods=["POST"])
@@ -2407,29 +2598,113 @@ def api_library_metadata():
     level = (request.args.get("level") or "").strip().lower()
     value = (request.args.get("value") or "").strip()
 
-    r = root_by_id(root_id)
-    if not r:
+    aggregate = root_id == LIBRARY_ALL_ROOT_ID
+    r = None if aggregate else root_by_id(root_id)
+    if not aggregate and not r:
         abort(404)
-    _, _, root_abs, mode = r
+    root_abs = "" if aggregate else r[2]
+    mode = "metadata" if aggregate else r[3]
 
     if level == "playlists":
-        items = scan_root_playlists(root_abs)
+        items = []
+        if aggregate:
+            for root in root_objects():
+                for item in scan_root_playlists(str(root.get("path") or "")):
+                    if isinstance(item, dict):
+                        row = dict(item)
+                        row["root_id"] = str(root.get("id") or "")
+                        row["sub_label"] = str(root.get("name") or "")
+                        row["forceTwoLine"] = True
+                        items.append(row)
+        else:
+            items = scan_root_playlists(root_abs)
         if not items:
             items = [{"kind": "info", "label": "No playlists found"}]
-        return jsonify({"items": items, "version": library_root_version(root_id), "stale": False})
+        return jsonify({"items": items, "version": (sum(library_root_versions().values()) if aggregate else library_root_version(root_id)), "stale": False})
 
     if level == "playlist_tracks":
+        playlist_root_id = root_id
+        if aggregate:
+            try:
+                selector = json.loads(value) if value else {}
+            except Exception:
+                selector = {}
+            playlist_root_id = str(selector.get("root_id") or request.args.get("item_root_id") or "")
+            value = str(selector.get("rel") or selector.get("value") or value)
+            selected_root = root_by_id(playlist_root_id)
+            if not selected_root:
+                abort(404)
+            root_abs = selected_root[2]
         if is_smart_playlist_rel(value):
-            items = smart_playlist_tracks_for_root(root_abs, value, root_id)
+            items = smart_playlist_tracks_for_root(root_abs, value, playlist_root_id)
         else:
             items = playlist_tracks_for_root(root_abs, value)
+        for item in items:
+            if isinstance(item, dict):
+                item.setdefault("root_id", playlist_root_id)
         if not items:
             items = [{"kind": "info", "label": "No playable tracks found in playlist"}]
-        return jsonify({"items": items, "version": library_root_version(root_id), "stale": False})
+        return jsonify({"items": items, "version": library_root_version(playlist_root_id), "stale": False})
 
-    ensure_index_async(root_id, root_abs, mode=mode)
-    data = get_index(root_id)
-    building = bool(index_building_status()[1].get(root_id))
+    if aggregate:
+        data = {"tracks": [], "videos": [], "movies": [], "shows": []}
+        aggregate_shows: list[dict[str, Any]] = []
+        building_map = index_building_status()[1]
+        building = False
+        for root in root_objects():
+            rid = str(root.get("id") or "")
+            path = str(root.get("path") or "")
+            ensure_index_async(rid, path, mode="metadata")
+            snapshot = get_index(rid)
+            building = building or bool(building_map.get(rid)) or snapshot is None
+            if not snapshot:
+                continue
+            for key in ("tracks", "videos", "movies"):
+                for raw in snapshot.get(key) or []:
+                    if isinstance(raw, dict):
+                        row = dict(raw)
+                        row["root_id"] = rid
+                        data[key].append(row)
+            for raw_show in snapshot.get("shows") or []:
+                if not isinstance(raw_show, dict):
+                    continue
+                show = dict(raw_show)
+                episodes = []
+                for raw_episode in show.get("episodes") or []:
+                    if isinstance(raw_episode, dict):
+                        episode = dict(raw_episode)
+                        episode["root_id"] = rid
+                        episodes.append(episode)
+                show["episodes"] = episodes
+                aggregate_shows.append(show)
+        aliases = load_show_aliases(LIBRARY_ALL_ROOT_ID)
+        show_buckets: dict[str, dict[str, Any]] = {}
+        for show in aggregate_shows:
+            label = str(show.get("label") or "Show")
+            raw_key = normalize_show_key(label)
+            show_key = str(aliases.get(raw_key) or raw_key)
+            if show_key not in show_buckets:
+                for candidate_key, candidate in show_buckets.items():
+                    if show_keys_close(label, str(candidate.get("label") or "")):
+                        show_key = candidate_key
+                        aliases[raw_key] = candidate_key
+                        break
+            bucket = show_buckets.setdefault(show_key, {"show_key": show_key, "label": label, "episodes": []})
+            bucket["episodes"].extend(show.get("episodes") or [])
+        data["shows"] = sorted(show_buckets.values(), key=lambda item: str(item.get("label") or "").lower())
+        for show in data["shows"]:
+            show["episodes"].sort(key=lambda item: (
+                int((item.get("parse") or {}).get("season") or 0),
+                int((item.get("parse") or {}).get("episode") or 0),
+                str(item.get("root_id") or ""),
+                str(item.get("rel") or "").lower(),
+            ))
+        save_show_aliases(LIBRARY_ALL_ROOT_ID, aliases)
+        data["version"] = sum(int(value or 0) for value in library_root_versions().values())
+    else:
+        ensure_index_async(root_id, root_abs, mode=mode)
+        data = get_index(root_id)
+        building = bool(index_building_status()[1].get(root_id))
     if data is None:
         if level == "top":
             cats = [
@@ -2437,8 +2712,10 @@ def api_library_metadata():
                 {"key": "albums", "label": "Albums"},
                 {"key": "songs", "label": "Songs"},
                 {"key": "liked_songs", "label": "Liked Songs"},
-                {"key": "playlists", "label": "Playlists"},
                 {"key": "genres", "label": "Genres"},
+                {"key": "playlists", "label": "Playlists"},
+                {"key": "movies", "label": "Movies"},
+                {"key": "shows", "label": "Shows"},
                 {"key": "videos", "label": "Videos"},
                 {"key": "folders", "label": "Folders"},
             ]
@@ -2448,7 +2725,7 @@ def api_library_metadata():
     tracks = data.get("tracks") or []
     vids = data.get("videos") or []
     version_value = int(data.get("version") or library_root_version(root_id))
-    facets = library_metadata_facets(root_id) or {}
+    facets = {} if aggregate else (library_metadata_facets(root_id) or {})
     response_meta = {"building": building, "version": version_value, "stale": building}
 
     def facet_items(name: str, empty_label: str) -> list[dict]:
@@ -2460,14 +2737,73 @@ def api_library_metadata():
     def track_facet_key(*, artist: str = "", album: str = "", genre: str = "") -> str:
         return json.dumps({"artist": artist, "album": album, "genre": genre}, ensure_ascii=False, sort_keys=True)
 
+    def playable_video_row(record: dict, kind: str) -> dict:
+        parsed = record.get("parse") if isinstance(record.get("parse"), dict) else {}
+        rid = str(record.get("root_id") or root_id)
+        rel = str(record.get("rel") or "")
+        progress = media_progress_for(rid, rel)
+        percent = int(progress.get("completion_percent") or record.get("completion_percent") or 0)
+        duration = record.get("duration")
+        duration_label = duration_text(duration)
+        quality = str(record.get("quality") or parsed.get("quality") or "")
+        friendly = bool(record.get("browser_friendly") or parsed.get("browser_friendly"))
+        year = parsed.get("year")
+        pills = []
+        if kind == "show_episode":
+            season = int(parsed.get("season") or 0)
+            episode = int(parsed.get("episode") or 0)
+            episode_end = parsed.get("episode_end")
+            number = f"S{season:02d}E{episode:02d}" if season else f"E{episode:02d}"
+            if episode_end:
+                number += f" to E{int(episode_end):02d}"
+            pills.append(number)
+        if parsed.get("airdate"):
+            pills.append(str(parsed.get("airdate")))
+        if year:
+            pills.append(str(year))
+        if duration_label:
+            pills.append(duration_label)
+        if quality:
+            pills.append(quality)
+        pills.extend(["\u2713" if friendly else "\u00d7", f"{percent}%"])
+        if kind == "show_episode":
+            title = str(parsed.get("episode_title") or parsed.get("title") or record.get("title") or record.get("name") or "Episode")
+            label = title
+        else:
+            label = str(parsed.get("title") or record.get("title") or record.get("name") or ("Movie" if kind == "movie" else "Video"))
+        return {
+            "kind": kind if kind != "video" else "file",
+            "label": label,
+            "sub_label": rel,
+            "root_id": rid,
+            "root": {"id": rid},
+            "rel": rel,
+            "media": "video",
+            "year": year,
+            "duration": duration,
+            "duration_text": duration_label,
+            "quality": quality,
+            "browser_friendly": friendly,
+            "completion_percent": percent,
+            "position": float(progress.get("position") or record.get("position") or 0),
+            "source": str(record.get("source") or "library"),
+            "season": parsed.get("season"),
+            "episode": parsed.get("episode"),
+            "episode_end": parsed.get("episode_end"),
+            "pills": pills,
+            "forceTwoLine": True,
+        }
+
     if level == "top":
         cats = [
             {"key": "artists", "label": "Artists"},
             {"key": "albums", "label": "Albums"},
             {"key": "songs", "label": "Songs"},
             {"key": "liked_songs", "label": "Liked Songs"},
-            {"key": "playlists", "label": "Playlists"},
             {"key": "genres", "label": "Genres"},
+            {"key": "playlists", "label": "Playlists"},
+            {"key": "movies", "label": "Movies"},
+            {"key": "shows", "label": "Shows"},
             {"key": "videos", "label": "Videos"},
             {"key": "folders", "label": "Folders"},
         ]
@@ -2547,7 +2883,7 @@ def api_library_metadata():
                 if not a or not tt or (not lastfm_is_loved(a, tt, b)):
                     continue
             label = t.get("title") or t.get("name") or "Track"
-            tr.append({"kind": "track", "label": label, "rel": t.get("rel"), "badge": (t.get("track") or "")})
+            tr.append({"kind": "track", "label": label, "rel": t.get("rel"), "root_id": t.get("root_id") or root_id, "root": {"id": t.get("root_id") or root_id}, "badge": (t.get("track") or "")})
         tr.sort(key=lambda x: track_sort_key(x.get("badge") or "") + (x.get("label") or "",))
         if not tr:
             tr = [{"kind": "info", "label": "No tracks found"}]
@@ -2566,7 +2902,7 @@ def api_library_metadata():
                 continue
             if not lastfm_is_loved(a, tt, b):
                 continue
-            items.append({"kind": "track", "label": (t.get("title") or t.get("name") or "Track"), "rel": t.get("rel"), "badge": (t.get("track") or "")})
+            items.append({"kind": "track", "label": (t.get("title") or t.get("name") or "Track"), "rel": t.get("rel"), "root_id": t.get("root_id") or root_id, "root": {"id": t.get("root_id") or root_id}, "badge": (t.get("track") or "")})
         items.sort(key=lambda x: (x.get("label") or "").lower())
         if not items:
             items = [{"kind": "info", "label": "No liked songs found"}]
@@ -2577,7 +2913,7 @@ def api_library_metadata():
         if items:
             return jsonify({"items": items, **response_meta})
         s = sorted(tracks, key=lambda x: (x.get("title") or x.get("name") or "").lower())
-        items = [{"kind": "track", "label": (t.get("title") or t.get("name") or "Track"), "rel": t.get("rel")} for t in s[:3000]]
+        items = [{"kind": "track", "label": (t.get("title") or t.get("name") or "Track"), "rel": t.get("rel"), "root_id": t.get("root_id") or root_id, "root": {"id": t.get("root_id") or root_id}} for t in s[:3000]]
         if not items:
             items = [{"kind": "info", "label": "No songs found"}]
         return jsonify({"items": items, **response_meta})
@@ -2639,19 +2975,70 @@ def api_library_metadata():
             if (t.get("genre") or "").strip() != genre:
                 continue
             label = t.get("title") or t.get("name") or "Track"
-            items.append({"kind": "track", "label": label, "rel": t.get("rel")})
+            items.append({"kind": "track", "label": label, "rel": t.get("rel"), "root_id": t.get("root_id") or root_id, "root": {"id": t.get("root_id") or root_id}})
         items.sort(key=lambda x: (x.get("label") or "").lower())
         if not items:
             items = [{"kind": "info", "label": "No tracks found"}]
         return jsonify({"items": items, **response_meta})
 
-    if level == "videos":
-        items = facet_items("videos", "No videos found")
-        if items:
-            return jsonify({"items": items, **response_meta})
+    if level == "movies":
+        items = [playable_video_row(item, "movie") for item in (data.get("movies") or []) if isinstance(item, dict)]
+        if not items:
+            items = [{"kind": "info", "label": "No movies found"}]
+        return jsonify({"items": items[:3000], **response_meta})
+
+    if level == "shows":
         items = []
-        for v in sorted(vids, key=lambda x: (x.get("title") or x.get("name") or "").lower())[:3000]:
-            items.append({"kind": "file", "label": v.get("name") or v.get("title") or "Video", "rel": v.get("rel"), "media": "video", "badge": "video"})
+        for show in data.get("shows") or []:
+            if not isinstance(show, dict):
+                continue
+            episodes = [item for item in (show.get("episodes") or []) if isinstance(item, dict)]
+            percentages = [int(media_progress_for(str(item.get("root_id") or root_id), str(item.get("rel") or "")).get("completion_percent") or 0) for item in episodes]
+            percent = math.floor(sum(percentages) / len(percentages)) if percentages else 0
+            count = len(episodes)
+            items.append({
+                "kind": "show", "label": str(show.get("label") or "Show"), "show_key": str(show.get("show_key") or ""),
+                "episode_count": count, "completion_percent": percent, "pills": [f"{count} episode" + ("" if count == 1 else "s"), f"{percent}%"],
+            })
+        if not items:
+            items = [{"kind": "info", "label": "No shows found"}]
+        return jsonify({"items": items, **response_meta})
+
+    if level == "show_seasons":
+        show = next((item for item in (data.get("shows") or []) if isinstance(item, dict) and str(item.get("show_key") or "") == value), None)
+        if not show:
+            return jsonify({"items": [{"kind": "info", "label": "Show not found"}], **response_meta})
+        seasons: dict[int, list[dict]] = {}
+        for episode in show.get("episodes") or []:
+            if isinstance(episode, dict):
+                seasons.setdefault(int((episode.get("parse") or {}).get("season") or 0), []).append(episode)
+        items = []
+        for season, episodes in sorted(seasons.items()):
+            percentages = [int(media_progress_for(str(item.get("root_id") or root_id), str(item.get("rel") or "")).get("completion_percent") or 0) for item in episodes]
+            percent = math.floor(sum(percentages) / len(percentages)) if percentages else 0
+            count = len(episodes)
+            label = "Specials" if season == 0 else f"Season {season}"
+            items.append({"kind": "show_season", "label": label, "show_key": value, "season": season, "episode_count": count, "completion_percent": percent, "pills": [f"{count} episode" + ("" if count == 1 else "s"), f"{percent}%"]})
+        return jsonify({"items": items or [{"kind": "info", "label": "No seasons found"}], **response_meta})
+
+    if level == "show_episodes":
+        try:
+            selector = json.loads(value) if value else {}
+        except Exception:
+            selector = {}
+        show_key = str(selector.get("show_key") or "")
+        season = int(selector.get("season") or 0)
+        show = next((item for item in (data.get("shows") or []) if isinstance(item, dict) and str(item.get("show_key") or "") == show_key), None)
+        episodes = [item for item in ((show or {}).get("episodes") or []) if isinstance(item, dict) and int((item.get("parse") or {}).get("season") or 0) == season]
+        items = []
+        for episode in episodes:
+            row = playable_video_row(episode, "show_episode")
+            row["show_key"] = show_key
+            items.append(row)
+        return jsonify({"items": items or [{"kind": "info", "label": "No episodes found"}], **response_meta})
+
+    if level == "videos":
+        items = [playable_video_row(item, "video") for item in sorted(vids, key=lambda x: (x.get("title") or x.get("name") or "").lower())[:3000] if isinstance(item, dict)]
         if not items:
             items = [{"kind": "info", "label": "No videos found"}]
         return jsonify({"items": items, **response_meta})
@@ -3029,7 +3416,7 @@ def hls_file(key: str, name: str):
     return range_response(path)
 
 
-def _proxy_url_allowed(raw_url: str) -> bool:
+def _proxy_url_allowed(raw_url: str, *, trusted_provider_stream: bool = False) -> bool:
     try:
         parsed = urlparse(str(raw_url or "").strip())
     except Exception:
@@ -3044,7 +3431,7 @@ def _proxy_url_allowed(raw_url: str) -> bool:
         suffix = str(raw_suffix or "").strip().lower().lstrip(".")
         if suffix:
             allowed_suffixes.append(suffix)
-    if allowed_suffixes and not any(host == suffix or host.endswith("." + suffix) for suffix in allowed_suffixes):
+    if not trusted_provider_stream and allowed_suffixes and not any(host == suffix or host.endswith("." + suffix) for suffix in allowed_suffixes):
         return False
     try:
         addresses = {ipaddress.ip_address(host)}
@@ -3082,7 +3469,8 @@ def stream(root_id: str, relpath: str):
                 return Response("Unable to fetch stream", status=502, mimetype="text/plain")
             return range_response(local_path)
         upstream_url = str(it.get("url") or "")
-        if not _proxy_url_allowed(upstream_url):
+        trusted_provider_stream = bool(it.get("trusted_provider_stream"))
+        if not _proxy_url_allowed(upstream_url, trusted_provider_stream=trusted_provider_stream):
             abort(400)
         headers = {}
         rng = request.headers.get("Range")
@@ -3091,7 +3479,7 @@ def stream(root_id: str, relpath: str):
         method = "HEAD" if request.method == "HEAD" else "GET"
         try:
             upstream = requests.request(method, upstream_url, headers=headers, stream=True, timeout=REQUEST_TIMEOUT_SECONDS, allow_redirects=True)
-            if not _proxy_url_allowed(str(upstream.url or "")):
+            if not _proxy_url_allowed(str(upstream.url or ""), trusted_provider_stream=trusted_provider_stream):
                 upstream.close()
                 abort(400)
         except Exception:
@@ -3140,16 +3528,6 @@ def stream(root_id: str, relpath: str):
         return Response("Unable to prepare stream", status=500, mimetype="text/plain")
 
     return range_response(playable)
-
-
-@app.route("/watch/<root_id>/<path:relpath>", methods=["GET"])
-def watch(root_id: str, relpath: str):
-    rel = unquote(relpath)
-    # legacy endpoint kept for older links, now routed into the Library player
-    return redirect("/?tab=library&vroot=" + quote(root_id) + "&vrel=" + quote(rel, safe=""))
-
-
-
 
 
 configure_playback_state(

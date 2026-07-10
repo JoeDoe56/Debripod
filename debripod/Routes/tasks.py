@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import time
+import os
 from typing import List
 
 from flask import jsonify, request, session
@@ -16,6 +17,28 @@ from ..Tasks.manager import (
     task_file_action,
     task_public_dict,
 )
+from ..Library.roots import root_objects
+
+
+def _task_library_nav(task) -> dict:
+    raw_task_dir = str(getattr(task, "task_dir", "") or "").strip()
+    if not raw_task_dir:
+        return {"root_id": "", "rel": "", "label": "Open library location", "available": False}
+    task_dir = os.path.realpath(os.path.abspath(raw_task_dir))
+    matches = []
+    for root in root_objects():
+        root_abs = os.path.realpath(os.path.abspath(str(root.get("path") or "")))
+        try:
+            if root_abs and os.path.commonpath([root_abs, task_dir]) == root_abs:
+                matches.append((len(root_abs), root, root_abs))
+        except Exception:
+            continue
+    if not matches:
+        return {"root_id": "", "rel": "", "label": "Open library location", "available": False}
+    _length, root, root_abs = max(matches, key=lambda item: item[0])
+    rel = os.path.relpath(task_dir, root_abs).replace("\\", "/")
+    rel = "" if rel == "." else rel.strip("/")
+    return {"root_id": str(root.get("id") or ""), "rel": rel, "label": "Open library location", "available": True}
 
 
 def register_task_routes(app) -> None:
@@ -30,7 +53,9 @@ def register_task_routes(app) -> None:
         out: List[dict] = []
         for t in list_tasks_for_owner(current_owner()):
             try:
-                out.append(task_public_dict(t))
+                payload = task_public_dict(t)
+                payload["library_nav"] = _task_library_nav(t)
+                out.append(payload)
             except Exception as e:
                 try:
                     out.append({
@@ -41,14 +66,16 @@ def register_task_routes(app) -> None:
                         "paused": bool(getattr(t, "paused", False)),
                         "state": "error",
                         "message": "Task serialization error",
-                        "torrent_id": getattr(t, "torrent_id", None),
-                        "source": getattr(t, "source", "rd"),
+                        "debrid_provider": getattr(t, "debrid_provider", ""),
+                        "debrid_task_id": getattr(t, "debrid_task_id", None),
+                        "source": getattr(t, "source", "debrid"),
                         "overall_done": 0,
                         "overall_total": None,
                         "slsk_user": "",
                         "slsk_directory": "",
                         "slsk_files": [],
-                        "rd_files": [],
+                        "debrid_files": [],
+                        "youtube_files": [],
                         "downloaded_files": [],
                         "current_file": "",
                         "current_done": 0,

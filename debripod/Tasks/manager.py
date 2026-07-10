@@ -14,7 +14,7 @@ class Task:
     magnet: str
     task_dir: str
     owner: str = ""
-    source: str = "rd"  # "rd", "soulseek", or "youtube"
+    source: str = "debrid"  # "debrid", "soulseek", or "youtube"
 
     # Pause control (set pause_event to pause; clear to resume)
     paused: bool = False
@@ -33,14 +33,18 @@ class Task:
     slsk_directory: str = ""
     slsk_files: List[Dict[str, Any]] = field(default_factory=list)
 
-    # Real-Debrid per-file statuses
-    rd_files: List[Dict[str, Any]] = field(default_factory=list)
+    # Provider-neutral debrid fields.
+    debrid_provider: str = ""
+    debrid_task_id: Optional[str] = None
+    debrid_selected_file_ids: List[str] = field(default_factory=list)
+    debrid_files: List[Dict[str, Any]] = field(default_factory=list)
+
+    # YouTube format/download statuses.
+    youtube_files: List[Dict[str, Any]] = field(default_factory=list)
 
     created: float = field(default_factory=time.time)
     state: str = "queued"
     message: str = ""
-    torrent_id: Optional[str] = None
-    rd_selected_file_ids: List[int] = field(default_factory=list)
     downloaded_files: List[str] = field(default_factory=list)
     current_file: str = ""
     current_done: int = 0
@@ -123,7 +127,7 @@ def cancel_task(task_id: str) -> bool:
         t.cancel_event.set()
         t.state = "canceling"
         t.message = "Cancel requested"
-        src = (t.source or "rd").lower()
+        src = (t.source or "debrid").lower()
 
     if src == "soulseek":
         svc = _soulseek_service_provider()
@@ -149,7 +153,7 @@ def pause_task(task_id: str) -> bool:
             t.pre_pause_message = t.message or ""
             t.state = "paused"
             t.message = "Paused"
-        src = (t.source or "rd").lower()
+        src = (t.source or "debrid").lower()
 
     if src == "soulseek":
         svc = _soulseek_service_provider()
@@ -175,7 +179,7 @@ def resume_task(task_id: str) -> bool:
         if t.state == "paused":
             t.state = prev_state if prev_state and prev_state != "paused" else "downloading"
             t.message = prev_msg if prev_msg else "Resumed"
-        src = (t.source or "rd").lower()
+        src = (t.source or "debrid").lower()
 
     if src == "soulseek":
         svc = _soulseek_service_provider()
@@ -236,7 +240,7 @@ def task_file_action(task_id: str, file_id: str, action: str) -> bool:
         t = TASKS.get(task_id)
         if not t:
             return False
-        src = (t.source or "rd").lower()
+        src = (t.source or "debrid").lower()
 
     if src == "soulseek":
         if action == "pause":
@@ -267,25 +271,26 @@ def task_file_action(task_id: str, file_id: str, action: str) -> bool:
                 pass
         return True
 
+    file_list_name = "debrid_files" if src == "debrid" else "youtube_files"
     if action == "pause":
         _set_file_control(task_id, file_id, paused=True, canceled=False)
-        _update_task_file_entry(task_id, "rd_files", file_id, paused=True, state="paused")
+        _update_task_file_entry(task_id, file_list_name, file_id, paused=True, state="paused")
         return True
     if action == "resume":
         _set_file_control(task_id, file_id, paused=False)
-        _update_task_file_entry(task_id, "rd_files", file_id, paused=False)
+        _update_task_file_entry(task_id, file_list_name, file_id, paused=False)
         return True
     if action == "cancel":
         _set_file_control(task_id, file_id, canceled=True)
-        _update_task_file_entry(task_id, "rd_files", file_id, canceled=True, state="canceled")
+        _update_task_file_entry(task_id, file_list_name, file_id, canceled=True, state="canceled")
         return True
     if action == "retry":
         _set_file_control(task_id, file_id, paused=False, canceled=False)
-        _update_task_file_entry(task_id, "rd_files", file_id, paused=False, canceled=False, done=0, speed=0.0, error="", state="queued")
+        _update_task_file_entry(task_id, file_list_name, file_id, paused=False, canceled=False, done=0, speed=0.0, error="", state="queued")
         with TASKS_LOCK:
             t = TASKS.get(task_id)
             st = (t.state or "").lower() if t else ""
-            src2 = (t.source or "rd").lower() if t else "rd"
+            src2 = (t.source or "debrid").lower() if t else "debrid"
         if st in {"done", "error", "canceled"}:
             target = _retry_worker_provider(src2)
             if target:
@@ -354,14 +359,16 @@ def task_public_dict(t: Task) -> dict:
         "paused": bool(getattr(t, "paused", False)),
         "state": t.state,
         "message": t.message,
-        "torrent_id": t.torrent_id,
+        "debrid_provider": getattr(t, "debrid_provider", ""),
+        "debrid_task_id": getattr(t, "debrid_task_id", None),
         "source": t.source,
         "overall_done": int(t.overall_done or 0),
         "overall_total": (int(t.overall_total) if t.overall_total is not None else None),
         "slsk_user": t.slsk_user,
         "slsk_directory": t.slsk_directory,
         "slsk_files": _redact_paths(list(t.slsk_files or [])),
-        "rd_files": _redact_paths(list(getattr(t, "rd_files", []) or [])),
+        "debrid_files": _redact_paths(list(getattr(t, "debrid_files", []) or [])),
+        "youtube_files": _redact_paths(list(getattr(t, "youtube_files", []) or [])),
         "downloaded_files": [_display_path(p) for p in list(t.downloaded_files or [])],
         "current_file": _display_path(t.current_file),
         "current_done": int(t.current_done or 0),
@@ -382,12 +389,12 @@ def clear_task(task_id: str) -> bool:
     if not task_id:
         return False
 
-    src = "rd"
+    src = "debrid"
     with TASKS_LOCK:
         t = TASKS.get(task_id)
         if not t:
             return False
-        src = (t.source or "rd").lower()
+        src = (t.source or "debrid").lower()
         if t.state not in ("done", "error", "canceled"):
             try:
                 t.cancel_event.set()

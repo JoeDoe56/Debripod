@@ -70,7 +70,7 @@ from .Library.index import (
     set_index_cache,
     track_sort_key,
 )
-from .Library.roots import configure_library_roots, root_by_id, roots, safe_path_join
+from .Library.roots import LIBRARY_ALL_ROOT_ID, configure_library_roots, root_by_id, root_objects, roots, safe_path_join
 from .media_types import (
     AUDIO_EXTS,
     VIDEO_EXTS,
@@ -102,7 +102,6 @@ from .Services.lastfm import (
     lastfm_username,
     _lastfm_async,
 )
-from .Services.real_debrid import configure_real_debrid, rd_headers, rd_request
 from .Services.soulseek import (
     SoulseekService,
     _slsk_annotate_file_with_download_state,
@@ -171,6 +170,7 @@ from .playback.state import (
     load_playback_state,
     playback_snapshot_public,
     playback_update_from_client,
+    media_progress_for,
     save_playback_state_best_effort,
 )
 from .playback.transcoding import (
@@ -213,7 +213,14 @@ try:
     apply_config_to_module(globals())
 except Exception as _config_error:
     print(f"DebriPod config warning: {_config_error}")
-configure_library_roots(lambda: LIBRARY_FOLDERS)
+configure_library_roots(
+    lambda: LIBRARY_FOLDERS,
+    lambda: {
+        "debrid": DOWNLOAD_DIR,
+        "soulseek": SOULSEEK_DOWNLOAD_DIR,
+        "youtube": YOUTUBE_DOWNLOAD_DIR,
+    },
+)
 configure_playlists(
     file_meta_provider=lambda abs_path: file_meta_cached(abs_path),
     track_sort_key_provider=lambda track: track_sort_key(track),
@@ -221,11 +228,6 @@ configure_playlists(
     get_index_provider=lambda root_id: get_index(root_id),
     build_index_provider=lambda root_abs: build_index_for_root(root_abs),
     set_index_provider=lambda root_id, data: set_index_cache(root_id, data),
-)
-configure_real_debrid(
-    api_key_provider=lambda: REAL_DEBRID_API_KEY,
-    base_url_provider=lambda: RD_BASE,
-    timeout_provider=lambda: REQUEST_TIMEOUT_SECONDS,
 )
 configure_knaben(
     api_key_provider=lambda: KNABEN_API_KEY,
@@ -261,7 +263,7 @@ configure_soulseek_module(
     get_file_control_func=_get_file_control,
 )
 configure_metadata(ffmpeg_path_provider=lambda: FFMPEG_PATH)
-configure_library_index(cache_dir_name_provider=lambda: CACHE_DIR_NAME)
+configure_library_index(cache_dir_name_provider=lambda: CACHE_DIR_NAME, progress_provider=lambda root_id, rel: media_progress_for(root_id, rel))
 configure_probe(ffprobe_path_provider=lambda: FFPROBE_PATH)
 configure_paths(
     download_dir_provider=lambda: DOWNLOAD_DIR,
@@ -282,11 +284,15 @@ configure_lastfm(
 )
 
 def ensure_dirs() -> None:
-    if not os.path.isabs(DOWNLOAD_DIR):
-        raise ValueError("DOWNLOAD_DIR must be an absolute path")
-    os.makedirs(DOWNLOAD_DIR, exist_ok=True)
-    os.makedirs(SOULSEEK_DOWNLOAD_DIR, exist_ok=True)
-    os.makedirs(soulseek_incoming_dir(), exist_ok=True)
+    if DOWNLOAD_DIR:
+        if not os.path.isabs(DOWNLOAD_DIR):
+            raise ValueError("DOWNLOAD_DIR must be an absolute path")
+        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
+    if SOULSEEK_DOWNLOAD_DIR:
+        if not os.path.isabs(SOULSEEK_DOWNLOAD_DIR):
+            raise ValueError("SOULSEEK_DOWNLOAD_DIR must be an absolute path")
+        os.makedirs(SOULSEEK_DOWNLOAD_DIR, exist_ok=True)
+        os.makedirs(soulseek_incoming_dir(), exist_ok=True)
     os.makedirs(cache_dir(), exist_ok=True)
     os.makedirs(transcode_cache_dir(), exist_ok=True)
     os.makedirs(art_cache_dir(), exist_ok=True)
@@ -319,7 +325,7 @@ configure_search_cache(
 
 
 # =========================
-# Real Debrid task tracking
+# Download task tracking
 # =========================
 class Cancelled(Exception):
     pass

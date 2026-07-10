@@ -2,46 +2,38 @@ from __future__ import annotations
 
 import os
 import re
-from typing import Callable, List, Optional, Tuple
+from typing import Any, Callable, List, Optional, Tuple
 
 from ..utils import sha1_text
 
-_library_folders_provider: Callable[[], List[str]] = lambda: []
+_library_folders_provider: Callable[[], List[Any]] = lambda: []
+_download_folders_provider: Callable[[], dict[str, str]] = lambda: {}
+LIBRARY_ALL_ROOT_ID = "__all__"
 
 
-def configure_library_roots(library_folders_provider: Callable[[], List[str]]) -> None:
-    global _library_folders_provider
+def configure_library_roots(
+    library_folders_provider: Callable[[], List[Any]],
+    download_folders_provider: Optional[Callable[[], dict[str, str]]] = None,
+) -> None:
+    global _library_folders_provider, _download_folders_provider
     _library_folders_provider = library_folders_provider
+    if download_folders_provider is not None:
+        _download_folders_provider = download_folders_provider
 
 
-def _parse_library_folder_spec(spec: str) -> Optional[Tuple[str, str, str]]:
-    spec = (spec or "").strip()
-    if not spec:
+def _parse_library_folder_spec(spec: Any) -> Optional[Tuple[str, str, str]]:
+    if not isinstance(spec, dict):
         return None
-
-    mode = None
-    path = spec
-
-    if ":" in spec:
-        p, suf = spec.rsplit(":", 1)
-        suf_l = (suf or "").strip().lower()
-        if suf_l in ("meta", "metadata", "m"):
-            mode = "metadata"
-            path = p
-        elif suf_l in ("list", "folders", "folder", "l"):
-            mode = "folders"
-            path = p
-
-    if mode is None:
-        mode = "folders"
-
+    path = str(spec.get("path") or "").strip()
+    if not path:
+        return None
     path = (path or "").strip().strip('"').strip("'")
     if not path or not os.path.isabs(path):
         return None
 
     ap = os.path.abspath(path)
     name = os.path.basename(ap.rstrip("\\/")) or ap
-    return name, ap, mode
+    return name, ap, "metadata"
 
 
 def roots() -> List[Tuple[str, str, str, str]]:
@@ -53,17 +45,54 @@ def roots() -> List[Tuple[str, str, str, str]]:
             continue
         name, ap, mode = p
         parsed.append((name, ap, mode))
+    labels = {"debrid": "Debrid", "soulseek": "Soulseek", "youtube": "YouTube"}
+    for source, path in (_download_folders_provider() or {}).items():
+        clean = str(path or "").strip()
+        if not clean or not os.path.isabs(clean):
+            continue
+        ap = os.path.abspath(clean)
+        parsed.append((labels.get(str(source), os.path.basename(ap.rstrip("\\/")) or ap), ap, "metadata"))
 
     out: List[Tuple[str, str, str, str]] = []
     seen = set()
     for name, ap, mode in parsed:
         ap2 = os.path.abspath(ap)
-        if ap2 in seen:
+        key = os.path.normcase(os.path.realpath(ap2))
+        if key in seen:
             continue
-        seen.add(ap2)
+        seen.add(key)
         rid = sha1_text(ap2)
         out.append((rid, name, ap2, mode))
     return out
+
+
+def root_objects() -> List[dict]:
+    download_roots = {
+        os.path.normcase(os.path.realpath(os.path.abspath(str(path)))): str(source)
+        for source, path in (_download_folders_provider() or {}).items()
+        if str(path or "").strip() and os.path.isabs(str(path))
+    }
+    out = []
+    for rid, name, ap, mode in roots():
+        source = download_roots.get(os.path.normcase(os.path.realpath(ap)), "library")
+        out.append({"id": rid, "name": name, "path": ap, "mode": mode, "source": source})
+    return out
+
+
+def source_origin_for_path(abs_path: str) -> str:
+    candidate = os.path.realpath(os.path.abspath(str(abs_path or "")))
+    matches: list[tuple[int, str]] = []
+    for source, root in (_download_folders_provider() or {}).items():
+        clean = str(root or "").strip()
+        if not clean:
+            continue
+        root_abs = os.path.realpath(os.path.abspath(clean))
+        try:
+            if os.path.commonpath([root_abs, candidate]) == root_abs:
+                matches.append((len(root_abs), str(source)))
+        except Exception:
+            continue
+    return max(matches, default=(0, "library"))[1]
 
 
 def root_by_id(root_id: str) -> Optional[Tuple[str, str, str, str]]:

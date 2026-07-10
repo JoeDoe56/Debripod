@@ -82,10 +82,13 @@ def file_meta_cached(abs_path: str) -> dict:
 
         streams = js.get("streams") or []
         audio_stream = None
+        video_stream = None
         if isinstance(streams, list):
             for s in streams:
                 if not isinstance(s, dict):
                     continue
+                if (s.get("codec_type") or "").lower() == "video" and video_stream is None:
+                    video_stream = s
                 if (s.get("codec_type") or "").lower() != "audio":
                     continue
                 if audio_stream is None:
@@ -187,6 +190,11 @@ def file_meta_cached(abs_path: str) -> dict:
             "bit_depth": bits,
             "sample_rate": sample_rate,
             "bitrate": bit_rate,
+            "container": str(fmt.get("format_name") or "").split(",", 1)[0] if isinstance(fmt, dict) else "",
+            "video_codec": str((video_stream or {}).get("codec_name") or ""),
+            "audio_codec": str((audio_stream or {}).get("codec_name") or ""),
+            "width": int((video_stream or {}).get("width") or 0),
+            "height": int((video_stream or {}).get("height") or 0),
         }
     except Exception:
         meta = {
@@ -202,6 +210,11 @@ def file_meta_cached(abs_path: str) -> dict:
             "bit_depth": None,
             "sample_rate": None,
             "bitrate": None,
+            "container": "",
+            "video_codec": "",
+            "audio_codec": "",
+            "width": 0,
+            "height": 0,
         }
 
     with META_LOCK:

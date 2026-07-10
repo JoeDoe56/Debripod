@@ -6,6 +6,15 @@ from .runtime_video_post import *
 YTDLP_PROCESS_SEMAPHORE = threading.BoundedSemaphore(2)
 YTDLP_DOWNLOAD_TIMEOUT_SECONDS = 6 * 3600
 
+
+def _youtube_recompute_overall(task_id: str) -> None:
+    with TASKS_LOCK:
+        task = TASKS.get(task_id)
+        files = list(getattr(task, "youtube_files", []) or []) if task else []
+    done = sum(max(0, int(item.get("done") or 0)) for item in files)
+    totals = [max(0, int(item.get("total") or 0)) for item in files]
+    set_task(task_id, overall_done=done, overall_total=(sum(totals) if any(totals) else None))
+
 def _youtube_ytdlp_parse_int(raw: Any) -> int:
     try:
         s = str(raw or '').strip()
@@ -57,13 +66,13 @@ def _youtube_find_downloaded_path(task_dir: str, base_title: str, preferred_ext:
 def _youtube_pick_next_entry(task_id: str) -> Optional[Dict[str, Any]]:
     with TASKS_LOCK:
         tcur = TASKS.get(task_id)
-        entries = list(getattr(tcur, 'rd_files', []) or []) if tcur else []
+        entries = list(getattr(tcur, 'youtube_files', []) or []) if tcur else []
     for e in entries:
         file_id = str(e.get('file_id') or '')
         st = str(e.get('state') or '').lower()
         ctl = _get_file_control(task_id, file_id) if file_id else {}
         if ctl.get('canceled'):
-            _update_task_file_entry(task_id, 'rd_files', file_id, state='canceled', canceled=True, error='')
+            _update_task_file_entry(task_id, 'youtube_files', file_id, state='canceled', canceled=True, error='')
             continue
         if st == 'queued':
             return e
@@ -81,10 +90,10 @@ def _youtube_run_download(task_id: str, entry: Dict[str, Any], seq: int, total_c
         raise RuntimeError('Missing file id')
     ctl = _get_file_control(task_id, file_id)
     if ctl.get('canceled'):
-        _update_task_file_entry(task_id, 'rd_files', file_id, state='canceled', canceled=True, error='')
+        _update_task_file_entry(task_id, 'youtube_files', file_id, state='canceled', canceled=True, error='')
         return None
     if ctl.get('paused'):
-        _update_task_file_entry(task_id, 'rd_files', file_id, state='paused', paused=True, error='')
+        _update_task_file_entry(task_id, 'youtube_files', file_id, state='paused', paused=True, error='')
         return None
 
     title = sanitize_filename(str(entry.get('name') or entry.get('title') or 'youtube'))
@@ -109,9 +118,9 @@ def _youtube_run_download(task_id: str, entry: Dict[str, Any], seq: int, total_c
     ]
 
     initial_total = int(entry.get('total') or 0)
-    _update_task_file_entry(task_id, 'rd_files', file_id, state='downloading', paused=False, canceled=False, error='', out_path=preferred_out, name=os.path.basename(preferred_out), done=0, speed=0.0, total=initial_total)
+    _update_task_file_entry(task_id, 'youtube_files', file_id, state='downloading', paused=False, canceled=False, error='', out_path=preferred_out, name=os.path.basename(preferred_out), done=0, speed=0.0, total=initial_total)
     set_task(task_id, current_file=os.path.basename(preferred_out), current_done=0, current_total=(initial_total or None), state='downloading', message=f'Downloading {seq} of {total_count}')
-    _rd_recompute_overall_from_files(task_id)
+    _youtube_recompute_overall(task_id)
 
     YTDLP_PROCESS_SEMAPHORE.acquire()
     try:
@@ -162,9 +171,9 @@ def _youtube_run_download(task_id: str, entry: Dict[str, Any], seq: int, total_c
                         done = _youtube_ytdlp_parse_int(parts[2])
                         total = _youtube_ytdlp_parse_int(parts[3]) or int(entry.get('total') or 0)
                         speed = _youtube_ytdlp_parse_speed(parts[4])
-                        _update_task_file_entry(task_id, 'rd_files', file_id, state='downloading', done=done, total=total, speed=speed, error='')
+                        _update_task_file_entry(task_id, 'youtube_files', file_id, state='downloading', done=done, total=total, speed=speed, error='')
                         set_task(task_id, current_done=done, current_total=(total or None), message=f'Downloading {seq} of {total_count}')
-                        _rd_recompute_overall_from_files(task_id)
+                        _youtube_recompute_overall(task_id)
                 elif s.startswith('dp:filepath:'):
                     actual_path = s.split(':', 2)[2].strip()
                 elif 'ERROR:' in s:
@@ -186,12 +195,12 @@ def _youtube_run_download(task_id: str, entry: Dict[str, Any], seq: int, total_c
             pass
 
     if cancel_requested:
-        _update_task_file_entry(task_id, 'rd_files', file_id, state='canceled', canceled=True, error='')
-        _rd_recompute_overall_from_files(task_id)
+        _update_task_file_entry(task_id, 'youtube_files', file_id, state='canceled', canceled=True, error='')
+        _youtube_recompute_overall(task_id)
         return None
     if pause_requested:
-        _update_task_file_entry(task_id, 'rd_files', file_id, state='paused', paused=True, error='')
-        _rd_recompute_overall_from_files(task_id)
+        _update_task_file_entry(task_id, 'youtube_files', file_id, state='paused', paused=True, error='')
+        _youtube_recompute_overall(task_id)
         return None
     if rc != 0:
         if timed_out:
@@ -207,15 +216,15 @@ def _youtube_run_download(task_id: str, entry: Dict[str, Any], seq: int, total_c
         sz = int(entry.get('total') or 0)
     final_name = os.path.basename(actual) if actual else os.path.basename(preferred_out)
     final_ext = os.path.splitext(final_name)[1].lstrip('.').lower()
-    _update_task_file_entry(task_id, 'rd_files', file_id, state='complete', done=sz, total=sz, speed=0.0, out_path=actual or preferred_out, name=final_name, ext=(final_ext or ext), error='', paused=False, canceled=False)
-    _rd_recompute_overall_from_files(task_id)
+    _update_task_file_entry(task_id, 'youtube_files', file_id, state='complete', done=sz, total=sz, speed=0.0, out_path=actual or preferred_out, name=final_name, ext=(final_ext or ext), error='', paused=False, canceled=False)
+    _youtube_recompute_overall(task_id)
     return actual or preferred_out
 
 
 def _youtube_finalize_task_state(task_id: str, default_message: str = 'Finished') -> None:
     with TASKS_LOCK:
         t = TASKS.get(task_id)
-        entries = list(getattr(t, 'rd_files', []) or []) if t else []
+        entries = list(getattr(t, 'youtube_files', []) or []) if t else []
     if not entries:
         set_task(task_id, state='error', message='No YouTube formats selected', current_file='', current_done=0, current_total=None)
         return
@@ -269,7 +278,7 @@ def _youtube_download_from_queue(task_id: str) -> List[str]:
             break
         with TASKS_LOCK:
             tcur = TASKS.get(task_id)
-            entries = list(getattr(tcur, 'rd_files', []) or []) if tcur else []
+            entries = list(getattr(tcur, 'youtube_files', []) or []) if tcur else []
         total_count = len(entries)
         seq = 1
         fid = str(nxt.get('file_id') or '')
@@ -284,8 +293,8 @@ def _youtube_download_from_queue(task_id: str) -> List[str]:
         except Cancelled:
             raise
         except Exception:
-            _update_task_file_entry(task_id, 'rd_files', fid, state='failed', error='YouTube download failed', paused=False)
-            _rd_recompute_overall_from_files(task_id)
+            _update_task_file_entry(task_id, 'youtube_files', fid, state='failed', error='YouTube download failed', paused=False)
+            _youtube_recompute_overall(task_id)
     _youtube_finalize_task_state(task_id)
     return completed_paths
 
@@ -310,7 +319,7 @@ def youtube_worker(task_id: str) -> None:
     if not task:
         return
     try:
-        entries = list(getattr(task, 'rd_files', []) or [])
+        entries = list(getattr(task, 'youtube_files', []) or [])
         if not entries:
             raise RuntimeError('No YouTube formats selected')
         set_task(task_id, state='downloading', message=f'Downloading {len(entries)} YouTube file(s)', overall_done=0, overall_total=None)

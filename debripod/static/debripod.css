@@ -865,6 +865,7 @@
       max-width:100%;
       padding-right:0;
     }
+    .dpInlineLoader,
     .libSearchInlineLoader{
       flex:0 0 auto;
       width:1em;
@@ -874,6 +875,48 @@
       border:0.16em solid rgba(255,255,255,0.26);
       border-top-color:rgba(255,255,255,0.92);
       animation:dpSpin .75s linear infinite;
+    }
+    .ipodItem.isExpandedRow{
+      align-items:stretch;
+      flex-direction:column;
+      gap:5px;
+      padding-top:7px;
+      padding-bottom:7px;
+    }
+    .ipodExpandedMain,
+    .ipodExpandedSub{
+      display:flex;
+      align-items:center;
+      width:100%;
+      min-width:0;
+    }
+    .ipodExpandedMain{ gap:8px; }
+    .ipodExpandedSub{
+      min-height:0;
+      max-height:0;
+      opacity:0;
+      transform:translateY(-4px);
+      overflow:hidden;
+      gap:7px;
+      padding-left:4px;
+      color:var(--dp-text-row-pills);
+      font-size:11px;
+      transition:max-height .22s ease, opacity .18s ease, transform .22s ease;
+    }
+    .ipodItem.isExpandedRow .ipodExpandedSub{
+      min-height:22px;
+      max-height:40px;
+      opacity:1;
+      transform:translateY(0);
+    }
+    .ipodExpandedSubLabel{
+      flex:1 1 auto;
+      min-width:0;
+    }
+    @media (prefers-reduced-motion: reduce){
+      .dpInlineLoader,
+      .libSearchInlineLoader{ animation-duration:1.8s; }
+      .ipodExpandedSub{ transition:none; }
     }
     .ipodPill{
       position: relative;
@@ -1141,6 +1184,21 @@
       outline-color: transparent;
     }
     .ipodItem.info{cursor:default; opacity:.78}
+    .ipodItem.disabled{
+      opacity:.42;
+      filter:grayscale(.5);
+      cursor:default;
+    }
+    @media (hover: none) and (pointer: coarse){
+      /* WebKit can treat a masked scrolling element as an inert hit target.
+         Keep the fade effect off the actual scroller so a finger can pan it. */
+      .ipodList{
+        -webkit-mask-image:none;
+        mask-image:none;
+        touch-action:pan-y pinch-zoom;
+        overscroll-behavior-y:contain;
+      }
+    }
     .ipodItem.random{justify-content:center; letter-spacing:.02em}
     .ipodItem.random.sel{background: transparent; outline: 0;}
     .ipodBadge{

@@ -411,6 +411,11 @@ async function goBack(){
 
     const rootId = item.root.id;
     const rel = item.rel;
+    if(!(resumeTime > 0)){
+      const key = String(rootId || "") + "::" + String(rel || "").replace(/\\/g, "/").replace(/^\/+/, "");
+      const saved = state.serverMediaProgress && state.serverMediaProgress[key];
+      resumeTime = Number((saved && saved.position) || item.position || 0);
+    }
 
     try{
       if(isVideoActive() && state.now && state.now.media === "video" && state.now.rootId === rootId && state.now.rel === rel){
@@ -1086,6 +1091,20 @@ async function goBack(){
     }, !!push);
   }
 
+  async function viewFolderSources(push){
+    showNowPlaying(false);
+    await setView({
+      kind:"folder_sources",
+      label:"Folders",
+      load:async function(){
+        const cfg = await loadConfig();
+        const items = (cfg.roots || []).map(root=>({kind:"folder_source", label:root.name || "Folder", root:root, pills:[root.source ? String(root.source) : "library"]}));
+        if(!items.length) items.push({kind:"info", label:"No library folders configured"});
+        resetList(items);
+      }
+    }, !!push);
+  }
+
   async function viewMetaList(root, level, value, label, push){
     showNowPlaying(false);
     await setView({
@@ -1104,6 +1123,7 @@ async function goBack(){
           throw e;
         }
         const items = [];
+        const cfg = await loadConfig();
         if(this.level === "playlists"){
           items.push({kind:"playlist_create", label:"Create playlist"});
           items.push({kind:"smart_playlist_create", label:"Create smart playlist"});
@@ -1117,7 +1137,7 @@ async function goBack(){
             continue;
           }
           const out = Object.assign({}, it);
-          out.root = root;
+          out.root = out.root_id ? ((cfg.roots || []).find(candidate=>candidate.id === out.root_id) || {id:out.root_id, name:"Library", mode:"metadata"}) : root;
           items.push(out);
         }
         if(js.building){
@@ -1139,12 +1159,21 @@ async function goBack(){
     }
     const it = forcedItem || currentItem();
 if(!it) return;
-    if(it.kind === "info") return;
+    if(it.disabled) return;
+    if(!it.root && it.root_id){
+      try{
+        const cfg = await loadConfig();
+        it.root = (cfg.roots || []).find(candidate=>candidate.id === it.root_id) || {id:it.root_id, name:"Library", mode:"metadata"};
+      }catch(e){ it.root = {id:it.root_id, name:"Library", mode:"metadata"}; }
+    }
+    if(!it.root && state.current && state.current.root) it.root = state.current.root;
+    if(it.kind === "info" || it.kind === "loading") return;
 
     if(it.kind === "libsearch_query" || it.kind === "libsearch_filter"){
       const field = (it.kind === "libsearch_filter") ? "filter" : "q";
       try{
-        if(!state.libSearch) state.libSearch = {q:"", filter:"", engine:"combined", cache_key:"", result_source:"combined", last_count:0, results:[], knaben_results:[], slsk_users:[], editField:"", editValue:""};
+        if(!state.libSearch) state.libSearch = {q:"", filter:"", engine:"combined", cache_key:"", result_source:"combined", last_count:0, results:[], knaben_results:[], slsk_users:[], sourceStatus:{}, searching:false, cached:false, showSourceStatus:false, editField:"", editValue:""};
+        if(field === "q") state.libSearch.showSourceStatus = false;
         state.libSearch.editField = field;
         state.libSearch.editValue = (typeof state.libSearch[field] === "string") ? state.libSearch[field] : "";
         renderList();
@@ -1401,6 +1430,8 @@ if(it.kind === "libtasks_entry"){
         state.libSearch.slsk_users = [];
         state.libSearch.last_count = 0;
         state.libSearch.searching = false;
+        state.libSearch.showSourceStatus = false;
+        state.libSearch.sourceStatus = {};
         libSetStatus("", "");
         await viewLibSearch(false);
         return;
@@ -1466,42 +1497,18 @@ if(it.kind === "libtasks_entry"){
         }
         return;
       }
-      await viewSettingsLibraryMode(picked, -1, true, setupReturnPage);
+      const folders = libraryFolders();
+      if(!folders.some(item=>String((item && item.path) || "").toLowerCase() === String(picked).toLowerCase())) folders.push({path:String(picked), mode:"meta"});
+      await settingsSave({LIBRARY_FOLDERS:folders}, {});
+      if(setupReturnPage && typeof viewSetupWizardPage === "function") await viewSetupWizardPage(setupReturnPage, false);
+      else await viewSettingsLibrary(false);
       return;
     }
 
     if(it.kind === "settings_library_folder"){
       const folders = libraryFolders();
       const f = folders[Number(it.folderIndex || 0)] || {};
-      await viewSettingsLibraryMode(String(f.path || ""), Number(it.folderIndex || 0), true, String(it.setupReturnPage || ""));
-      return;
-    }
-
-    if(it.kind === "settings_library_mode_choice"){
-      const cur = state.current || {};
-      const folders = libraryFolders();
-      const idx = Number(cur.folderIndex);
-      const entry = {path:String(cur.folderPath || ""), mode:String(it.mode || "list")};
-      if(!entry.path) return;
-      if(Number.isFinite(idx) && idx >= 0 && idx < folders.length){
-        folders[idx] = entry;
-      }else{
-        folders.push(entry);
-      }
-      try{
-        await settingsSave({LIBRARY_FOLDERS: folders}, {});
-        const setupReturnPage = String(cur.setupReturnPage || "");
-        if(setupReturnPage && typeof viewSetupWizardPage === "function"){
-          await viewSetupWizardPage(setupReturnPage, false);
-        }else{
-          await goBack();
-          await viewSettingsLibrary(false);
-        }
-      }catch(e){
-        const setupReturnPage = String(cur.setupReturnPage || "");
-        if(setupReturnPage && typeof libSetStatus === "function") libSetStatus(String(e && e.message ? e.message : e), "warn");
-        else alert(String(e && e.message ? e.message : e));
-      }
+      await viewSettingsLibraryDetail(String(f.path || ""), Number(it.folderIndex || 0), true, String(it.setupReturnPage || ""));
       return;
     }
 
@@ -1559,12 +1566,17 @@ if(it.kind === "libsearch_history_action"){
     }
 
     if(it.kind === "libsearch_history_entry"){
-      state.pendingLibSearch = {engine: it.engine || "", q: it.q || ""};
+      state.pendingLibSearch = {engine: "combined", q: it.q || "", cache_key:it.cache_key || ""};
       await goBack();
       return;
     }
 
     if(it.kind === "libsearch_result"){
+      const raw = it.raw || {};
+      if(String(it.source || raw.source || "") === "library" && Array.isArray(raw.files) && raw.files.length === 1){
+        await startSearchStreamQueue(raw.files, 0);
+        return;
+      }
       await viewLibSearchResultDetails(true, it);
       return;
     }
@@ -1594,19 +1606,19 @@ if(it.kind === "libsearch_history_action"){
           const visible = (state.items || []).filter(x=>x && x.kind === "libsearch_file" && x.selectable);
           let anyUnsel = false;
           for(const v of visible){
-            const key = src === "knaben" ? ("file:" + String(v.file_id || v.label || "")) : (src === "youtube" ? ("itag:" + String(v.itag || v.file_id || v.label || "")) : String(v.remote_path || v.label || ""));
+            const key = src === "knaben" ? ("file:" + String(v.file_id || v.label || "")) : (src === "youtube" ? ("itag:" + String(v.itag || v.file_id || v.label || "")) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
             if(key && !target.selected.has(key)){ anyUnsel = true; break; }
           }
           target.downloadQueued = false;
           if(anyUnsel){
             for(const v of visible){
-              const key = src === "knaben" ? ("file:" + String(v.file_id || v.label || "")) : (src === "youtube" ? ("itag:" + String(v.itag || v.file_id || v.label || "")) : String(v.remote_path || v.label || ""));
+              const key = src === "knaben" ? ("file:" + String(v.file_id || v.label || "")) : (src === "youtube" ? ("itag:" + String(v.itag || v.file_id || v.label || "")) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
               if(!key) continue;
-              target.selected.set(key, {key:key, remote_path:String(v.remote_path || ""), file_id:String(v.file_id || ""), itag:String(v.itag || v.format_id || v.file_id || ""), format_id:String(v.format_id || v.itag || v.file_id || ""), size:Number(v.size || 0), name:String(v.label || ""), source:String(v.source || src || ""), ext:String(v.ext || ((((v.pills || [])[1] && typeof (v.pills || [])[1] === "string") ? (v.pills || [])[1] : "") || "")), quality:String(v.quality || ""), bitrate:String(v.bitrate || ""), media:String(v.media || ""), direct_url:String(v.direct_url || ""), url:String((target.result && target.result.url) || "")});
+              target.selected.set(key, {key:key, remote_path:String(v.remote_path || ""), file_id:String(v.file_id || ""), itag:String(v.itag || v.format_id || v.file_id || ""), format_id:String(v.format_id || v.itag || v.file_id || ""), size:Number(v.size || 0), name:String(v.label || ""), label:String(v.label || ""), source:String(v.source || src || ""), ext:String(v.ext || ((((v.pills || [])[1] && typeof (v.pills || [])[1] === "string") ? (v.pills || [])[1] : "") || "")), quality:String(v.quality || ""), bitrate:String(v.bitrate || ""), media:String(v.media || (target.result && target.result.media) || ""), root_id:String(v.root_id || (target.result && target.result.root_id) || ""), rel:String(v.rel || ""), direct_url:String(v.direct_url || ""), url:String((target.result && target.result.url) || "")});
             }
           }else{
             for(const v of visible){
-              const key = src === "knaben" ? ("file:" + String(v.file_id || v.label || "")) : (src === "youtube" ? ("itag:" + String(v.itag || v.file_id || v.label || "")) : String(v.remote_path || v.label || ""));
+              const key = src === "knaben" ? ("file:" + String(v.file_id || v.label || "")) : (src === "youtube" ? ("itag:" + String(v.itag || v.file_id || v.label || "")) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
               if(key) target.selected.delete(key);
             }
           }
@@ -1627,10 +1639,16 @@ if(it.kind === "libsearch_history_action"){
           libSetFileStatus("Preparing stream", "");
           try{
             const rr = target.result || {};
+            if(src === "library"){
+              await startSearchStreamQueue(Array.from(target.selected.values()), 0);
+              libSetFileStatus("", "");
+              return;
+            }
             const sel = Array.from(target.selected.values()).map(x=>({remote_path:x.remote_path || "", file_id:x.file_id || "", itag:x.itag || x.format_id || x.file_id || "", format_id:x.format_id || x.itag || x.file_id || "", size:x.size || 0, name:x.name || "", source:x.source || src || "", ext:x.ext || "", quality:x.quality || "", bitrate:x.bitrate || "", media:x.media || "", direct_url:x.direct_url || "", url:x.url || rr.url || ""}));
             const res = await apiPost("/api/libsearch/stream_selected", {
               source: src,
-              torrent_id: rr.torrent_id || "",
+              provider: rr.provider || "",
+              debrid_task_id: rr.debrid_task_id || "",
               magnet: rr.magnet || "",
               url: rr.url || "",
               channel: rr.channel || rr.user || "",
@@ -1658,7 +1676,7 @@ if(it.kind === "libsearch_history_action"){
             if(src === "knaben"){
               const ids = Array.from(target.selected.values()).map(x=>String(x.file_id || "")).filter(Boolean);
               const rr = target.result || {};
-              const res = await apiPost("/api/rd/enqueue_selected", {torrent_id: rr.torrent_id || "", file_ids: ids, title: rr.title || "Knaben item", magnet: rr.magnet || ""});
+              const res = await apiPost("/api/debrid/enqueue_selected", {provider: rr.provider || "", debrid_task_id: rr.debrid_task_id || "", file_ids: ids, title: rr.title || "Knaben item", magnet: rr.magnet || ""});
               const js = (res && res.json) ? res.json : {};
               if(!res || !res.ok || !js.ok) throw new Error((js && js.error) ? js.error : "Failed to queue download");
             }else if(src === "youtube"){
@@ -1712,53 +1730,6 @@ if(it.kind === "libsearch_history_action"){
           return;
         }
       }
-      if(it.action === "rd_selectall" && view._rd){
-        const visible = (state.items || []).filter(x=>x && x.kind === "libsearch_file");
-        let anyUnsel = false;
-        for(const v of visible){
-          if(v && v.file_id && !view._rd.selected.has(String(v.file_id))){
-            anyUnsel = true;
-            break;
-          }
-        }
-        if(anyUnsel){
-          for(const v of visible){
-            if(v && v.file_id) view._rd.selected.add(String(v.file_id));
-          }
-        }else{
-          for(const v of visible){
-            if(v && v.file_id) view._rd.selected.delete(String(v.file_id));
-          }
-        }
-        libSearchRebuildFilesList(view._rd.buildItems());
-        return;
-      }
-      if(it.action === "rd_clear" && view._rd){
-        view._rd.selected = new Set();
-        libSearchRebuildFilesList(view._rd.buildItems());
-        return;
-      }
-      if(it.action === "rd_download" && view._rd){
-        if(!view._rd.selected || view._rd.selected.size === 0){
-          libSetFileStatus("Select files", "warn");
-          return;
-        }
-        libSetFileStatus("Queuing", "");
-        try{
-          const ids = Array.from(view._rd.selected.values());
-          const res = await apiPost("/api/rd/enqueue_selected", {torrent_id: view._rd.torrent_id, file_ids: ids, title: view._rd.title || "Knaben item", magnet: view._rd.magnet || ""});
-          const js = (res && res.json) ? res.json : {};
-          if(!res || !res.ok || !js.ok){
-            throw new Error((js && js.error) ? js.error : "Failed to queue download");
-          }
-          libSetFileStatus("", "");
-        }catch(e){
-          libSetFileStatus("Error", "warn");
-          alert(String(e && e.message ? e.message : e));
-        }
-        return;
-      }
-
       if(it.action === "slsk_browse_user" && view._slsk){
         view._slsk.loadingBrowse = true;
         libSearchRebuildFilesList(view._slsk.buildItems());
@@ -1847,8 +1818,6 @@ if(it.kind === "libsearch_history_action"){
         const view = state.current || {};
         if(view._searchResult && typeof view._searchResult.buildItems === "function"){
           libSearchRebuildFilesList(view._searchResult.buildItems());
-        }else if(view._rd && typeof view._rd.buildItems === "function"){
-          libSearchRebuildFilesList(view._rd.buildItems());
         }else if(view._slsk && typeof view._slsk.buildItems === "function"){
           libSearchRebuildFilesList(view._slsk.buildItems());
         }else if(view._slskbrowse && typeof view._slskbrowse.buildItems === "function"){
@@ -1965,6 +1934,16 @@ if(it.kind === "libtask_action"){
   if(it.action === "cancel_task"){
     await apiPost("/api/tasks/cancel", {task_id: tid});
     await libTasksPollTick();
+    return;
+  }
+  if(it.action === "open_library_location"){
+    const nav = it.library_nav || {};
+    if(!nav.available) return;
+    const cfg = await loadConfig();
+    const root = (cfg.roots || []).find(candidate=>candidate.id === nav.root_id);
+    if(!root) return;
+    state.root = root;
+    await viewFolder(root, String(nav.rel || ""), "Open library location", true);
     return;
   }
   if(it.action === "clear_task"){
@@ -2125,9 +2104,23 @@ if(it.kind === "root"){
       await viewFolder(it.root, it.rel, it.label, true);
       return;
     }
+    if(it.kind === "folder_sources"){
+      await viewFolderSources(true);
+      return;
+    }
+
+    if(it.kind === "debrid_token"){
+      try{ if(typeof beginDebridTokenEdit === "function") beginDebridTokenEdit(); }catch(e){}
+      return;
+    }
+    if(it.kind === "folder_source"){
+      state.root = it.root;
+      await viewFolder(it.root, "", it.label || "Folders", true);
+      return;
+    }
     if(it.kind === "metacat"){
       if(it.cat === "folders"){
-        await viewFolder(it.root, "", "", true);
+        await viewFolderSources(true);
         return;
       }
       if(it.cat === "artists"){
@@ -2154,6 +2147,14 @@ if(it.kind === "root"){
         await viewMetaList(it.root, "genres", "", it.label, true);
         return;
       }
+      if(it.cat === "movies"){
+        await viewMetaList(it.root, "movies", "", it.label, true);
+        return;
+      }
+      if(it.cat === "shows"){
+        await viewMetaList(it.root, "shows", "", it.label, true);
+        return;
+      }
       if(it.cat === "videos"){
         await viewMetaList(it.root, "videos", "", it.label, true);
         return;
@@ -2170,6 +2171,18 @@ if(it.kind === "root"){
     }
     if(it.kind === "genre"){
       await viewMetaList(it.root, "genre_albums", it.value, it.label, true);
+      return;
+    }
+    if(it.kind === "show"){
+      await viewMetaList(it.root, "show_seasons", it.show_key || "", it.label, true);
+      return;
+    }
+    if(it.kind === "show_season"){
+      await viewMetaList(it.root, "show_episodes", JSON.stringify({show_key:it.show_key || "", season:Number(it.season || 0)}), it.label, true);
+      return;
+    }
+    if(it.kind === "movie" || it.kind === "show_episode"){
+      await startVideoFromItem(it, true, Number(it.position || 0));
       return;
     }
     if(it.kind === "playlist"){

@@ -43,7 +43,7 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {'APP_NAME': 'DebriPod',
  'KNABEN_API_BASE': 'https://api.knaben.org/v1',
  'KNABEN_WEB_BASE': 'https://knaben.org',
  'YTDLP_CMD': 'yt-dlp',
- 'YOUTUBE_DOWNLOAD_DIR': 'C:\\Users\\bugma\\Debripod\\youtube',
+ 'YOUTUBE_DOWNLOAD_DIR': '',
  'YOUTUBE_STREAM_CACHE_SUBDIR': 'youtube_streams',
  'YOUTUBE_WEB_BASE': 'https://www.youtube.com',
  'YOUTUBE_SEARCH_LIMIT': 24,
@@ -62,10 +62,17 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {'APP_NAME': 'DebriPod',
  'VIDEO_BROWSER_TARGET_EXT': 'mp4',
  'REAL_DEBRID_API_KEY': '',
  'RD_BASE': 'https://api.real-debrid.com/rest/1.0',
- 'DOWNLOAD_DIR': 'C:\\Users\\bugma\\Debripod\\debrid',
+ 'DEBRID_PROVIDER': '',
+ 'ALLDEBRID_API_KEY': '',
+ 'ALLDEBRID_BASE': 'https://api.alldebrid.com',
+ 'PREMIUMIZE_API_KEY': '',
+ 'PREMIUMIZE_BASE': 'https://www.premiumize.me',
+ 'TORBOX_API_KEY': '',
+ 'TORBOX_BASE': 'https://api.torbox.app',
+ 'DOWNLOAD_DIR': '',
  'SOULSEEK_USERNAME': '',
  'SOULSEEK_PASSWORD': '',
- 'SOULSEEK_DOWNLOAD_DIR': 'C:\\Users\\bugma\\Debripod\\soulseek',
+ 'SOULSEEK_DOWNLOAD_DIR': '',
  'SOULSEEK_LISTENING_PORT': 61000,
  'SOULSEEK_OBFUSCATED_PORT': 0,
  'SOULSEEK_SEARCH_TIMEOUT_SEC': 8,
@@ -88,19 +95,15 @@ NON_PERSISTED_APP_SETTING_KEYS = {"ADVANCED_UI_SETTINGS_DEFAULTS"}
 SECRET_SETTING_KEYS = {
     "KNABEN_API_KEY",
     "REAL_DEBRID_API_KEY",
+    "ALLDEBRID_API_KEY",
+    "PREMIUMIZE_API_KEY",
+    "TORBOX_API_KEY",
     "SOULSEEK_USERNAME",
     "SOULSEEK_PASSWORD",
     "LASTFM_API_KEY",
     "LASTFM_API_SECRET",
     "LASTFM_SESSION_KEY",
 }
-
-LEGACY_DEFAULT_LIBRARY_FOLDERS = [
-    {"path": "./data/debrid", "mode": "list"},
-    {"path": "./data/soulseek", "mode": "meta"},
-    {"path": "./data/music", "mode": "meta"},
-]
-
 
 def _user_settings_path(username: str) -> Path:
     raw = str(username or "").strip().lower()
@@ -119,10 +122,6 @@ def default_app_settings(username: str | None = None, defaults_overrides: dict[s
         if key_upper in APP_SETTING_KEYS and key_upper not in SECRET_SETTING_KEYS:
             out[key_upper] = _coerce_setting(key_upper, value)
     if str(username or "").strip():
-        base = _user_data_dir(str(username))
-        out["DOWNLOAD_DIR"] = str(base / "debrid")
-        out["SOULSEEK_DOWNLOAD_DIR"] = str(base / "soulseek")
-        out["YOUTUBE_DOWNLOAD_DIR"] = str(base / "youtube")
         out["LIBRARY_FOLDERS"] = []
     return out
 
@@ -164,6 +163,9 @@ def _atomic_write_json(path: Path, data: dict[str, Any]) -> None:
 
 def _coerce_setting(key: str, value: Any) -> Any:
     default = DEFAULT_APP_SETTINGS.get(key)
+    if key == "DEBRID_PROVIDER":
+        clean = str(value or "").strip().lower()
+        return clean if clean in {"", "real_debrid", "alldebrid", "premiumize", "torbox"} else ""
     if key in {"SOULSEEK_LISTENING_PORT", "SOULSEEK_OBFUSCATED_PORT"}:
         try:
             return max(0, min(65535, int(value)))
@@ -190,20 +192,8 @@ def _coerce_setting(key: str, value: Any) -> Any:
             for item in value:
                 if isinstance(item, dict):
                     path = str(item.get("path") or "").strip()
-                    mode = str(item.get("mode") or "list").strip().lower()
-                    mode = "meta" if mode in {"meta", "metadata"} else "list"
                     if path:
-                        out.append({"path": path, "mode": mode})
-                elif isinstance(item, str):
-                    path, mode = item, "list"
-                    if ":" in item:
-                        p, suffix = item.rsplit(":", 1)
-                        if suffix.strip().lower() in {"meta", "metadata", "m", "list", "folders", "folder", "l"}:
-                            path = p
-                            mode = "meta" if suffix.strip().lower() in {"meta", "metadata", "m"} else "list"
-                    path = str(path or "").strip()
-                    if path:
-                        out.append({"path": path, "mode": mode})
+                        out.append({"path": path, "mode": "meta"})
         return out
     if isinstance(default, bool):
         return bool(value)
@@ -226,10 +216,6 @@ def _coerce_setting(key: str, value: Any) -> Any:
             return [x.strip() for x in value.split(",") if x.strip()]
         return list(default)
     return "" if value is None else str(value)
-
-
-def _matches_legacy_default_library_folders(value: Any) -> bool:
-    return _coerce_setting("LIBRARY_FOLDERS", value) == LEGACY_DEFAULT_LIBRARY_FOLDERS
 
 
 def normalize_settings(data: dict[str, Any], username: str | None = None, defaults_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -256,16 +242,11 @@ def ensure_app_settings(startup_config: dict[str, Any] | None = None, username: 
             if key_upper in APP_SETTING_KEYS and key_upper not in merged:
                 merged[key_upper] = value
                 changed = True
-    else:
-        user_defaults = default_app_settings(username, defaults_overrides=defaults_overrides)
-        if _matches_legacy_default_library_folders(merged.get("LIBRARY_FOLDERS")):
-            merged["LIBRARY_FOLDERS"] = []
-            changed = True
-        for key in ("DOWNLOAD_DIR", "SOULSEEK_DOWNLOAD_DIR", "YOUTUBE_DOWNLOAD_DIR"):
-            if str(merged.get(key) or "").strip() == str(DEFAULT_APP_SETTINGS.get(key) or "").strip():
-                merged[key] = user_defaults[key]
-                changed = True
     normalized = normalize_settings(merged, username=username, defaults_overrides=defaults_overrides)
+    if not str(normalized.get("DEBRID_PROVIDER") or "").strip():
+        if str(normalized.get("REAL_DEBRID_API_KEY") or "").strip():
+            normalized["DEBRID_PROVIDER"] = "real_debrid"
+            changed = True
     persisted = _persistable_settings(normalized)
     if changed or persisted != raw:
         _atomic_write_json(path, persisted)

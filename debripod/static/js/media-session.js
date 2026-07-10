@@ -250,6 +250,7 @@
       const js = await apiGet("/api/playback/snapshot");
       state.serverNow = (js && js.now) ? js.now : null;
       state.serverRecent = (js && Array.isArray(js.recent)) ? js.recent : [];
+      state.serverMediaProgress = (js && js.media_progress && typeof js.media_progress === "object") ? js.media_progress : {};
       state.serverLoaded = true;
       try{
         if(typeof applyServerPlaybackSession === "function"){

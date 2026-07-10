@@ -65,6 +65,10 @@ incoming/
 Debripod-Playlists/
 Debripod-SmartPlaylists/
 
+# Provider adapter source lives in a package that intentionally uses this name.
+!debripod/Services/debrid/
+!debripod/Services/debrid/**
+
 # Flask and local server state
 instance/
 .webassets-cache

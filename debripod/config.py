@@ -32,7 +32,8 @@ CONFIG_KEYS = {
 } | APP_SETTING_KEYS
 
 SECRET_KEYS = {
-    "KNABEN_API_KEY", "REAL_DEBRID_API_KEY", "SOULSEEK_USERNAME", "SOULSEEK_PASSWORD",
+    "KNABEN_API_KEY", "REAL_DEBRID_API_KEY", "ALLDEBRID_API_KEY", "PREMIUMIZE_API_KEY", "TORBOX_API_KEY",
+    "SOULSEEK_USERNAME", "SOULSEEK_PASSWORD",
     "LASTFM_API_KEY", "LASTFM_API_SECRET", "LASTFM_SESSION_KEY", "APP_SECRET_KEY", "MCP_TOKEN",
 }
 
@@ -77,6 +78,8 @@ def save_default_app_config_overrides(data: dict[str, Any], path: str | os.PathL
 
 
 def _coerce_path(value: str) -> str:
+    if not str(value or "").strip():
+        return ""
     value = os.path.expandvars(os.path.expanduser(str(value)))
     path = Path(value)
     if not path.is_absolute() and value not in {"ffmpeg", "ffprobe", "yt-dlp"}:
@@ -84,21 +87,17 @@ def _coerce_path(value: str) -> str:
     return str(path)
 
 
-def _coerce_library_folders(value: Any) -> list[str]:
+def _coerce_library_folders(value: Any) -> list[dict[str, str]]:
     if value is None:
         return []
     if not isinstance(value, list):
         raise TypeError("LIBRARY_FOLDERS must be a list")
-    out: list[str] = []
+    out: list[dict[str, str]] = []
     for item in value:
-        if isinstance(item, str):
-            out.append(_coerce_path(item))
-            continue
         if isinstance(item, dict):
             path = _coerce_path(str(item.get("path", "")))
-            mode = str(item.get("mode", "list")).strip().lower() or "list"
             if path:
-                out.append(f"{path}:{mode}")
+                out.append({"path": path, "mode": "meta"})
     return out
 
 
