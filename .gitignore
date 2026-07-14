@@ -47,11 +47,14 @@ lastfm_loved.json
 *.log
 *.sqlite
 *.sqlite3
+*.sqlite3-*
 *.db
+*.db-*
 *.sqlite-wal
 *.sqlite-shm
 *.db-wal
 *.db-shm
+*.migrated.local
 *.json
 .env
 .env.*

@@ -245,21 +245,6 @@ find_debripod_dir() {
   return 1
 }
 
-ensure_config_port() {
-  mkdir -p config
-
-  if [ ! -f "config/debripod.local.json" ] && [ ! -f "config/debripod.json" ]; then
-    cat > "config/debripod.local.json" <<EOF
-{
-  "PORT": $PORT
-}
-EOF
-    say "Created config/debripod.local.json with port $PORT."
-  else
-    say "Existing config found. Leaving it unchanged."
-  fi
-}
-
 ensure_venv() {
   if [ ! -x "$VENV_DIR/bin/python" ]; then
     say "Creating Python virtual environment named debripod."
@@ -314,7 +299,7 @@ check_updates() {
 
 start_app() {
   say "Starting DebriPod on http://127.0.0.1:$PORT"
-  python -m debripod.app
+  python -m debripod.app --port "$PORT"
 }
 
 ensure_system_dependencies
@@ -334,7 +319,6 @@ if [ ! -d ".git" ]; then
   die "$APP_DIR is not a Git repository. Refusing to overwrite it."
 fi
 
-ensure_config_port
 ensure_venv
 
 if [ ! -f "$VENV_DIR/.debripod-deps-installed" ]; then

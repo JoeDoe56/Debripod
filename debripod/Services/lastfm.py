@@ -1,14 +1,16 @@
 ﻿from __future__ import annotations
 
 import hashlib
-import json
-import os
 import threading
 import time
 from typing import Any, Dict, Optional
 from urllib.parse import quote
 
 import requests
+
+from ..secrets import get_secret, set_secret
+from ..storage.lastfm import load_loved, save_loved
+from ..storage import settings as settings_repository
 
 LASTFM_API_KEY = ""
 LASTFM_API_SECRET = ""
@@ -25,12 +27,9 @@ def configure_lastfm(
     callback_url: str,
     api_root: str = "",
     request_timeout_seconds: int = 0,
-    session_cache_path: str = "",
-    loved_db_path: str = "",
 ) -> None:
     global LASTFM_API_KEY, LASTFM_API_SECRET, LASTFM_SESSION_KEY, LASTFM_CALLBACK_URL
     global LASTFM_API_ROOT, LASTFM_REQUEST_TIMEOUT_SECONDS
-    global _LASTFM_SESSION_CACHE_PATH, _LASTFM_LOVED_DB_PATH
     LASTFM_API_KEY = api_key or ""
     LASTFM_API_SECRET = api_secret or ""
     LASTFM_SESSION_KEY = session_key or ""
@@ -39,10 +38,6 @@ def configure_lastfm(
         LASTFM_API_ROOT = api_root
     if request_timeout_seconds:
         LASTFM_REQUEST_TIMEOUT_SECONDS = int(request_timeout_seconds)
-    if session_cache_path:
-        _LASTFM_SESSION_CACHE_PATH = session_cache_path
-    if loved_db_path:
-        _LASTFM_LOVED_DB_PATH = loved_db_path
 
 def initialize_lastfm_cache() -> None:
     _lastfm_load_session_cache()
@@ -65,9 +60,6 @@ def lastfm_loved_updated() -> int:
         return int(_LASTFM_LOVED.get("updated") or 0)
 
 _LASTFM_SESSION_LOCK = threading.Lock()
-_LASTFM_SESSION_CACHE_PATH = ""  # set after CACHE_DIR is initialized
-_LASTFM_LOVED_DB_PATH = ""       # set after CACHE_DIR is initialized
-
 _LASTFM_SESSION = {
     "sk": "",
     "username": "",
@@ -187,37 +179,21 @@ def _lastfm_api_get(method: str, params: Optional[Dict[str, Any]] = None, requir
 
 
 def _lastfm_load_session_cache() -> None:
-    global _LASTFM_SESSION_CACHE_PATH
+    stored = settings_repository.load("")
     with _LASTFM_SESSION_LOCK:
-        _LASTFM_SESSION["sk"] = ""
-        _LASTFM_SESSION["username"] = ""
-        _LASTFM_SESSION["ts"] = 0
-    if not _LASTFM_SESSION_CACHE_PATH:
-        return
-    try:
-        if os.path.isfile(_LASTFM_SESSION_CACHE_PATH):
-            with open(_LASTFM_SESSION_CACHE_PATH, "r", encoding="utf-8") as f:
-                js = json.load(f) or {}
-            with _LASTFM_SESSION_LOCK:
-                _LASTFM_SESSION["sk"] = str(js.get("sk") or "").strip()
-                _LASTFM_SESSION["username"] = str(js.get("username") or "").strip()
-                _LASTFM_SESSION["ts"] = int(js.get("ts") or 0)
-    except Exception:
-        pass
+        _LASTFM_SESSION["sk"] = (LASTFM_SESSION_KEY or get_secret("global", "LASTFM_SESSION_KEY")).strip()
+        _LASTFM_SESSION["username"] = str(stored.get("LASTFM_USERNAME") or "").strip()
+        _LASTFM_SESSION["ts"] = int(stored.get("LASTFM_SESSION_UPDATED") or 0)
 
 
 def _lastfm_save_session_cache(sk: str, username: str = "") -> None:
-    global _LASTFM_SESSION_CACHE_PATH
-    if not _LASTFM_SESSION_CACHE_PATH:
-        return
-    try:
-        js = {"sk": (sk or "").strip(), "username": (username or "").strip(), "ts": int(time.time())}
-        with open(_LASTFM_SESSION_CACHE_PATH, "w", encoding="utf-8") as f:
-            json.dump(js, f, indent=2)
-        with _LASTFM_SESSION_LOCK:
-            _LASTFM_SESSION.update(js)
-    except Exception:
-        pass
+    js = {"sk": (sk or "").strip(), "username": (username or "").strip(), "ts": int(time.time())}
+    set_secret("global", "LASTFM_SESSION_KEY", js["sk"])
+    stored = settings_repository.load("")
+    stored.update({"LASTFM_USERNAME": js["username"], "LASTFM_SESSION_UPDATED": js["ts"]})
+    settings_repository.save(stored, "")
+    with _LASTFM_SESSION_LOCK:
+        _LASTFM_SESSION.update(js)
 
 
 def lastfm_auth_start() -> Dict[str, Any]:
@@ -334,39 +310,19 @@ def _lastfm_track_key(artist: str, title: str, album: str = "") -> str:
 
 
 def _lastfm_loved_load() -> None:
-    global _LASTFM_LOVED_DB_PATH
+    tracks, updated = load_loved()
     with _LASTFM_LOVED_LOCK:
         _LASTFM_LOVED["version"] = 1
-        _LASTFM_LOVED["updated"] = 0
-        _LASTFM_LOVED["tracks"] = {}
-    if not _LASTFM_LOVED_DB_PATH:
-        return
-    try:
-        if os.path.isfile(_LASTFM_LOVED_DB_PATH):
-            with open(_LASTFM_LOVED_DB_PATH, "r", encoding="utf-8") as f:
-                js = json.load(f) or {}
-            if isinstance(js, dict) and isinstance(js.get("tracks"), dict):
-                with _LASTFM_LOVED_LOCK:
-                    _LASTFM_LOVED["version"] = int(js.get("version") or 1)
-                    _LASTFM_LOVED["updated"] = int(js.get("updated") or 0)
-                    _LASTFM_LOVED["tracks"] = dict(js.get("tracks") or {})
-    except Exception:
-        pass
+        _LASTFM_LOVED["updated"] = updated
+        _LASTFM_LOVED["tracks"] = tracks
 
 
 def _lastfm_loved_save() -> None:
-    global _LASTFM_LOVED_DB_PATH
-    if not _LASTFM_LOVED_DB_PATH:
-        return
-    try:
-        with _LASTFM_LOVED_LOCK:
-            js = {"version": int(_LASTFM_LOVED.get("version") or 1), "updated": int(time.time()), "tracks": dict(_LASTFM_LOVED.get("tracks") or {})}
-        with open(_LASTFM_LOVED_DB_PATH, "w", encoding="utf-8") as f:
-            json.dump(js, f, indent=2)
-        with _LASTFM_LOVED_LOCK:
-            _LASTFM_LOVED["updated"] = int(js.get("updated") or 0)
-    except Exception:
-        pass
+    with _LASTFM_LOVED_LOCK:
+        tracks = dict(_LASTFM_LOVED.get("tracks") or {})
+    updated = save_loved(tracks)
+    with _LASTFM_LOVED_LOCK:
+        _LASTFM_LOVED["updated"] = updated
 
 
 def lastfm_is_loved(artist: str, title: str, album: str = "") -> bool:

@@ -6,3 +6,4 @@ aioslsk==1.6.3
 yt-dlp==2026.6.9
 webauthn==2.8.0
 watchdog==6.0.0
+keyring==25.7.0

@@ -8,6 +8,10 @@ from pathlib import Path
 from typing import Any, MutableMapping
 
 from .settings import APP_SETTING_KEYS, DEFAULT_APP_SETTINGS, SECRET_SETTING_KEYS, STARTUP_CONFIG_KEYS, ensure_app_settings
+from .secrets import get_secret, set_secret
+from .storage.database import database_path
+from .storage import settings as settings_repository
+from .storage.users import list_users, replace_users
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 DEFAULTS_CONFIG_PATH = PACKAGE_ROOT / "config" / "debripod.defaults.json"
@@ -41,14 +45,16 @@ SECRET_KEYS = {
 def load_default_app_config_overrides(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
     candidate = Path(path) if path else DEFAULTS_CONFIG_PATH
     candidate = Path(os.path.expandvars(os.path.expanduser(str(candidate))))
-    if not candidate.is_file():
-        return {}
-    try:
-        with candidate.open("r", encoding="utf-8") as handle:
-            data = json.load(handle)
-    except Exception as exc:
-        warnings.warn(f"DebriPod defaults config is unreadable: {candidate}: {exc}", RuntimeWarning)
-        return {}
+    data = settings_repository.load("__defaults__")
+    if not data and candidate.is_file():
+        try:
+            with candidate.open("r", encoding="utf-8") as handle:
+                data = json.load(handle)
+            settings_repository.save(data if isinstance(data, dict) else {}, "__defaults__")
+            candidate.replace(candidate.with_name(candidate.name + ".migrated.local"))
+        except Exception as exc:
+            warnings.warn(f"DebriPod defaults config is unreadable: {candidate}: {exc}", RuntimeWarning)
+            return {}
     if not isinstance(data, dict):
         warnings.warn(f"DebriPod defaults config must contain a JSON object: {candidate}", RuntimeWarning)
         return {}
@@ -61,20 +67,13 @@ def load_default_app_config_overrides(path: str | os.PathLike[str] | None = None
 
 
 def save_default_app_config_overrides(data: dict[str, Any], path: str | os.PathLike[str] | None = None) -> Path:
-    target = Path(path) if path else DEFAULTS_CONFIG_PATH
-    target = Path(os.path.expandvars(os.path.expanduser(str(target))))
     clean: dict[str, Any] = {}
     for key, value in (data or {}).items():
         key_upper = str(key).upper()
         if key_upper in APP_SETTING_KEYS and key_upper not in SECRET_SETTING_KEYS:
             clean[key_upper] = value
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(target.name + ".tmp")
-    with tmp.open("w", encoding="utf-8") as handle:
-        json.dump(clean, handle, indent=2, sort_keys=True)
-        handle.write("\n")
-    tmp.replace(target)
-    return target
+    settings_repository.save(clean, "__defaults__")
+    return Path(database_path())
 
 
 def _coerce_path(value: str) -> str:
@@ -117,8 +116,16 @@ def load_config(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
                 data = json.load(handle)
             if not isinstance(data, dict):
                 raise TypeError(f"Config file must contain a JSON object: {candidate}")
+            data["_LEGACY_CONFIG_PATH"] = str(candidate)
             return data
-    return {}
+    stored = settings_repository.load("")
+    data = {key: stored[key] for key in STARTUP_CONFIG_KEYS if key in stored}
+    users = list_users()
+    data["USERS"] = [{"username": u["username"], "password_hash": u["password_hash"], "id": u["user_id"]} for u in users]
+    data["SETUP_COMPLETE"] = bool(users)
+    for key in ("APP_SECRET_KEY", "MCP_TOKEN"):
+        data[key] = get_secret("global", key)
+    return data
 
 
 def _config_write_path(path: str | os.PathLike[str] | None = None) -> Path:
@@ -134,14 +141,23 @@ def _config_write_path(path: str | os.PathLike[str] | None = None) -> Path:
 
 
 def save_config(data: dict[str, Any], path: str | os.PathLike[str] | None = None) -> Path:
-    target = _config_write_path(path)
-    target.parent.mkdir(parents=True, exist_ok=True)
-    tmp = target.with_name(target.name + ".tmp")
-    with tmp.open("w", encoding="utf-8") as handle:
-        json.dump(data, handle, indent=2)
-        handle.write("\n")
-    tmp.replace(target)
-    return target
+    current = settings_repository.load("")
+    for key in ("ENABLE_MCP", "SETUP_COMPLETE"):
+        if key in data:
+            current[key] = data[key]
+    settings_repository.save(current, "")
+    replace_users(data.get("USERS") if isinstance(data.get("USERS"), list) else [])
+    for key in ("APP_SECRET_KEY", "MCP_TOKEN"):
+        if key in data:
+            set_secret("global", key, str(data.get(key) or ""))
+    legacy_path = str(data.get("_LEGACY_CONFIG_PATH") or "")
+    if legacy_path:
+        source = Path(legacy_path)
+        try:
+            source.replace(source.with_name(source.name + ".migrated.local"))
+        except OSError:
+            pass
+    return Path(database_path())
 
 
 def ensure_startup_security_config(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
@@ -195,6 +211,13 @@ def apply_config_to_module(module_globals: MutableMapping[str, Any], path: str |
     for key in ("PORT", "USERS", "APP_SECRET_KEY", "ENABLE_MCP", "MCP_TOKEN", "SETUP_COMPLETE"):
         if key in startup_config:
             config[key] = startup_config[key]
+    config["PORT"] = 8083
+    port_env = os.environ.get("DEBRIPOD_PORT")
+    if port_env:
+        try:
+            config["PORT"] = int(port_env)
+        except ValueError as exc:
+            raise ValueError("DEBRIPOD_PORT must be an integer") from exc
     applied: dict[str, Any] = {}
 
     for key, value in config.items():

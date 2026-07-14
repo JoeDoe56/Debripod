@@ -1461,11 +1461,7 @@ if(it.kind === "libtasks_entry"){
         return;
       }
       if(it.action === "settings_export"){
-        await exportUserSettings(false);
-        return;
-      }
-      if(it.action === "settings_export_secrets"){
-        if(confirm("This export can include service credentials. Keep it private.")) await exportUserSettings(true);
+        await exportUserSettings();
         return;
       }
       if(it.action === "settings_import"){

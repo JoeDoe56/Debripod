@@ -113,7 +113,7 @@ var visualizerAnalysisState = {
   rel: "",
   source: "",
   mediaKind: "",
-  videoPaletteFrames: null,
+  videoPaletteTimeline: null,
   videoPalettePending: false
 };
 
@@ -255,7 +255,7 @@ function resetVisualizerAnalysis(reason){
     rel: "",
     source: String(reason || ""),
     mediaKind: "",
-    videoPaletteFrames: null,
+    videoPaletteTimeline: null,
     videoPalettePending: false
   };
 }
@@ -328,7 +328,7 @@ function applyVisualizerAnalysis(rootId, rel, analysis, nonce){
       rel: String(rel || ""),
       source: "sqlite",
       mediaKind: String(metadata.media_kind || ""),
-      videoPaletteFrames: Array.isArray(metadata.video_palette_frames) ? metadata.video_palette_frames : null,
+      videoPaletteTimeline: analysis.video_palette_timeline || null,
       videoPalettePending: !!metadata.video_palette_pending
     };
     try{ if(visualizerAnalysisRetryTimer) clearTimeout(visualizerAnalysisRetryTimer); }catch(e){}
@@ -403,31 +403,15 @@ function loadVisualizerAnalysisForTrack(rootId, rel, mediaKind, options){
 
 function applyCachedVideoPaletteForFrame(analysis, frameIndex){
   try{
-    const frames = analysis && Array.isArray(analysis.videoPaletteFrames) ? analysis.videoPaletteFrames : null;
-    if(!frames || !frames.length) return;
-    const idx = Math.max(0, Math.floor(Number(frameIndex || 0)));
+    const timeline = analysis && analysis.videoPaletteTimeline;
+    if(!timeline || !window.DebriPodPalette) return;
+    const seconds = Math.max(0, Number(frameIndex || 0)) / Math.max(1, Number(analysis.rate || 30));
+    const idx = Math.floor(seconds * Math.max(1, Number(timeline.sampleRateHz || 2)) * 8);
     const key = String(analysis.key || "") + ":" + idx;
     if(key === visualizerVideoPaletteKey) return;
-    let lo = 0;
-    let hi = frames.length - 1;
-    let best = frames[0];
-    while(lo <= hi){
-      const mid = (lo + hi) >> 1;
-      const row = frames[mid] || [];
-      const fi = Number(row[0] || 0);
-      if(fi <= idx){
-        best = row;
-        lo = mid + 1;
-      }else{
-        hi = mid - 1;
-      }
-    }
-    const bestFrame = Number(best && best[0]);
-    if(bestFrame === visualizerVideoPaletteFrame) return;
-    const hexColors = best && Array.isArray(best[1]) ? best[1] : [];
-    const colors = hexColors.map(c=>rgbFromHex(c, null)).filter(Boolean);
+    const colors = window.DebriPodPalette.interpolate(timeline, seconds);
     if(!colors.length) return;
-    visualizerVideoPaletteFrame = bestFrame;
+    visualizerVideoPaletteFrame = idx;
     visualizerVideoPaletteKey = key;
     setVisualizerPalette(colors);
     visualizerPalette = visualizerTargetPalette.map(c=>({r:c.r, g:c.g, b:c.b}));
@@ -894,7 +878,7 @@ function currentVisualizerFrameState(ts){
     roleWeights: roleWeightsForSelectedText(),
     selectedTextContrastMix: selectedTextContrastMix,
     analysisSource: visualizerAnalysisState && visualizerAnalysisState.loaded ? "sqlite" : (visualizerAnalysisState && visualizerAnalysisState.source ? visualizerAnalysisState.source : "live"),
-    videoPaletteFrames: visualizerAnalysisState && visualizerAnalysisState.videoPaletteFrames ? visualizerAnalysisState.videoPaletteFrames : null
+    videoPaletteTimeline: visualizerAnalysisState && visualizerAnalysisState.videoPaletteTimeline ? visualizerAnalysisState.videoPaletteTimeline : null
   };
 }
 
@@ -1521,6 +1505,7 @@ function paletteContrastPairs(palette){
 }
 
 function buildVisualizerPaletteObject(colors){
+  if(window.DebriPodPalette) return window.DebriPodPalette.derive(colors || []);
   var palette = (Array.isArray(colors) && colors.length ? colors : defaultVisualizerPalette)
     .map(c=>({r:clampByte(c.r), g:clampByte(c.g), b:clampByte(c.b)}));
   palette = palette.slice(0, MAX_VISUALIZER_PALETTE_COLORS);
@@ -1576,7 +1561,7 @@ function rgbFromHex(hex, fallback){
 function colorsFromPaletteObject(paletteObj){
   try{
     const colors = paletteObj && Array.isArray(paletteObj.colors) ? paletteObj.colors : [];
-    const out = colors.map(c=>rgbFromHex(c, null)).filter(Boolean);
+    const out = colors.map(c=>Array.isArray(c) ? {r:Number(c[0]),g:Number(c[1]),b:Number(c[2])} : rgbFromHex(c, null)).filter(Boolean);
     return out.length ? out : null;
   }catch(e){
     return null;
@@ -1586,23 +1571,7 @@ function colorsFromPaletteObject(paletteObj){
 function normalizeVisualizerPaletteObject(paletteObj, colors){
   try{
     const normalized = buildVisualizerPaletteObject(colors || colorsFromPaletteObject(paletteObj) || defaultVisualizerPalette);
-    if(!paletteObj || typeof paletteObj !== "object") return normalized;
-    const out = Object.assign({}, paletteObj, {
-      version: paletteObj.version || normalized.version,
-      colors: normalized.colors,
-      roles: normalized.roles,
-      ui: Object.assign({}, normalized.ui, paletteObj.ui || {}),
-      contrastPairs: Array.isArray(paletteObj.contrastPairs) && paletteObj.contrastPairs.length >= normalized.colors.length
-        ? paletteObj.contrastPairs
-        : normalized.contrastPairs,
-      contrastMap: paletteObj.contrastMap && typeof paletteObj.contrastMap === "object"
-        ? paletteObj.contrastMap
-        : normalized.contrastMap,
-      metadata: Object.assign({}, normalized.metadata, paletteObj.metadata || {})
-    });
-    out.metadata.paletteColorCount = normalized.colors.length;
-    if(!out.metadata.contrastSource) out.metadata.contrastSource = "palette";
-    return out;
+    return normalized;
   }catch(e){
     return buildVisualizerPaletteObject(defaultVisualizerPalette);
   }

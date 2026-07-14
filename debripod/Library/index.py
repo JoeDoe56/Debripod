@@ -4,11 +4,12 @@ import os
 import re
 import threading
 import time
+from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Optional, Tuple
 
 from .metadata import art_identity_for_media, file_meta_cached, warm_art_palette, warm_audio_analysis, warm_video_audio_analysis, warm_video_frame_palette_analysis
-from .download_manifest import nearest_task_manifest
+from ..storage.tasks import metadata_for_path
 from .library_db import clear_library_cache, load_index_snapshot, load_library_facets, load_show_aliases, root_manifest, root_version, root_versions, save_folder_entries, save_index_snapshot, save_show_aliases, update_media_art_identity
 from .roots import source_origin_for_path
 from .video_parse import classify_video_records, completion_percent, duration_text, is_canonical_video, parse_video_filename
@@ -20,7 +21,8 @@ from ..utils import sha1_text
 _cache_dir_name_provider = lambda: "_debripod_cache"
 _progress_provider = lambda _root_id, _rel: {}
 _ENRICH_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="debripod-enrich")
-_ENRICH_LOCK = threading.Lock()
+_ENRICH_LOCK = threading.Condition(threading.RLock())
+_ENRICH_PAUSED = False
 _ENRICH_QUEUED: set[str] = set()
 _ENRICH_RUNNING: set[str] = set()
 _ENRICH_STAGE_COUNTS: dict[str, int] = {}
@@ -50,6 +52,8 @@ def _queue_enrichment(stage: str, key: str, func) -> None:
 
     def run() -> None:
         with _ENRICH_LOCK:
+            while _ENRICH_PAUSED:
+                _ENRICH_LOCK.wait()
             _ENRICH_QUEUED.discard(job_key)
             _ENRICH_RUNNING.add(job_key)
             _ENRICH_LAST["stage"] = stage_name
@@ -64,6 +68,7 @@ def _queue_enrichment(stage: str, key: str, func) -> None:
                 _ENRICH_RUNNING.discard(job_key)
                 _ENRICH_STAGE_COUNTS[stage_name] = max(0, int(_ENRICH_STAGE_COUNTS.get(stage_name) or 0) - 1)
                 _ENRICH_LAST["finished_at"] = time.time()
+                _ENRICH_LOCK.notify_all()
 
     try:
         _ENRICH_EXECUTOR.submit(run)
@@ -80,7 +85,23 @@ def enrichment_status() -> dict:
             "running": len(_ENRICH_RUNNING),
             "stages": dict(_ENRICH_STAGE_COUNTS),
             "last": dict(_ENRICH_LAST),
+            "paused": _ENRICH_PAUSED,
         }
+
+
+@contextmanager
+def pause_enrichment_writes():
+    global _ENRICH_PAUSED
+    with _ENRICH_LOCK:
+        _ENRICH_PAUSED = True
+        while _ENRICH_RUNNING:
+            _ENRICH_LOCK.wait()
+    try:
+        yield
+    finally:
+        with _ENRICH_LOCK:
+            _ENRICH_PAUSED = False
+            _ENRICH_LOCK.notify_all()
 
 def _media_group_key(record: dict) -> str:
     meta = record.get("meta") if isinstance(record.get("meta"), dict) else {}
@@ -237,7 +258,7 @@ def build_index_for_root(root_abs: str, *, full_video_sync: bool = False, progre
         record["media_id"] = media_id
         record["duration"] = duration
         if record.get("media") == "video":
-            manifest = nearest_task_manifest(abs_p, root_abs_norm)
+            manifest = metadata_for_path(abs_p, root_abs_norm)
             source = str(manifest.get("source") or source_origin_for_path(abs_p) or "unknown").strip().lower()
             if source not in {"youtube", "debrid", "soulseek", "library", "unknown"}:
                 source = "unknown"
@@ -273,7 +294,7 @@ def build_index_for_root(root_abs: str, *, full_video_sync: bool = False, progre
                 "meta": dict(meta) if isinstance(meta, dict) else {},
             })
         else:
-            audio_manifest = nearest_task_manifest(abs_p, root_abs_norm)
+            audio_manifest = metadata_for_path(abs_p, root_abs_norm)
             audio_source = str(audio_manifest.get("source") or source_origin_for_path(abs_p) or "unknown").strip().lower()
             title = (meta.get("title") if isinstance(meta, dict) else "") or os.path.splitext(fn)[0]
             artist = ((meta.get("artist") if isinstance(meta, dict) else "") or "").strip()

@@ -689,8 +689,8 @@
       }
       if(Array.isArray(js.search_history)) await put("search", {key:scope + "::history", value:js.search_history, savedAt:Date.now()});
       if(js.settings) await put("kv", {key:scope + "::settings", value:sanitizeItem(js.settings, 0), savedAt:Date.now()});
-      if(js.advanced_ui_defaults && window.DebriPod && DebriPod.uiSettings && DebriPod.uiSettings.applyServerAdvancedDefaults){
-        DebriPod.uiSettings.applyServerAdvancedDefaults(js.advanced_ui_defaults);
+      if(js.settings && window.DebriPod && DebriPod.uiSettings && DebriPod.uiSettings.applyServerAppSettings){
+        DebriPod.uiSettings.applyServerAppSettings(js.settings);
         try{ if(window.uiSettings !== undefined) window.uiSettings = DebriPod.uiSettings.settings; }catch(e){}
       }
       if(js.playback){

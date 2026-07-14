@@ -15,5 +15,4 @@ sys.stderr = (LOG_DIR / "server-8083.err.log").open("a", encoding="utf-8", buffe
 from debripod import runtime  # noqa: E402
 
 
-runtime.HOST = "0.0.0.0"
 runtime.main()

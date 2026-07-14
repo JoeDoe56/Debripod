@@ -121,6 +121,7 @@
 <script src="{{ url_for('static', filename='liquidGL.js') }}?v={{ asset_v }}"></script>
 <script>
   window.DEBRIPOD_APP_INFO = {{ info_json|safe }};
+  window.DEBRIPOD_UI_DEFAULTS = {{ ui_defaults|tojson }};
   window.DEBRIPOD_ASSET_VERSION = {{ asset_v|tojson }};
   window.DEBRIPOD_ICON_VERSION = {{ icon_v|tojson }};
   window.DEBRIPOD_TASKS_POLL_MS = {{ tasks_poll_ms }};
@@ -136,6 +137,7 @@
 <script src="{{ url_for('static', filename='js/format-utils.js') }}?v={{ asset_v }}"></script>
 <script src="{{ url_for('static', filename='js/path-pill.js') }}?v={{ asset_v }}"></script>
 <script src="{{ url_for('static', filename='js/playback-loader.js') }}?v={{ asset_v }}"></script>
+<script src="{{ url_for('static', filename='js/palette-utils.js') }}?v={{ asset_v }}"></script>
 <script src="{{ url_for('static', filename='js/visualizer-engine.js') }}?v={{ asset_v }}"></script>
 <script src="{{ url_for('static', filename='js/album-art-texture.js') }}?v={{ asset_v }}"></script>
 <script src="{{ url_for('static', filename='js/now-playing-ui.js') }}?v={{ asset_v }}"></script>

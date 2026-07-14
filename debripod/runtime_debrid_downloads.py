@@ -8,7 +8,7 @@ from typing import Any, Dict, List, Optional
 
 import requests
 
-from .Library.download_manifest import write_task_manifest
+from .storage.tasks import save_task_metadata
 from .Services.debrid import DebridFile, DebridProviderError, get_provider
 from .runtime_state import *
 from .runtime_video_post import enqueue_video_postprocess
@@ -284,7 +284,7 @@ def worker(task_id: str) -> None:
             })
             _set_file_control(task_id, file_id, paused=False, canceled=False)
         set_task(task_id, debrid_files=entries, overall_done=0, overall_total=None, state="downloading", message=f"Downloading {len(entries)} file(s)")
-        write_task_manifest(task, original_result_title=task.title, remote_files=entries, selected_file_ids=selected_ids, version=str(VERSION))
+        save_task_metadata(task, original_result_title=task.title, remote_files=entries, selected_file_ids=selected_ids, version=str(VERSION))
         completed = _download_from_queue(task_id)
         with TASKS_LOCK:
             current = TASKS.get(task_id)

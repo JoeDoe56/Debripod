@@ -6,75 +6,32 @@ import sqlite3
 import threading
 import time
 from contextlib import contextmanager
-from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from ..paths import cache_dir
+from ..storage.database import database
+from ..storage.palettes import load_palette as load_packed_palette, save_palette as save_packed_palette
+from ..storage.codec import CodecError, decode as decode_blob, encode as encode_blob
 
-SCHEMA_VERSION = 3
+SCHEMA_VERSION = 4
 ANALYSIS_ALGORITHM_VERSION = 2
-PACKAGE_ROOT = Path(__file__).resolve().parents[2]
-
 _DB_LOCK = threading.RLock()
-
-
-def library_db_path() -> str:
-    root = os.path.join(cache_dir(), "library")
-    try:
-        os.makedirs(root, exist_ok=True)
-    except OSError:
-        pass
-    return os.path.join(root, "library.sqlite3")
-
-
-def auth_db_path() -> str:
-    root = PACKAGE_ROOT / "config"
-    try:
-        root.mkdir(parents=True, exist_ok=True)
-    except OSError:
-        pass
-    return str(root / "auth.sqlite3")
 
 
 @contextmanager
 def library_db() -> Iterator[sqlite3.Connection]:
     with _DB_LOCK:
-        conn = sqlite3.connect(library_db_path(), timeout=30)
-        conn.row_factory = sqlite3.Row
-        try:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            conn.execute("PRAGMA foreign_keys=ON")
-            ensure_schema(conn)
+        with database() as conn:
             yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
 
 
 @contextmanager
 def auth_db() -> Iterator[sqlite3.Connection]:
     with _DB_LOCK:
-        conn = sqlite3.connect(auth_db_path(), timeout=30)
-        conn.row_factory = sqlite3.Row
-        try:
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA synchronous=NORMAL")
-            ensure_passkey_schema(conn)
+        with database() as conn:
             yield conn
-            conn.commit()
-        except Exception:
-            conn.rollback()
-            raise
-        finally:
-            conn.close()
 
 
 def ensure_schema(conn: sqlite3.Connection) -> None:
-    conn.execute(f"PRAGMA user_version = {SCHEMA_VERSION}")
     conn.executescript(
         """
         CREATE TABLE IF NOT EXISTS library_roots (
@@ -1040,6 +997,8 @@ def clear_library_cache() -> None:
         conn.execute("DELETE FROM library_items")
         conn.execute("DELETE FROM library_roots")
         conn.execute("DELETE FROM art_palette_cache")
+        conn.execute("DELETE FROM media_palettes")
+        conn.execute("DELETE FROM video_palette_timelines")
         conn.execute("DELETE FROM visualizer_analysis")
 
 
@@ -1071,18 +1030,7 @@ def update_media_art_identity(root_id: str, rels: list[str], art_identity: str) 
 
 
 def load_palette(cache_key: str) -> Optional[dict]:
-    with library_db() as conn:
-        row = conn.execute(
-            "SELECT palette_json FROM art_palette_cache WHERE cache_key = ?",
-            (str(cache_key or ""),),
-        ).fetchone()
-    if not row:
-        return None
-    try:
-        data = json.loads(str(row["palette_json"] or "{}"))
-        return data if isinstance(data, dict) else None
-    except Exception:
-        return None
+    return load_packed_palette(str(cache_key or ""))
 
 
 def load_palette_for_media(root_id: str, rel: str) -> Optional[dict]:
@@ -1102,48 +1050,11 @@ def load_palette_for_media(root_id: str, rel: str) -> Optional[dict]:
                 palette = load_palette(art_identity)
                 if palette is not None:
                     return palette
-    with library_db() as conn:
-        row = conn.execute(
-            """
-            SELECT palette_json
-            FROM art_palette_cache
-            WHERE root_id = ? AND rel = ?
-            ORDER BY saved_at DESC
-            LIMIT 1
-            """,
-            (str(root_id or ""), str(rel or "")),
-        ).fetchone()
-    if not row:
-        return None
-    try:
-        data = json.loads(str(row["palette_json"] or "{}"))
-        return data if isinstance(data, dict) else None
-    except Exception:
-        return None
+    return load_packed_palette(root_id=str(root_id or ""), rel=str(rel or ""))
 
 
 def save_palette(cache_key: str, palette: dict, *, source_kind: str = "", source_identity: str = "", root_id: str = "", rel: str = "") -> None:
-    payload = json.dumps(palette if isinstance(palette, dict) else {}, ensure_ascii=False, sort_keys=True)
-    try:
-        palette_version = int(palette.get("version") if isinstance(palette, dict) else SCHEMA_VERSION)
-    except Exception:
-        palette_version = SCHEMA_VERSION
-    with library_db() as conn:
-        conn.execute(
-            """
-            INSERT INTO art_palette_cache(cache_key, root_id, rel, source_kind, source_identity, version, saved_at, palette_json)
-            VALUES(?, ?, ?, ?, ?, ?, ?, ?)
-            ON CONFLICT(cache_key) DO UPDATE SET
-              root_id=excluded.root_id,
-              rel=excluded.rel,
-              source_kind=excluded.source_kind,
-              source_identity=excluded.source_identity,
-              version=excluded.version,
-              saved_at=excluded.saved_at,
-              palette_json=excluded.palette_json
-            """,
-            (str(cache_key or ""), str(root_id or ""), str(rel or ""), str(source_kind or ""), str(source_identity or ""), palette_version, time.time(), payload),
-        )
+    save_packed_palette(str(cache_key or ""), palette, source_kind=source_kind, source_identity=source_identity, root_id=root_id, rel=rel)
 
 
 def load_visualizer_analysis(analysis_key: str) -> Optional[dict[str, Any]]:
@@ -1164,6 +1075,21 @@ def load_visualizer_analysis(analysis_key: str) -> Optional[dict[str, Any]]:
         metadata = json.loads(str(row["metadata_json"] or "{}"))
     except Exception:
         metadata = {}
+    stored_blob = bytes(row["feature_blob"] or b"")
+    try:
+        feature_blob = decode_blob(stored_blob)
+        storage_compression = str(row["compression"] or "raw")
+    except CodecError:
+        # Ordered migration of pre-envelope analysis values.
+        if str(row["compression"] or "") == "zlib":
+            import zlib
+            feature_blob = zlib.decompress(stored_blob)
+        else:
+            feature_blob = stored_blob
+        envelope, storage_compression, _ = encode_blob(feature_blob)
+        with library_db() as migrate_conn:
+            migrate_conn.execute("UPDATE visualizer_analysis SET feature_blob=?,compression=? WHERE analysis_key=?",
+                (envelope, storage_compression, str(analysis_key or "")))
     return {
         "analysis_key": str(analysis_key or ""),
         "media_id": str(row["media_id"] or ""),
@@ -1175,11 +1101,12 @@ def load_visualizer_analysis(analysis_key: str) -> Optional[dict[str, Any]]:
         "duration": row["duration"],
         "analysis_rate_hz": int(row["analysis_rate_hz"] or 30),
         "band_count": int(row["band_count"] or 7),
-        "compression": str(row["compression"] or "none"),
+        "compression": "none",
+        "storage_compression": storage_compression,
         "decoder_settings_hash": str(row["decoder_settings_hash"] or ""),
         "algorithm_version": int(row["algorithm_version"] or ANALYSIS_ALGORITHM_VERSION),
         "frame_count": int(row["frame_count"] or 0),
-        "feature_blob": bytes(row["feature_blob"] or b""),
+        "feature_blob": feature_blob,
         "metadata": metadata if isinstance(metadata, dict) else {},
     }
 
@@ -1226,6 +1153,11 @@ def save_visualizer_analysis(
     metadata: Optional[dict] = None,
 ) -> None:
     size, mtime_ns = file_identity(abs_path)
+    raw_blob = bytes(feature_blob or b"")
+    if compression == "zlib":
+        import zlib
+        raw_blob = zlib.decompress(raw_blob)
+    envelope, storage_compression, _raw_len = encode_blob(raw_blob)
     with library_db() as conn:
         conn.execute(
             """
@@ -1263,12 +1195,12 @@ def save_visualizer_analysis(
                 duration,
                 int(analysis_rate_hz or 30),
                 int(band_count or 7),
-                str(compression or "none"),
+                storage_compression,
                 str(decoder_settings_hash or ""),
                 ANALYSIS_ALGORITHM_VERSION,
                 time.time(),
                 int(frame_count or 0),
-                feature_blob or b"",
+                envelope,
                 json.dumps(metadata if isinstance(metadata, dict) else {}, ensure_ascii=False, sort_keys=True),
             ),
         )

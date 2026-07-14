@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import ipaddress
 import json
-import pprint
 import re
 import base64
 import zlib
@@ -30,12 +29,13 @@ from .Library.metadata import file_meta_cached
 from .Library.video_parse import duration_text, normalize_show_key, show_keys_close
 from .Library.library_db import load_show_aliases, save_show_aliases
 from .Library.search_ranker import infer_query_intent, normalize_search_text, rank_combined_results, source_priority_for_intent
-from .Library.download_manifest import write_task_manifest
+from .storage.tasks import save_task_metadata
+from .storage.palettes import load_video_timeline
 from .Services.debrid import DebridAuthError, DebridProviderError, get_active_provider, get_provider, provider_specs, provider_status as debrid_provider_status
 from .Tasks.manager import task_belongs_to_owner
 from .runtime_state import *
 from .runtime_downloads import *
-from .settings import APP_SETTING_KEYS, SECRET_SETTING_KEYS, default_app_settings, executable_status, ensure_app_settings, masked_settings, pick_system_path, save_app_settings, settings_fingerprint
+from .settings import APP_SETTING_KEYS, DEFAULT_APP_SETTINGS, DEFAULT_UI_SETTINGS, SECRET_SETTING_KEYS, default_app_settings, executable_status, ensure_app_settings, masked_settings, pick_system_path, save_app_settings, settings_fingerprint
 
 # =========================
 # Flask app and templates
@@ -82,11 +82,6 @@ def _current_settings_username() -> str:
 
 def _default_app_overrides() -> dict[str, Any]:
     return load_default_app_config_overrides()
-
-
-def _advanced_ui_defaults_from_settings(settings: dict[str, Any]) -> dict[str, Any]:
-    raw = settings.get("ADVANCED_UI_SETTINGS_DEFAULTS") if isinstance(settings, dict) else {}
-    return dict(raw) if isinstance(raw, dict) else {}
 
 
 def _shutdown_soulseek_service() -> None:
@@ -297,6 +292,7 @@ def render_shell(autorefresh: int = 0, **ctx) -> str:
         icon_v=ICON_VERSION,
         asset_v=ASSET_VERSION,
         info_json=info_json,
+        ui_defaults=DEFAULT_UI_SETTINGS,
         **ctx,
     )
 register_shell_routes(app, render_shell)
@@ -1229,7 +1225,7 @@ def api_youtube_enqueue():
     t = Task(id=task_id, title=title, magnet=url, task_dir=task_dir, owner=_current_settings_username(), source='youtube', state='queued', message='Queued', youtube_files=entries)
     with TASKS_LOCK:
         TASKS[task_id] = t
-    write_task_manifest(t, original_result_title=title, remote_files=entries, selected_file_ids=[item.get('file_id') for item in entries], version=str(VERSION))
+    save_task_metadata(t, original_result_title=title, remote_files=entries, selected_file_ids=[item.get('file_id') for item in entries], version=str(VERSION))
     th = threading.Thread(target=youtube_worker, args=(task_id,), daemon=True)
     th.start()
     return jsonify(ok=True, task_id=task_id)
@@ -1396,7 +1392,7 @@ def api_debrid_enqueue_selected():
     )
     with TASKS_LOCK:
         TASKS[task_id] = t
-    write_task_manifest(t, original_result_title=title, selected_file_ids=clean_ids, version=str(VERSION))
+    save_task_metadata(t, original_result_title=title, selected_file_ids=clean_ids, version=str(VERSION))
     th = threading.Thread(target=worker, args=(task_id,), daemon=True)
     th.start()
 
@@ -1491,7 +1487,7 @@ def api_soulseek_enqueue():
     )
     with TASKS_LOCK:
         TASKS[task_id] = t
-    write_task_manifest(t, original_result_title=title, remote_files=files, selected_file_ids=[item.get("file_id") for item in files], version=str(VERSION))
+    save_task_metadata(t, original_result_title=title, remote_files=files, selected_file_ids=[item.get("file_id") for item in files], version=str(VERSION))
 
     try:
         svc.enqueue_downloads(task_id, user, remote_paths)
@@ -1597,7 +1593,16 @@ def api_library_reindex():
                 set_status(root=name or rid, phase="saving index", percent=int(max(0, min(99, base + span * 0.96))))
                 set_index_cache(rid, data)
                 set_status(processed_roots=idx + 1, root=name or rid, phase="root complete", percent=int(max(0, min(99, base + span))))
-            set_status(running=False, phase="complete", percent=100, root="", processed_roots=len(root_rows), finished_at=time.time())
+            maintenance_result = None
+            maintenance_error = ""
+            set_status(phase="database maintenance", percent=99, root="")
+            try:
+                with pause_enrichment_writes():
+                    maintenance_result = finish_full_reindex()
+            except Exception as exc:
+                maintenance_error = str(exc)
+            set_status(running=False, phase="complete", percent=100, root="", processed_roots=len(root_rows),
+                       maintenance=maintenance_result, maintenance_error=maintenance_error, finished_at=time.time())
         except Exception as exc:
             set_status(running=False, phase="error", error=str(exc), finished_at=time.time())
 
@@ -1648,7 +1653,6 @@ def api_settings_get():
             "MCP_TOKEN_SET": bool(str(cfg.get("MCP_TOKEN") or "").strip()),
         },
         "settings": masked_settings(settings),
-        "advanced_ui_defaults": _advanced_ui_defaults_from_settings(settings),
         "tools": {
             "ffmpeg": executable_status(str(settings.get("FFMPEG_PATH") or "ffmpeg")),
             "ffprobe": executable_status(str(settings.get("FFPROBE_PATH") or "ffprobe")),
@@ -1854,17 +1858,16 @@ def api_services_status():
 @app.route("/api/settings/export", methods=["GET"])
 def api_settings_export():
     username = _current_settings_username()
-    include_secrets = (request.args.get("include_secrets") or "").strip() == "1"
     settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
     payload = {}
     for key in sorted(APP_SETTING_KEYS):
         if key in {"SETUP_SKIPPED_SERVICES", "SETUP_WIZARD_COMPLETE"}:
             payload[key] = settings.get(key)
             continue
-        if key in SECRET_SETTING_KEYS and not include_secrets:
+        if key in SECRET_SETTING_KEYS:
             continue
         payload[key] = settings.get(key)
-    return jsonify({"ok": True, "version": 1, "username": username, "include_secrets": include_secrets, "settings": payload})
+    return jsonify({"ok": True, "version": 1, "username": username, "include_secrets": False, "settings": payload})
 
 
 @app.route("/api/settings/import", methods=["POST"])
@@ -1937,7 +1940,7 @@ def api_settings_mcp_reset_token():
     cfg["MCP_TOKEN"] = secrets.token_urlsafe(48)
     cfg["ENABLE_MCP"] = True
     save_config(cfg)
-    return jsonify({"ok": True, "token": cfg["MCP_TOKEN"]})
+    return jsonify({"ok": True, "saved": True})
 
 
 @app.route("/api/settings/pick_path", methods=["POST"])
@@ -2083,85 +2086,9 @@ def _coerce_advanced_ui_defaults(raw: Any, glass: dict[str, Any]) -> dict[str, A
     }
 
 
-def _replace_js_const_object(text: str, const_name: str, replacement: str) -> str:
-    needle = f"  const {const_name} = "
-    start = text.find(needle)
-    if start < 0:
-        raise ValueError(f"{const_name} not found")
-    brace_start = text.find("{", start)
-    if brace_start < 0:
-        raise ValueError(f"{const_name} opening brace not found")
-    depth = 0
-    in_string: str | None = None
-    escaped = False
-    for idx in range(brace_start, len(text)):
-        ch = text[idx]
-        if in_string:
-            if escaped:
-                escaped = False
-            elif ch == "\\":
-                escaped = True
-            elif ch == in_string:
-                in_string = None
-            continue
-        if ch in {"'", '"', "`"}:
-            in_string = ch
-            continue
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                semi = text.find(";", idx)
-                if semi < 0:
-                    raise ValueError(f"{const_name} semicolon not found")
-                return text[:start] + f"  const {const_name} = {replacement};" + text[semi + 1 :]
-    raise ValueError(f"{const_name} closing brace not found")
-
-
-def _advanced_ui_defaults_js(defaults: dict[str, Any]) -> str:
-    json_text = json.dumps(defaults, indent=4)
-    json_text = json_text.replace('"__LIQUID_GLASS_DEFAULTS__"', "cloneGlassElementSettings(DEFAULT_LIQUID_GLASS_ELEMENT_SETTINGS)")
-    return json_text.replace("\n", "\n  ")
-
-
-def _replace_py_const_object(text: str, name: str, replacement: str) -> str:
-    start = text.find(name)
-    if start < 0:
-        raise ValueError(f"{name} not found")
-    eq = text.find("=", start)
-    brace_start = text.find("{", eq)
-    if eq < 0 or brace_start < 0:
-        raise ValueError(f"{name} opening brace not found")
-    depth = 0
-    in_string: str | None = None
-    escaped = False
-    for idx in range(brace_start, len(text)):
-        ch = text[idx]
-        if in_string:
-          if escaped:
-              escaped = False
-          elif ch == "\\":
-              escaped = True
-          elif ch == in_string:
-              in_string = None
-          continue
-        if ch in {"'", '"'}:
-            in_string = ch
-            continue
-        if ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                return text[:brace_start] + replacement + text[idx + 1 :]
-    raise ValueError(f"{name} closing brace not found")
-
-
 def _coerce_app_default_overrides(raw: Any) -> dict[str, Any]:
     source = raw if isinstance(raw, dict) else {}
     skip = set(SECRET_SETTING_KEYS) | {
-        "ADVANCED_UI_SETTINGS_DEFAULTS",
         "LIBRARY_FOLDERS",
         "SETUP_SKIPPED_SERVICES",
         "SETUP_WIZARD_COMPLETE",
@@ -2181,76 +2108,19 @@ def _coerce_app_default_overrides(raw: Any) -> dict[str, Any]:
     return out
 
 
-def _commit_app_defaults(settings: dict[str, Any]) -> None:
-    path = Path(__file__).resolve().parent / "settings.py"
-    text = path.read_text(encoding="utf-8")
-    rendered = pprint.pformat(settings, width=120, sort_dicts=False)
-    text = _replace_py_const_object(text, "DEFAULT_APP_SETTINGS", rendered)
-    path.write_text(text, encoding="utf-8")
-
-
-def _commit_startup_defaults(startup: Any) -> None:
-    if not isinstance(startup, dict):
-        return
-    path = Path(__file__).resolve().parent / "config.py"
-    text = path.read_text(encoding="utf-8")
-    if "PORT" in startup:
-        try:
-            port = max(1, min(65535, int(startup.get("PORT"))))
-            text = re.sub(r'("PORT":\s*)[^,\n]+', r"\g<1>" + str(port), text, count=1)
-        except Exception:
-            pass
-    if "ENABLE_MCP" in startup:
-        enabled = "True" if bool(startup.get("ENABLE_MCP")) else "False"
-        text = re.sub(r'("ENABLE_MCP":\s*)[^,\n]+', r"\g<1>" + enabled, text, count=1)
-    path.write_text(text, encoding="utf-8")
-
-
-@app.route("/api/ui/advanced_defaults/commit", methods=["POST"])
-def api_ui_advanced_defaults_commit():
-    return jsonify({"ok": False, "error": "Source rewriting is disabled. Use /api/ui/advanced_defaults/save."}), 410
-
-
-@app.route("/api/ui/advanced_defaults/save", methods=["POST"])
-def api_ui_advanced_defaults_save():
-    data = request.get_json(silent=True) or {}
-    try:
-        glass = _coerce_glass_defaults(data.get("liquidGlassElements"))
-        defaults = _coerce_advanced_ui_defaults(data.get("uiSettings"), glass)
-        defaults["liquidGlassElements"] = glass
-        next_defaults = load_default_app_config_overrides()
-        next_defaults.update(_coerce_app_default_overrides(data.get("appSettings")))
-        next_defaults["ADVANCED_UI_SETTINGS_DEFAULTS"] = defaults
-        path = save_default_app_config_overrides(next_defaults)
-    except Exception as exc:
-        target = str(getattr(save_default_app_config_overrides, "__defaults_path__", "") or (Path(__file__).resolve().parent.parent / "config" / "debripod.defaults.json"))
-        return jsonify({"ok": False, "error": f"Failed to write defaults config: {target}: {exc}", "path": target}), 500
+@app.route("/api/defaults/diff", methods=["GET"])
+def api_defaults_diff():
     username = _current_settings_username()
-    if username:
-        _apply_runtime_settings_for_user(username, force=True)
-    return jsonify({
-        "ok": True,
-        "path": str(path),
-        "saved_keys": sorted(next_defaults.keys()),
-        "advanced_ui_defaults": defaults,
-        "skipped_secret_defaults": sorted(SECRET_SETTING_KEYS),
-    })
-
-
-@app.route("/api/ui/advanced_defaults/reset", methods=["POST"])
-def api_ui_advanced_defaults_reset():
-    try:
-        next_defaults = load_default_app_config_overrides()
-        removed = "ADVANCED_UI_SETTINGS_DEFAULTS" in next_defaults
-        next_defaults.pop("ADVANCED_UI_SETTINGS_DEFAULTS", None)
-        path = save_default_app_config_overrides(next_defaults)
-    except Exception as exc:
-        target = str(Path(__file__).resolve().parent.parent / "config" / "debripod.defaults.json")
-        return jsonify({"ok": False, "error": f"Failed to write defaults config: {target}: {exc}", "path": target}), 500
-    username = _current_settings_username()
-    if username:
-        _apply_runtime_settings_for_user(username, force=True)
-    return jsonify({"ok": True, "path": str(path), "removed": removed, "saved_keys": sorted(next_defaults.keys())})
+    current = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
+    private = {"DOWNLOAD_DIR", "SOULSEEK_DOWNLOAD_DIR", "YOUTUBE_DOWNLOAD_DIR", "LIBRARY_FOLDERS", "FFMPEG_PATH", "FFPROBE_PATH", "CACHE_DIR_NAME"}
+    changed = {}
+    for key, source_value in DEFAULT_APP_SETTINGS.items():
+        if key in SECRET_SETTING_KEYS or key in private:
+            continue
+        current_value = current.get(key)
+        if current_value != source_value:
+            changed[key] = {"source": source_value, "current": current_value}
+    return jsonify({"ok": True, "changes": changed, "excluded_private": sorted(private), "excluded_secrets": sorted(SECRET_SETTING_KEYS)})
 
 
 @app.route("/api/library/building", methods=["GET"])
@@ -2373,7 +2243,6 @@ def api_sync():
         "library_changes": library_changes,
         "deleted": deleted,
         "settings": masked_settings(settings),
-        "advanced_ui_defaults": _advanced_ui_defaults_from_settings(settings),
         "search_history": _load_search_history(),
         "playback": playback,
         "services": _service_status_payload(settings),
@@ -2485,14 +2354,9 @@ def api_library_analysis():
         warming = start_video_analysis_warm()
         return jsonify({"ok": True, "analysis": None, "stale": True, "warming": bool(warming)})
     blob = analysis.pop("feature_blob", b"")
-    storage_compression = str(analysis.get("compression") or "none")
-    if storage_compression == "zlib":
-        try:
-            blob = zlib.decompress(blob)
-            analysis["storage_compression"] = storage_compression
-            analysis["compression"] = "none"
-        except Exception:
-            return jsonify({"ok": True, "analysis": None, "stale": True, "error": "Analysis cache is unreadable"})
+    timeline = load_video_timeline(str(analysis.get("analysis_key") or ""))
+    if timeline:
+        analysis["video_palette_timeline"] = timeline
     analysis["feature_blob_b64"] = base64.b64encode(blob).decode("ascii")
     analysis["feature_blob_encoding"] = "base64-raw"
     return jsonify({"ok": True, "analysis": analysis, "stale": False})

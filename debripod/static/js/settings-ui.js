@@ -40,9 +40,14 @@
     const js = await apiGet("/api/settings");
     state.settingsData = js || {};
     state.appSettings = Object.assign({}, (js && js.settings) || {});
-    state.advancedUiDefaults = Object.assign({}, (js && js.advanced_ui_defaults) || {});
-    if(window.DebriPod && DebriPod.uiSettings && DebriPod.uiSettings.applyServerAdvancedDefaults){
-      DebriPod.uiSettings.applyServerAdvancedDefaults(state.advancedUiDefaults);
+    const localUiMigration = window.DebriPod && DebriPod.uiSettings && DebriPod.uiSettings.takeLocalUiMigration ? DebriPod.uiSettings.takeLocalUiMigration() : null;
+    if(localUiMigration){
+      const migrated = DebriPod.uiSettings.uiSettingsToAppSettings(localUiMigration);
+      await apiPost("/api/settings/save", {settings:migrated});
+      Object.assign(state.appSettings, migrated);
+    }
+    if(window.DebriPod && DebriPod.uiSettings && DebriPod.uiSettings.applyServerAppSettings){
+      DebriPod.uiSettings.applyServerAppSettings(state.appSettings);
       uiSettings = DebriPod.uiSettings.settings;
     }
     state.startupSettings = Object.assign({}, (js && js.startup) || {});
@@ -289,7 +294,6 @@
         items.push({kind:"info", label:"Signed in", pills:[username || "Unknown"]});
         items.push({kind:"account_action", label:"Create user", action:"create_user"});
         items.push({kind:"account_action", label:"Export settings", action:"settings_export", pills:["No secrets"]});
-        items.push({kind:"account_action", label:"Export settings with secrets", sub_label:"Includes saved service credentials. Keep the file private.", action:"settings_export_secrets", pills:[{text:"Sensitive", tone:"warn"}]});
         items.push({kind:"account_action", label:"Import settings", action:"settings_import"});
         items.push({kind:"account_action", label:"Log out", action:"logout"});
         const users = Array.isArray(js.users) ? js.users : [];
@@ -331,8 +335,8 @@
     return {text: ok ? goodText : badText, tone: ok ? "ok" : "warn"};
   }
 
-  async function exportUserSettings(includeSecrets){
-    const js = await apiGet("/api/settings/export?include_secrets=" + (includeSecrets ? "1" : "0"));
+  async function exportUserSettings(){
+    const js = await apiGet("/api/settings/export");
     const text = JSON.stringify(js, null, 2);
     try{
       if(navigator.clipboard && navigator.clipboard.writeText){
@@ -1635,7 +1639,7 @@ async function libDoSearch(engine, q){
   function glassElementSummary(key){
     const settings = cloneGlassElementSettings(uiSettings.liquidGlassElements);
     const item = settings[key] || {};
-    return [
+    const rows = [
       glassTintLabel(item.glassTint),
       "R " + String(item.refraction),
       "B " + String(item.bevelDepth)
@@ -1812,7 +1816,7 @@ async function libDoSearch(engine, q){
 
   function animationRows(){
     const fps = cloneAnimationFps(uiSettings.animationFps);
-    return [
+    const rows = [
       {key:"selectedRow", label:"Selected row animations"},
       {key:"wheelTilt", label:"Wheel tilt animations"},
       {key:"libraryList", label:"Library list moving animation"},
@@ -1829,6 +1833,7 @@ async function libDoSearch(engine, q){
       forceTwoLine:true,
       settingRow:true
     }));
+    return rows.concat(uiTuningRows().slice(0, 6).map((row)=>({kind:"libui_action", label:row.label, sub_label:"Motion and timing", action:row.action, pills:[String(row.value)], forceTwoLine:true, settingRow:true})));
   }
 
   function advancedCategoryLabels(){
@@ -1855,7 +1860,7 @@ async function libDoSearch(engine, q){
       return items;
     }
     if(cat === "ui"){
-      return uiTuningRows().map((row)=>({kind:"libui_action", label:row.label, sub_label:"Visualizer tuning", action:row.action, pills:[String(row.value)], forceTwoLine:true, settingRow:true}))
+      return uiTuningRows().slice(6).map((row)=>({kind:"libui_action", label:row.label, sub_label:"Visualizer tuning", action:row.action, pills:[String(row.value)], forceTwoLine:true, settingRow:true}))
         .concat(settingRowsForCategory("advanced").filter((row)=> row && String(row.key || "").indexOf("TASKS_") === 0).map(settingRowToListItem));
     }
     if(cat === "text") return textModeRows();
@@ -1913,8 +1918,7 @@ async function libDoSearch(engine, q){
         await settingsLoad();
         const labels = advancedCategoryLabels();
         const items = [
-          {kind:"libui_action", label:"Save advanced defaults", sub_label:"Writes commit ready app defaults to config", action:"save_advanced_defaults", pills:["Config"], forceTwoLine:true, settingRow:true},
-          {kind:"libui_action", label:"Reset advanced defaults", sub_label:"Removes saved advanced UI defaults from config", action:"reset_advanced_defaults", pills:["Config"], forceTwoLine:true, settingRow:true},
+          {kind:"libui_action", label:"Review source-default diff", sub_label:"Shows nonsecret, nonprivate changes to review before a Git commit", action:"review_defaults_diff", pills:["Diff"], forceTwoLine:true, settingRow:true},
           {kind:"libui_action", label:"Performance overlay button", sub_label:"Show the compact performance toggle button", action:"toggle_performance_overlay_button", pills:[uiSettings.performanceOverlayButton ? "On" : "Off"], forceTwoLine:true, settingRow:true}
         ].concat(["glass", "text", "ui", "animations", "search", "downloads", "services", "playback", "system"].map((key)=>({
           kind:"libui_action",
@@ -2523,45 +2527,13 @@ async function libDoSearch(engine, q){
       }, true);
       return true;
     };
-    const saveAdvancedDefaults = async ()=>{
+    const reviewDefaultsDiff = async ()=>{
       try{
-        uiSettings.textModes = cloneTextModes(uiSettings.textModes);
-        uiSettings.animationFps = cloneAnimationFps(uiSettings.animationFps);
-        uiSettings.textTransparency = normalizeTextTransparency(uiSettings.textTransparency);
-        saveUiSettings();
-        const res = await apiPost("/api/ui/advanced_defaults/save", {
-          uiSettings: uiSettings,
-          liquidGlassElements: cloneGlassElementSettings(uiSettings.liquidGlassElements),
-          appSettings: state.appSettings || {},
-          startupSettings: state.startupSettings || {}
-        });
-        const js = res && res.json ? res.json : {};
-        if(!res || !res.ok || !js.ok) throw new Error((js && js.error) ? js.error : "Failed to write defaults");
-        if(js.advanced_ui_defaults && window.DebriPod && DebriPod.uiSettings && DebriPod.uiSettings.applyServerAdvancedDefaults){
-          DebriPod.uiSettings.applyServerAdvancedDefaults(js.advanced_ui_defaults);
-          uiSettings = DebriPod.uiSettings.settings;
-        }
-        try{ libSetStatus("Advanced defaults saved to config.", "ok"); }catch(statusErr){}
-      }catch(e){
-        alert(String(e && e.message ? e.message : e));
-      }
-      await viewLibAdvancedSettings(false);
-      return true;
-    };
-    const resetAdvancedDefaults = async ()=>{
-      try{
-        const res = await apiPost("/api/ui/advanced_defaults/reset", {});
-        const js = res && res.json ? res.json : {};
-        if(!res || !res.ok || !js.ok) throw new Error((js && js.error) ? js.error : "Failed to reset defaults");
-        if(window.DebriPod && DebriPod.uiSettings && DebriPod.uiSettings.applyServerAdvancedDefaults){
-          DebriPod.uiSettings.applyServerAdvancedDefaults({});
-          uiSettings = DebriPod.uiSettings.settings;
-        }
-        try{ libSetStatus("Advanced defaults removed from config.", "ok"); }catch(statusErr){}
-      }catch(e){
-        alert(String(e && e.message ? e.message : e));
-      }
-      await viewLibAdvancedSettings(false);
+        if(window.DebriPod && DebriPod.uiSettings && DebriPod.uiSettings.flushUiSettings) await DebriPod.uiSettings.flushUiSettings();
+        const js = await apiGet("/api/defaults/diff");
+        const changes = js && js.changes ? js.changes : {};
+        prompt("Review these nonsecret source-default changes before editing settings.py and committing them", JSON.stringify(changes, null, 2));
+      }catch(e){ alert(String(e && e.message ? e.message : e)); }
       return true;
     };
     const returnAdvancedCategory = async (category)=>{
@@ -2655,10 +2627,8 @@ async function libDoSearch(engine, q){
         cycleVisualizerFpsLock();
         await viewLibUiSettings(false);
         return true;
-      case "save_advanced_defaults":
-        return await saveAdvancedDefaults();
-      case "reset_advanced_defaults":
-        return await resetAdvancedDefaults();
+      case "review_defaults_diff":
+        return await reviewDefaultsDiff();
       case "toggle_performance_overlay_button":
         uiSettings.performanceOverlayButton = !uiSettings.performanceOverlayButton;
         saveUiSettings();

@@ -90,7 +90,7 @@ Confirm that the host can open DebriPod locally at:
 http://127.0.0.1:8083
 ```
 
-If you changed the DebriPod port in `config/debripod.local.json`, use that port in the next command instead of `8083`.
+If you selected another port with `--port` or `DEBRIPOD_PORT`, use that port in the next command instead of `8083`.
 
 ## Start Tailscale Serve for DebriPod
 

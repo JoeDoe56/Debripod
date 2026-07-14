@@ -4,7 +4,7 @@ from ..factory import DeferredApp
 from ..runtime_state import *
 from ..runtime_downloads import *
 from ..runtime_route_state import *
-from ..Library.download_manifest import write_task_manifest
+from ..storage.tasks import save_task_metadata
 from ..Services.debrid import get_active_provider
 
 app = DeferredApp()
@@ -369,7 +369,7 @@ def _mcp_start_debrid_download(title: str, magnet: str) -> dict:
     )
     with TASKS_LOCK:
         TASKS[task_id] = t
-    write_task_manifest(t, original_result_title=title, remote_files=preview.files, selected_file_ids=file_ids, version=str(VERSION))
+    save_task_metadata(t, original_result_title=title, remote_files=preview.files, selected_file_ids=file_ids, version=str(VERSION))
     threading.Thread(target=worker, args=(task_id,), daemon=True).start()
     return {'task_id': task_id, 'task_dir': task_dir, 'provider': provider.id, 'debrid_task_id': preview.provider_task_id, 'selected_file_count': len(file_ids)}
 
@@ -435,7 +435,7 @@ def _mcp_start_slsk_download(user: str, directory: str, files_in: List[Dict[str,
     )
     with TASKS_LOCK:
         TASKS[task_id] = t
-    write_task_manifest(t, original_result_title=title, remote_files=files, selected_file_ids=[item.get('file_id') for item in files], version=str(VERSION))
+    save_task_metadata(t, original_result_title=title, remote_files=files, selected_file_ids=[item.get('file_id') for item in files], version=str(VERSION))
     svc.enqueue_downloads(task_id, user, remote_paths)
     return {'task_id': task_id, 'task_dir': task_download_dir, 'file_count': len(remote_paths), 'user': user, 'directory': directory}
 

@@ -125,9 +125,9 @@ Last.fm support can send now playing updates, scrobble tracks, read loved track 
 
 DebriPod uses local app accounts. The first account is created before the main app opens. User settings, service credentials, download paths, setup state, passkeys, playback state, search history, task ownership, and library folders are stored per user where practical.
 
-Service credentials are stored locally for the current user and are redacted from exported settings unless you explicitly choose an export with secrets. Password login remains available. Passkeys use WebAuthn when the optional server package and the browser origin support it.
+Real secrets are stored in the operating-system keyring under the `DebriPod` service name. SQLite keeps only saved status, a stable keyring reference, update time, and nonsecret provider identity; settings responses and exports never return saved secret values. DebriPod fails closed if no secure keyring backend is available. Password login remains available. Passkeys use WebAuthn when the optional server package and the browser origin support it.
 
-DebriPod includes optional MCP support. Set `ENABLE_MCP` to `true` in startup config and restart DebriPod. If `MCP_TOKEN` is blank, DebriPod can generate one during startup.
+DebriPod includes optional MCP support. Enable it in Settings and restart DebriPod. Its token is stored in the operating-system keyring.
 
 ## Repository layout
 
@@ -135,12 +135,13 @@ DebriPod includes optional MCP support. Set `ENABLE_MCP` to `true` in startup co
 debripod/
   __main__.py             package runner for python -m debripod
   app.py                  Flask app entry point
-  config.py               startup config loader and secret redaction helpers
+  config.py               startup state migration and runtime configuration helpers
   media_types.py          media extension and playlist constants
   paths.py                cache, art, and transcode path helpers
   runtime.py              app startup and runtime facade
   runtime_*.py            split runtime state, routes, and workers
-  Library/                library index, SQLite cache, metadata, and search helpers
+  Library/                library index, metadata, and search helpers
+  storage/                primary SQLite database, migrations, codecs, and repositories
   MCP/                    optional MCP HTTP and SSE route helpers
   Routes/                 modular Flask route groups
   Services/               Debrid providers, Knaben, Soulseek, and Last.fm helpers
@@ -148,10 +149,6 @@ debripod/
   playback/               streaming, range responses, ffprobe, and command helpers
   static/                 browser UI, JS modules, LiquidGL, visualizer, service worker, fonts
   templates/              Flask HTML templates
-config/
-  debripod.defaults.json  safe default app setting overrides
-  debripod.example.json   safe startup config example
-  debripod.local.json     local startup config, ignored by Git
 install/
   debripod.sh             macOS and Linux installer, updater, and launcher
   debripod.ps1            Windows installer, updater, and launcher
@@ -163,30 +160,25 @@ LICENSE                   project license summary
 README.md                 project documentation
 ```
 
-## Startup config
+## Startup and port selection
 
-DebriPod loads startup config from the first file it finds in this order.
+DebriPod binds to `127.0.0.1`. Choose a port with `--port`, then `DEBRIPOD_PORT`; otherwise it uses `8083`.
 
-1. The path in the `DEBRIPOD_CONFIG` environment variable.
-2. `./config/debripod.local.json`.
-3. `./config/debripod.json`.
-4. `~/.config/debripod/config.json`.
-
-The installer creates `config/debripod.local.json` only when no startup config exists. The generated file only sets the default port.
-
-```json
-{
-  "PORT": 8083
-}
+```bash
+python -m debripod --port 8083
 ```
 
-Startup config is for early values needed before login, including `PORT`, local users, app secret key, setup state, MCP enablement, and MCP token. Normal app settings and service credentials are managed after login through the app settings UI. This keeps user specific runtime state out of committed files.
-
-DebriPod creates startup security values when needed, including the app secret key. The setup wizard is considered complete only after at least one user exists.
+Port selection does not create a JSON configuration file. Accounts, setup state, MCP saved status, and application settings are stored in the primary database. The Flask secret and MCP token are stored in the operating-system keyring. Older startup JSON is read once during migration, renamed with `.migrated.local`, and never recreated.
 
 ## Runtime data
 
-DebriPod writes runtime data to configured download folders and to local data and cache folders. Runtime files can include artwork cache, SQLite library indexes, visualizer analysis cache, transcoded files, HLS output, ffmpeg logs, playback state, search history, search cache, Last.fm session data, task state, user settings, user accounts, passkeys, setup state, and downloaded media.
+DebriPod uses one primary database at `data/debripod.sqlite3` for nonsecret structured state: accounts and passkeys, settings and setup, playback, tasks, Last.fm loved tracks, Library indexes and metadata, search history/cache, packed palettes, and visualizer analysis. Normal operation uses SQLite WAL mode. Real secrets stay in the OS keyring.
+
+Static palettes store exactly three packed RGB bytes per color. Video palette timelines are sampled at 2 Hz, omit adjacent repeats, and store no contrast/UI roles. The browser shares one memoized palette utility for music and video contrast, roles, engraving, wheel text, and selected-pill colors, and interpolates neighboring video samples.
+
+Large eligible BLOBs use a self-describing versioned `raw` or `zlib` envelope. Compression begins above 1 KiB and is retained only when it saves at least four percent. This is application-level value compression, not automatic SQLite table/page compression.
+
+After a successful explicit full reindex, DebriPod removes stale media/cache rows, pauses enrichment writes, truncates the WAL, runs `PRAGMA optimize`, and runs `VACUUM` outside a transaction. The reindex status reports database bytes before and after maintenance; a maintenance failure does not discard the completed index.
 
 These files should stay out of Git. Local configs, virtual environments, cache folders, media folders, logs, and runtime output should not be committed.
 
@@ -200,7 +192,7 @@ Make sure the terminal still says DebriPod is running. Then open this exact addr
 http://127.0.0.1:8083
 ```
 
-If you changed the port in `config/debripod.local.json`, use that port instead.
+If you selected another port with `--port` or `DEBRIPOD_PORT`, use that port instead.
 
 ### The installer says a command is still missing
 
@@ -263,7 +255,7 @@ Confirm DebriPod opens locally first. Then check Tailscale status, Tailscale Ser
 
 DebriPod is designed as a local app and binds to `127.0.0.1`. Do not expose it directly to the public internet.
 
-Keep `config/debripod.local.json`, `data/`, downloaded media folders, and logs out of Git because they may contain usernames, API keys, session data, paths, or personal media information.
+Keep `data/`, downloaded media folders, migration backups, and logs out of Git because they may contain usernames, paths, or personal media information. Back up `data/debripod.sqlite3` only after stopping DebriPod or after a successful WAL checkpoint. Back up keyring entries separately using operating-system tooling. Restore both the database and matching keyring entries while DebriPod is stopped.
 
 Use a strong admin password. Keep API tokens private. Rotate tokens if they are ever pasted into an issue, screenshot, commit, or chat.
 

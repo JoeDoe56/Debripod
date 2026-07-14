@@ -6,6 +6,8 @@ import os
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
+from ..storage.tasks import update_task_state
+
 
 @dataclass
 class Task:
@@ -82,12 +84,16 @@ def configure_task_manager(
 
 
 def set_task(task_id: str, **kwargs: Any) -> None:
+    changed = None
     with TASKS_LOCK:
         t = TASKS.get(task_id)
         if not t:
             return
         for k, v in kwargs.items():
             setattr(t, k, v)
+        changed = t
+    if changed is not None:
+        update_task_state(changed)
 
 
 def get_task(task_id: str) -> Optional[Task]:

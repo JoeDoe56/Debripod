@@ -67,6 +67,7 @@ from .Library.index import (
     library_root_versions,
     library_watch_root,
     queue_video_analysis_warm,
+    pause_enrichment_writes,
     set_index_cache,
     track_sort_key,
 )
@@ -185,6 +186,8 @@ from .playback.transcoding import (
     transcode_if_needed,
 )
 from .playback.probe import configure_probe, ffprobe_json, run_cmd
+from .storage.library import finish_full_reindex
+from .storage.legacy_import import migrate_runtime_json, run_startup_import_once
 
 # =========================
 # Runtime config
@@ -196,7 +199,19 @@ VERSION = app_version()
 def _commit_cache_version() -> str:
     full = str(VERSION_INFO.get("full_commit") or "").strip()
     short = str(VERSION_INFO.get("short_commit") or "").strip()
-    return full or short or str(VERSION or "dev")
+    base = full or short or str(VERSION or "dev")
+    # Development and migration updates must invalidate the PWA shell even before a commit exists.
+    newest = 0.0
+    package_dir = os.path.dirname(__file__)
+    for rel in ("static", "templates"):
+        root = os.path.join(package_dir, rel)
+        for current, _dirs, files in os.walk(root):
+            for name in files:
+                try:
+                    newest = max(newest, os.path.getmtime(os.path.join(current, name)))
+                except OSError:
+                    pass
+    return f"{base}-{int(newest * 1000)}" if newest else base
 
 
 ASSET_VERSION = _commit_cache_version()
@@ -297,6 +312,9 @@ def ensure_dirs() -> None:
     os.makedirs(transcode_cache_dir(), exist_ok=True)
     os.makedirs(art_cache_dir(), exist_ok=True)
 
+    run_startup_import_once()
+    migrate_runtime_json(cache_dir())
+
     configure_lastfm(
         api_key=LASTFM_API_KEY,
         api_secret=LASTFM_API_SECRET,
@@ -304,8 +322,6 @@ def ensure_dirs() -> None:
         callback_url=LASTFM_CALLBACK_URL,
         api_root=LASTFM_API_ROOT,
         request_timeout_seconds=LASTFM_REQUEST_TIMEOUT_SECONDS,
-        session_cache_path=os.path.join(cache_dir(), "lastfm_session.json"),
-        loved_db_path=os.path.join(cache_dir(), "lastfm_loved.json"),
     )
     initialize_lastfm_cache()
     # Best-effort: refresh loved cache occasionally so the UI shows existing likes

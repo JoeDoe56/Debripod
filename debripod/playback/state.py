@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import json
 import os
 import threading
 import time
@@ -8,6 +7,8 @@ import uuid
 from typing import Any, Callable, Dict, Optional
 
 from ..paths import cache_dir
+from ..storage import playback as playback_repository
+from ..storage.legacy_import import read_json as read_legacy_json, retire as retire_legacy
 
 _search_stream_root_id_provider: Callable[[], str] = lambda: "__search_stream__"
 _search_stream_get_or_restore_provider: Callable[[str], Optional[Dict[str, Any]]] = lambda _rel: None
@@ -80,10 +81,12 @@ def load_playback_state() -> None:
     global PLAYBACK_STATE
     p = playback_state_path()
     try:
-        if os.path.exists(p):
-            with open(p, "r", encoding="utf-8") as f:
-                js = json.load(f)
-            if isinstance(js, dict):
+        js = playback_repository.load()
+        legacy = False
+        if not js and os.path.exists(p):
+            js = read_legacy_json(p)
+            legacy = True
+        if isinstance(js, dict) and js:
                 base = _default_playback_state()
                 base.update(js)
 
@@ -145,28 +148,25 @@ def load_playback_state() -> None:
                 with PLAYBACK_STATE_LOCK:
                     PLAYBACK_STATE.clear()
                     PLAYBACK_STATE.update(base)
+                if legacy:
+                    playback_repository.save(base)
+                    try:
+                        retire_legacy(p)
+                    except OSError:
+                        pass
     except Exception:
         with PLAYBACK_STATE_LOCK:
             PLAYBACK_STATE.clear()
             PLAYBACK_STATE.update(_default_playback_state())
 
 def save_playback_state_best_effort() -> None:
-    p = playback_state_path()
-    tmp = p + ".tmp"
     try:
-        data = None
         with PLAYBACK_STATE_LOCK:
             PLAYBACK_STATE["updated"] = time.time()
-            data = json.dumps(PLAYBACK_STATE, indent=2)
-        with open(tmp, "w", encoding="utf-8") as f:
-            f.write(data)
-        os.replace(tmp, p)
+            data = dict(PLAYBACK_STATE)
+        playback_repository.save(data)
     except Exception:
-        try:
-            if os.path.exists(tmp):
-                os.remove(tmp)
-        except Exception:
-            pass
+        pass
 
 def _media_key(media: str, root_id: str, rel: str) -> str:
     return f"{(media or '').strip().lower()}::{(root_id or '').strip()}::{(rel or '').strip()}"

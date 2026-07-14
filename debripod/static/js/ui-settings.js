@@ -109,6 +109,10 @@
     pageTransition: 60,
     pathPill: 60
   };
+  const BOOTSTRAP_UI_DEFAULTS = (window.DEBRIPOD_UI_DEFAULTS && typeof window.DEBRIPOD_UI_DEFAULTS === "object") ? window.DEBRIPOD_UI_DEFAULTS : {};
+  if(BOOTSTRAP_UI_DEFAULTS.liquidGlassElements && typeof BOOTSTRAP_UI_DEFAULTS.liquidGlassElements === "object") Object.assign(DEFAULT_LIQUID_GLASS_ELEMENT_SETTINGS, BOOTSTRAP_UI_DEFAULTS.liquidGlassElements);
+  if(BOOTSTRAP_UI_DEFAULTS.textModes && typeof BOOTSTRAP_UI_DEFAULTS.textModes === "object") Object.assign(DEFAULT_TEXT_MODES, BOOTSTRAP_UI_DEFAULTS.textModes);
+  if(BOOTSTRAP_UI_DEFAULTS.animationFps && typeof BOOTSTRAP_UI_DEFAULTS.animationFps === "object") Object.assign(DEFAULT_ANIMATION_FPS, BOOTSTRAP_UI_DEFAULTS.animationFps);
   const VISUALIZER_PRESETS = {
     album: {label: "Orbit", style: "orbit", motion: 1.0, layers: 5, flow: 0.88, bassResponse: 1.18, midResponse: 0.72, trebleResponse: 0.92, beatResponse: 1.12},
     aurora: {label: "Aurora", style: "aurora", motion: 0.82, layers: 7, flow: 1.12, bassResponse: 0.52, midResponse: 1.14, trebleResponse: 0.84, beatResponse: 0.62},
@@ -120,7 +124,7 @@
     lattice: {label: "Lattice", style: "lattice", motion: 0.88, layers: 10, flow: 0.72, bassResponse: 0.82, midResponse: 1.02, trebleResponse: 1.18, beatResponse: 0.74}
   };
   const VISUALIZER_BAND_LABELS = ["low low", "low high", "low mids", "mids", "upper mids", "high low", "high high"];
-  let serverAdvancedUiDefaults = {};
+  let serverUiSettings = null;
   const DEFAULT_UI_SETTINGS = {
       "visualizer": true,
       "visualizerMaxBrightnessPct": 60,
@@ -157,6 +161,10 @@
       "infoPillDarkMultiplier": 1.0,
       "infoPillLightMultiplier": 1.0
   };
+  Object.assign(DEFAULT_UI_SETTINGS, BOOTSTRAP_UI_DEFAULTS);
+  DEFAULT_UI_SETTINGS.textModes = cloneTextModes(DEFAULT_UI_SETTINGS.textModes);
+  DEFAULT_UI_SETTINGS.animationFps = cloneAnimationFps(DEFAULT_UI_SETTINGS.animationFps);
+  DEFAULT_UI_SETTINGS.liquidGlassElements = cloneGlassElementSettings(DEFAULT_UI_SETTINGS.liquidGlassElements);
 
   function clampNumber(value, fallback, min, max){
     const n = Number(value);
@@ -303,15 +311,12 @@
 
   function loadUiSettings(){
     const out = Object.assign({}, DEFAULT_UI_SETTINGS);
-    applyUiSettingsObject(out, serverAdvancedUiDefaults);
-    try{
+    if(serverUiSettings) applyUiSettingsObject(out, serverUiSettings);
+    if(!serverUiSettings) try{
       const raw = localStorage.getItem(UI_SETTINGS_KEY) || "";
       if(raw){
         const saved = JSON.parse(raw);
-        if(saved && typeof saved === "object"){
-          applyUiSettingsObject(out, saved);
-          return out;
-        }
+        if(saved && typeof saved === "object") applyUiSettingsObject(out, saved);
       }
     }catch(e){}
     try{
@@ -354,15 +359,52 @@
     uiSettings.performanceOverlayButton = !!uiSettings.performanceOverlayButton;
     uiSettings.performanceOverlayText = !!uiSettings.performanceOverlayText;
     try{ uiSettings.liquidGlassElements = cloneGlassElementSettings(uiSettings.liquidGlassElements); }catch(e){}
+    try{
+      clearTimeout(root.uiSettings._saveTimer || 0);
+      root.uiSettings._saveTimer = setTimeout(function(){
+        if(typeof apiPost === "function") apiPost("/api/settings/save", {settings:uiSettingsToAppSettings(uiSettings)}).catch(function(){});
+      }, 350);
+    }catch(e){}
   }
 
-  function applyServerAdvancedDefaults(defaults){
-    serverAdvancedUiDefaults = defaults && typeof defaults === "object" ? defaults : {};
+  async function flushUiSettings(){
+    try{
+      clearTimeout(root.uiSettings._saveTimer || 0);
+      if(typeof apiPost === "function") await apiPost("/api/settings/save", {settings:uiSettingsToAppSettings(uiSettings)});
+    }catch(e){}
+  }
+
+  function appSettingsToUiSettings(settings){
+    const s = settings && typeof settings === "object" ? settings : {};
+    const out = {visualizer:s.UI_VISUALIZER, visualizerMaxBrightnessPct:s.UI_VISUALIZER_MAX_BRIGHTNESS_PCT, visualizerPreset:s.UI_VISUALIZER_PRESET, visualizerFpsLock:s.UI_VISUALIZER_FPS_LOCK, textTransparency:s.UI_TEXT_TRANSPARENCY, performanceOverlayButton:s.UI_PERFORMANCE_OVERLAY_BUTTON, performanceOverlayText:s.UI_PERFORMANCE_OVERLAY_TEXT, centerBounceAmount:s.UI_CENTER_BOUNCE_AMOUNT, centerBounceDuration:s.UI_CENTER_BOUNCE_DURATION, centerBounceOvershoot:s.UI_CENTER_BOUNCE_OVERSHOOT, wheelClickTiltAmount:s.UI_WHEEL_CLICK_TILT_AMOUNT, wheelTiltRampDuration:s.UI_WHEEL_TILT_RAMP_DURATION, wheelTiltReleaseDuration:s.UI_WHEEL_TILT_RELEASE_DURATION, infoPillDarkMultiplier:s.UI_INFO_PILL_DARK_MULTIPLIER, infoPillLightMultiplier:s.UI_INFO_PILL_LIGHT_MULTIPLIER,
+      textModes:{wheelLabels:s.UI_TEXT_WHEEL_LABELS,pathPill:s.UI_TEXT_PATH_PILL,infoPill:s.UI_TEXT_INFO_PILL,rows:s.UI_TEXT_ROWS,rowPills:s.UI_TEXT_ROW_PILLS,selectedRow:s.UI_TEXT_SELECTED_ROW,selectedRowPills:s.UI_TEXT_SELECTED_ROW_PILLS}, animationFps:{selectedRow:s.UI_ANIMATION_SELECTED_ROW_FPS,wheelTilt:s.UI_ANIMATION_WHEEL_TILT_FPS,libraryList:s.UI_ANIMATION_LIBRARY_LIST_FPS,infoPill:s.UI_ANIMATION_INFO_PILL_FPS,albumArtTransition:s.UI_ANIMATION_ALBUM_ART_TRANSITION_FPS,pageTransition:s.UI_ANIMATION_PAGE_TRANSITION_FPS,pathPill:s.UI_ANIMATION_PATH_PILL_FPS}, liquidGlassElements:{libraryList:s.UI_GLASS_LIBRARY_LIST,wheel:s.UI_GLASS_WHEEL,pathPill:s.UI_GLASS_PATH_PILL,infoPill:s.UI_GLASS_INFO_PILL,listPills:s.UI_GLASS_LIST_PILLS,selectedRow:s.UI_GLASS_SELECTED_ROW}};
+    return out;
+  }
+
+  function uiSettingsToAppSettings(s){
+    const u=s||{}; const text=u.textModes||{}, fps=u.animationFps||{}, glass=u.liquidGlassElements||{};
+    return {UI_VISUALIZER:u.visualizer,UI_VISUALIZER_MAX_BRIGHTNESS_PCT:u.visualizerMaxBrightnessPct,UI_VISUALIZER_PRESET:u.visualizerPreset,UI_VISUALIZER_FPS_LOCK:u.visualizerFpsLock,UI_TEXT_TRANSPARENCY:u.textTransparency,UI_PERFORMANCE_OVERLAY_BUTTON:u.performanceOverlayButton,UI_PERFORMANCE_OVERLAY_TEXT:u.performanceOverlayText,UI_CENTER_BOUNCE_AMOUNT:u.centerBounceAmount,UI_CENTER_BOUNCE_DURATION:u.centerBounceDuration,UI_CENTER_BOUNCE_OVERSHOOT:u.centerBounceOvershoot,UI_WHEEL_CLICK_TILT_AMOUNT:u.wheelClickTiltAmount,UI_WHEEL_TILT_RAMP_DURATION:u.wheelTiltRampDuration,UI_WHEEL_TILT_RELEASE_DURATION:u.wheelTiltReleaseDuration,UI_INFO_PILL_DARK_MULTIPLIER:u.infoPillDarkMultiplier,UI_INFO_PILL_LIGHT_MULTIPLIER:u.infoPillLightMultiplier,UI_TEXT_WHEEL_LABELS:text.wheelLabels,UI_TEXT_PATH_PILL:text.pathPill,UI_TEXT_INFO_PILL:text.infoPill,UI_TEXT_ROWS:text.rows,UI_TEXT_ROW_PILLS:text.rowPills,UI_TEXT_SELECTED_ROW:text.selectedRow,UI_TEXT_SELECTED_ROW_PILLS:text.selectedRowPills,UI_ANIMATION_SELECTED_ROW_FPS:fps.selectedRow,UI_ANIMATION_WHEEL_TILT_FPS:fps.wheelTilt,UI_ANIMATION_LIBRARY_LIST_FPS:fps.libraryList,UI_ANIMATION_INFO_PILL_FPS:fps.infoPill,UI_ANIMATION_ALBUM_ART_TRANSITION_FPS:fps.albumArtTransition,UI_ANIMATION_PAGE_TRANSITION_FPS:fps.pageTransition,UI_ANIMATION_PATH_PILL_FPS:fps.pathPill,UI_GLASS_LIBRARY_LIST:glass.libraryList,UI_GLASS_WHEEL:glass.wheel,UI_GLASS_PATH_PILL:glass.pathPill,UI_GLASS_INFO_PILL:glass.infoPill,UI_GLASS_LIST_PILLS:glass.listPills,UI_GLASS_SELECTED_ROW:glass.selectedRow};
+  }
+
+  function applyServerAppSettings(settings){
+    serverUiSettings = appSettingsToUiSettings(settings);
     if(root.uiSettings){
-      root.uiSettings.serverAdvancedUiDefaults = serverAdvancedUiDefaults;
+      root.uiSettings.serverUiSettings = serverUiSettings;
       root.uiSettings.settings = loadUiSettings();
     }
     return root.uiSettings ? root.uiSettings.settings : loadUiSettings();
+  }
+
+  function takeLocalUiMigration(){
+    try{
+      if(localStorage.getItem("debripod_ui_settings_sqlite_v1") === "1") return null;
+      const raw = localStorage.getItem(UI_SETTINGS_KEY) || "";
+      if(!raw) return null;
+      const value = JSON.parse(raw);
+      if(!value || typeof value !== "object") return null;
+      localStorage.setItem("debripod_ui_settings_sqlite_v1", "1");
+      return value;
+    }catch(e){ return null; }
   }
 
   root.uiSettings = {
@@ -390,10 +432,13 @@
     liquidGlassModeToTint,
     cloneGlassElementSettings,
     applyUiSettingsObject,
-    applyServerAdvancedDefaults,
-    serverAdvancedUiDefaults,
+    applyServerAppSettings,
+    uiSettingsToAppSettings,
+    takeLocalUiMigration,
+    serverUiSettings,
     loadUiSettings,
     saveUiSettings,
+    flushUiSettings,
     settings: loadUiSettings()
   };
 })();

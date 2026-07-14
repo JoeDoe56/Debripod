@@ -132,22 +132,6 @@ function Find-DebriPodDir {
     return $null
 }
 
-function Ensure-ConfigPort {
-    if (-not (Test-Path -LiteralPath "config")) {
-        New-Item -ItemType Directory -Path "config" | Out-Null
-    }
-
-    $localConfig = Join-Path "config" "debripod.local.json"
-    $mainConfig = Join-Path "config" "debripod.json"
-
-    if (-not (Test-Path -LiteralPath $localConfig) -and -not (Test-Path -LiteralPath $mainConfig)) {
-        "{`n  `"PORT`": $Port`n}" | Set-Content -LiteralPath $localConfig -Encoding UTF8
-        Say "Created config\debripod.local.json with port $Port."
-    } else {
-        Say "Existing config found. Leaving it unchanged."
-    }
-}
-
 function Ensure-Venv {
     $venvPython = Join-Path $VenvDir "Scripts\python.exe"
 
@@ -215,7 +199,7 @@ function Check-Updates($VenvPython) {
 
 function Start-App($VenvPython) {
     Say "Starting DebriPod on http://127.0.0.1:$Port"
-    & $VenvPython -m debripod.app
+    & $VenvPython -m debripod.app --port $Port
 }
 
 Ensure-SystemDependencies
@@ -236,7 +220,6 @@ if (-not (Test-Path -LiteralPath ".git")) {
     Die "$appDir is not a Git repository. Refusing to overwrite it."
 }
 
-Ensure-ConfigPort
 $venvPython = Ensure-Venv
 
 $depsMarker = Join-Path $VenvDir ".debripod-deps-installed"

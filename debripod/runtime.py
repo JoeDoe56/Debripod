@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from typing import Any
+import argparse
 
 from flask import Flask
 
@@ -39,6 +40,12 @@ def create_app() -> Flask:
 
 
 def main() -> None:
+    parser = argparse.ArgumentParser(prog="debripod")
+    parser.add_argument("--port", type=int, default=None)
+    args = parser.parse_args()
+    if args.port is not None:
+        state.PORT = args.port
+        globals()["PORT"] = args.port
     _sync_config_overrides()
     state.ensure_dirs()
     state.load_playback_state()
