@@ -446,7 +446,7 @@ def _mcp_build_library_tree() -> dict:
         tree = {'name': name, 'root_id': rid, 'path': root_abs, 'mode': mode, 'folders': []}
         index: Dict[str, dict] = {'': tree}
         for base, dirs, _files in os.walk(root_abs):
-            dirs[:] = [d for d in dirs if not d.startswith('.') and d != CACHE_DIR_NAME]
+            dirs[:] = [d for d in dirs if not d.startswith('.') and d != "_debripod_cache"]
             rel_base = os.path.relpath(base, root_abs).replace('\\', '/')
             if rel_base == '.':
                 rel_base = ''

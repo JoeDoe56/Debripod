@@ -12,6 +12,7 @@ import requests
 from ...media_types import AUDIO_EXTS, VIDEO_EXTS
 from .base import DebridAuthError, DebridProviderBase, DebridProviderError
 from .models import DebridFile, DebridPreview, DebridResolvedLink
+from .identifiers import first_identifier, normalize_identifier, normalize_identifier_list
 
 
 _CACHE_LOCK = threading.Lock()
@@ -81,7 +82,7 @@ class PremiumizeProvider(DebridProviderBase):
                 ext=ext.lstrip("."),
                 raw=dict(item),
             ))
-        queued_id = str(payload.get("id") or payload.get("transfer_id") or "")
+        queued_id = first_identifier(payload, "id", "transfer_id") or ""
         return DebridPreview(
             provider="premiumize",
             provider_task_id=task_id,
@@ -116,7 +117,7 @@ class PremiumizeProvider(DebridProviderBase):
             # fallback isolated to this response shape.
             try:
                 created = self._create_transfer(magnet)
-                preview.raw["queued_transfer_id"] = str(created.get("id") or preview.raw.get("queued_transfer_id") or "")
+                preview.raw["queued_transfer_id"] = first_identifier(created, "id") or normalize_identifier(preview.raw.get("queued_transfer_id")) or ""
             except DebridProviderError:
                 pass
         return self._cache(magnet, preview)
@@ -131,7 +132,7 @@ class PremiumizeProvider(DebridProviderBase):
         self, *, magnet: str, provider_task_id: str, selected_file_ids: Iterable[str],
         timeout_seconds: int, poll_interval_seconds: int,
     ) -> List[DebridFile]:
-        wanted = {str(value) for value in selected_file_ids if str(value or "").strip()}
+        wanted = set(normalize_identifier_list(selected_file_ids))
         if not wanted:
             raise DebridProviderError("No files selected.")
         preview, source = self._cached(provider_task_id)
@@ -171,11 +172,12 @@ class PremiumizeProvider(DebridProviderBase):
         return self._request("POST", "/api/transfer/delete", data={"id": transfer_id})
 
     def delete_task_best_effort(self, provider_task_id: str | None) -> None:
-        if not provider_task_id:
+        provider_task_id = normalize_identifier(provider_task_id)
+        if provider_task_id is None:
             return
         preview, _source = self._cached(provider_task_id)
-        transfer_id = str((preview.raw if preview else {}).get("queued_transfer_id") or "")
-        if transfer_id:
+        transfer_id = normalize_identifier((preview.raw if preview else {}).get("queued_transfer_id"))
+        if transfer_id is not None:
             try:
                 self._delete_transfer(transfer_id)
             except Exception:

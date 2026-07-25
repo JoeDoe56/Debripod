@@ -21,57 +21,13 @@
       }
     });
   }
-  function menuButtonPress(){
-    if(state.current && state.current.kind === "np_playlist_add") return;
-    if(nowPlaying.style.display === "block" && !playbackPillsPinned) hidePlaybackPillsImmediate("menu button");
-    if(nowPlaying.style.display === "block" && seekMode && !isVideoActive() && lastfmIsEnabled()){
-      lastfmToggleLoved(lastfmState.meta);
-      resetSeekIdle();
-      return;
-    }
-    if(nowPlaying.style.display !== "block" && state.current && (state.current.kind === "history" || state.current.kind === "playback_queue")){
-      showNowPlaying(true);
-      return;
-    }
-    goBack();
-  }
-
-  function playButtonPress(){
-    if(state.current && state.current.kind === "np_playlist_add") return;
-    if(nowPlaying.style.display === "block" && seekMode && !isVideoActive()){
-      toggleShuffle();
-      resetSeekIdle();
-    }else{
-      const p = togglePlay();
-      if(p && typeof p.catch === "function") p.catch(()=>{});
-    }
-  }
-
-  function revButtonPress(){
-    if(state.current && state.current.kind === "np_playlist_add") return;
-    if(nowPlaying.style.display === "block" && seekMode){
-      seek(-15);
-      resetSeekIdle();
-    }else{
-      if(isVideoActive()){
-        playVideoPrev();
-      }else{
-        playPrev();
-      }
-    }
-  }
-
-  function fwdButtonPress(){
-    if(state.current && state.current.kind === "np_playlist_add") return;
-    if(nowPlaying.style.display === "block" && seekMode){
-      seek(15);
-      resetSeekIdle();
-    }else{
-      if(isVideoActive()){
-        playVideoNext();
-      }else{
-        playNext();
-      }
+  function dispatchControl(gesture, control, details){
+    try{
+      const dispatcher = window.DebriPod && DebriPod.controlDispatcher;
+      if(!dispatcher || typeof dispatcher.dispatch !== "function") return Promise.resolve();
+      return dispatcher.dispatch(gesture, control, details || {});
+    }catch(error){
+      return Promise.reject(error);
     }
   }
 
@@ -103,39 +59,19 @@
     }catch(e){}
   }
 
-  function centerPress(){
-    if(nowPlaying.style.display === "block"){
-      if(seekMode){
-        if(!seekChanged && !isVideoActive()){
-          const p = viewNowPlayingPlaylistMode();
-          if(p && typeof p.catch === "function") p.catch(()=>{});
-        }else{
-          commitSeekMode();
-        }
-      }else{
-        enterSeekMode();
-      }
-      return;
-    }
-    if(typeof rangeEditorCenterPress === "function" && rangeEditorCenterPress()){
-      return;
-    }
-    selectItem();
-  }
-
   btnCenter.addEventListener("animationend", (ev)=>{
     try{ if(ev.animationName === "wheelCenterPulse") btnCenter.classList.remove("centerPulse"); }catch(e){}
   });
 
-  function performWheelButtonTap(zone, pressFn, options){
+  function performWheelButtonTap(zone, control, options){
     triggerWheelClickTilt(zone);
     if(options && options.pulse) pulseWheelCenter();
     vibeTick();
     if(nowPlaying.style.display === "block" && !(options && options.skipPlaybackPill)) playbackPillActivity(false, "wheel button");
-    pressFn();
+    dispatchControl("tap", control).catch(()=>{});
   }
 
-  function bindWheelButton(el, zone, pressFn, longFn, options){
+  function bindWheelButton(el, zone, control, options){
     if(!el) return;
     let active = null;
     const clear = ()=>{
@@ -157,10 +93,7 @@
         active.long = true;
         suppressWheelClicks(700);
         vibeTick();
-        try{
-          const result = longFn && longFn();
-          if(result && typeof result.catch === "function") result.catch(()=>{});
-        }catch(e){}
+        dispatchControl("hold", control).catch(()=>{});
       }, 320);
     }, {passive:false});
     el.addEventListener("pointermove", (ev)=>{
@@ -184,7 +117,7 @@
         clear();
         suppressWheelClicks(500);
         if(wasDrag) wheelPointerEnd();
-        if(shouldTap) performWheelButtonTap(zone, pressFn, options);
+        if(shouldTap) performWheelButtonTap(zone, control, options);
       }
     };
     el.addEventListener("pointerup", finish, {passive:false});
@@ -194,15 +127,15 @@
         try{ ev.preventDefault(); ev.stopPropagation(); }catch(e){}
         return;
       }
-      performWheelButtonTap(zone, pressFn, options);
+      performWheelButtonTap(zone, control, options);
     });
   }
 
-  bindWheelButton(btnMenu, "top", menuButtonPress, ()=>{ if(typeof openNowFolder === "function") return openNowFolder(); }, {skipPlaybackPill:true});
-  bindWheelButton(btnRev, "left", revButtonPress, ()=>{ if(typeof viewHistory === "function") return viewHistory(true); });
-  bindWheelButton(btnFwd, "right", fwdButtonPress, ()=>{ if(typeof viewPlaybackQueue === "function") return viewPlaybackQueue(true); });
-  bindWheelButton(btnPlay, "bottom", playButtonPress, null);
-  bindWheelButton(btnCenter, "center", centerPress, null, {pulse:true});
+  bindWheelButton(btnMenu, "top", "top", {skipPlaybackPill:true});
+  bindWheelButton(btnRev, "left", "left");
+  bindWheelButton(btnFwd, "right", "right");
+  bindWheelButton(btnPlay, "bottom", "bottom");
+  bindWheelButton(btnCenter, "center", "center", {pulse:true});
 
   updateWheelLabels();
 
@@ -232,7 +165,8 @@
             setSelectionFast(idx);
           }
         }
-        menuButtonPress();
+        const item = (state.items || [])[state.sel] || null;
+        dispatchControl("hold", "center", {item:item}).catch(()=>{});
       }catch(e){}
     });
   }
@@ -274,20 +208,6 @@
       activateListRow(ev.target);
     });
   }
-  if(document && !document._dpStageContextMenuBound){
-    document._dpStageContextMenuBound = true;
-    document.addEventListener("contextmenu", (ev)=>{
-      try{
-        if(keyboardInputTarget(ev.target)) return;
-        const inStage = ev.target && ev.target.closest && ev.target.closest(".ipodStage");
-        if(!inStage) return;
-        ev.preventDefault();
-        ev.stopPropagation();
-        menuButtonPress();
-      }catch(e){}
-    });
-  }
-
   // rotation scroll on wheel ring
   var wheelPointerDown = false;
   var dragging = false;
@@ -300,6 +220,14 @@
   var wheelPointerRect = null;
   var step = 18;
   var dragPx = 8;
+
+  // A long press on a wheel label must remain a wheel gesture rather than
+  // starting native text selection or drag handling.
+  ["selectstart", "dragstart", "contextmenu"].forEach((eventName)=>{
+    wheel.addEventListener(eventName, (ev)=>{
+      ev.preventDefault();
+    });
+  });
 
   function isWheelClickSuppressed(){
     return Date.now() < wheelClickSuppressUntil;
@@ -369,34 +297,17 @@
       accum += d;
     }
 
-    if(nowPlaying.style.display === "block"){
-      if(Math.abs(accum) >= step){
-        if(seekMode){
-          showPlaybackPills(true, "seek wheel step");
-          adjustSeekPreview(accum > 0 ? 1 : -1);
-        }else{
-          adjustVolumeStep(accum > 0 ? 1 : -1);
-        }
-        accum = 0;
-      }
-      return;
-    }
-
-    if(typeof rangeEditorWheelActive === "function" && rangeEditorWheelActive()){
-      if(Math.abs(accum) >= step){
-        const steps = Math.trunc(accum / step);
-        try{ adjustRangeEditor(steps); }catch(e){}
-        accum -= steps * step;
-      }
-      return;
-    }
-
     if(Math.abs(accum) >= step){
       const steps = Math.trunc(accum / step);
-      scrollSel(steps);
+      const count = Math.abs(steps);
+      const control = steps > 0 ? "scroll_forward" : "scroll_back";
+      for(let i = 0; i < count; i++) dispatchControl("wheel_step", control).catch(()=>{});
       accum -= steps * step;
-      try{ if(typeof setLibSelectionStretch === "function") setLibSelectionStretch(accum / step); }catch(e){}
-    }else{
+      if(nowPlaying.style.display === "block" && seekMode) showPlaybackPills(true, "seek wheel step");
+      if(nowPlaying.style.display !== "block"){
+        try{ if(typeof setLibSelectionStretch === "function") setLibSelectionStretch(accum / step); }catch(e){}
+      }
+    }else if(nowPlaying.style.display !== "block"){
       try{ if(typeof setLibSelectionStretch === "function") setLibSelectionStretch(accum / step); }catch(e){}
     }
   }
@@ -435,12 +346,6 @@
   window.addEventListener("wheel", (ev)=>{
     // Let normal browser zoom and text input scrolling work.
     if(ev.ctrlKey) return;
-    if(typeof rangeEditorWheelActive === "function" && rangeEditorWheelActive()){
-      ev.preventDefault();
-      const dir = ev.deltaY > 0 ? 1 : -1;
-      try{ adjustRangeEditor(dir); }catch(e){}
-      return;
-    }
     const tgt = ev.target;
     if(keyboardInputTarget(tgt)) return;
 
@@ -453,19 +358,9 @@
 
     ev.preventDefault();
     const dir = ev.deltaY > 0 ? 1 : -1;
-    if(nowPlaying.style.display === "block"){
-      if(seekMode){
-        adjustSeekPreview(dir);
-      }else{
-        adjustVolumeStep(dir);
-      }
-    }else{
-      if(typeof rangeEditorWheelActive === "function" && rangeEditorWheelActive()){
-        try{ adjustRangeEditor(dir); }catch(e){}
-        return;
-      }
+    dispatchControl("wheel_step", dir > 0 ? "scroll_forward" : "scroll_back").catch(()=>{});
+    if(nowPlaying.style.display !== "block"){
       try{ if(typeof setLibSelectionStretch === "function") setLibSelectionStretch(dir * 0.35); }catch(e){}
-      scrollSel(dir);
       setTimeout(()=>{ try{ if(typeof setLibSelectionStretch === "function") setLibSelectionStretch(0); }catch(e){} }, 90);
     }
   }, {passive:false});
@@ -486,89 +381,27 @@
 
     const k = ev.key;
 
-    // iPod clickwheel shortcuts
-    // w = top, a = left, s = middle, space = bottom, d = right
-    if(k === "w" || k === "W"){
-      ev.preventDefault();
-      menuButtonPress();
-    }else if(k === "Escape" || k === "Backspace"){
-      ev.preventDefault();
-      menuButtonPress();
-    }else if(k === "a" || k === "A"){
-      ev.preventDefault();
-      revButtonPress();
-    }else if(k === "ArrowLeft"){
-      ev.preventDefault();
-      revButtonPress();
-    }else if(k === "s" || k === "S"){
-      ev.preventDefault();
-      pulseWheelCenter();
-      centerPress();
-    }else if(k === "Enter"){
-      ev.preventDefault();
-      pulseWheelCenter();
-      centerPress();
-    }else if(k === " "){
-      ev.preventDefault();
-      if(state.current && state.current.kind === "np_playlist_add") return;
-      playButtonPress();
-    }else if(k === "d" || k === "D"){
-      ev.preventDefault();
-      fwdButtonPress();
-    }else if(k === "ArrowRight"){
-      ev.preventDefault();
-      fwdButtonPress();
-    }else if(k === "q" || k === "Q"){
-      ev.preventDefault();
-      scrollSel(-1);
-    }else if(k === "e" || k === "E"){
-      ev.preventDefault();
-      scrollSel(1);
-    }else if(k === "ArrowUp"){
-      ev.preventDefault();
-      if(nowPlaying.style.display === "block"){
-        if(seekMode){
-          adjustSeekPreview(-1);
-        }else{
-          adjustVolumeStep(1);
-        }
-      }else if(typeof rangeEditorWheelActive === "function" && rangeEditorWheelActive()){
-        adjustRangeEditor(-1);
-      }else{
-        scrollSel(-1);
-      }
-    }else if(k === "ArrowDown"){
-      ev.preventDefault();
-      if(nowPlaying.style.display === "block"){
-        if(seekMode){
-          adjustSeekPreview(1);
-        }else{
-          adjustVolumeStep(-1);
-        }
-      }else if(typeof rangeEditorWheelActive === "function" && rangeEditorWheelActive()){
-        adjustRangeEditor(1);
-      }else{
-        scrollSel(1);
-      }
-    }else if(k === "Home"){
-      ev.preventDefault();
-      if(nowPlaying.style.display !== "block") setSelectionFast(0);
-    }else if(k === "End"){
-      ev.preventDefault();
-      if(nowPlaying.style.display !== "block") setSelectionFast(Math.max(0, (state.items || []).length - 1));
-    }else if(k === "PageUp"){
-      ev.preventDefault();
-      if(nowPlaying.style.display !== "block") scrollSel(-Math.max(1, Math.floor(((libList && libList.clientHeight) || 320) / 56)));
-    }else if(k === "PageDown"){
-      ev.preventDefault();
-      if(nowPlaying.style.display !== "block") scrollSel(Math.max(1, Math.floor(((libList && libList.clientHeight) || 320) / 56)));
-    }
+    let control = "";
+    if(k === "w" || k === "W" || k === "Backspace") control = "top";
+    else if(k === "a" || k === "A") control = "left";
+    else if(k === "s" || k === "S" || k === "Enter") control = "center";
+    else if(k === " ") control = "bottom";
+    else if(k === "d" || k === "D") control = "right";
+    else if(k === "q" || k === "Q") control = "scroll_back";
+    else if(k === "e" || k === "E") control = "scroll_forward";
+    if(!control) return;
+    ev.preventDefault();
+    if(control === "center") pulseWheelCenter();
+    dispatchControl("keyboard", control).catch(()=>{});
   });
 
 
 
 async function maybeOpenFromUrl(){
   try{
+    if(window.DebriPod && DebriPod.linkIntake && typeof DebriPod.linkIntake.consumeDeepLinks === "function"){
+      await DebriPod.linkIntake.consumeDeepLinks();
+    }
     const p = new URLSearchParams(location.search || "");
     const rid = (p.get("root_id") || "").trim();
     if(!rid) return;

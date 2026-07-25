@@ -129,6 +129,30 @@ Real secrets are stored in the operating-system keyring under the `DebriPod` ser
 
 DebriPod includes optional MCP support. Enable it in Settings and restart DebriPod. Its token is stored in the operating-system keyring.
 
+### Controls
+
+| Input | Number | Lists | Now Playing | Seek Mode | Hold |
+|---|---:|---|---|---|---|
+| S or Enter | 1 | Interact with item | Enter Seek Mode | Commit seek, or exit Seek Mode when no seek occurred | Open context menu for selected or current item |
+| W or Backspace | 2 | Back to previous screen | Back to the preceding special page or originating ordinary page | Toggle like status | Jump to the library list location of the current item |
+| D | 3 | Next track | Next track | Skip forward | Open Queue |
+| Space | 4 | Pause or play | Pause or play | Toggle shuffle | Open Now Playing |
+| A | 5 | Previous track | Previous track | Skip back | Open History |
+| Q or wheel backward | 6 | Scroll backward on list | Decrease volume | Seek backward | No hold action |
+| E or wheel forward | 7 | Scroll forward on list | Increase volume | Seek forward | No hold action |
+
+Desktop right click on a playable row is the same as holding center.
+
+Special pages restore the exact ordinary view, selected row, and scroll position when closed.
+
+### Task notifications
+
+Choose **Enable task notifications** from Info. Permission is requested only from that action. Notifications are device scoped: a completed task notifies only the browser installation that created it. Choose **Disable task notifications** to revoke the current device subscription. Notification clicks open the exact task.
+
+### Link intake and iOS Shortcut
+
+Search accepts ordinary text, BitTorrent magnet links, and any HTTP(S) URL supported by yt-dlp. Install the [Send to DebriPod iOS Shortcut](https://www.icloud.com/shortcuts/9b20434f0f454145be37f680275f1a44) to send shared links or text directly to DebriPod. After installing it, edit the Shortcut's **Text** action and replace the example DebriPod address with the exact URL you normally use (including its protocol and port). Using the same address preserves the browser sign-in session.
+
 ## Repository layout
 
 ```text

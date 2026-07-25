@@ -11,7 +11,7 @@ import time
 import concurrent.futures
 import threading
 from pathlib import Path
-from urllib.parse import unquote
+from urllib.parse import unquote, urlparse
 
 from flask import g, session, stream_with_context
 
@@ -20,8 +20,12 @@ from . import runtime_route_state as route_state_module
 from . import runtime_state as state_module
 from .Services import lastfm as lastfm_module
 from .Services import soulseek as soulseek_module
+from .Services.youtube import ytdlp_comments, ytdlp_inspect
+from .Services.link_intake import classify_link_input
+from .Library.tvmaze import normalized_episode_information
 from .factory import DeferredApp
 from .auth import register_auth
+from .Routes.notifications import register_notification_routes
 from .config import _coerce_config_value, ensure_startup_security_config, load_default_app_config_overrides, save_config, save_default_app_config_overrides
 from .Library.library_db import load_folder_entries, load_palette, load_palette_for_media, load_visualizer_analysis_for_media, save_folder_entries, save_palette
 from .Library.index import build_index_for_root, set_index_cache
@@ -31,7 +35,9 @@ from .Library.library_db import load_show_aliases, save_show_aliases
 from .Library.search_ranker import infer_query_intent, normalize_search_text, rank_combined_results, source_priority_for_intent
 from .storage.tasks import save_task_metadata
 from .storage.palettes import load_video_timeline
+from .storage.media_likes import get_media_like, list_media_likes, set_media_like
 from .Services.debrid import DebridAuthError, DebridProviderError, get_active_provider, get_provider, provider_specs, provider_status as debrid_provider_status
+from .Services.debrid.identifiers import normalize_identifier
 from .Tasks.manager import task_belongs_to_owner
 from .runtime_state import *
 from .runtime_downloads import *
@@ -71,6 +77,7 @@ register_lastfm_routes(
     api_secret_provider=lambda: LASTFM_API_SECRET,
 )
 register_task_routes(app)
+register_notification_routes(app)
 
 
 def _current_settings_username() -> str:
@@ -302,9 +309,7 @@ def _pwa_shell_assets() -> list[str]:
     base = [
         "/",
         f"/site.webmanifest?v={ICON_VERSION}",
-        f"/favicon.ico?v={ICON_VERSION}",
-        f"/apple-touch-icon.png?v={ICON_VERSION}",
-        f"/apple-touch-icon-precomposed.png?v={ICON_VERSION}",
+        f"/icons/debripod-app-icon.svg?v={ICON_VERSION}",
         f"/static/debripod.css?v={ASSET_VERSION}",
         f"/static/debripod.js?v={ASSET_VERSION}",
         f"/static/liquidGL.js?v={ASSET_VERSION}",
@@ -1162,6 +1167,55 @@ def api_youtube_files():
         return jsonify(ok=False, error="Failed to list formats", files=[], file_count=0, size=0), 500
 
 
+@app.route("/api/link/inspect", methods=["POST"])
+def api_link_inspect():
+    try:
+        data = request.get_json(force=True) or {}
+    except Exception:
+        data = {}
+    value = str(data.get("value") or "").strip()
+    kind = classify_link_input(value)
+    if kind == "query":
+        return jsonify(ok=False, error="Enter a valid magnet or HTTP(S) link."), 400
+    try:
+        if kind == "magnet":
+            current = ensure_app_settings(username=_current_settings_username(), defaults_overrides=_default_app_overrides())
+            status = debrid_provider_status(current)
+            if not status.get("configured"):
+                return jsonify(ok=False, error="No debrid provider is configured."), 400
+            provider = get_active_provider(current, int(current.get("REQUEST_TIMEOUT_SECONDS") or 25))
+            preview = provider.preview_magnet(value)
+            files = []
+            for item in preview.files:
+                name = str(item.path or "")
+                files.append({
+                    "name": name, "title": name, "path": name,
+                    "id": item.file_id, "file_id": item.file_id,
+                    "size": int(item.bytes or 0), "bytes": int(item.bytes or 0),
+                    "source": "knaben", "selectable": True,
+                })
+            result = {
+                "result_id": "magnet:" + value,
+                "source": "knaben", "source_label": provider.label,
+                "title": str(data.get("title") or "Magnet link"),
+                "directory_title": "Magnet link", "magnet": value,
+                "provider": provider.id, "provider_label": provider.label,
+                "debrid_task_id": preview.provider_task_id,
+                "browse_available": False, "stream_available": True,
+                "download_available": True, "files_loaded": True,
+                "files": files, "file_count": len(files),
+                "size": sum(int(row.get("size") or 0) for row in files),
+            }
+            return jsonify(ok=True, detail_kind="debrid_files", result=result)
+        result = ytdlp_inspect(value)
+        return jsonify(ok=True, detail_kind="ytdlp_formats", result=result)
+    except DebridProviderError as exc:
+        return jsonify(ok=False, error=str(exc) or "Failed to inspect link"), 400
+    except Exception as exc:
+        app.logger.warning("Link inspection failed: %s", exc)
+        return jsonify(ok=False, error="This link could not be inspected by yt-dlp."), 400
+
+
 @app.route("/api/youtube/channel", methods=["GET"])
 def api_youtube_channel():
     channel_id = (request.args.get('channel_id') or '').strip()
@@ -1172,6 +1226,21 @@ def api_youtube_channel():
         return jsonify(ok=True, results=results, result_count=len(results))
     except Exception:
         return jsonify(ok=False, error="Failed to browse channel", results=[], result_count=0), 500
+
+
+@app.route("/api/youtube/comments", methods=["GET"])
+def api_youtube_comments():
+    url = (request.args.get("url") or "").strip()
+    if not url:
+        return jsonify(ok=False, error="Missing URL", comments=[]), 400
+    try:
+        parsed = urlparse(url)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            return jsonify(ok=False, error="Invalid URL", comments=[]), 400
+        comments = ytdlp_comments(url, limit=100)
+        return jsonify(ok=True, comments=comments)
+    except Exception:
+        return jsonify(ok=False, error="Failed to load comments", comments=[]), 500
 
 
 @app.route("/api/youtube/enqueue", methods=["POST"])
@@ -1222,7 +1291,7 @@ def api_youtube_enqueue():
     folder = sanitize_folder_name(f"{stamp}_{base}_{task_id[:6]}")
     task_dir = os.path.join(youtube_root, folder)
     os.makedirs(task_dir, exist_ok=True)
-    t = Task(id=task_id, title=title, magnet=url, task_dir=task_dir, owner=_current_settings_username(), source='youtube', state='queued', message='Queued', youtube_files=entries)
+    t = Task(id=task_id, title=title, magnet=url, task_dir=task_dir, owner=_current_settings_username(), source='youtube', source_url=url, origin_client_id=str(request.headers.get("X-DebriPod-Client-Id") or ""), state='queued', message='Queued', youtube_files=entries)
     with TASKS_LOCK:
         TASKS[task_id] = t
     save_task_metadata(t, original_result_title=title, remote_files=entries, selected_file_ids=[item.get('file_id') for item in entries], version=str(VERSION))
@@ -1345,7 +1414,7 @@ def api_debrid_enqueue_selected():
         data = {}
     title = str(data.get("title") or "").strip() or "Knaben item"
     magnet = str(data.get("magnet") or "").strip()
-    provider_task_id = str(data.get("debrid_task_id") or "").strip()
+    provider_task_id = normalize_identifier(data.get("debrid_task_id")) or ""
     file_ids = data.get("file_ids") or []
 
     if not provider_task_id:
@@ -1383,6 +1452,7 @@ def api_debrid_enqueue_selected():
         magnet=magnet,
         task_dir=task_dir,
         owner=_current_settings_username(),
+        origin_client_id=str(request.headers.get("X-DebriPod-Client-Id") or ""),
         source="debrid",
         state="queued",
         message="Queued",
@@ -1478,6 +1548,7 @@ def api_soulseek_enqueue():
         magnet="",
         task_dir=task_download_dir,
         owner=_current_settings_username(),
+        origin_client_id=str(request.headers.get("X-DebriPod-Client-Id") or ""),
         source="soulseek",
         state="queued",
         message="Queued",
@@ -2036,6 +2107,8 @@ def _coerce_advanced_ui_defaults(raw: Any, glass: dict[str, Any]) -> dict[str, A
         "albumArtTransition": 60,
         "pageTransition": 60,
         "pathPill": 60,
+        "rowExpansion": 60,
+        "rowInsertion": 60,
     }
     fps_raw = source.get("animationFps") if isinstance(source.get("animationFps"), dict) else {}
     animation_fps = {}
@@ -2112,7 +2185,7 @@ def _coerce_app_default_overrides(raw: Any) -> dict[str, Any]:
 def api_defaults_diff():
     username = _current_settings_username()
     current = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
-    private = {"DOWNLOAD_DIR", "SOULSEEK_DOWNLOAD_DIR", "YOUTUBE_DOWNLOAD_DIR", "LIBRARY_FOLDERS", "FFMPEG_PATH", "FFPROBE_PATH", "CACHE_DIR_NAME"}
+    private = {"DOWNLOAD_DIR", "SOULSEEK_DOWNLOAD_DIR", "YOUTUBE_DOWNLOAD_DIR", "LIBRARY_FOLDERS", "FFMPEG_PATH", "FFPROBE_PATH"}
     changed = {}
     for key, source_value in DEFAULT_APP_SETTINGS.items():
         if key in SECRET_SETTING_KEYS or key in private:
@@ -2429,7 +2502,7 @@ def api_library_browse():
     dirs = []
     files = []
     for n in names:
-        if n.startswith(".") or n == CACHE_DIR_NAME:
+        if n.startswith(".") or n == "_debripod_cache":
             continue
         p = os.path.join(abs_path, n)
         if os.path.isdir(p):
@@ -2575,7 +2648,6 @@ def api_library_metadata():
                 {"key": "artists", "label": "Artists"},
                 {"key": "albums", "label": "Albums"},
                 {"key": "songs", "label": "Songs"},
-                {"key": "liked_songs", "label": "Liked Songs"},
                 {"key": "genres", "label": "Genres"},
                 {"key": "playlists", "label": "Playlists"},
                 {"key": "movies", "label": "Movies"},
@@ -2651,9 +2723,11 @@ def api_library_metadata():
             "completion_percent": percent,
             "position": float(progress.get("position") or record.get("position") or 0),
             "source": str(record.get("source") or "library"),
+            "source_url": str(record.get("source_url") or (record.get("manifest") or {}).get("source_url") or ""),
             "season": parsed.get("season"),
             "episode": parsed.get("episode"),
             "episode_end": parsed.get("episode_end"),
+            "show_title": str(parsed.get("show_title") or ""),
             "pills": pills,
             "forceTwoLine": True,
         }
@@ -2663,7 +2737,6 @@ def api_library_metadata():
             {"key": "artists", "label": "Artists"},
             {"key": "albums", "label": "Albums"},
             {"key": "songs", "label": "Songs"},
-            {"key": "liked_songs", "label": "Liked Songs"},
             {"key": "genres", "label": "Genres"},
             {"key": "playlists", "label": "Playlists"},
             {"key": "movies", "label": "Movies"},
@@ -2754,22 +2827,59 @@ def api_library_metadata():
         return jsonify({"items": tr, **response_meta})
 
 
-    if level == "liked_songs":
-        if not lastfm_enabled():
-            return jsonify({"items": [{"kind": "info", "label": "Last.fm is not configured. Add API credentials or skip Last.fm features."}], **response_meta})
+    if level in {"liked_music", "liked_movies", "liked_episodes", "liked_videos"}:
+        requested_types = {
+            "liked_music": ("music",),
+            "liked_movies": ("movie",),
+            "liked_episodes": ("episode",),
+            "liked_videos": ("video", "youtube"),
+        }[level]
+        liked_rows: list[dict[str, Any]] = []
+        like_root_id = "" if aggregate else root_id
+        for requested_type in requested_types:
+            liked_rows.extend(list_media_likes(_current_settings_username(), media_type=requested_type, root_id=like_root_id))
         items = []
-        for t in tracks:
-            a = (t.get("artist") or "").strip()
-            tt = (t.get("title") or t.get("name") or "").strip()
-            b = (t.get("album") or "").strip()
-            if not a or not tt:
-                continue
-            if not lastfm_is_loved(a, tt, b):
-                continue
-            items.append({"kind": "track", "label": (t.get("title") or t.get("name") or "Track"), "rel": t.get("rel"), "root_id": t.get("root_id") or root_id, "root": {"id": t.get("root_id") or root_id}, "badge": (t.get("track") or "")})
-        items.sort(key=lambda x: (x.get("label") or "").lower())
+        for liked in sorted(liked_rows, key=lambda row: float(row.get("updated_at") or 0), reverse=True):
+            media_type = str(liked.get("media_type") or "")
+            metadata = liked.get("metadata") if isinstance(liked.get("metadata"), dict) else {}
+            media = "audio" if media_type == "music" else "video"
+            kind = {
+                "music": "track",
+                "movie": "movie",
+                "episode": "show_episode",
+            }.get(media_type, "file")
+            row = {
+                "kind": kind,
+                "label": str(liked.get("title") or liked.get("rel") or "Liked media").split("/")[-1],
+                "root_id": str(liked.get("root_id") or ""),
+                "root": {"id": str(liked.get("root_id") or "")},
+                "rel": str(liked.get("rel") or ""),
+                "media": media,
+                "source": str(liked.get("source") or "library"),
+                "source_id": str(liked.get("source_id") or ""),
+                "source_url": str(metadata.get("source_url") or ""),
+                "title": str(liked.get("title") or ""),
+                "artist": str(liked.get("artist") or ""),
+                "album": str(liked.get("album") or ""),
+                "year": metadata.get("year"),
+                "show_key": str(metadata.get("show_key") or ""),
+                "show_title": str(metadata.get("show_title") or ""),
+                "season": metadata.get("season"),
+                "episode": metadata.get("episode"),
+                "art": str(metadata.get("art") or ""),
+                "ext": str(metadata.get("ext") or ""),
+                "quality": str(metadata.get("quality") or ""),
+            }
+            if row["rel"] or row["source_url"]:
+                items.append(row)
         if not items:
-            items = [{"kind": "info", "label": "No liked songs found"}]
+            empty_label = {
+                "liked_music": "No liked songs found",
+                "liked_movies": "No liked movies found",
+                "liked_episodes": "No liked episodes found",
+                "liked_videos": "No liked videos found",
+            }[level]
+            items = [{"kind": "info", "label": empty_label}]
         return jsonify({"items": items[:3000], **response_meta})
 
     if level == "songs":
@@ -3100,6 +3210,75 @@ def api_library_filemeta():
             "art": art,
         }
     )
+
+
+@app.route("/api/library/media_information", methods=["GET"])
+def api_library_media_information():
+    show_title = (request.args.get("show_title") or "").strip()
+    try:
+        season = int(request.args.get("season") or 0)
+        episode = int(request.args.get("episode") or 0)
+    except (TypeError, ValueError):
+        return jsonify(ok=False, error="Invalid episode", information={}), 400
+    if not show_title or season < 0 or episode <= 0:
+        return jsonify(ok=False, error="Missing episode", information={}), 400
+    information = normalized_episode_information(show_title, season, episode)
+    return jsonify(ok=True, information=information)
+
+
+@app.route("/api/library/like", methods=["GET", "POST"])
+def api_library_like():
+    username = _current_settings_username()
+    if request.method == "GET":
+        media_key = (request.args.get("media_key") or "").strip()
+        if not media_key:
+            return jsonify(ok=False, error="Missing media key"), 400
+        row = get_media_like(username, media_key)
+        if row is None:
+            artist = (request.args.get("artist") or "").strip()
+            title = (request.args.get("title") or "").strip()
+            album = (request.args.get("album") or "").strip()
+            if artist and title and lastfm_module.lastfm_is_loved(artist, title, album):
+                target = {
+                    "media_type": "music", "source": "lastfm", "artist": artist,
+                    "title": title, "album": album,
+                }
+                row = set_media_like(username, target, True)
+        return jsonify(ok=True, like=row)
+
+    payload = request.get_json(silent=True) or {}
+    if not isinstance(payload.get("liked"), bool):
+        return jsonify(ok=False, error="liked must be a boolean"), 400
+    try:
+        row = set_media_like(username, payload, bool(payload["liked"]))
+    except ValueError as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+    warning = ""
+    if row.get("media_type") == "music":
+        artist = str(row.get("artist") or "")
+        title = str(row.get("title") or "")
+        album = str(row.get("album") or "")
+        if artist and title:
+            try:
+                lastfm_module.lastfm_set_loved_local(artist, title, album, bool(row["liked"]))
+                if lastfm_module.lastfm_enabled():
+                    if row["liked"]:
+                        lastfm_module.lastfm_love_track(artist, title)
+                    else:
+                        lastfm_module.lastfm_unlove_track(artist, title)
+            except Exception:
+                warning = "Local like saved; Last.fm sync failed"
+    return jsonify(ok=True, like=row, sync_warning=warning)
+
+
+@app.route("/api/library/liked", methods=["GET"])
+def api_library_liked():
+    media_type = (request.args.get("media_type") or "").strip().lower()
+    root_id = (request.args.get("root_id") or "").strip()
+    if media_type and media_type not in {"music", "movie", "episode", "video", "youtube"}:
+        return jsonify(ok=False, error="Unsupported media type", items=[]), 400
+    rows = list_media_likes(_current_settings_username(), media_type=media_type, root_id=root_id)
+    return jsonify(ok=True, items=rows)
 
 
 @app.route("/art/<root_id>/<path:relpath>", methods=["GET", "HEAD"])

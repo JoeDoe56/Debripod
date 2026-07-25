@@ -16,11 +16,9 @@
     const items = [
       {kind:"libsearch_entry", label:"Search"},
       {kind:"libtasks_entry", label:"Tasks"},
-      {kind:"nowplaying", label:"Now Playing", disabled:!(state.now || state.serverNow)},
       {kind:"metacat", label:"Artists", cat:"artists", root:aggregateRoot},
       {kind:"metacat", label:"Albums", cat:"albums", root:aggregateRoot},
       {kind:"metacat", label:"Songs", cat:"songs", root:aggregateRoot},
-      {kind:"metacat", label:"Liked Songs", cat:"liked_songs", root:aggregateRoot},
       {kind:"metacat", label:"Genres", cat:"genres", root:aggregateRoot},
       {kind:"metacat", label:"Playlists", cat:"playlists", root:aggregateRoot},
       {kind:"metacat", label:"Movies", cat:"movies", root:aggregateRoot},
@@ -249,7 +247,6 @@
       {key:"MCP_SEARCH_RESULT_LIMIT", label:"MCP result limit", type:"number", value:s.MCP_SEARCH_RESULT_LIMIT},
       {key:"MCP_SSE_KEEPALIVE_SECONDS", label:"MCP keepalive", type:"number", value:s.MCP_SSE_KEEPALIVE_SECONDS},
       {key:"MCP_SESSION_TTL_SECONDS", label:"MCP session TTL", type:"number", value:s.MCP_SESSION_TTL_SECONDS},
-      {key:"CACHE_DIR_NAME", label:"Cache folder name", type:"text", value:s.CACHE_DIR_NAME},
       {key:"STREAM_PROXY_ALLOWED_HOST_SUFFIXES", label:"Stream proxy hosts", type:"csv_list", value:s.STREAM_PROXY_ALLOWED_HOST_SUFFIXES},
       {key:"AUDIO_TRANSCODE", label:"Audio transcode rules", type:"text", value:s.AUDIO_TRANSCODE},
       {key:"VIDEO_BROWSER_TARGET_EXT", label:"Video target", type:"text", value:s.VIDEO_BROWSER_TARGET_EXT},
@@ -893,30 +890,24 @@
     const filt = libParseFilter(state.libSearch.filter || "");
     const items = [];
 
-    const stMsg = (state.libSearch && state.libSearch.status_msg) ? String(state.libSearch.status_msg) : "";
-    const stTone = (state.libSearch && state.libSearch.status_tone) ? String(state.libSearch.status_tone) : "";
-    const qPills = [];
-    if(stMsg){
-      qPills.push({text: stMsg, tone: stTone || ""});
-    }
     const sourceRows = Object.values((state.libSearch && state.libSearch.sourceStatus) || {});
-    const sourcePills = [];
-    if(sourceRows.length){
-      for(const src of sourceRows){
-        if(!src) continue;
-        const label = String(src.label || src.source || "");
-        const count = Number(src.result_count || 0);
-        const err = String(src.error || "");
-        if(err) sourcePills.push({text: label + " error", tone:"warn"});
-        else if(label) sourcePills.push({text: label + (src.done === false ? " searching" : " ready") + (count ? " · " + String(count) : ""), tone: src.done === false ? "" : "ok"});
-      }
-    }
+    const sourceMap = {};
+    sourceRows.forEach(src=>{ if(src && src.source) sourceMap[String(src.source).toLowerCase()] = src; });
+    const sourcePills = ["library", "soulseek", "knaben", "youtube"].map(source=>{
+      const src = sourceMap[source] || {};
+      const label = source === "soulseek" ? "Soulseek" : source.charAt(0).toUpperCase() + source.slice(1);
+      if(String(src.error || "")) return {text:label + " ×", tone:"warn"};
+      if(src.done === false || !sourceMap[source]) return {text:label + " …", tone:""};
+      return {text:label + " " + String(Number(src.result_count || 0)), tone:"ok"};
+    });
+    const visibleTotal = Number((state.libSearch && state.libSearch.last_count) || sourceRows.reduce((sum, src)=>sum + Number(src && src.result_count || 0), 0));
+    sourcePills.push({text:"Total " + String(visibleTotal) + ((state.libSearch && state.libSearch.cached) ? " ↻" : ""), tone:""});
     items.push({
       kind:"libsearch_query",
-      label:"Enter query",
-      pills: qPills,
+      label:"Enter query or link",
+      pills: [],
       expanded: !!(state.libSearch && (state.libSearch.searching || state.libSearch.showSourceStatus)),
-      sub_row: (state.libSearch && (state.libSearch.searching || state.libSearch.showSourceStatus)) ? {loading:!!state.libSearch.searching, label:libSearchCombinedStatusText(sourceRows), pills:sourcePills} : null
+      sub_row: (state.libSearch && (state.libSearch.searching || state.libSearch.showSourceStatus)) ? {loading:false, label:"", pills:sourcePills} : null
     });
     items.push({kind:"libsearch_filter", label:"Enter filters"});
 
@@ -1024,19 +1015,19 @@
       }
     }catch(e){ restoreSel = null; restoreScroll = null; }
 
-    state.items = Array.isArray(items) ? items : [];
+    const nextItems = Array.isArray(items) ? items : [];
     if(preserveSel){
-      const max = Math.max(0, state.items.length - 1);
+      const max = Math.max(0, nextItems.length - 1);
       state.sel = Math.max(0, Math.min(max, prevSel));
     }else if(restoreSel != null){
-      const max = Math.max(0, state.items.length - 1);
+      const max = Math.max(0, nextItems.length - 1);
       state.sel = Math.max(0, Math.min(max, restoreSel));
     }else{
       state.sel = 0;
     }
 
     setHeader();
-    renderList();
+    replaceListItems(nextItems, {animate:true, preserveSelection:!!preserveSel, preserveScroll:true, selectionIndex:state.sel, reason:"search results"});
 
     if(!preserveSel && restoreScroll != null && libList){
       const top = Math.max(0, restoreScroll);
@@ -1050,11 +1041,10 @@
     const prevSel = state.sel;
     const prevScroll = (libList ? libList.scrollTop : 0);
     const arr = Array.isArray(items) ? items : [];
-    state.items = arr;
     const max = Math.max(0, arr.length - 1);
     state.sel = Math.max(0, Math.min(max, prevSel));
     setHeader();
-    renderList();
+    replaceListItems(arr, {animate:true, preserveSelection:true, preserveScroll:true, selectionIndex:state.sel, reason:"search detail"});
     try{ if(libList) libList.scrollTop = prevScroll; }catch(e){}
   }
 
@@ -1144,19 +1134,19 @@ function libTasksRefreshList(preserveSel){
     }
   }catch(e){ restoreSel = null; restoreScroll = null; }
 
-  state.items = Array.isArray(items) ? items : [];
+  const nextItems = Array.isArray(items) ? items : [];
   if(preserveSel){
-    const max = Math.max(0, state.items.length - 1);
+    const max = Math.max(0, nextItems.length - 1);
     state.sel = Math.max(0, Math.min(max, prevSel));
   }else if(restoreSel != null){
-    const max = Math.max(0, state.items.length - 1);
+    const max = Math.max(0, nextItems.length - 1);
     state.sel = Math.max(0, Math.min(max, restoreSel));
   }else{
     state.sel = 0;
   }
 
   setHeader();
-  renderList();
+  replaceListItems(nextItems, {animate:true, preserveSelection:!!preserveSel, preserveScroll:true, selectionIndex:state.sel, reason:"task list"});
 
   if(!preserveSel && restoreScroll != null && libList){
     const top = Math.max(0, restoreScroll);
@@ -1194,7 +1184,7 @@ function libTaskBuildItemsForView(view){
   }
 
   for(const f of files){
-    const fid = String((f && f.file_id) || "");
+    const fid = identifierText(f && f.file_id);
     const rp = String((f && (f.name || f.remote_path || f.out_path)) || "");
     const name = (rp.split("\\").pop() || rp || fid || "File");
     const stLower = String((f && f.state) || "queued").toLowerCase();
@@ -1315,11 +1305,11 @@ async function libTasksPollTick(){
       }
       const prevSel = state.sel;
       const prevScroll = (libList ? libList.scrollTop : 0);
-      state.items = libTaskBuildItemsForView(view);
-      const max = Math.max(0, state.items.length - 1);
+      const nextItems = libTaskBuildItemsForView(view);
+      const max = Math.max(0, nextItems.length - 1);
       state.sel = Math.max(0, Math.min(max, prevSel));
       setHeader();
-      renderList();
+      replaceListItems(nextItems, {animate:true, preserveSelection:true, preserveScroll:true, selectionIndex:state.sel, reason:"task polling"});
       try{ if(libList) libList.scrollTop = prevScroll; }catch(e){}
     }
   }catch(e){}
@@ -1464,6 +1454,11 @@ async function libDoSearch(engine, q){
         }catch(e){}
 
         items.push({kind:"libinfo_action", label:"Account", action:"account_settings"});
+        let notificationStatus = "unavailable";
+        try{
+          if(window.DebriPod && DebriPod.pwaNotifications) notificationStatus = await DebriPod.pwaNotifications.status();
+        }catch(e){}
+        items.push({kind:"libinfo_action", label:notificationStatus === "enabled" ? "Disable task notifications" : "Enable task notifications", action:notificationStatus === "enabled" ? "disable_task_notifications" : "enable_task_notifications", pills:[notificationStatus.charAt(0).toUpperCase() + notificationStatus.slice(1)]});
         items.push({kind:"libinfo_action", label:"Visualizer", action:"ui_settings_menu"});
         items.push({kind:"libinfo_action", label:"Library", action:"settings_library"});
         items.push({kind:"libinfo_action", label:"Downloads", action:"settings_downloads"});
@@ -1648,7 +1643,7 @@ async function libDoSearch(engine, q){
 
   async function viewLibUiSettings(push){
     showNowPlaying(false, {immediate:true});
-    try{ if(libList){ libList.style.display = "block"; libList.classList.remove("npUnderlay", "pageFadeHidden"); } }catch(e){}
+    try{ if(libList){ libList.style.display = "block"; libList.classList.remove("pageFadeHidden"); } }catch(e){}
     const restoreSel = (!push && state.current && state.current.kind === "libuisettings") ? state.sel : null;
     const restoreScroll = (!push && state.current && state.current.kind === "libuisettings" && libList) ? libList.scrollTop : null;
     await setView({
@@ -1823,7 +1818,9 @@ async function libDoSearch(engine, q){
       {key:"infoPill", label:"Info pill animations"},
       {key:"albumArtTransition", label:"Album art transition animation"},
       {key:"pageTransition", label:"Page transition animation"},
-      {key:"pathPill", label:"Path pill animations"}
+      {key:"pathPill", label:"Path pill animations"},
+      {key:"rowExpansion", label:"Row expansion animations"},
+      {key:"rowInsertion", label:"Row insertion animations"}
     ].map((row)=>({
       kind:"libui_action",
       label:row.label,
@@ -1866,7 +1863,7 @@ async function libDoSearch(engine, q){
     if(cat === "text") return textModeRows();
     if(cat === "animations") return animationRows();
     if(cat === "system"){
-      const systemKeys = new Set(["PORT", "ENABLE_MCP", "MCP_TOKEN", "MCP_PROTOCOL_VERSION", "MCP_SEARCH_RESULT_LIMIT", "MCP_SSE_KEEPALIVE_SECONDS", "MCP_SESSION_TTL_SECONDS", "CACHE_DIR_NAME", "STREAM_PROXY_ALLOWED_HOST_SUFFIXES", "REQUEST_TIMEOUT_SECONDS", "POLL_INTERVAL_SECONDS"]);
+      const systemKeys = new Set(["PORT", "ENABLE_MCP", "MCP_TOKEN", "MCP_PROTOCOL_VERSION", "MCP_SEARCH_RESULT_LIMIT", "MCP_SSE_KEEPALIVE_SECONDS", "MCP_SESSION_TTL_SECONDS", "STREAM_PROXY_ALLOWED_HOST_SUFFIXES", "REQUEST_TIMEOUT_SECONDS", "POLL_INTERVAL_SECONDS"]);
       const reindex = state.fullReindexStatus || {};
       const pct = Math.max(0, Math.min(100, Number(reindex.percent || 0)));
       const reindexPill = reindex.running ? (String(Math.round(pct)) + "%") : (reindex.error ? {text:"Error", tone:"warn"} : (pct >= 100 ? "Complete" : "Idle"));
@@ -2020,8 +2017,6 @@ async function libDoSearch(engine, q){
         items.push({kind:"info", label:"Q", pills:["Scroll up"]});
         items.push({kind:"info", label:"E", pills:["Scroll down"]});
         items.push({kind:"info", label:"Mouse wheel", pills:["Scroll lists"]});
-        items.push({kind:"info", label:"Arrow Up", pills:["Scroll up","Now Playing volume up","Seek left in seek mode"]});
-        items.push({kind:"info", label:"Arrow Down", pills:["Scroll down","Now Playing volume down","Seek right in seek mode"]});
 
         resetList(items);
       }
@@ -2081,6 +2076,14 @@ async function libDoSearch(engine, q){
         return true;
       case "account_settings":
         await viewAccountSettings(true);
+        return true;
+      case "enable_task_notifications":
+        try{ await DebriPod.pwaNotifications.enable(); }catch(e){ alert(String(e && e.message || e)); }
+        await viewLibInfo(false);
+        return true;
+      case "disable_task_notifications":
+        try{ await DebriPod.pwaNotifications.disable(); }catch(e){}
+        await viewLibInfo(false);
         return true;
       case "settings_library":
         await viewSettingsLibrary(true);

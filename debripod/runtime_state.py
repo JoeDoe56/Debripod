@@ -76,7 +76,14 @@ from .media_types import (
     AUDIO_EXTS,
     VIDEO_EXTS,
 )
-from .paths import art_cache_dir, cache_dir, configure_paths, transcode_cache_dir
+from .paths import (
+    art_cache_dir,
+    cache_dir,
+    configure_paths,
+    ensure_runtime_cache_dirs,
+    migrate_legacy_runtime_caches,
+    transcode_cache_dir,
+)
 from .Routes import icons as icons_module
 from .Routes.icons import register_icon_routes
 from .Routes.lastfm import register_lastfm_routes
@@ -278,12 +285,9 @@ configure_soulseek_module(
     get_file_control_func=_get_file_control,
 )
 configure_metadata(ffmpeg_path_provider=lambda: FFMPEG_PATH)
-configure_library_index(cache_dir_name_provider=lambda: CACHE_DIR_NAME, progress_provider=lambda root_id, rel: media_progress_for(root_id, rel))
+configure_library_index(progress_provider=lambda root_id, rel: media_progress_for(root_id, rel))
 configure_probe(ffprobe_path_provider=lambda: FFPROBE_PATH)
-configure_paths(
-    download_dir_provider=lambda: DOWNLOAD_DIR,
-    cache_dir_name_provider=lambda: CACHE_DIR_NAME,
-)
+configure_paths()
 configure_transcoding(
     audio_transcode_provider=lambda: AUDIO_TRANSCODE,
     ffmpeg_path_provider=lambda: FFMPEG_PATH,
@@ -302,15 +306,13 @@ def ensure_dirs() -> None:
     if DOWNLOAD_DIR:
         if not os.path.isabs(DOWNLOAD_DIR):
             raise ValueError("DOWNLOAD_DIR must be an absolute path")
-        os.makedirs(DOWNLOAD_DIR, exist_ok=True)
     if SOULSEEK_DOWNLOAD_DIR:
         if not os.path.isabs(SOULSEEK_DOWNLOAD_DIR):
             raise ValueError("SOULSEEK_DOWNLOAD_DIR must be an absolute path")
-        os.makedirs(SOULSEEK_DOWNLOAD_DIR, exist_ok=True)
-        os.makedirs(soulseek_incoming_dir(), exist_ok=True)
-    os.makedirs(cache_dir(), exist_ok=True)
-    os.makedirs(transcode_cache_dir(), exist_ok=True)
-    os.makedirs(art_cache_dir(), exist_ok=True)
+    if YOUTUBE_DOWNLOAD_DIR and not os.path.isabs(YOUTUBE_DOWNLOAD_DIR):
+        raise ValueError("YOUTUBE_DOWNLOAD_DIR must be an absolute path")
+    ensure_runtime_cache_dirs()
+    migrate_legacy_runtime_caches([DOWNLOAD_DIR, SOULSEEK_DOWNLOAD_DIR, YOUTUBE_DOWNLOAD_DIR])
 
     run_startup_import_once()
     migrate_runtime_json(cache_dir())
@@ -334,7 +336,7 @@ def ensure_dirs() -> None:
 
 
 configure_search_cache(
-    cache_dir,
+    lambda: os.path.join(cache_dir(), "search"),
     history_max_items_provider=lambda: SEARCH_HISTORY_MAX_ITEMS,
     disk_cache_ttl_seconds_provider=lambda: SEARCH_DISK_CACHE_TTL_SECONDS,
 )

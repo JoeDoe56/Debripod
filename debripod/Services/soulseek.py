@@ -372,11 +372,11 @@ def _slsk_local_path(download_dir: str, remote_path: str) -> str:
 
 def soulseek_log_file_path() -> str:
     # Keeps Soulseek (aioslsk) logs out of the terminal; written to a dedicated file.
-    return os.path.join(cache_dir(), "soulseek_aioslsk.log")
+    return os.path.join(cache_dir(), "incoming", "soulseek_aioslsk.log")
 
 
 def soulseek_incoming_dir() -> str:
-    return os.path.join(SOULSEEK_DOWNLOAD_DIR, "_incoming")
+    return os.path.join(cache_dir(), "incoming", "soulseek")
 
 
 def _slsk_sanitized_dir_name(remote_directory: str) -> str:
@@ -1416,8 +1416,7 @@ class SoulseekService:
             "warning": "",
         }
 
-        os.makedirs(self.download_dir, exist_ok=True)
-        self.incoming_dir = os.path.join(self.download_dir, "_incoming")
+        self.incoming_dir = soulseek_incoming_dir()
         os.makedirs(self.incoming_dir, exist_ok=True)
 
         self._thread = threading.Thread(target=self._thread_main, name="SoulseekLoop", daemon=True)

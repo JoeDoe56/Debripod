@@ -1,3 +1,17 @@
+  function identifierText(value){
+    return value === null || typeof value === "undefined" ? "" : String(value);
+  }
+
+  function firstIdentifierText(){
+    for(let i = 0; i < arguments.length; i += 1){
+      const value = arguments[i];
+      if(value !== null && typeof value !== "undefined" && String(value) !== ""){
+        return String(value);
+      }
+    }
+    return "";
+  }
+
   function libStandardizePreviewFilesForKnaben(preview){
     const out = [];
     const files = Array.isArray(preview && preview.files) ? preview.files : [];
@@ -16,7 +30,7 @@
         quality: quality.join(" "),
         bitrate: "",
         size: Number(ff.bytes || 0),
-        file_id: String(ff.id || ""),
+        file_id: identifierText(ff.id),
         bit_depth: bitDepth,
         sample_rate: sampleRate,
         source: "knaben",
@@ -95,10 +109,13 @@
         if(f.bitDepth && (!bd || bd !== f.bitDepth)) continue;
         if(f.sampleRate && (!sr || sr !== f.sampleRate)) continue;
         visibleFileCount += 1;
-        const key = src === "knaben" ? ("file:" + String(ff.file_id || name)) : (src === "youtube" ? ("itag:" + String(ff.itag || ff.file_id || name)) : (src === "library" ? ("library:" + String(ff.root_id || rr.root_id || "") + ":" + String(ff.rel || "")) : (String(ff.remote_path || name))));
+        const key = src === "knaben" ? ("file:" + firstIdentifierText(ff.file_id, name)) : (src === "youtube" ? ("itag:" + firstIdentifierText(ff.itag, ff.file_id, name)) : (src === "library" ? ("library:" + String(ff.root_id || rr.root_id || "") + ":" + String(ff.rel || "")) : (String(ff.remote_path || name))));
         const dlState = normalizeSlskDownloadState(String(ff.download_state || ""));
         const pills = [];
-        if(fileSource) pills.push({text:fileSource});
+        // yt-dlp keeps "youtube" as its internal source for format handling,
+        // while source_label carries the actual site name (for example, TikTok).
+        const fileSourceLabel = String(ff.source_label || rr.source_label || fileSource || src || "");
+        if(fileSourceLabel) pills.push({text:fileSourceLabel});
         if(ext) pills.push(ext);
         if(ff.quality) pills.push(String(ff.quality));
         if(ff.bitrate) pills.push(String(ff.bitrate));
@@ -112,7 +129,7 @@
           selected: !dlState && target.selected.has(key),
           pills:pills,
           remote_path: String(ff.remote_path || ""),
-          file_id: String(ff.file_id || ""),
+          file_id: identifierText(ff.file_id),
           size: Number(ff.size || 0),
           root_id: String(ff.root_id || rr.root_id || ""),
           rel: String(ff.rel || ""),
@@ -121,13 +138,13 @@
           quality: String(ff.quality || ""),
           bitrate: String(ff.bitrate || ""),
           direct_url: String(ff.direct_url || ""),
-          itag: String(ff.itag || ff.format_id || ff.file_id || ""),
-          format_id: String(ff.format_id || ff.itag || ff.file_id || ""),
+          itag: firstIdentifierText(ff.itag, ff.format_id, ff.file_id),
+          format_id: firstIdentifierText(ff.format_id, ff.itag, ff.file_id),
           source: fileSource || src,
           onToggle: ()=>{
             if(dlState) return;
             if(target.selected.has(key)) target.selected.delete(key);
-            else target.selected.set(key, {key:key, remote_path:String(ff.remote_path || ""), file_id:String(ff.file_id || ""), itag:String(ff.itag || ff.format_id || ff.file_id || ""), format_id:String(ff.format_id || ff.itag || ff.file_id || ""), size:Number(ff.size || 0), name:name, label:name, source:String(ff.source || src || ""), ext:String(ff.ext || ""), quality:String(ff.quality || ""), bitrate:String(ff.bitrate || ""), media:String(ff.media || rr.media || ""), root_id:String(ff.root_id || rr.root_id || ""), rel:String(ff.rel || ""), direct_url:String(ff.direct_url || ""), url:String((target.result && target.result.url) || "")});
+            else target.selected.set(key, {key:key, remote_path:String(ff.remote_path || ""), file_id:identifierText(ff.file_id), itag:firstIdentifierText(ff.itag, ff.format_id, ff.file_id), format_id:firstIdentifierText(ff.format_id, ff.itag, ff.file_id), size:Number(ff.size || 0), name:name, label:name, source:String(ff.source || src || ""), ext:String(ff.ext || ""), quality:String(ff.quality || ""), bitrate:String(ff.bitrate || ""), media:String(ff.media || rr.media || ""), root_id:String(ff.root_id || rr.root_id || ""), rel:String(ff.rel || ""), direct_url:String(ff.direct_url || ""), url:String((target.result && target.result.url) || "")});
           }
         });
       }
@@ -160,16 +177,12 @@
     const pl = libBuildStreamQueue(queue);
     if(!pl.length) throw new Error("No streamable items");
     const idx = Math.max(0, Math.min(pl.length - 1, Number(index || 0)));
-    state.streamQueue = pl;
-    state.streamQueueIndex = idx;
     const first = pl[idx];
+    const canonical = window.DebriPod && DebriPod.playbackQueue;
+    if(canonical) canonical.replaceFromPlayableList(pl, first);
     if(first.media === "video"){
-      state.videoPlaylist = pl;
-      state.videoIndex = idx;
       await startVideoFromItem(first, true, 0);
     }else{
-      state.playlist = pl;
-      state.playIndex = idx;
       await startAudioFromItem(first, pl, idx, true, 0);
     }
   }
@@ -185,20 +198,21 @@
   async function playStreamQueueIndex(i, forceShow){
     const q = Array.isArray(state.streamQueue) ? state.streamQueue : [];
     if(i < 0 || i >= q.length) return;
-    state.streamQueueIndex = i;
     const item = q[i];
+    const canonical = window.DebriPod && DebriPod.playbackQueue;
+    if(canonical) canonical.setCurrent(canonical.state.items[i] && canonical.state.items[i].queue_id);
     if(item.media === "video"){
-      state.videoPlaylist = q;
-      state.videoIndex = i;
       await startVideoFromItem(item, (typeof forceShow === "boolean" ? forceShow : true), 0);
     }else{
-      state.playlist = q;
-      state.playIndex = i;
       await startAudioFromItem(item, q, i, (typeof forceShow === "boolean" ? forceShow : true), 0);
     }
   }
 
-  async function viewLibSearchResultDetails(push, item){
+  async function openSearchResultDetail(result, push){
+    const item = result && result.raw ? result : {
+      source:String((result && result.source) || ""),
+      raw:result || {}
+    };
     showNowPlaying(false);
     await setView({
       kind:"libsearch_result_detail",
@@ -239,7 +253,7 @@
           alert(String(e && e.message ? e.message : e));
         }
       }
-    }, push);
+    }, push !== false);
   }
 
   function normalizeSlskDownloadState(v){
@@ -552,7 +566,12 @@
     }, push);
   }
 
-async function viewHistory(push){
+async function viewHistory(push, options){
+    const opts = options || {};
+    const controller = window.DebriPod && DebriPod.navigationController;
+    if(!opts.navigationControlled && controller && typeof controller.openHistory === "function"){
+      return controller.openHistory();
+    }
     showNowPlaying(false);
     await syncPlaybackFromServer();
     await setView({
@@ -635,69 +654,33 @@ async function viewHistory(push){
   function buildPlaybackQueueItems(){
     const items = [];
     try{
-      const pl = Array.isArray(state.playlist) ? state.playlist : [];
-      if(state.shuffleEnabled && Array.isArray(state.playOrder) && state.playOrder.length && pl.length){
-        const curOrder = Math.max(0, Math.min(state.playOrder.length - 1, Number(state.orderPos || 0)));
-        state.playOrder.forEach((playlistIndex, orderIndex)=>{
-          const item = pl[playlistIndex];
-          if(!item) return;
-          items.push({kind:"queue_item", label:queueItemLabel(item, orderIndex), pills:orderIndex === curOrder ? ["Now", "Shuffle"] : ["Shuffle"], queueKind:"shuffle", queueIndex:playlistIndex, queueOrderPos:orderIndex, media:"audio", queueItem:item});
+      const queue = window.DebriPod && DebriPod.playbackQueue;
+      if(!queue) return items;
+      queue.state.items.forEach((item, index)=>{
+        const pills = [item.media];
+        if(index === queue.state.index) pills.unshift("Now");
+        if(queue.state.shuffle) pills.push("Shuffle");
+        if(item.quality) pills.push(String(item.quality));
+        items.push({
+          kind:"queue_item",
+          label:queueItemLabel(item, index),
+          pills:pills,
+          queueKind:"canonical",
+          queueIndex:index,
+          media:item.media,
+          queueItem:item
         });
-        return items;
-      }
-    }catch(e){}
-    try{
-      const sess = state.playbackSession || {};
-      const q = Array.isArray(sess.queue) ? sess.queue : [];
-      if(q.length){
-        const cur = Math.max(0, Math.min(q.length - 1, Number(sess.queueIndex || 0)));
-        q.forEach((item, index)=>{
-          const media = String(item.media || (sess.now && sess.now.media) || "audio");
-          const pills = [media === "video" ? "video" : "audio"];
-          if(index === cur) pills.unshift("Now");
-          if(item.quality) pills.push(String(item.quality));
-          items.push({kind:"queue_item", label:queueItemLabel(item, index), pills:pills, queueKind:media === "video" ? "video" : "audio", queueIndex:index, media:media, queueItem:item});
-        });
-        return items;
-      }
-    }catch(e){}
-    try{
-      if(typeof isSearchStreamActive === "function" && isSearchStreamActive()){
-        const q = Array.isArray(state.streamQueue) ? state.streamQueue : [];
-        const cur = Math.max(0, Math.min(q.length - 1, Number(state.streamQueueIndex || 0)));
-        q.forEach((item, index)=>{
-          const pills = [item.media === "video" ? "video" : "audio"];
-          if(index === cur) pills.unshift("Now");
-          if(item.quality) pills.push(String(item.quality));
-          items.push({kind:"queue_item", label:queueItemLabel(item, index), pills:pills, queueKind:"stream", queueIndex:index, media:item.media || "audio", queueItem:item});
-        });
-        return items;
-      }
-    }catch(e){}
-
-    try{
-      if(isVideoActive() && Array.isArray(state.videoPlaylist) && state.videoPlaylist.length){
-        const cur = Math.max(0, Math.min(state.videoPlaylist.length - 1, Number(state.videoIndex || 0)));
-        state.videoPlaylist.forEach((item, index)=>{
-          items.push({kind:"queue_item", label:queueItemLabel(item, index), pills:index === cur ? ["Now", "video"] : ["video"], queueKind:"video", queueIndex:index, media:"video", queueItem:item});
-        });
-        return items;
-      }
-    }catch(e){}
-
-    try{
-      const pl = Array.isArray(state.playlist) ? state.playlist : [];
-      if(pl.length){
-        const cur = Math.max(0, Math.min(pl.length - 1, Number(state.playIndex || 0)));
-        pl.forEach((item, index)=>{
-          items.push({kind:"queue_item", label:queueItemLabel(item, index), pills:index === cur ? ["Now", "audio"] : ["audio"], queueKind:"audio", queueIndex:index, media:"audio", queueItem:item});
-        });
-      }
+      });
     }catch(e){}
     return items;
   }
 
-  async function viewPlaybackQueue(push){
+  async function viewPlaybackQueue(push, options){
+    const opts = options || {};
+    const controller = window.DebriPod && DebriPod.navigationController;
+    if(!opts.navigationControlled && controller && typeof controller.openQueue === "function"){
+      return controller.openQueue();
+    }
     showNowPlaying(false);
     await setView({
       kind:"playback_queue",

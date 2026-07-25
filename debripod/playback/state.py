@@ -40,7 +40,7 @@ def _search_stream_get_or_restore(rel: str) -> Optional[Dict[str, Any]]:
 PLAYBACK_STATE_LOCK = threading.Lock()
 
 def playback_state_path() -> str:
-    return os.path.join(cache_dir(), "playback_state.json")
+    return os.path.join(cache_dir(), "incoming", "playback_state.json")
 
 def _default_playback_state() -> dict:
     return {

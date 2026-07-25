@@ -190,7 +190,7 @@ function commitSeekMode(){
   cancelSeekMode();
 }
 
-function wheelLabelSvg(name, active){
+function legacyWheelLabelSvg(name, active){
   var filled = !!active;
   var icon = (b64, cls='') => {
     const className = 'wheelSvgIcon' + (cls ? ' ' + cls : '');
@@ -210,8 +210,54 @@ function wheelLabelSvg(name, active){
   return '';
 }
 
+function wheelLabelSvg(name, active, options){
+  const iconName = {
+    heart: active ? "button2_seek-mode_liked-active.svg" : "button2_seek-mode_liked-inactive.svg",
+    prev: "button5_previous-track.svg",
+    next: "button3_next-track.svg",
+    back15: "button5_seek-mode_skip-back.svg",
+    forward15: "button3_seek-mode_skip-forward.svg",
+    play: "button4_media-paused.svg",
+    pause: "button4_media-playing.svg",
+    shuffle: active ? "shuffleactivefull-fixed.svg" : "shuffleinactivefull-fixed.svg"
+  }[name];
+  if(name === "menu") return '<span class="menuWord glassText" data-text="MENU">MENU</span>';
+  if(!iconName) return "";
+  const iconVersion = encodeURIComponent(String(window.DEBRIPOD_ICON_VERSION || window.DEBRIPOD_ASSET_VERSION || "dev"));
+  const iconUrl = "/icons/" + iconName + "?v=" + iconVersion;
+  const inactive = (name === "play" || name === "shuffle") && !active ? " isInactive" : "";
+  const seekClass = options && options.seekMode ? " seekModeIcon" : "";
+  const glyphClass = options && options.seekMode ? " seekModeGlyph" : "";
+  const layer = '<span class="wheelSvgIcon' + inactive + seekClass + '" aria-hidden="true" style="-webkit-mask-image:url(\'' + iconUrl + '\');mask-image:url(\'' + iconUrl + '\')"></span>';
+  return '<span class="glassGlyph' + glyphClass + '">' + layer + layer + layer + '</span>';
+}
+
 function setWheelLabelContent(el, html){
-  try{ if(el) el.innerHTML = html || ""; }catch(e){}
+  try{
+    if(!el) return;
+    const next = html || "";
+    if(el.dataset.dpWheelLabelHtml === next) return;
+    const previous = el.dataset.dpWheelLabelHtml;
+    const reduceMotion = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    if(!previous || reduceMotion){
+      el.innerHTML = next;
+      el.dataset.dpWheelLabelHtml = next;
+      return;
+    }
+    const outgoing = document.createElement("span");
+    outgoing.className = "wheelLabelContent wheelLabelContentOutgoing";
+    outgoing.innerHTML = previous;
+    const incoming = document.createElement("span");
+    incoming.className = "wheelLabelContent wheelLabelContentIncoming";
+    incoming.innerHTML = next;
+    el.replaceChildren(outgoing, incoming);
+    el.dataset.dpWheelLabelHtml = next;
+    requestAnimationFrame(()=>{
+      outgoing.classList.add("isFading");
+      incoming.classList.add("isVisible");
+    });
+    setTimeout(()=>{ try{ outgoing.remove(); }catch(_error){} }, 190);
+  }catch(e){}
 }
 
 function updateWheelLabels(){
@@ -235,20 +281,20 @@ function updateWheelLabels(){
 
     if(nowPlaying.style.display === "block" && seekMode){
       if(!isVideoActive() && lastfmIsEnabled()){
-        setWheelLabelContent(lMenu, wheelLabelSvg("heart", !!(lastfmState.lovedKnown && lastfmState.loved)));
+        setWheelLabelContent(lMenu, wheelLabelSvg("heart", !!(lastfmState.lovedKnown && lastfmState.loved), {seekMode:true}));
       }else{
         setWheelLabelContent(lMenu, wheelLabelSvg("menu"));
       }
-      setWheelLabelContent(lRev, wheelLabelSvg("back15"));
-      setWheelLabelContent(lFwd, wheelLabelSvg("forward15"));
+      setWheelLabelContent(lRev, wheelLabelSvg("back15", false, {seekMode:true}));
+      setWheelLabelContent(lFwd, wheelLabelSvg("forward15", false, {seekMode:true}));
       if(isVideoActive()){
         const m = wheelMedia();
-        setWheelLabelContent(lPlay, wheelLabelSvg((m && m.paused) ? "play" : "pause", !(m && m.paused)));
+        setWheelLabelContent(lPlay, wheelLabelSvg((m && m.paused) ? "play" : "pause", !(m && m.paused), {seekMode:true}));
         lPlay.style.whiteSpace = "";
         lPlay.style.lineHeight = "";
         lPlay.style.fontSize = "";
       }else{
-        setWheelLabelContent(lPlay, wheelLabelSvg("shuffle", !!state.shuffleEnabled));
+        setWheelLabelContent(lPlay, wheelLabelSvg("shuffle", !!state.shuffleEnabled, {seekMode:true}));
         lPlay.style.whiteSpace = "";
         lPlay.style.lineHeight = "";
         lPlay.style.fontSize = "";
@@ -360,14 +406,18 @@ function resumeVideoViaSeekInputs(targetSec){
   try{
     if(!isVideoActive() || !npVideo) return;
     if(nowPlaying.style.display !== "block"){
-      try{ showNowPlaying(true); }catch(e){}
+      try{
+        const nav = window.DebriPod && DebriPod.navigationController;
+        if(nav && nav.openNowPlaying) nav.openNowPlaying();
+        else showNowPlaying(true, {navigationControlled:true});
+      }catch(e){}
     }
 
     // Ensure a clean seek mode state
     try{ if(seekMode) cancelSeekMode(); }catch(e){}
 
     // Enter seek mode using the same path as a center press
-    try{ centerPress(); }catch(e){ try{ enterSeekMode(); }catch(e2){} }
+    try{ enterSeekMode(); }catch(e){}
     if(!seekMode){
       try{ enterSeekMode(); }catch(e){}
     }
@@ -403,7 +453,7 @@ function resumeVideoViaSeekInputs(targetSec){
 
         let diff = tgt - (seekPreview || 0);
         if(Math.abs(diff) <= (stepSec / 2)){
-          try{ centerPress(); }catch(e){ try{ commitSeekMode(); }catch(e2){} }
+          try{ commitSeekMode(); }catch(e){}
           try{ npVideo.play(); }catch(e){}
           return;
         }

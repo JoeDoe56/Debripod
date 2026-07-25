@@ -4,6 +4,7 @@ import secrets
 import time
 import json
 import traceback
+from datetime import timedelta
 from functools import wraps
 from typing import Any, Callable
 from urllib.parse import urlparse
@@ -72,13 +73,16 @@ LOGIN_TEMPLATE = """<!doctype html>
     button{border:0;border-radius:8px;background:#f5f5f5;color:#111;padding:12px;font-weight:700;cursor:pointer}
     button.secondary{background:#1b222c;color:#f5f5f5;border:1px solid #303846}
     .error{color:#ff9d9d;min-height:20px}
+    .passkey-state{display:none;padding:12px;border-radius:8px;background:#11151b;color:#d7dce4}
+    .passkey-state.active{display:block}
+    form.passkey-pending label,form.passkey-pending>button[type=submit]{display:none}
   </style>
 </head>
 <body>
   <main>
     <h1>{{ title }}</h1>
     <p>{{ subtitle }}</p>
-    <form method="post" action="{{ action }}">
+    <form id="loginForm" method="post" action="{{ action }}">
       <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
       <label>Username<input name="username" autocomplete="username" required autofocus></label>
       <label>Password<input name="password" type="password" autocomplete="{{ password_autocomplete }}" required></label>
@@ -90,6 +94,7 @@ LOGIN_TEMPLATE = """<!doctype html>
       <button class="secondary" type="button" id="passkeyBtn">Sign in with passkey</button>
       {% endif %}
       <div class="error">{{ error }}</div>
+      {% if not setup %}<div class="passkey-state" id="passkeyState">Signing in with passkey</div>{% endif %}
     </form>
     {% if not setup %}
     <script>
@@ -131,27 +136,48 @@ LOGIN_TEMPLATE = """<!doctype html>
         };
       }
       var btn = document.getElementById("passkeyBtn");
-      if(btn){
-        btn.hidden = !(window.PublicKeyCredential && navigator.credentials);
-        btn.addEventListener("click", async function(){
-          try{
-            var optRes = await fetch("/api/auth/passkey/login/options", {method:"POST", headers:{"Content-Type":"application/json"}, body:"{}"});
-            var opt = await optRes.json();
-            if(!optRes.ok || !opt.ok) throw new Error(opt.error || "Passkey sign in is not available.");
-            var cred = await navigator.credentials.get({publicKey: publicKeyFromServer(opt.publicKey)});
-            var verifyRes = await fetch("/api/auth/passkey/login/verify", {
-              method:"POST",
-              headers:{"Content-Type":"application/json"},
-              body:JSON.stringify({challenge_id:opt.challenge_id, credential:credentialToJSON(cred)})
-            });
-            var verify = await verifyRes.json();
-            if(!verifyRes.ok || !verify.ok) throw new Error(verify.error || "Passkey sign in failed.");
-            window.location.href = "{{ next_url }}";
-          }catch(e){
+      var form = document.getElementById("loginForm");
+      var passkeyState = document.getElementById("passkeyState");
+      var supported = !!(window.PublicKeyCredential && navigator.credentials);
+      function pending(active){
+        if(form) form.classList.toggle("passkey-pending", !!active);
+        if(passkeyState) passkeyState.classList.toggle("active", !!active);
+        if(btn) btn.disabled = !!active;
+      }
+      async function signInWithPasskey(automatic){
+        pending(true);
+        try{
+          var optRes = await fetch("/api/auth/passkey/login/options", {method:"POST", headers:{"Content-Type":"application/json"}, body:"{}"});
+          var opt = await optRes.json();
+          if(!opt.available) return false;
+          if(!optRes.ok || !opt.ok) throw new Error(opt.error || "Passkey sign in is not available.");
+          var cred = await navigator.credentials.get({publicKey: publicKeyFromServer(opt.publicKey)});
+          var verifyRes = await fetch("/api/auth/passkey/login/verify", {
+            method:"POST",
+            headers:{"Content-Type":"application/json"},
+            body:JSON.stringify({challenge_id:opt.challenge_id, credential:credentialToJSON(cred)})
+          });
+          var verify = await verifyRes.json();
+          if(!verifyRes.ok || !verify.ok) throw new Error(verify.error || "Passkey sign in failed.");
+          window.location.replace({{ next_url|tojson }});
+          return true;
+        }catch(e){
+          if(!automatic || (e && e.name !== "NotAllowedError")){
             document.querySelector(".error").textContent = e && e.message ? e.message : String(e);
           }
-        });
+          return false;
+        }finally{
+          pending(false);
+        }
       }
+      if(btn){
+        btn.hidden = !supported;
+        btn.addEventListener("click", function(){ signInWithPasskey(false); });
+      }
+      document.addEventListener("DOMContentLoaded", function(){
+        if(!supported) return pending(false);
+        signInWithPasskey(true);
+      });
     </script>
     {% endif %}
   </main>
@@ -338,6 +364,8 @@ def _is_static_or_public_path() -> bool:
     path = request.path or "/"
     if path.startswith("/static/"):
         return True
+    if path.startswith("/icons/"):
+        return True
     if path in {"/favicon.ico", "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png", "/site.webmanifest", "/debripod-sw.js"}:
         return True
     if path in {"/login", "/logout", "/setup"}:
@@ -475,6 +503,8 @@ def register_auth(app: Any) -> None:
     app.config.update(
         SESSION_COOKIE_HTTPONLY=True,
         SESSION_COOKIE_SAMESITE="Lax",
+        PERMANENT_SESSION_LIFETIME=timedelta(days=30),
+        SESSION_REFRESH_EACH_REQUEST=True,
     )
 
     @app.before_request
@@ -524,6 +554,7 @@ def register_auth(app: Any) -> None:
                 _save_users([{"username": username, "password_hash": generate_password_hash(password)}])
                 _initialize_new_user_settings(username)
                 session.clear()
+                session.permanent = True
                 session["username"] = username
                 _mark_recent_password_auth()
                 _csrf_token()
@@ -553,6 +584,7 @@ def register_auth(app: Any) -> None:
             if user and password_hash and check_password_hash(password_hash, password):
                 _login_succeeded(username)
                 session.clear()
+                session.permanent = True
                 session["username"] = str(user.get("username") or username)
                 _mark_recent_password_auth()
                 _csrf_token()
@@ -592,6 +624,7 @@ def register_auth(app: Any) -> None:
                 ok, _err = _create_user(username, password)
                 if ok:
                     session.clear()
+                    session.permanent = True
                     session["username"] = username
                     _mark_recent_password_auth()
                     _csrf_token()
@@ -722,7 +755,7 @@ def register_auth(app: Any) -> None:
     @app.route("/api/auth/passkey/login/options", methods=["POST"])
     def api_auth_passkey_login_options() -> Any:
         if _setup_needed():
-            return jsonify({"ok": False, "error": "Set up DebriPod before adding passkeys."}), 400
+            return jsonify({"ok": False, "available": False, "error": "Set up DebriPod before adding passkeys."}), 400
         if not _webauthn_available():
             return _passkey_error()
         allow = []
@@ -738,7 +771,7 @@ def register_auth(app: Any) -> None:
                     pass
         if not allow:
             app.logger.warning("Passkey login requested but no active credentials were found; checked=%s", checked_users)
-            return jsonify({"ok": False, "error": "No passkeys are registered. Use your password."}), 400
+            return jsonify({"ok": False, "available": False, "error": "No passkeys are registered. Use your password."}), 400
         opts = generate_authentication_options(  # type: ignore[misc]
             rp_id=_webauthn_rp_id(),
             allow_credentials=allow,
@@ -775,6 +808,7 @@ def register_auth(app: Any) -> None:
             )
             update_passkey_sign_count(credential_id, int(getattr(verified, "new_sign_count", 0) or 0))
             session.clear()
+            session.permanent = True
             session["username"] = str(item.get("username") or "")
             _csrf_token()
             return jsonify({"ok": True, "username": str(item.get("username") or "")})

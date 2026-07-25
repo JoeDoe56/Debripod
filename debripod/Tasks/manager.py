@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from ..storage.tasks import update_task_state
+from ..Services.debrid.identifiers import first_identifier, normalize_identifier
 
 
 @dataclass
@@ -43,6 +44,8 @@ class Task:
 
     # YouTube format/download statuses.
     youtube_files: List[Dict[str, Any]] = field(default_factory=list)
+    source_url: str = ""
+    origin_client_id: str = ""
 
     created: float = field(default_factory=time.time)
     state: str = "queued"
@@ -69,31 +72,43 @@ TASKS: Dict[str, Task] = {}
 TASKS_LOCK = threading.Lock()
 _soulseek_service_provider: Callable[[], Any] = lambda: None
 _retry_worker_provider: Callable[[str], Optional[Callable[[str], None]]] = lambda source: None
+_completion_notifier: Callable[[Task], None] = lambda task: None
 
 
 def configure_task_manager(
     *,
     soulseek_service_provider: Optional[Callable[[], Any]] = None,
     retry_worker_provider: Optional[Callable[[str], Optional[Callable[[str], None]]]] = None,
+    completion_notifier: Optional[Callable[[Task], None]] = None,
 ) -> None:
-    global _soulseek_service_provider, _retry_worker_provider
+    global _soulseek_service_provider, _retry_worker_provider, _completion_notifier
     if soulseek_service_provider is not None:
         _soulseek_service_provider = soulseek_service_provider
     if retry_worker_provider is not None:
         _retry_worker_provider = retry_worker_provider
+    if completion_notifier is not None:
+        _completion_notifier = completion_notifier
 
 
 def set_task(task_id: str, **kwargs: Any) -> None:
     changed = None
+    completed = False
     with TASKS_LOCK:
         t = TASKS.get(task_id)
         if not t:
             return
+        previous_state = str(getattr(t, "state", "") or "")
         for k, v in kwargs.items():
             setattr(t, k, v)
+        completed = previous_state != "done" and str(getattr(t, "state", "") or "") == "done"
         changed = t
     if changed is not None:
         update_task_state(changed)
+        if completed:
+            try:
+                _completion_notifier(changed)
+            except Exception:
+                pass
 
 
 def get_task(task_id: str) -> Optional[Task]:
@@ -198,6 +213,8 @@ def resume_task(task_id: str) -> bool:
 
 
 def _get_file_control(task_id: str, file_id: str) -> Dict[str, Any]:
+    task_id = normalize_identifier(task_id) or ""
+    file_id = normalize_identifier(file_id) or ""
     with TASKS_LOCK:
         t = TASKS.get(task_id)
         if not t:
@@ -207,6 +224,8 @@ def _get_file_control(task_id: str, file_id: str) -> Dict[str, Any]:
 
 
 def _set_file_control(task_id: str, file_id: str, **kwargs: Any) -> None:
+    task_id = normalize_identifier(task_id) or ""
+    file_id = normalize_identifier(file_id) or ""
     with TASKS_LOCK:
         t = TASKS.get(task_id)
         if not t:
@@ -221,6 +240,8 @@ def _set_file_control(task_id: str, file_id: str, **kwargs: Any) -> None:
 
 
 def _update_task_file_entry(task_id: str, which: str, file_id: str, **kwargs: Any) -> None:
+    task_id = normalize_identifier(task_id) or ""
+    normalized_file_id = normalize_identifier(file_id)
     with TASKS_LOCK:
         t = TASKS.get(task_id)
         if not t:
@@ -230,7 +251,7 @@ def _update_task_file_entry(task_id: str, which: str, file_id: str, **kwargs: An
             return
         for f in lst:
             try:
-                if str(f.get("file_id") or "") == str(file_id):
+                if first_identifier(f, "file_id", "id") == normalized_file_id:
                     f.update(kwargs)
                     break
             except Exception:
@@ -239,6 +260,8 @@ def _update_task_file_entry(task_id: str, which: str, file_id: str, **kwargs: An
 
 def task_file_action(task_id: str, file_id: str, action: str) -> bool:
     action = (action or "").strip().lower()
+    task_id = normalize_identifier(task_id) or ""
+    file_id = normalize_identifier(file_id) or ""
     if not task_id or not file_id or action not in {"pause", "resume", "cancel", "retry"}:
         return False
 
@@ -368,6 +391,7 @@ def task_public_dict(t: Task) -> dict:
         "debrid_provider": getattr(t, "debrid_provider", ""),
         "debrid_task_id": getattr(t, "debrid_task_id", None),
         "source": t.source,
+        "origin_client_id": getattr(t, "origin_client_id", ""),
         "overall_done": int(t.overall_done or 0),
         "overall_total": (int(t.overall_total) if t.overall_total is not None else None),
         "slsk_user": t.slsk_user,

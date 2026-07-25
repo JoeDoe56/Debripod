@@ -10,6 +10,7 @@ import requests
 
 from .storage.tasks import save_task_metadata
 from .Services.debrid import DebridFile, DebridProviderError, get_provider
+from .Services.debrid.identifiers import first_identifier, normalize_identifier, normalize_identifier_list
 from .runtime_state import *
 from .runtime_video_post import enqueue_video_postprocess
 from .settings import ensure_app_settings
@@ -101,13 +102,13 @@ def _download_stream_inner(url: str, out_path: str, task: Task, file_id: Optiona
 
 def _file_from_entry(entry: dict) -> DebridFile:
     return DebridFile(
-        file_id=str(entry.get("file_id") or ""),
+        file_id=first_identifier(entry, "file_id", "id") or "",
         path=str(entry.get("path") or entry.get("name") or ""),
         name=str(entry.get("name") or os.path.basename(str(entry.get("path") or ""))),
         bytes=int(entry.get("total") or 0),
         provider_link=str(entry.get("provider_link") or ""),
-        provider_task_id=str(entry.get("provider_task_id") or ""),
-        provider_file_id=str(entry.get("provider_file_id") or entry.get("file_id") or ""),
+        provider_task_id=first_identifier(entry, "provider_task_id", "task_id") or "",
+        provider_file_id=first_identifier(entry, "provider_file_id", "file_id", "id") or "",
         media=str(entry.get("media") or ""),
         ext=str(entry.get("ext") or ""),
         raw=dict(entry.get("raw") or {}) if isinstance(entry.get("raw"), dict) else {},
@@ -157,7 +158,7 @@ def _download_from_queue(task_id: str) -> list[str]:
         entry = next((item for item in entries if str(item.get("state") or "").lower() == "queued"), None)
         if not entry:
             break
-        file_id = str(entry.get("file_id") or "")
+        file_id = first_identifier(entry, "file_id", "id") or ""
         if _get_file_control(task_id, file_id).get("canceled"):
             _update_task_file_entry(task_id, "debrid_files", file_id, state="canceled", canceled=True, error="")
             continue
@@ -231,7 +232,7 @@ def worker(task_id: str) -> None:
     try:
         check_canceled(task)
         provider = _provider_for_task(task)
-        provider_task_id = str(task.debrid_task_id or "")
+        provider_task_id = normalize_identifier(task.debrid_task_id) or ""
         preview = None
         if not provider_task_id:
             if not task.magnet:
@@ -241,7 +242,7 @@ def worker(task_id: str) -> None:
                 preview = provider.preview_magnet(task.magnet)
             provider_task_id = preview.provider_task_id
             set_task(task_id, debrid_task_id=provider_task_id)
-        selected_ids = [str(value) for value in (task.debrid_selected_file_ids or []) if str(value or "").strip()]
+        selected_ids = normalize_identifier_list(task.debrid_selected_file_ids)
         if not selected_ids:
             preview = preview or provider.refresh_preview(provider_task_id)
             selected_ids = [item.file_id for item in preview.files]
@@ -260,12 +261,12 @@ def worker(task_id: str) -> None:
         files = files[: int(MAX_FILES_PER_TORRENT or len(files))]
         entries: list[dict[str, Any]] = []
         for index, file in enumerate(files, start=1):
-            file_id = str(file.file_id or hashlib.sha1((file.path + file.provider_link).encode()).hexdigest()[:16])
+            file_id = normalize_identifier(file.file_id) or hashlib.sha1((file.path + file.provider_link).encode()).hexdigest()[:16]
             entries.append({
                 "file_id": file_id,
                 "provider": provider.id,
-                "provider_task_id": file.provider_task_id or provider_task_id,
-                "provider_file_id": file.provider_file_id or file_id,
+                "provider_task_id": normalize_identifier(file.provider_task_id) or provider_task_id,
+                "provider_file_id": normalize_identifier(file.provider_file_id) or file_id,
                 "provider_link": file.provider_link,
                 "seq": index,
                 "name": file.name,

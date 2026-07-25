@@ -40,6 +40,19 @@
     streamQueue: [],
     streamQueueIndex: -1,
     nowNavContext: null,
+    specialNav: {
+      origin: null,
+      stack: [],
+      restoring: false,
+      startedFromDeepLink: false
+    },
+    playbackQueue: {
+      items: [],
+      index: -1,
+      shuffle: false,
+      shuffleOrder: [],
+      version: 0
+    },
     playbackSession: {
       now: null,
       queue: [],
@@ -146,18 +159,15 @@
 
   function applyPlaybackQueueToRuntime(queue, index, media, reason, revision){
     const clean = normalizePlaybackQueue(queue, media);
-    const oldLen = media === "video" ? (Array.isArray(state.videoPlaylist) ? state.videoPlaylist.length : 0) : (Array.isArray(state.playlist) ? state.playlist.length : 0);
+    const oldLen = state.playbackQueue && Array.isArray(state.playbackQueue.items) ? state.playbackQueue.items.length : 0;
     if(!clean.length && oldLen > 0 && reason !== "explicit-clear" && reason !== "server-newer"){
       playbackDebug("skip empty queue replace", {oldLength:oldLen, newLength:0, reason:reason || "", revision:revision});
       return false;
     }
     const safeIndex = clean.length ? Math.max(0, Math.min(clean.length - 1, Number(index || 0))) : -1;
-    if(media === "video"){
-      state.videoPlaylist = clean;
-      state.videoIndex = safeIndex;
-    }else{
-      state.playlist = clean;
-      state.playIndex = safeIndex;
+    const canonical = window.DebriPod && DebriPod.playbackQueue;
+    if(canonical && typeof canonical.replaceFromPlayableList === "function"){
+      canonical.replaceFromPlayableList(clean, safeIndex >= 0 ? clean[safeIndex] : null);
     }
     playbackDebug("replace queue", {oldLength:oldLen, newLength:clean.length, reason:reason || "", revision:revision});
     return true;
@@ -416,7 +426,6 @@
         state.nowPlayingPathActive = false;
       }
       try{ if(typeof hideTransientListGlass === "function") hideTransientListGlass("now playing active"); }catch(e){}
-      try{ libList.classList.add("npUnderlay"); }catch(e){}
       layoutNowPlayingToLibList();
       nowPlaying.style.display = "block";
       try{ setHeader(); }catch(e){}
@@ -441,6 +450,7 @@
           try{
             if(fadeToken !== npPageFadeToken) return;
             nowPlaying.classList.add("npPageActive");
+            if(typeof suspendListRenderingForNowPlaying === "function") suspendListRenderingForNowPlaying();
             scheduleLiquidGlassSnapshot("now playing active", true);
           }catch(e){}
         });
@@ -448,9 +458,9 @@
       try{ if(playbackPillsPinned && hasNowPlayingMetadata()) showPlaybackPills(true, "now playing entering"); }catch(e){}
     }else{
       state.nowPlayingPathActive = false;
+      try{ if(typeof restoreListRenderingAfterNowPlaying === "function") restoreListRenderingAfterNowPlaying(); }catch(e){}
       try{ if(typeof stopNowPlayingArtTextureLoop === "function") stopNowPlayingArtTextureLoop(); }catch(e){}
       if(!playbackPillsPinned) hidePlaybackPillsImmediate("now playing leaving", false);
-      try{ libList.classList.remove("npUnderlay"); }catch(e){}
       try{ nowPlaying.classList.remove("npPageActive"); }catch(e){}
       scheduleLiquidGlassSnapshot("now playing leaving", true);
       const finishHide = ()=>{
@@ -478,25 +488,8 @@
 
   function syncWheelZoneHeight(){
     try{
-      const wrapEl = document.getElementById("divwrap") || document.querySelector(".wrap");
-      const screenEl = document.querySelector("#tab-library .ipodScreen");
-      const wheelZoneEl = document.getElementById("wheelZone") || document.querySelector("#tab-library .wheelZone");
-      if(!wrapEl || !screenEl || !wheelZoneEl) return;
-      const wrapRect = wrapEl.getBoundingClientRect();
-      const screenRect = screenEl.getBoundingClientRect();
-      const rootStyle = getComputedStyle(document.documentElement);
-      const wheelSize = parseFloat(rootStyle.getPropertyValue("--wheelSize")) || 0;
-      const wheelGap = parseFloat(rootStyle.getPropertyValue("--wheelGap")) || 0;
-      const minNeeded = Math.ceil(wheelSize + (wheelGap * 2));
-      const available = Math.max(0, Math.round(wrapRect.bottom - screenRect.bottom));
-      const viewportW = Math.max(1, Math.round(window.innerWidth || document.documentElement.clientWidth || minNeeded));
-      const desired = Math.max(minNeeded, viewportW);
-      const target = available > 0 ? Math.max(minNeeded, Math.min(available, desired)) : desired;
-      wheelZoneEl.style.height = target + "px";
-      wheelZoneEl.style.minHeight = target + "px";
-      wheelZoneEl.style.flex = "0 0 " + target + "px";
-      document.documentElement.style.setProperty("--wheelZoneHeight", target + "px");
-      updateWheelScreenIntersection();
+      const controller = window.DebriPod && DebriPod.layoutController;
+      if(controller && typeof controller.schedule === "function") controller.schedule();
     }catch(e){}
   }
 
@@ -509,35 +502,8 @@
     }
   }
 
-  function updateWheelScreenIntersection(){
-    try{
-      const screenEl = document.querySelector("#tab-library .ipodScreen");
-      const wheelEl = document.getElementById("wheel") || document.querySelector("#tab-library .wheel");
-      const doc = document.documentElement;
-      if(!screenEl || !wheelEl || !doc) return false;
-      const screenRect = screenEl.getBoundingClientRect();
-      const wheelRect = wheelEl.getBoundingClientRect();
-      const overlaps = rectsOverlap(screenRect, wheelRect);
-      doc.classList.toggle("wheelIntersectsScreen", overlaps);
-      return overlaps;
-    }catch(e){}
-    return false;
-  }
-
-  function scheduleWheelIntersectionCheck(){
-    try{
-      if(scheduleWheelIntersectionCheck._frame) cancelAnimationFrame(scheduleWheelIntersectionCheck._frame);
-      scheduleWheelIntersectionCheck._frame = requestAnimationFrame(()=>{
-        scheduleWheelIntersectionCheck._frame = 0;
-        updateWheelScreenIntersection();
-      });
-    }catch(e){}
-  }
-
-
   window.addEventListener("resize", ()=>{
     try{ syncWheelZoneHeight(); }catch(e){}
-    try{ scheduleWheelIntersectionCheck(); }catch(e){}
     try{
       if(nowPlaying && nowPlaying.style.display === "block"){
         layoutNowPlayingToLibList();
@@ -549,22 +515,12 @@
     try{ window.visualViewport.addEventListener("scroll", scheduleWheelIntersectionCheck, {passive:true}); }catch(e){}
   }
 
-  function bringToNowPlayingIfPlaying(){
-    if(!state.now) return;
-    if(activeAudio && !activeAudio.paused){
-      setTab("library");
-      showNowPlaying(true);
-    }
-  }
-
-  window.addEventListener("focus", bringToNowPlayingIfPlaying);
   document.addEventListener("visibilitychange", ()=>{
     if(document.hidden){
       try{ saveResumeNowPlaying(); }catch(e){}
       try{ ensurePlaybackAudioSession(); }catch(e){}
       try{ enforceSingleAudio(); }catch(e){}
     }else{
-      bringToNowPlayingIfPlaying();
       try{ ensurePlaybackAudioSession(); }catch(e){}
       try{ enforceSingleAudio(); }catch(e){}
       try{ syncMediaSessionControls(); }catch(e){}
@@ -674,18 +630,8 @@
   }
 
   async function closeNowPlayingPlaylistMode(){
-    try{
-      const prev = npPlaylistReturnView;
-      npPlaylistReturnView = null;
-      if(prev){
-        await runLibraryPageTransition(async ()=>{
-          state.current = prev;
-          setHeader();
-          await prev.load();
-        });
-      }
-    }catch(e){}
-    showNowPlaying(true);
+    const nav = window.DebriPod && DebriPod.navigationController;
+    if(nav && nav.isActive && nav.isActive()) await nav.back();
     updateWheelLabels();
   }
 
@@ -706,10 +652,13 @@
     return true;
   }
 
-  async function viewNowPlayingPlaylistMode(){
+  async function viewMediaPlaylistAdd(target){
     const currentNow = state.now || null;
-    const currentMedia = String((currentNow && currentNow.media) || (isVideoActive() ? "video" : "audio"));
-    if(!currentNow || currentMedia !== "audio" || !currentNow.rootId || !currentNow.rel){
+    const selected = target && typeof target === "object" ? target : null;
+    const currentMedia = String((selected && selected.media) || (currentNow && currentNow.media) || (isVideoActive() ? "video" : "audio"));
+    const rootId = String((selected && selected.root_id) || (currentNow && currentNow.rootId) || "");
+    const trackRel = String((selected && selected.rel) || (currentNow && currentNow.rel) || "");
+    if(currentMedia !== "audio" || !rootId || !trackRel){
       return;
     }
     let root = null;
@@ -717,7 +666,7 @@
       if(!state.roots || !state.roots.length){
         await loadConfig();
       }
-      root = (state.roots || []).find(r => r && r.id === currentNow.rootId) || null;
+      root = (state.roots || []).find(r => r && String(r.id) === rootId) || null;
     }catch(e){ root = null; }
     if(!root) return;
     const alreadyInMode = !!(state.current && state.current.kind === "np_playlist_add");
@@ -730,7 +679,7 @@
       kind: "np_playlist_add",
       label: "Add to playlist",
       root: root,
-      trackRel: String(currentNow.rel || ""),
+      trackRel: trackRel,
       _added: existingAdded,
       load: async function(){
         const js = await apiGet("/api/library/metadata?root_id=" + encodeURIComponent(root.id) + "&level=playlists&value=");
@@ -798,7 +747,7 @@
         return;
       }
       if(state.current && state.current.kind === "np_playlist_add"){
-        await viewNowPlayingPlaylistMode();
+        await viewMediaPlaylistAdd({media:"audio", root_id:state.current.root && state.current.root.id, rel:state.current.trackRel});
         try{
           const wantRel = String(js.rel || "");
           if(wantRel){
@@ -851,7 +800,7 @@
         return;
       }
       if(state.current && state.current.kind === "np_playlist_add"){
-        await viewNowPlayingPlaylistMode();
+        await viewMediaPlaylistAdd({media:"audio", root_id:state.current.root && state.current.root.id, rel:state.current.trackRel});
         return;
       }
       await viewMetaList(root, "playlists", "", "Playlists", false);

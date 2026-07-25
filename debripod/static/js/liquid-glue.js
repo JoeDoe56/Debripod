@@ -605,8 +605,6 @@
 
   function nowPlayingSurfaceVisible(){
     try{
-      const list = document.getElementById("libList");
-      if(list && list.classList && list.classList.contains("npUnderlay")) return true;
       const np = document.getElementById("nowPlaying");
       if(!np) return false;
       const style = window.getComputedStyle ? window.getComputedStyle(np) : null;
@@ -941,7 +939,7 @@
       const el = document.getElementById("libListSelectedGlass");
       const list = document.getElementById("libList");
       if(!el || !list) return;
-      if(list.classList && list.classList.contains("npUnderlay")){
+      if(list.hasAttribute("aria-hidden")){
         destroyLibSelectionGlass(reason || "now playing visible");
         return;
       }

@@ -109,11 +109,65 @@ def _v4(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _v5(conn: sqlite3.Connection) -> None:
+    conn.executescript("""
+    CREATE TABLE IF NOT EXISTS media_likes(
+      username TEXT NOT NULL,
+      media_key TEXT NOT NULL,
+      media_type TEXT NOT NULL,
+      root_id TEXT,
+      rel TEXT,
+      source TEXT NOT NULL,
+      source_id TEXT,
+      title TEXT,
+      artist TEXT,
+      album TEXT,
+      metadata_json TEXT NOT NULL DEFAULT '{}',
+      liked INTEGER NOT NULL,
+      updated_at REAL NOT NULL,
+      PRIMARY KEY(username,media_key)
+    );
+    CREATE INDEX IF NOT EXISTS idx_media_likes_user_type_liked_updated
+      ON media_likes(username,media_type,liked,updated_at);
+    """)
+
+
+def _v6(conn: sqlite3.Connection) -> None:
+    conn.executescript("""
+    ALTER TABLE tasks ADD COLUMN origin_client_id TEXT NOT NULL DEFAULT '';
+    CREATE TABLE IF NOT EXISTS push_subscriptions(
+      username TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      endpoint TEXT NOT NULL,
+      p256dh TEXT NOT NULL,
+      auth TEXT NOT NULL,
+      expiration_time REAL,
+      created_at REAL NOT NULL,
+      updated_at REAL NOT NULL,
+      revoked INTEGER NOT NULL DEFAULT 0,
+      PRIMARY KEY(username,client_id,endpoint)
+    );
+    CREATE INDEX IF NOT EXISTS idx_push_subscriptions_client
+      ON push_subscriptions(username,client_id,revoked);
+    CREATE TABLE IF NOT EXISTS notification_deliveries(
+      task_id TEXT NOT NULL,
+      username TEXT NOT NULL,
+      client_id TEXT NOT NULL,
+      event TEXT NOT NULL,
+      delivered_at REAL NOT NULL,
+      status TEXT NOT NULL,
+      UNIQUE(task_id,username,client_id,event)
+    );
+    """)
+
+
 MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (1, "structured_state", _v1),
     (2, "compact_palettes", _v2),
     (3, "unified_library_and_auth", _v3),
     (4, "large_value_envelopes", _v4),
+    (5, "user_scoped_media_likes", _v5),
+    (6, "device_scoped_push_notifications", _v6),
 )
 
 

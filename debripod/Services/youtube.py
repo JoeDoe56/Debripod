@@ -387,12 +387,7 @@ def _youtube_download_root() -> str:
 
 
 def _youtube_stream_cache_dir() -> str:
-    try:
-        base = cache_dir()
-    except Exception:
-        base = _youtube_download_root()
-    sub = str(_stream_cache_subdir_provider() or "youtube_streams").strip() or "youtube_streams"
-    out = os.path.join(base, sub)
+    out = os.path.join(cache_dir(), "ytdlp")
     os.makedirs(out, exist_ok=True)
     return out
 
@@ -501,6 +496,42 @@ def _yt_dlp_extract_info(url: str) -> dict:
     if not isinstance(data, dict):
         raise RuntimeError("yt-dlp returned invalid info")
     return data
+
+
+def ytdlp_comments(url: str, limit: int = 100) -> List[dict]:
+    """Extract a bounded normalized comment list without downloading media."""
+    u = str(url or "").strip()
+    if not u:
+        return []
+    code, out, err = _run_ytdlp(_yt_dlp_base_args() + ["--get-comments", "-J", "--skip-download", u])
+    if code != 0:
+        raise RuntimeError((err or out or "yt-dlp failed").strip())
+    try:
+        info = json.loads(out or "{}")
+    except Exception as exc:
+        raise RuntimeError(f"yt-dlp returned invalid json: {exc}") from exc
+    comments = info.get("comments") if isinstance(info, dict) else []
+    result: List[dict] = []
+    for raw in comments if isinstance(comments, list) else []:
+        if not isinstance(raw, dict):
+            continue
+        text_value = str(raw.get("text") or "").strip()
+        if not text_value:
+            continue
+        row = {
+            "author": str(raw.get("author") or raw.get("author_id") or "").strip(),
+            "text": text_value,
+        }
+        if raw.get("timestamp") is not None:
+            row["timestamp"] = raw.get("timestamp")
+        if raw.get("like_count") is not None:
+            row["like_count"] = raw.get("like_count")
+        if raw.get("reply_count") is not None:
+            row["reply_count"] = raw.get("reply_count")
+        result.append(row)
+        if len(result) >= max(1, min(100, int(limit or 100))):
+            break
+    return result
 
 
 def _yt_guess_media(format_info: dict) -> str:
@@ -645,6 +676,40 @@ def ytdlp_list_formats(url: str) -> List[dict]:
 
     items.sort(key=_sort_key)
     return items
+
+
+def ytdlp_inspect(url: str) -> dict:
+    """Inspect any yt-dlp-supported HTTP(S) URL without downloading it."""
+    original_url = str(url or "").strip()
+    info = _yt_dlp_extract_info(original_url)
+    files = ytdlp_list_formats(original_url)
+    extractor = str(info.get("extractor_key") or info.get("extractor") or "").strip()
+    title = str(info.get("title") or info.get("fulltitle") or original_url).strip()
+    media_id = str(info.get("id") or "").strip()
+    total_size = sum(int(item.get("size") or 0) for item in files)
+    return {
+        "result_id": "ytdlp:" + (extractor or "generic") + ":" + (media_id or original_url),
+        "source": "youtube",
+        "source_label": extractor or "yt-dlp",
+        "title": title,
+        "directory_title": title,
+        "directory": original_url,
+        "url": original_url,
+        "original_url": original_url,
+        "extractor": extractor,
+        "extractor_id": media_id,
+        "channel": str(info.get("channel") or info.get("uploader") or "").strip(),
+        "channel_id": str(info.get("channel_id") or info.get("uploader_id") or "").strip(),
+        "thumbnail": str(info.get("thumbnail") or "").strip(),
+        "description": str(info.get("description") or "").strip(),
+        "browse_available": False,
+        "stream_available": True,
+        "download_available": True,
+        "files_loaded": True,
+        "files": files,
+        "file_count": len(files),
+        "size": total_size,
+    }
 
 
 def _search_youtube_cached(q: str) -> Tuple[List[dict], str, str]:

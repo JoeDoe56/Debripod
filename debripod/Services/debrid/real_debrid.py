@@ -10,6 +10,7 @@ import requests
 from ...media_types import AUDIO_EXTS, VIDEO_EXTS
 from .base import DebridAuthError, DebridProviderBase, DebridProviderError
 from .models import DebridFile, DebridPreview, DebridResolvedLink
+from .identifiers import first_identifier, normalize_identifier, normalize_identifier_list
 
 
 class RealDebridProvider(DebridProviderBase):
@@ -57,7 +58,7 @@ class RealDebridProvider(DebridProviderBase):
     @staticmethod
     def _file(raw: dict, task_id: str) -> DebridFile:
         path = str(raw.get("path") or raw.get("file_path") or raw.get("filename") or "")
-        file_id = str(raw.get("id") or "")
+        file_id = first_identifier(raw, "id") or ""
         ext = os.path.splitext(path)[1].lower()
         media = "video" if ext in VIDEO_EXTS else ("audio" if ext in AUDIO_EXTS else "")
         return DebridFile(
@@ -78,8 +79,8 @@ class RealDebridProvider(DebridProviderBase):
 
     def preview_magnet(self, magnet: str) -> DebridPreview:
         data = self._request("POST", "/torrents/addMagnet", data={"magnet": magnet})
-        task_id = str((data or {}).get("id") or "")
-        if not task_id:
+        task_id = first_identifier(data if isinstance(data, dict) else {}, "id")
+        if task_id is None:
             raise DebridProviderError("Debrid provider did not return a task id.")
         return self.refresh_preview(task_id)
 
@@ -103,7 +104,7 @@ class RealDebridProvider(DebridProviderBase):
         self, *, magnet: str, provider_task_id: str, selected_file_ids: Iterable[str],
         timeout_seconds: int, poll_interval_seconds: int,
     ) -> List[DebridFile]:
-        wanted = [str(value) for value in selected_file_ids if str(value or "").strip()]
+        wanted = normalize_identifier_list(selected_file_ids)
         if not wanted:
             raise DebridProviderError("No files selected.")
         self._request("POST", f"/torrents/selectFiles/{provider_task_id}", data={"files": ",".join(wanted)})
@@ -137,7 +138,8 @@ class RealDebridProvider(DebridProviderBase):
         )
 
     def delete_task_best_effort(self, provider_task_id: str | None) -> None:
-        if not provider_task_id:
+        provider_task_id = normalize_identifier(provider_task_id)
+        if provider_task_id is None:
             return
         try:
             self._request("DELETE", f"/torrents/delete/{provider_task_id}")

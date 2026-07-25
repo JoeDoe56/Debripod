@@ -108,7 +108,7 @@ def _safe_remove(p: str) -> None:
 
 
 def ffmpeg_log_dir() -> str:
-    p = os.path.join(cache_dir(), "ffmpeg_logs")
+    p = os.path.join(transcode_cache_dir(), "logs")
     try:
         os.makedirs(p, exist_ok=True)
     except OSError:

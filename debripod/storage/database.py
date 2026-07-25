@@ -36,8 +36,11 @@ def connect(*, initialize: bool = True) -> sqlite3.Connection:
 
 
 def initialize_database() -> int:
-    with connect(initialize=False) as conn:
+    conn = connect(initialize=False)
+    try:
         return migrate(conn)
+    finally:
+        conn.close()
 
 
 @contextmanager

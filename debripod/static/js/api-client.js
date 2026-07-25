@@ -17,12 +17,18 @@
     window.fetch = function(input, init){
       const opts = Object.assign({}, init || {});
       const method = String(opts.method || (input && input.method) || "GET").toUpperCase();
+      let sameOrigin = true;
+      try{
+        const u = new URL((typeof input === "string") ? input : input.url, window.location.href);
+        sameOrigin = u.origin === window.location.origin;
+      }catch(e){}
+      if(sameOrigin){
+        const headers = new Headers(opts.headers || (input && input.headers) || {});
+        const clientId = root.pwaNotifications && root.pwaNotifications.clientId ? root.pwaNotifications.clientId() : "";
+        if(clientId && !headers.has("X-DebriPod-Client-Id")) headers.set("X-DebriPod-Client-Id", clientId);
+        opts.headers = headers;
+      }
       if(["POST", "PUT", "PATCH", "DELETE"].indexOf(method) >= 0 && CSRF_TOKEN){
-        let sameOrigin = true;
-        try{
-          const u = new URL((typeof input === "string") ? input : input.url, window.location.href);
-          sameOrigin = u.origin === window.location.origin;
-        }catch(e){}
         if(sameOrigin){
           const headers = new Headers(opts.headers || (input && input.headers) || {});
           if(!headers.has("X-CSRF-Token")) headers.set("X-CSRF-Token", CSRF_TOKEN);

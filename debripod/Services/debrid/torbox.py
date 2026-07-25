@@ -10,6 +10,7 @@ import requests
 from ...media_types import AUDIO_EXTS, VIDEO_EXTS
 from .base import DebridAuthError, DebridProviderBase, DebridProviderError
 from .models import DebridFile, DebridPreview, DebridResolvedLink
+from .identifiers import first_identifier, identifiers_equal, normalize_identifier, normalize_identifier_list
 
 
 def find_torbox_files(payload: Any) -> list[dict]:
@@ -37,7 +38,7 @@ def _task_payload(payload: dict, task_id: str) -> dict:
     data = payload.get("data")
     if isinstance(data, list):
         for item in data:
-            if isinstance(item, dict) and str(item.get("id") or item.get("torrent_id") or "") == task_id:
+            if isinstance(item, dict) and identifiers_equal(first_identifier(item, "id", "torrent_id"), task_id):
                 return item
         return next((item for item in data if isinstance(item, dict)), {})
     if isinstance(data, dict):
@@ -91,8 +92,8 @@ class TorBoxProvider(DebridProviderBase):
     def preview_magnet(self, magnet: str) -> DebridPreview:
         data = self._request("POST", "/v1/api/torrents/createtorrent", files={"magnet": (None, magnet)})
         task = _task_payload(data if isinstance(data, dict) else {}, "")
-        task_id = str(task.get("torrent_id") or task.get("id") or (data or {}).get("id") or "")
-        if not task_id:
+        task_id = first_identifier(task, "torrent_id", "id") or first_identifier(data if isinstance(data, dict) else {}, "id")
+        if task_id is None:
             raise DebridProviderError("Debrid provider did not return a task id.")
         return self.refresh_preview(task_id)
 
@@ -106,9 +107,9 @@ class TorBoxProvider(DebridProviderBase):
         raw_files = find_torbox_files(task) or find_torbox_files(payload)
         files: list[DebridFile] = []
         for item in raw_files:
-            file_id = str(item.get("id") or item.get("file_id") or "")
+            file_id = first_identifier(item, "id", "file_id")
             path = str(item.get("path") or item.get("name") or item.get("short_name") or "")
-            if not file_id or not path:
+            if file_id is None or not path:
                 continue
             ext = os.path.splitext(path)[1].lower()
             files.append(DebridFile(
@@ -138,7 +139,7 @@ class TorBoxProvider(DebridProviderBase):
         self, *, magnet: str, provider_task_id: str, selected_file_ids: Iterable[str],
         timeout_seconds: int, poll_interval_seconds: int,
     ) -> List[DebridFile]:
-        wanted = {str(value) for value in selected_file_ids if str(value or "").strip()}
+        wanted = set(normalize_identifier_list(selected_file_ids))
         if not wanted:
             raise DebridProviderError("No files selected.")
         deadline = time.time() + max(1, int(timeout_seconds or 0))
@@ -155,7 +156,7 @@ class TorBoxProvider(DebridProviderBase):
         data = self._request("GET", "/v1/api/torrents/requestdl", allow_text=True, params={
             "token": self.token,
             "torrent_id": file.provider_task_id,
-            "file_id": file.provider_file_id or file.file_id,
+            "file_id": normalize_identifier(file.provider_file_id) or normalize_identifier(file.file_id),
             "zip_link": "false",
             "redirect": "false",
             "append_name": "true",
@@ -184,7 +185,8 @@ class TorBoxProvider(DebridProviderBase):
         )
 
     def delete_task_best_effort(self, provider_task_id: str | None) -> None:
-        if not provider_task_id:
+        provider_task_id = normalize_identifier(provider_task_id)
+        if provider_task_id is None:
             return
         try:
             self._request("POST", "/v1/api/torrents/controltorrent", json={"torrent_id": provider_task_id, "action": "delete"})

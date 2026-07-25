@@ -12,6 +12,7 @@ import requests
 from ...media_types import AUDIO_EXTS, VIDEO_EXTS
 from .base import DebridAuthError, DebridProviderBase, DebridProviderError
 from .models import DebridFile, DebridPreview, DebridResolvedLink
+from .identifiers import first_identifier, identifiers_equal, normalize_identifier, normalize_identifier_list
 
 
 _RATE_LOCK = threading.Lock()
@@ -27,7 +28,7 @@ def _pick_magnet(data: Any, task_id: str = "") -> dict:
         magnets = data.get("magnets")
         if isinstance(magnets, list):
             for item in magnets:
-                if isinstance(item, dict) and (not task_id or str(item.get("id") or item.get("magnet") or "") == task_id):
+                if isinstance(item, dict) and (not task_id or identifiers_equal(first_identifier(item, "id", "magnet"), task_id)):
                     return item
             return magnets[0] if magnets and isinstance(magnets[0], dict) else {}
         if isinstance(magnets, dict):
@@ -119,8 +120,8 @@ class AllDebridProvider(DebridProviderBase):
     def preview_magnet(self, magnet: str) -> DebridPreview:
         data = self._request("POST", "/v4/magnet/upload", data={"magnets[]": magnet})
         item = _pick_magnet(data)
-        task_id = str(item.get("id") or item.get("magnet") or "")
-        if not task_id:
+        task_id = first_identifier(item, "id", "magnet")
+        if task_id is None:
             raise DebridProviderError("Debrid provider did not return a task id.")
         return self.refresh_preview(task_id)
 
@@ -153,7 +154,7 @@ class AllDebridProvider(DebridProviderBase):
         self, *, magnet: str, provider_task_id: str, selected_file_ids: Iterable[str],
         timeout_seconds: int, poll_interval_seconds: int,
     ) -> List[DebridFile]:
-        wanted = {str(value) for value in selected_file_ids if str(value or "").strip()}
+        wanted = set(normalize_identifier_list(selected_file_ids))
         if not wanted:
             raise DebridProviderError("No files selected.")
         deadline = time.time() + max(1, int(timeout_seconds or 0))
@@ -184,8 +185,8 @@ class AllDebridProvider(DebridProviderBase):
             streams.sort(key=lambda item: (0 if str(item.get("ext") or "").lower() == "mp4" else 1, str(item.get("name") or "")))
             if streams:
                 stream = streams[0]
-                stream_id = stream.get("id") or stream.get("stream")
-                unlock_id = data.get("id") or data.get("link")
+                stream_id = first_identifier(stream, "id", "stream")
+                unlock_id = first_identifier(data, "id", "link")
                 result = self._request("POST", "/v4/link/streaming", data={"id": unlock_id, "stream": stream_id})
                 url = str(result.get("link") or result.get("url") or "")
                 data = result
@@ -202,7 +203,8 @@ class AllDebridProvider(DebridProviderBase):
         )
 
     def delete_task_best_effort(self, provider_task_id: str | None) -> None:
-        if not provider_task_id:
+        provider_task_id = normalize_identifier(provider_task_id)
+        if provider_task_id is None:
             return
         try:
             self._request("POST", "/v4/magnet/delete", data={"id": provider_task_id})

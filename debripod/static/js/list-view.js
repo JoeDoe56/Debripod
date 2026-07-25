@@ -284,6 +284,125 @@
     return 44;
   }
 
+  function replaceListItems(nextItems, options){
+    const opts = Object.assign({animate:true, preserveSelection:true, preserveScroll:true, reason:"list update", pageTransition:false}, options || {});
+    const previous = Array.isArray(state.items) ? state.items : [];
+    const next = Array.isArray(nextItems) ? nextItems.slice() : [];
+    const selectedIdentity = previous[state.sel] ? virtualItemIdentity(previous[state.sel], state.sel) : "";
+    const oldScroll = libList ? libList.scrollTop : 0;
+    const oldRects = new Map();
+    if(libList){
+      libList.querySelectorAll(".ipodItem[data-index]").forEach(row=>{
+        const index = Number(row.dataset.index || 0);
+        const item = previous[index];
+        if(item) oldRects.set(virtualItemIdentity(item, index), row.getBoundingClientRect());
+      });
+    }
+    const transitionApi = window.DebriPod && DebriPod.rowTransitions;
+    const reducedMotion = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
+    const plan = transitionApi ? transitionApi.planRowMutation(previous, next, virtualItemIdentity, selectedIdentity, {reducedMotion:reducedMotion}) : null;
+    const removedRows = [];
+    if(opts.animate && plan && plan.animate && libList){
+      const listRect = libList.getBoundingClientRect();
+      plan.removed.forEach(change=>{
+        const row = libList.querySelector('.ipodItem[data-index="' + change.oldIndex + '"]');
+        if(!row) return;
+        const rect = row.getBoundingClientRect();
+        const clone = row.cloneNode(true);
+        clone.removeAttribute("data-index");
+        clone.classList.add("dpRowRemoving");
+        Object.assign(clone.style, {
+          position:"absolute", left:(rect.left - listRect.left) + "px",
+          top:(rect.top - listRect.top + libList.scrollTop) + "px",
+          width:rect.width + "px", height:rect.height + "px",
+          pointerEvents:"none", zIndex:"20"
+        });
+        removedRows.push(clone);
+      });
+    }
+    state.items = next;
+    if(opts.preserveSelection && plan && plan.selectionIndex >= 0) state.sel = plan.selectionIndex;
+    else if(typeof opts.selectionIndex === "number") state.sel = Math.max(0, Math.min(Math.max(0, next.length - 1), opts.selectionIndex));
+    else state.sel = Math.max(0, Math.min(Math.max(0, next.length - 1), state.sel || 0));
+    invalidateVirtualPrefix();
+    renderList({rowMutation:true, pageTransition:!!opts.pageTransition});
+    if(opts.preserveScroll && libList) libList.scrollTop = oldScroll;
+    const animateRows = ()=>{
+      if(!(opts.animate && plan && plan.animate && libList)) return;
+      const duration = transitionApi.TRANSITION_DURATION_MS;
+      removedRows.forEach(clone=>{
+        libList.appendChild(clone);
+        const animation = clone.animate([{maxBlockSize:clone.offsetHeight + "px", opacity:1}, {maxBlockSize:"0px", opacity:0, transform:"translateY(-6px)"}], {duration:duration, easing:"ease", fill:"both"});
+        animation.finished.then(()=>clone.remove()).catch(()=>clone.remove());
+      });
+      libList.querySelectorAll(".ipodItem[data-index]").forEach(row=>{
+        const index = Number(row.dataset.index || 0);
+        const key = next[index] ? virtualItemIdentity(next[index], index) : "";
+        const before = oldRects.get(key);
+        if(before){
+          const after = row.getBoundingClientRect();
+          const delta = before.top - after.top;
+          if(Math.abs(delta) > 0.5) row.animate([{transform:"translateY(" + delta + "px)"}, {transform:"translateY(0)"}], {duration:duration, easing:"ease", fill:"both"});
+        }else{
+          const inserted = plan.inserted.find(change=>change.newIndex === index);
+          const nearest = inserted && plan.retained.slice().sort((a,b)=>Math.abs(a.newIndex - index) - Math.abs(b.newIndex - index))[0];
+          const origin = nearest ? oldRects.get(nearest.key) : null;
+          const after = row.getBoundingClientRect();
+          const delta = origin ? origin.top - after.top : -6;
+          row.animate([{maxBlockSize:"0px", opacity:0, transform:"translateY(" + delta + "px)"}, {maxBlockSize:row.scrollHeight + "px", opacity:1, transform:"translateY(0)"}], {duration:duration, delay:transitionApi.spawnDelayMs(index), easing:"ease", fill:"both"});
+        }
+      });
+    };
+    if(opts.pageTransition && libList){
+      const animateWhenPageIsVisible = ()=>{
+        if(libList._dpPageTransitionActive){
+          requestAnimationFrame(animateWhenPageIsVisible);
+          return;
+        }
+        animateRows();
+      };
+      requestAnimationFrame(animateWhenPageIsVisible);
+    }else{
+      animateRows();
+    }
+    invalidateVirtualPrefix();
+    return plan;
+  }
+
+  let nowPlayingListSnapshot = null;
+
+  function suspendListRenderingForNowPlaying(){
+    if(!libList || nowPlayingListSnapshot) return;
+    const selected = state.items[state.sel];
+    nowPlayingListSnapshot = {
+      selectedIdentity:selected ? virtualItemIdentity(selected, state.sel) : "",
+      selectionIndex:state.sel,
+      scrollTop:libList.scrollTop,
+      descriptor:virtualViewDescriptor(),
+      virtualWindow:libList._dpLastVirtualWindow || null
+    };
+    if(libList.replaceChildren) libList.replaceChildren();
+    else libList.innerHTML = "";
+    libList.inert = true;
+    libList.setAttribute("aria-hidden", "true");
+    try{ if(typeof hideTransientListGlass === "function") hideTransientListGlass("list suspended"); }catch(e){}
+    try{ if(typeof destroyLibSelectionGlass === "function") destroyLibSelectionGlass("list suspended"); }catch(e){}
+    try{ if(typeof invalidateLibPillGlass === "function") invalidateLibPillGlass("list suspended"); }catch(e){}
+  }
+
+  function restoreListRenderingAfterNowPlaying(){
+    if(!libList || !nowPlayingListSnapshot) return;
+    const snapshot = nowPlayingListSnapshot;
+    nowPlayingListSnapshot = null;
+    libList.inert = false;
+    libList.removeAttribute("aria-hidden");
+    const found = state.items.findIndex((item, index)=>virtualItemIdentity(item, index) === snapshot.selectedIdentity);
+    state.sel = found >= 0 ? found : Math.max(0, Math.min(Math.max(0, state.items.length - 1), snapshot.selectionIndex));
+    libList.scrollTop = snapshot.scrollTop;
+    renderList({virtualScroll:true, restoringNowPlaying:true});
+    libList.scrollTop = snapshot.scrollTop;
+  }
+
   function makeInlineLoader(label){
     const loader = document.createElement("span");
     loader.className = "dpInlineLoader";
@@ -730,7 +849,7 @@
         const isSmartPlaylistCreate = (it.kind === "smart_playlist_create");
         const isPlaylistRename = (it.kind === "playlist_edit_name");
         const field = (isPlaylistCreate || isSmartPlaylistCreate || isPlaylistRename) ? "name" : ((it.kind === "libsearch_filter") ? "filter" : "q");
-        const placeholder = isPlaylistCreate ? "Create playlist" : (isSmartPlaylistCreate ? "Create smart playlist" : (isPlaylistRename ? "Edit name" : ((it.kind === "libsearch_filter") ? "Enter filters" : "Enter query")));
+        const placeholder = isPlaylistCreate ? "Create playlist" : (isSmartPlaylistCreate ? "Create smart playlist" : (isPlaylistRename ? "Edit name" : ((it.kind === "libsearch_filter") ? "Enter filters" : "Enter query or link")));
         const isEditing = (isPlaylistCreate || isSmartPlaylistCreate)
           ? !!(isSel && (isSmartPlaylistCreate ? state.smartPlaylistCreate : state.playlistCreate) && (isSmartPlaylistCreate ? state.smartPlaylistCreate.editing : state.playlistCreate.editing))
           : (isPlaylistRename ? !!(isSel && state.playlistEdit && state.playlistEdit.editingName) : !!(isSel && state.libSearch && state.libSearch.editField === field));
@@ -747,6 +866,9 @@
                 ? ((state.playlistEdit && typeof state.playlistEdit.editNameValue === "string") ? state.playlistEdit.editNameValue : "")
                 : ((state.libSearch && typeof state.libSearch.editValue === "string") ? state.libSearch.editValue : ((state.libSearch && typeof state.libSearch[field] === "string") ? state.libSearch[field] : ""))));
           inp.placeholder = placeholder;
+          if(field === "q" && window.DebriPod && DebriPod.linkIntake){
+            inp.addEventListener("paste", DebriPod.linkIntake.onPaste);
+          }
           inp.addEventListener("input", ()=>{
             try{
               if(isPlaylistCreate){
@@ -801,7 +923,11 @@
                 }catch(e){}
                 try{ inp.blur(); }catch(e){}
                 if(field === "q") {
-                  try{ libDoSearch((state.libSearch && state.libSearch.engine) ? state.libSearch.engine : "combined", inp.value || ""); }catch(e){}
+                  try{
+                    const intake = window.DebriPod && DebriPod.linkIntake;
+                    if(intake && intake.classify(inp.value || "") !== "query") intake.inspect(inp.value || "");
+                    else libDoSearch((state.libSearch && state.libSearch.engine) ? state.libSearch.engine : "combined", inp.value || "");
+                  }catch(e){}
                 }
               }
               return;
@@ -896,10 +1022,12 @@
 
           const wrap = document.createElement("span");
           wrap.className = "ipodPills";
-          const sp = document.createElement("span");
-          sp.className = "ipodPill" + ((!isPlaylistCreate && !isPlaylistRename && field === "q") ? " v" : "");
-          prepareGlassPill(sp, isPlaylistCreate ? "New" : (isSmartPlaylistCreate ? "Smart" : (isPlaylistRename ? "Name" : ((field === "q") ? "Query" : "Filters"))));
-          wrap.appendChild(sp);
+          if(isPlaylistCreate || isSmartPlaylistCreate || isPlaylistRename){
+            const sp = document.createElement("span");
+            sp.className = "ipodPill";
+            prepareGlassPill(sp, isPlaylistCreate ? "New" : (isSmartPlaylistCreate ? "Smart" : "Name"));
+            wrap.appendChild(sp);
+          }
           // extra pills (status etc.)
           if(Array.isArray(it.pills)){
             for(const p of it.pills){
@@ -916,7 +1044,7 @@
               wrap.appendChild(sp2);
             }
           }
-          li.appendChild(wrap);
+          if(wrap.childNodes.length) li.appendChild(wrap);
         }
 
         appendExpandedSubRow(li, it);
@@ -1452,8 +1580,6 @@ function vibeTick(){
       }
       arr.splice(insertAt, 0, btn);
     }
-    state.items = arr;
-
     // Restore selection and scroll when returning to a list via Menu/back
     let restoreSel = null;
     let restoreScroll = null;
@@ -1473,8 +1599,8 @@ function vibeTick(){
       state.sel = 0;
     }
 
+    replaceListItems(arr, {animate:true, preserveSelection:false, preserveScroll:false, selectionIndex:state.sel, reason:"page load", pageTransition:true});
     setHeader();
-    renderList();
     try{ if(typeof applySelectedTextContrast === "function") applySelectedTextContrast(); }catch(e){}
 
     if(restoreScroll != null && libList){
@@ -1503,6 +1629,7 @@ function vibeTick(){
     try{
       try{ if(typeof hideTransientListGlass === "function") hideTransientListGlass("page transition"); }catch(e){}
       if(libList){
+        libList._dpPageTransitionActive = true;
         fadeTimer = setTimeout(()=>{
           faded = true;
           try{ libList.classList.add("pageFadeHidden"); }catch(e){}
@@ -1515,15 +1642,17 @@ function vibeTick(){
           requestAnimationFrame(()=>{
             requestAnimationFrame(()=>{
               try{ libList.classList.remove("pageFadeHidden"); }catch(e){}
+              libList._dpPageTransitionActive = false;
             });
           });
         }else{
           try{ libList.classList.remove("pageFadeHidden"); }catch(e){}
+          libList._dpPageTransitionActive = false;
         }
       }
     }catch(e){
       if(fadeTimer) clearTimeout(fadeTimer);
-      try{ if(libList) libList.classList.remove("pageFadeHidden"); }catch(_e){}
+      try{ if(libList){ libList.classList.remove("pageFadeHidden"); libList._dpPageTransitionActive = false; } }catch(_e){}
       throw e;
     }
   }

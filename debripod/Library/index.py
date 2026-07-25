@@ -18,7 +18,6 @@ from .roots import root_by_id
 from ..media_types import AUDIO_EXTS, VIDEO_EXTS
 from ..utils import sha1_text
 
-_cache_dir_name_provider = lambda: "_debripod_cache"
 _progress_provider = lambda _root_id, _rel: {}
 _ENRICH_EXECUTOR = ThreadPoolExecutor(max_workers=1, thread_name_prefix="debripod-enrich")
 _ENRICH_LOCK = threading.Condition(threading.RLock())
@@ -30,15 +29,14 @@ _ENRICH_LAST: dict[str, object] = {"stage": "", "key": "", "finished_at": 0.0}
 VIDEO_PARSE_VERSION = 2
 
 
-def configure_library_index(*, cache_dir_name_provider, progress_provider=None) -> None:
-    global _cache_dir_name_provider, _progress_provider
-    _cache_dir_name_provider = cache_dir_name_provider
+def configure_library_index(*, progress_provider=None) -> None:
+    global _progress_provider
     if progress_provider is not None:
         _progress_provider = progress_provider
 
 
 def _cache_dir_name() -> str:
-    return str(_cache_dir_name_provider() or "_debripod_cache")
+    return "_debripod_cache"
 
 
 def _queue_enrichment(stage: str, key: str, func) -> None:
@@ -280,6 +278,7 @@ def build_index_for_root(root_abs: str, *, full_video_sync: bool = False, progre
                 "duration": duration,
                 "duration_text": duration_text(duration),
                 "source": source,
+                "source_url": str(manifest.get("source_url") or ""),
                 "manifest": manifest,
                 "parse": parsed,
                 "parse_version": VIDEO_PARSE_VERSION,

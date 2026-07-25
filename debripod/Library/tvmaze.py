@@ -2,6 +2,8 @@ from __future__ import annotations
 
 """Small, cached TVMaze lookup used only to fill missing episode metadata."""
 
+import html
+import re
 from typing import Any, Iterable
 
 import requests
@@ -71,6 +73,67 @@ def episodes_for_show(show_title: str) -> dict[tuple[int, int], dict[str, str]]:
         return _episode_map(payload)
     except (requests.RequestException, ValueError):
         return {}
+
+
+def _cached_show_payload(show_title: str) -> dict[str, Any]:
+    title = str(show_title or "").strip()
+    key = _cache_key(title)
+    if not title or key.endswith(":"):
+        return {}
+    try:
+        cached = load_search_cache(key)
+        payload = cached.get("payload") if isinstance(cached, dict) else None
+        if isinstance(payload, dict):
+            return payload
+    except Exception:
+        pass
+    episodes_for_show(title)
+    try:
+        cached = load_search_cache(key)
+        payload = cached.get("payload") if isinstance(cached, dict) else None
+        return payload if isinstance(payload, dict) else {}
+    except Exception:
+        return {}
+
+
+def _plain_summary(value: Any) -> str:
+    text = re.sub(r"<[^>]+>", " ", str(value or ""))
+    return " ".join(html.unescape(text).split())
+
+
+def normalized_episode_information(show_title: str, season: int, episode: int) -> dict[str, Any]:
+    """Return only available fields from the existing cached TVmaze show payload."""
+    payload = _cached_show_payload(show_title)
+    if not payload:
+        return {}
+    embedded = payload.get("_embedded") if isinstance(payload.get("_embedded"), dict) else {}
+    episodes = embedded.get("episodes") if isinstance(embedded.get("episodes"), list) else []
+    selected: dict[str, Any] = {}
+    for candidate in episodes:
+        if not isinstance(candidate, dict):
+            continue
+        try:
+            if int(candidate.get("season") or 0) == int(season) and int(candidate.get("number") or 0) == int(episode):
+                selected = candidate
+                break
+        except (TypeError, ValueError):
+            continue
+    network_payload = payload.get("network") if isinstance(payload.get("network"), dict) else {}
+    web_channel = payload.get("webChannel") if isinstance(payload.get("webChannel"), dict) else {}
+    network = str(network_payload.get("name") or web_channel.get("name") or "").strip()
+    result: dict[str, Any] = {
+        "show_title": str(payload.get("name") or show_title or "").strip(),
+        "episode_title": str(selected.get("name") or "").strip(),
+        "number": f"S{int(season):02d}E{int(episode):02d}",
+        "airdate": str(selected.get("airdate") or "").strip(),
+        "runtime": selected.get("runtime") if selected.get("runtime") is not None else payload.get("runtime"),
+        "show_status": str(payload.get("status") or "").strip(),
+        "genres": [str(value).strip() for value in (payload.get("genres") or []) if str(value).strip()],
+        "network": network,
+        "premiered": str(payload.get("premiered") or "").strip(),
+        "summary": _plain_summary(selected.get("summary") or payload.get("summary")),
+    }
+    return {key: value for key, value in result.items() if value not in ("", None, [])}
 
 
 def _needs_lookup(parsed: dict[str, Any]) -> bool:

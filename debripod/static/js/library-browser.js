@@ -37,7 +37,21 @@
     return false;
   }
 
-  async function openNowFolder(){
+  async function openNowFolder(options){
+    const opts = options || {};
+    if(opts.ordinaryOrigin && window.DebriPod && DebriPod.navigationController){
+      try{
+        await DebriPod.navigationController.restoreOrdinaryOrigin(opts.ordinaryOrigin);
+        const rootId = state.now && state.now.rootId ? String(state.now.rootId) : "";
+        const rel = state.now && state.now.rel ? String(state.now.rel) : "";
+        const index = (state.items || []).findIndex((item)=>item && item.rel === rel && item.root && String(item.root.id) === rootId);
+        if(index >= 0){
+          state.sel = index;
+          renderList();
+          return;
+        }
+      }catch(e){}
+    }
     if(!state.now){
       showNowPlaying(false);
       await showRoots();
@@ -75,17 +89,6 @@
     }catch(e){ folderRel = ""; }
 
     state.root = root;
-    state.history = [];
-    state.current = null;
-
-    if(folderRel){
-      const segs = folderRel.split("/");
-      state.history.push(folderViewObj(root, "", ""));
-      for(let i = 0; i < segs.length - 1; i++){
-        const rel = segs.slice(0, i + 1).join("/");
-        state.history.push(folderViewObj(root, rel, segs[i]));
-      }
-    }
 
     showNowPlaying(false);
     await setView(folderViewObj(root, folderRel, folderRel ? folderRel.split("/").slice(-1)[0] : ""), false);
@@ -230,15 +233,15 @@
     }catch(e){}
     if(media === "video"){
       const q = persistedQueueItems("video", entry);
-      state.videoPlaylist = q.items.length ? q.items : [item];
-      state.videoIndex = q.index >= 0 ? q.index : 0;
+      const canonical = window.DebriPod && DebriPod.playbackQueue;
+      if(canonical) canonical.replaceFromPlayableList(q.items.length ? q.items : [item], item);
       await startVideoFromItem(item, !!forceShow, resumeAt);
       return true;
     }
     const q = persistedQueueItems("audio", entry);
-    state.playlist = q.items.length ? q.items : [item];
-    state.playIndex = q.index >= 0 ? q.index : 0;
-    await startAudioFromItem(item, state.playlist, state.playIndex, !!forceShow, resumeAt);
+    const canonical = window.DebriPod && DebriPod.playbackQueue;
+    if(canonical) canonical.replaceFromPlayableList(q.items.length ? q.items : [item], item);
+    await startAudioFromItem(item, q.items.length ? q.items : [item], q.index >= 0 ? q.index : 0, !!forceShow, resumeAt);
     return true;
   }
 
@@ -258,10 +261,9 @@ async function goBack(){
     if(typeof rangeEditorCancelActive === "function" && rangeEditorCancelActive()){
       return;
     }
-    if(nowPlaying.style.display === "block"){
-      if(!playbackPillsPinned) hidePlaybackPillsImmediate("go back", false);
-      showNowPlaying(false);
-      await waitNowPlayingFade(220);
+    const navigationController = window.DebriPod && DebriPod.navigationController;
+    if(navigationController && navigationController.isActive && navigationController.isActive()){
+      await navigationController.back();
       return;
     }
     if(state.history.length){
@@ -325,22 +327,6 @@ async function goBack(){
     const rootId = item.root.id;
     const rel = item.rel;
 
-    // establish a video playlist context from the current view so next/prev works
-    try{
-      const vpl = buildVideoPlaylistFromItems(state.items || []);
-      if(vpl && vpl.length){
-        state.videoPlaylist = vpl;
-        const vidx = vpl.findIndex(x => x && x.rel === rel && x.root && x.root.id === rootId);
-        state.videoIndex = (vidx >= 0 ? vidx : 0);
-      }else{
-        // fallback to a single-item playlist
-        state.videoPlaylist = [item];
-        state.videoIndex = 0;
-      }
-    }catch(e){
-      state.videoPlaylist = [item];
-      state.videoIndex = 0;
-    }
     try{
       const meta = Object.assign({}, await apiGet("/api/library/filemeta?root_id=" + encodeURIComponent(rootId) + "&rel=" + encodeURIComponent(rel)), {streamed: !!item.streamed, source: item.source || "", ext: item.ext || "", quality: item.quality || ""});
       state.now = {rootId: rootId, rel: rel, media: "audio", streamed: !!item.streamed};
@@ -398,9 +384,10 @@ async function goBack(){
 
   async function startVideoFromItem(item, forceShow, resumeTime){
     if(typeof forceShow !== "boolean") forceShow = true;
+    syncCanonicalPlaybackStart(item, state.videoPlaylist && state.videoPlaylist.length ? state.videoPlaylist : (state.items || []), forceShow);
     const playbackNav = captureNavContext();
     const sourceView = captureSourceViewContext(item, state.videoPlaylist && state.videoPlaylist.length ? state.videoPlaylist : (state.items || []), state.videoIndex >= 0 ? state.videoIndex : 0);
-    if(forceShow) showNowPlaying(true);
+    if(forceShow) openNowPlayingExplicit();
 
     try{ if(activeAudio) activeAudio.pause(); }catch(e){}
     resetGaplessPrime();
@@ -423,7 +410,7 @@ async function goBack(){
         if(rt0 > 0){
           try{ setTimeout(()=>{ resumeVideoViaSeekInputs(rt0); }, 200); }catch(e){}
         }
-        if(forceShow) showNowPlaying(true);
+        if(forceShow) openNowPlayingExplicit();
         return;
       }
     }catch(e){}
@@ -453,7 +440,7 @@ async function goBack(){
     saveResumeNowPlaying();
 
     await updateNowPlayingDisplay(meta, item.label || "Video", {animateArt: true, animatePill: true});
-    if(forceShow) showNowPlaying(true);
+    if(forceShow) openNowPlayingExplicit();
     updateMediaSession({title: meta.title || item.label || "Video", artist: meta.artist || "", album: meta.album || "", art: meta.art || ""});
     try{ syncMediaSessionControls(); }catch(e){}
 
@@ -487,6 +474,7 @@ async function goBack(){
 
   async function startAudioFromItem(item, playlist, index, forceShow, resumeTime){
     if(typeof forceShow !== "boolean") forceShow = true;
+    syncCanonicalPlaybackStart(item, playlist || state.playlist || state.items || [], forceShow);
     const playbackNav = captureNavContext();
     const sourceView = captureSourceViewContext(item, playlist || state.playlist || state.items || [], (typeof index === "number" ? index : state.playIndex));
     stopVideoOverlay();
@@ -495,8 +483,6 @@ async function goBack(){
 
     const same = state.now && state.now.rootId === rootId && state.now.rel === rel;
     if(same){
-      state.playlist = playlist || state.playlist || [item];
-      if(typeof index === "number") state.playIndex = index;
       try{
         buildPlaybackSessionUpdate({now:Object.assign({}, state.now, {nav:playbackNav, meta:state.nowMeta || {}}), queue:state.playlist, queueIndex:state.playIndex, nav:playbackNav, sourceView:sourceView, media:"audio"}, "playback-start");
       }catch(e){}
@@ -507,12 +493,12 @@ async function goBack(){
         state.now = null;
         state.nowMeta = null;
       }else{
-      if(forceShow) showNowPlaying(true);
+      if(forceShow) openNowPlayingExplicit();
 
       const meta = Object.assign({}, state.nowMeta || {}, {streamed: !!item.streamed, source: item.source || "", ext: item.ext || "", quality: item.quality || ""});
       try{ loadVisualizerAnalysisForTrack(rootId, rel, "audio", {streamed: !!item.streamed}); }catch(err){}
       await updateNowPlayingDisplay(meta, item.label || "Track", {animateArt: false, animatePill: false});
-      if(forceShow) showNowPlaying(true);
+      if(forceShow) openNowPlayingExplicit();
       updateMediaSession({title: meta.title, artist: meta.artist, album: meta.album, art: meta.art});
       try{ syncMediaSessionControls(); }catch(e){}
       lastfmOnTrack(meta);
@@ -556,7 +542,7 @@ async function goBack(){
       }
     }
 
-    if(forceShow) showNowPlaying(true);
+    if(forceShow) openNowPlayingExplicit();
 
     const meta = await apiGet("/api/library/filemeta?root_id=" + encodeURIComponent(rootId) + "&rel=" + encodeURIComponent(rel));
 
@@ -590,8 +576,6 @@ async function goBack(){
       }catch(e){}
     }
 
-    state.playlist = playlist || [item];
-    state.playIndex = (typeof index === "number") ? index : 0;
     ensurePlayOrder(false);
 
     state.now = {rootId: rootId, rel: rel, media: "audio", streamed: !!item.streamed, nav: playbackNav};
@@ -635,7 +619,7 @@ async function goBack(){
     });
 
     await updateNowPlayingDisplay(meta, item.label || "Track", {animateArt: true, animatePill: true});
-    if(forceShow) showNowPlaying(true);
+    if(forceShow) openNowPlayingExplicit();
     updateMediaSession({title: meta.title, artist: meta.artist, album: meta.album, art: meta.art});
     try{ syncMediaSessionControls(); }catch(e){}
     lastfmOnTrack(meta);
@@ -765,11 +749,15 @@ async function goBack(){
 
   function setShuffleEnabled(on){
     const nextOn = !!on;
+    try{
+      const canonical = window.DebriPod && DebriPod.playbackQueue;
+      if(canonical && canonical.state.shuffle !== nextOn) canonical.setShuffle(nextOn);
+    }catch(e){}
     if(nextOn){
       try{
         if((!Array.isArray(state.playlist) || state.playlist.length <= 1) && state.playbackSession && Array.isArray(state.playbackSession.queue) && state.playbackSession.queue.length > 1){
-          state.playlist = state.playbackSession.queue.slice();
-          state.playIndex = Math.max(0, Math.min(state.playlist.length - 1, Number(state.playbackSession.queueIndex || 0)));
+          const canonicalQueue = window.DebriPod && DebriPod.playbackQueue;
+          if(canonicalQueue) canonicalQueue.restoreFromPlaybackSession(state.playbackSession);
         }
         const needsQueue = !Array.isArray(state.playlist) || state.playlist.length <= 1;
         const canUseCurrentList = !(state.current && (state.current.kind === "history" || state.current.kind === "playback_queue"));
@@ -777,8 +765,8 @@ async function goBack(){
           const pl = buildPlaylistFromItems(state.items || []);
           const idx = pl.findIndex(x => x && x.rel === state.now.rel && x.root && x.root.id === state.now.rootId);
           if(pl.length > 1 && idx >= 0){
-            state.playlist = pl;
-            state.playIndex = idx;
+            const canonicalQueue = window.DebriPod && DebriPod.playbackQueue;
+            if(canonicalQueue) canonicalQueue.replaceFromPlayableList(pl, pl[idx]);
           }
         }
       }catch(e){}
@@ -808,11 +796,15 @@ async function goBack(){
     if(i < 0 || i >= state.playlist.length) return;
     if(typeof forceShow !== "boolean") forceShow = (nowPlaying.style.display === "block");
     const item = state.playlist[i];
-    state.playIndex = i;
     await startAudioFromItem(item, state.playlist, i, forceShow);
   }
 
   function playNext(){
+    const canonical = window.DebriPod && DebriPod.playbackQueue;
+    if(canonical && canonical.hasItems()){
+      canonical.next();
+      return;
+    }
     if(isSearchStreamActive()){
       const ni = (state.streamQueueIndex || 0) + 1;
       if(ni >= 0 && ni < state.streamQueue.length){
@@ -831,6 +823,11 @@ async function goBack(){
   }
 
   function playPrev(){
+    const canonical = window.DebriPod && DebriPod.playbackQueue;
+    if(canonical && canonical.hasItems()){
+      canonical.previous();
+      return;
+    }
     if(isSearchStreamActive()){
       const pi = (state.streamQueueIndex || 0) - 1;
       if(pi >= 0 && pi < state.streamQueue.length){
@@ -853,17 +850,21 @@ async function goBack(){
     try{
       if(!Array.isArray(state.videoPlaylist) || !state.videoPlaylist.length) return;
       if(i < 0 || i >= state.videoPlaylist.length) return;
-      state.videoIndex = i;
       const it = state.videoPlaylist[i];
       startVideoFromItem(it, (typeof forceShow === "boolean" ? forceShow : true), (resumeTime || 0));
     }catch(e){}
   }
 
   function playVideoNext(){
+    const canonical = window.DebriPod && DebriPod.playbackQueue;
+    if(canonical && canonical.hasItems()){
+      canonical.next();
+      return;
+    }
     try{
       if(!Array.isArray(state.videoPlaylist) || !state.videoPlaylist.length){
-        state.videoPlaylist = buildVideoPlaylistFromItems(state.items || []);
-        state.videoIndex = 0;
+        const candidates = buildVideoPlaylistFromItems(state.items || []);
+        if(canonical) canonical.replaceFromPlayableList(candidates, candidates[0] || null);
       }
       const ni = (state.videoIndex || 0) + 1;
       if(ni >= 0 && ni < state.videoPlaylist.length){
@@ -873,10 +874,15 @@ async function goBack(){
   }
 
   function playVideoPrev(){
+    const canonical = window.DebriPod && DebriPod.playbackQueue;
+    if(canonical && canonical.hasItems()){
+      canonical.previous();
+      return;
+    }
     try{
       if(!Array.isArray(state.videoPlaylist) || !state.videoPlaylist.length){
-        state.videoPlaylist = buildVideoPlaylistFromItems(state.items || []);
-        state.videoIndex = 0;
+        const candidates = buildVideoPlaylistFromItems(state.items || []);
+        if(canonical) canonical.replaceFromPlayableList(candidates, candidates[0] || null);
       }
       const pi = (state.videoIndex || 0) - 1;
       if(pi >= 0 && pi < state.videoPlaylist.length){
@@ -1124,6 +1130,7 @@ async function goBack(){
         }
         const items = [];
         const cfg = await loadConfig();
+        items.push.apply(items, categoryPreludeItems(this.level, root));
         if(this.level === "playlists"){
           items.push({kind:"playlist_create", label:"Create playlist"});
           items.push({kind:"smart_playlist_create", label:"Create smart playlist"});
@@ -1138,6 +1145,7 @@ async function goBack(){
           }
           const out = Object.assign({}, it);
           out.root = out.root_id ? ((cfg.roots || []).find(candidate=>candidate.id === out.root_id) || {id:out.root_id, name:"Library", mode:"metadata"}) : root;
+          if(out.kind === "track" && !out.media) out.media = "audio";
           items.push(out);
         }
         if(js.building){
@@ -1168,6 +1176,12 @@ if(!it) return;
     }
     if(!it.root && state.current && state.current.root) it.root = state.current.root;
     if(it.kind === "info" || it.kind === "loading") return;
+
+    if(it.kind === "media_action"){
+      const actions = window.DebriPod && DebriPod.mediaActions;
+      if(actions && typeof actions.executeAction === "function") await actions.executeAction(it);
+      return;
+    }
 
     if(it.kind === "libsearch_query" || it.kind === "libsearch_filter"){
       const field = (it.kind === "libsearch_filter") ? "filter" : "q";
@@ -1568,12 +1582,7 @@ if(it.kind === "libsearch_history_action"){
     }
 
     if(it.kind === "libsearch_result"){
-      const raw = it.raw || {};
-      if(String(it.source || raw.source || "") === "library" && Array.isArray(raw.files) && raw.files.length === 1){
-        await startSearchStreamQueue(raw.files, 0);
-        return;
-      }
-      await viewLibSearchResultDetails(true, it);
+      await openSearchResultDetail(it);
       return;
     }
 
@@ -1602,19 +1611,19 @@ if(it.kind === "libsearch_history_action"){
           const visible = (state.items || []).filter(x=>x && x.kind === "libsearch_file" && x.selectable);
           let anyUnsel = false;
           for(const v of visible){
-            const key = src === "knaben" ? ("file:" + String(v.file_id || v.label || "")) : (src === "youtube" ? ("itag:" + String(v.itag || v.file_id || v.label || "")) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
+            const key = src === "knaben" ? ("file:" + firstIdentifierText(v.file_id, v.label)) : (src === "youtube" ? ("itag:" + firstIdentifierText(v.itag, v.file_id, v.label)) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
             if(key && !target.selected.has(key)){ anyUnsel = true; break; }
           }
           target.downloadQueued = false;
           if(anyUnsel){
             for(const v of visible){
-              const key = src === "knaben" ? ("file:" + String(v.file_id || v.label || "")) : (src === "youtube" ? ("itag:" + String(v.itag || v.file_id || v.label || "")) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
+              const key = src === "knaben" ? ("file:" + firstIdentifierText(v.file_id, v.label)) : (src === "youtube" ? ("itag:" + firstIdentifierText(v.itag, v.file_id, v.label)) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
               if(!key) continue;
-              target.selected.set(key, {key:key, remote_path:String(v.remote_path || ""), file_id:String(v.file_id || ""), itag:String(v.itag || v.format_id || v.file_id || ""), format_id:String(v.format_id || v.itag || v.file_id || ""), size:Number(v.size || 0), name:String(v.label || ""), label:String(v.label || ""), source:String(v.source || src || ""), ext:String(v.ext || ((((v.pills || [])[1] && typeof (v.pills || [])[1] === "string") ? (v.pills || [])[1] : "") || "")), quality:String(v.quality || ""), bitrate:String(v.bitrate || ""), media:String(v.media || (target.result && target.result.media) || ""), root_id:String(v.root_id || (target.result && target.result.root_id) || ""), rel:String(v.rel || ""), direct_url:String(v.direct_url || ""), url:String((target.result && target.result.url) || "")});
+              target.selected.set(key, {key:key, remote_path:String(v.remote_path || ""), file_id:identifierText(v.file_id), itag:firstIdentifierText(v.itag, v.format_id, v.file_id), format_id:firstIdentifierText(v.format_id, v.itag, v.file_id), size:Number(v.size || 0), name:String(v.label || ""), label:String(v.label || ""), source:String(v.source || src || ""), ext:String(v.ext || ((((v.pills || [])[1] && typeof (v.pills || [])[1] === "string") ? (v.pills || [])[1] : "") || "")), quality:String(v.quality || ""), bitrate:String(v.bitrate || ""), media:String(v.media || (target.result && target.result.media) || ""), root_id:String(v.root_id || (target.result && target.result.root_id) || ""), rel:String(v.rel || ""), direct_url:String(v.direct_url || ""), url:String((target.result && target.result.url) || "")});
             }
           }else{
             for(const v of visible){
-              const key = src === "knaben" ? ("file:" + String(v.file_id || v.label || "")) : (src === "youtube" ? ("itag:" + String(v.itag || v.file_id || v.label || "")) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
+              const key = src === "knaben" ? ("file:" + firstIdentifierText(v.file_id, v.label)) : (src === "youtube" ? ("itag:" + firstIdentifierText(v.itag, v.file_id, v.label)) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
               if(key) target.selected.delete(key);
             }
           }
@@ -1640,7 +1649,7 @@ if(it.kind === "libsearch_history_action"){
               libSetFileStatus("", "");
               return;
             }
-            const sel = Array.from(target.selected.values()).map(x=>({remote_path:x.remote_path || "", file_id:x.file_id || "", itag:x.itag || x.format_id || x.file_id || "", format_id:x.format_id || x.itag || x.file_id || "", size:x.size || 0, name:x.name || "", source:x.source || src || "", ext:x.ext || "", quality:x.quality || "", bitrate:x.bitrate || "", media:x.media || "", direct_url:x.direct_url || "", url:x.url || rr.url || ""}));
+            const sel = Array.from(target.selected.values()).map(x=>({remote_path:x.remote_path || "", file_id:identifierText(x.file_id), itag:firstIdentifierText(x.itag, x.format_id, x.file_id), format_id:firstIdentifierText(x.format_id, x.itag, x.file_id), size:x.size || 0, name:x.name || "", source:x.source || src || "", ext:x.ext || "", quality:x.quality || "", bitrate:x.bitrate || "", media:x.media || "", direct_url:x.direct_url || "", url:x.url || rr.url || ""}));
             const res = await apiPost("/api/libsearch/stream_selected", {
               source: src,
               provider: rr.provider || "",
@@ -1670,7 +1679,7 @@ if(it.kind === "libsearch_history_action"){
           libSetFileStatus("Queuing", "");
           try{
             if(src === "knaben"){
-              const ids = Array.from(target.selected.values()).map(x=>String(x.file_id || "")).filter(Boolean);
+              const ids = Array.from(target.selected.values()).map(x=>identifierText(x.file_id)).filter(Boolean);
               const rr = target.result || {};
               const res = await apiPost("/api/debrid/enqueue_selected", {provider: rr.provider || "", debrid_task_id: rr.debrid_task_id || "", file_ids: ids, title: rr.title || "Knaben item", magnet: rr.magnet || ""});
               const js = (res && res.json) ? res.json : {};
@@ -1678,9 +1687,9 @@ if(it.kind === "libsearch_history_action"){
             }else if(src === "youtube"){
               const rr = target.result || {};
               const sel = Array.from(target.selected.values()).map(x=>({
-                file_id:String(x.file_id || x.itag || x.format_id || ""),
-                itag:String(x.itag || x.format_id || x.file_id || ""),
-                format_id:String(x.format_id || x.itag || x.file_id || ""),
+                file_id:firstIdentifierText(x.file_id, x.itag, x.format_id),
+                itag:firstIdentifierText(x.itag, x.format_id, x.file_id),
+                format_id:firstIdentifierText(x.format_id, x.itag, x.file_id),
                 name:String(x.name || x.title || x.label || ""),
                 title:String(x.title || x.name || x.label || ""),
                 ext:String(x.ext || ""),
@@ -1881,11 +1890,11 @@ if(it.kind === "libtask_action"){
     }
     const prevSel = state.sel;
     const prevScroll = (libList ? libList.scrollTop : 0);
-    state.items = libTaskBuildItemsForView(view);
-    const max = Math.max(0, state.items.length - 1);
+    const nextItems = libTaskBuildItemsForView(view);
+    const max = Math.max(0, nextItems.length - 1);
     state.sel = Math.max(0, Math.min(max, prevSel));
     setHeader();
-    renderList();
+    replaceListItems(nextItems, {animate:true, preserveSelection:true, preserveScroll:true, selectionIndex:state.sel, reason:"task selection"});
     try{ if(libList) libList.scrollTop = prevScroll; }catch(e){}
     return;
   }
@@ -1894,11 +1903,11 @@ if(it.kind === "libtask_action"){
     view.selected = new Set();
     const prevSel = state.sel;
     const prevScroll = (libList ? libList.scrollTop : 0);
-    state.items = libTaskBuildItemsForView(view);
-    const max = Math.max(0, state.items.length - 1);
+    const nextItems = libTaskBuildItemsForView(view);
+    const max = Math.max(0, nextItems.length - 1);
     state.sel = Math.max(0, Math.min(max, prevSel));
     setHeader();
-    renderList();
+    replaceListItems(nextItems, {animate:true, preserveSelection:true, preserveScroll:true, selectionIndex:state.sel, reason:"task selection"});
     try{ if(libList) libList.scrollTop = prevScroll; }catch(e){}
     return;
   }
@@ -1958,11 +1967,11 @@ if(it.kind === "libtask_file"){
     const view = state.current || {};
     const prevSel = state.sel;
     const prevScroll = (libList ? libList.scrollTop : 0);
-    state.items = libTaskBuildItemsForView(view);
-    const max = Math.max(0, state.items.length - 1);
+    const nextItems = libTaskBuildItemsForView(view);
+    const max = Math.max(0, nextItems.length - 1);
     state.sel = Math.max(0, Math.min(max, prevSel));
     setHeader();
-    renderList();
+    replaceListItems(nextItems, {animate:true, preserveSelection:true, preserveScroll:true, selectionIndex:state.sel, reason:"task file selection"});
     try{ if(libList) libList.scrollTop = prevScroll; }catch(e){}
     return;
   }
@@ -1971,6 +1980,11 @@ if(it.kind === "libtask_file"){
 if(it.kind === "queue_item"){
       const item = it.queueItem || null;
       const index = Math.max(0, Number(it.queueIndex || 0));
+      const canonical = window.DebriPod && DebriPod.playbackQueue;
+      if(canonical && canonical.hasItems()){
+        await canonical.playIndex(index, {forceShow:true});
+        return;
+      }
       if(it.queueKind === "stream" && typeof playStreamQueueIndex === "function"){
         await playStreamQueueIndex(index, true);
         return;
@@ -2008,7 +2022,7 @@ if(it.kind === "root"){
     }
     if(it.kind === "nowplaying"){
       await resumeFromServerNow(false);
-      showNowPlaying(true, {explicit:true});
+      await openNowPlayingExplicit({explicit:true});
       return;
     }
     if(it.kind === "history_item"){
@@ -2029,16 +2043,6 @@ if(it.kind === "root"){
               folderRel = parts.join("/");
             }catch(e){ folderRel = ""; }
             state.root = root;
-            state.history = [];
-            state.current = null;
-            if(folderRel){
-              const segs = folderRel.split("/");
-              state.history.push(folderViewObj(root, "", ""));
-              for(let i = 0; i < segs.length - 1; i++){
-                const r = segs.slice(0, i + 1).join("/");
-                state.history.push(folderViewObj(root, r, segs[i]));
-              }
-            }
             showNowPlaying(false);
             await setView(folderViewObj(root, folderRel, folderRel ? folderRel.split("/").slice(-1)[0] : ""), false);
           }
@@ -2071,27 +2075,23 @@ if(it.kind === "root"){
           idx = Math.max(0, Math.min(pl.length - 1, (idx >= 0 ? idx : 0)));
         }
         const resume = (sameAsServer && state.serverNow && state.serverNow.playing && isFinite(state.serverNow.position)) ? Number(state.serverNow.position) : 0;
-        if(itemObj.root.id === "__search_stream__") {
-          state.streamQueue = pl;
-          state.streamQueueIndex = idx;
-        }
+        const canonicalQueue = window.DebriPod && DebriPod.playbackQueue;
+        if(canonicalQueue) canonicalQueue.replaceFromPlayableList(pl, itemObj);
         await startAudioFromItem(itemObj, pl, idx, true, resume);
         return;
       }
       if(it.media === "video"){
+        let videoCandidates = [];
         try{
           if(it.playlist && Array.isArray(it.playlist.items) && it.playlist.items.length){
-            state.videoPlaylist = it.playlist.items.map(x=>({kind:"file", media:String(x.media || "video"), root:{id:x.root_id}, rel:x.rel, label:x.label || "", streamed:!!x.streamed, source:x.source || "", ext:x.ext || "", quality:x.quality || ""})).filter(x=>x.root.id && x.rel);
-            const vi = isFinite(it.playlist.index) ? Number(it.playlist.index) : 0;
-            state.videoIndex = Math.max(0, Math.min(state.videoPlaylist.length - 1, vi));
+            videoCandidates = it.playlist.items.map(x=>({kind:"file", media:String(x.media || "video"), root:{id:x.root_id}, rel:x.rel, label:x.label || "", streamed:!!x.streamed, source:x.source || "", ext:x.ext || "", quality:x.quality || ""})).filter(x=>x.root.id && x.rel);
           }
         }catch(e){}
         const resume = (sameAsServer && state.serverNow && isFinite(state.serverNow.position)) ? Number(state.serverNow.position) : ((it.position && isFinite(it.position)) ? Number(it.position) : 0);
-        if(it.rootId === "__search_stream__") {
-          state.streamQueue = Array.isArray(state.videoPlaylist) ? state.videoPlaylist.slice() : [];
-          state.streamQueueIndex = state.videoIndex || 0;
-        }
-        await startVideoFromItem({kind:"file", media:"video", root:{id: it.rootId}, rel: it.rel, label: it.label, streamed: !!it.streamed, source: it.source || "", ext: it.ext || "", quality: it.quality || ""}, true, resume);
+        const videoItem = {kind:"file", media:"video", root:{id: it.rootId}, rel: it.rel, label: it.label, streamed: !!it.streamed, source: it.source || "", ext: it.ext || "", quality: it.quality || ""};
+        const canonicalQueue = window.DebriPod && DebriPod.playbackQueue;
+        if(canonicalQueue) canonicalQueue.replaceFromPlayableList(videoCandidates.length ? videoCandidates : [videoItem], videoItem);
+        await startVideoFromItem(videoItem, true, resume);
         return;
       }
       return;
@@ -2129,10 +2129,6 @@ if(it.kind === "root"){
       }
       if(it.cat === "songs"){
         await viewMetaList(it.root, "songs", "", it.label, true);
-        return;
-      }
-      if(it.cat === "liked_songs"){
-        await viewMetaList(it.root, "liked_songs", "", it.label, true);
         return;
       }
       if(it.cat === "playlists"){
@@ -2173,6 +2169,10 @@ if(it.kind === "root"){
       await viewMetaList(it.root, "show_seasons", it.show_key || "", it.label, true);
       return;
     }
+    if(it.kind === "liked_category"){
+      await viewMetaList(it.root, it.level, "", it.label, true);
+      return;
+    }
     if(it.kind === "show_season"){
       await viewMetaList(it.root, "show_episodes", JSON.stringify({show_key:it.show_key || "", season:Number(it.season || 0)}), it.label, true);
       return;
@@ -2208,3 +2208,39 @@ if(it.kind === "root"){
   // ===== wheel controls =====
   var wheel = document.getElementById("wheel");
   var btnMenu = document.getElementById("btnMenu");
+  function openNowPlayingExplicit(options){
+    const controller = window.DebriPod && DebriPod.navigationController;
+    if(controller && typeof controller.openNowPlaying === "function"){
+      return controller.openNowPlaying(options || {});
+    }
+    showNowPlaying(true, {navigationControlled:true});
+    return Promise.resolve();
+  }
+
+  function syncCanonicalPlaybackStart(item, candidates, forceShow){
+    try{
+      const root = window.DebriPod || {};
+      const controller = root.playbackQueue;
+      const api = root.playbackQueueApi;
+      if(!controller || !api) return;
+      const normalized = api.normalizeQueueItem(item);
+      if(controller.isDispatching()){
+        if(normalized) controller.setCurrent(normalized.queue_id);
+        return;
+      }
+      if(forceShow === false && controller.hasItems()){
+        if(normalized && controller.setCurrent(normalized.queue_id)) return;
+      }
+      controller.replaceFromPlayableList(candidates, item);
+    }catch(e){}
+  }
+
+  function categoryPreludeItems(level, root){
+    const entry = {
+      songs:{label:"Liked Songs", level:"liked_music"},
+      movies:{label:"Liked Movies", level:"liked_movies"},
+      shows:{label:"Liked Episodes", level:"liked_episodes"},
+      videos:{label:"Liked Videos", level:"liked_videos"}
+    }[String(level || "").toLowerCase()];
+    return entry ? [{kind:"liked_category", label:entry.label, level:entry.level, root:root}] : [];
+  }

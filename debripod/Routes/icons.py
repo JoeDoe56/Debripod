@@ -1,12 +1,21 @@
 from __future__ import annotations
 
 import json
+from pathlib import Path
 from typing import Dict, Optional
 
-from flask import Response
+from flask import Response, abort, send_from_directory
 
 ICON_VERSION = "dev"
 ASSET_VERSION = "dev"
+PROJECT_ICON_DIR = Path(__file__).resolve().parents[2] / "icons"
+SVG_ICON_NAMES = frozenset({
+    "button2_seek-mode_liked-active.svg", "button2_seek-mode_liked-inactive.svg",
+    "button3_next-track.svg", "button3_seek-mode_skip-forward.svg",
+    "button4_media-paused.svg", "button4_media-playing.svg",
+    "button5_previous-track.svg", "button5_seek-mode_skip-back.svg",
+    "debripod-app-icon.svg", "shuffleactivefull-fixed.svg", "shuffleinactivefull-fixed.svg",
+})
 
 
 def configure_asset_versions(*, asset_version: str | None = None, icon_version: str | None = None) -> None:
@@ -74,6 +83,12 @@ def _favicon_ico_bytes() -> bytes:
 
 
 def register_icon_routes(app) -> None:
+    @app.route("/icons/<path:filename>")
+    def svg_icon(filename: str):
+        if filename not in SVG_ICON_NAMES or not (PROJECT_ICON_DIR / filename).is_file():
+            abort(404)
+        return send_from_directory(PROJECT_ICON_DIR, filename, mimetype="image/svg+xml", max_age=86400)
+
     @app.route("/favicon.ico")
     def favicon_ico():
         ico_bytes = _favicon_ico_bytes()
@@ -110,8 +125,7 @@ def register_icon_routes(app) -> None:
             "background_color": "#0b0b0c",
             "theme_color": "#0b0b0c",
             "icons": [
-                {"src": f"/icon-192.png?v={ICON_VERSION}", "sizes": "192x192", "type": "image/png"},
-                {"src": f"/icon-512.png?v={ICON_VERSION}", "sizes": "512x512", "type": "image/png"},
+                {"src": f"/icons/debripod-app-icon.svg?v={ICON_VERSION}", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable"},
             ],
         }
         return Response(json.dumps(manifest), mimetype="application/manifest+json", headers={"Cache-Control": "public, max-age=3600"})

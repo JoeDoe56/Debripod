@@ -182,6 +182,9 @@
     }
     const res = await root.apiClient.apiPost("/api/auth/passkey/login/options", {});
     const js = res && res.json ? res.json : {};
+    if(js.available === false){
+      return {ok:false, available:false, error:(js && js.error) || "No passkeys are registered. Use your password."};
+    }
     if(!res || !res.ok || !js.ok){
       return {ok:false, error:(js && js.error) || "Passkey sign in is not available."};
     }

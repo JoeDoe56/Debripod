@@ -39,7 +39,7 @@ function responseLooksLikeAppShell(response){
 
 function isShellAsset(url){
   if(url.pathname === "/" || url.pathname === "/site.webmanifest") return true;
-  if(url.pathname === "/favicon.ico" || url.pathname === "/apple-touch-icon.png" || url.pathname === "/apple-touch-icon-precomposed.png") return true;
+  if(url.pathname === "/icons/debripod-app-icon.svg") return true;
   return url.pathname.startsWith("/static/");
 }
 
@@ -138,4 +138,28 @@ self.addEventListener("fetch", (event)=>{
   }
 
   if(url.pathname.startsWith("/api/")) return;
+});
+
+self.addEventListener("push", (event)=>{
+  let payload = null;
+  try{ payload = event.data ? event.data.json() : null; }catch(_error){ payload = null; }
+  if(!payload || typeof payload !== "object" || !payload.title || !payload.data || !payload.data.task_id) return;
+  event.waitUntil(self.registration.showNotification(String(payload.title), {
+    body:String(payload.body || "Task complete"),
+    data:{task_id:String(payload.data.task_id), url:String(payload.data.url || ("/?task=" + payload.data.task_id))}
+  }));
+});
+
+self.addEventListener("notificationclick", (event)=>{
+  event.notification.close();
+  const destination = String(event.notification.data && event.notification.data.url || "/");
+  event.waitUntil(self.clients.matchAll({type:"window", includeUncontrolled:true}).then(clients=>{
+    const matching = clients.find(client=>{
+      try{ return new URL(client.url).origin === self.location.origin; }catch(_error){ return false; }
+    });
+    if(matching){
+      return matching.navigate(destination).then(client=>client && client.focus());
+    }
+    return self.clients.openWindow(destination).then(client=>client && client.focus());
+  }));
 });

@@ -5,6 +5,7 @@ from .runtime_state import *  # noqa: F401,F403
 from .runtime_video_post import *  # noqa: F401,F403
 from .runtime_debrid_downloads import *  # noqa: F401,F403
 from .runtime_youtube_downloads import *  # noqa: F401,F403
+from .Services.push_notifications import enqueue_task_completion
 
 
 configure_task_manager(
@@ -14,6 +15,7 @@ configure_task_manager(
         else debrid_download_remaining_worker if source == "debrid"
         else None
     ),
+    completion_notifier=enqueue_task_completion,
 )
 
 __all__ = [name for name in globals() if not name.startswith("__")]

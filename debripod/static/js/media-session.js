@@ -17,15 +17,15 @@
 
   function mediaSessionHasPrev(){
     try{
-      if(isVideoActive()) return !!(Array.isArray(state.videoPlaylist) && state.videoPlaylist.length > 1 && prevVideoIndexPeek() !== null);
-      return !!(Array.isArray(state.playlist) && state.playlist.length > 1 && prevIndexPeek() !== null);
+      const queue = window.DebriPod && DebriPod.playbackQueue;
+      return !!(queue && queue.state.index > 0);
     }catch(e){ return false; }
   }
 
   function mediaSessionHasNext(){
     try{
-      if(isVideoActive()) return !!(Array.isArray(state.videoPlaylist) && state.videoPlaylist.length > 1 && nextVideoIndexPeek() !== null);
-      return !!(Array.isArray(state.playlist) && state.playlist.length > 1 && nextIndexPeek() !== null);
+      const queue = window.DebriPod && DebriPod.playbackQueue;
+      return !!(queue && queue.state.index >= 0 && queue.state.index < queue.state.items.length - 1);
     }catch(e){ return false; }
   }
 
@@ -108,20 +108,18 @@
     setMediaActionHandler("seekto", null);
     setMediaActionHandler("previoustrack", mediaSessionHasPrev() ? ()=>{
       try{ ensurePlaybackAudioSession(); }catch(e){}
-      if(isVideoActive()){
-        try{ playVideoPrev(); }catch(e){}
-      }else{
-        try{ playPrev(); }catch(e){}
-      }
+      try{
+        const queue = window.DebriPod && DebriPod.playbackQueue;
+        if(queue) queue.previous();
+      }catch(e){}
       setTimeout(()=>{ try{ syncMediaSessionControls(); }catch(e){} }, 50);
     } : null);
     setMediaActionHandler("nexttrack", mediaSessionHasNext() ? ()=>{
       try{ ensurePlaybackAudioSession(); }catch(e){}
-      if(isVideoActive()){
-        try{ playVideoNext(); }catch(e){}
-      }else{
-        try{ playNext(); }catch(e){}
-      }
+      try{
+        const queue = window.DebriPod && DebriPod.playbackQueue;
+        if(queue) queue.next();
+      }catch(e){}
       setTimeout(()=>{ try{ syncMediaSessionControls(); }catch(e){} }, 50);
     } : null);
   }
@@ -163,15 +161,17 @@
   }
 
   async function lastfmGetLoved(meta){
-    if(!lastfmIsEnabled()) return;
     try{
       const a = encodeURIComponent((meta && meta.artist) ? meta.artist : "");
       const t = encodeURIComponent((meta && meta.title) ? meta.title : "");
       const b = encodeURIComponent((meta && meta.album) ? meta.album : "");
-      if(!a || !t) return;
-      const js = await apiGet("/api/lastfm/loved?artist=" + a + "&title=" + t + "&album=" + b);
+      const rootId = String((state.now && state.now.rootId) || "");
+      const rel = String((state.now && state.now.rel) || "");
+      const mediaKey = rootId && rel ? ("local:" + rootId + ":" + rel.replace(/\\/g, "/")) : "";
+      if(!mediaKey && (!a || !t)) return;
+      const js = await apiGet("/api/library/like?media_key=" + encodeURIComponent(mediaKey || ("music:" + [String((meta && meta.artist) || "").trim().toLowerCase(), String((meta && meta.title) || "").trim().toLowerCase(), String((meta && meta.album) || "").trim().toLowerCase()].join("\u001f"))) + "&artist=" + a + "&title=" + t + "&album=" + b);
       if(js && js.ok){
-        lastfmState.loved = !!js.loved;
+        lastfmState.loved = !!(js.like && js.like.liked);
         lastfmState.lovedKnown = true;
         updateWheelLabels();
       }
@@ -179,7 +179,6 @@
   }
 
   async function lastfmToggleLoved(meta){
-    if(!lastfmIsEnabled()) return;
     let prevKnown = false;
     let prevLoved = false;
     let havePrev = false;
@@ -187,7 +186,9 @@
       const artist = (meta && meta.artist) ? meta.artist : "";
       const title = (meta && meta.title) ? meta.title : "";
       const album = (meta && meta.album) ? meta.album : "";
-      if(!artist.trim() || !title.trim()) return;
+      const rootId = String((state.now && state.now.rootId) || "");
+      const rel = String((state.now && state.now.rel) || "");
+      if((!rootId || !rel) && (!artist.trim() || !title.trim())) return;
 
       prevKnown = !!lastfmState.lovedKnown;
       prevLoved = !!lastfmState.loved;
@@ -199,11 +200,14 @@
       lastfmState.lovedKnown = true;
       updateWheelLabels();
 
-      const res = await apiPost("/api/lastfm/toggle_loved", {artist: artist, title: title, album: album});
+      const res = await apiPost("/api/library/like", {
+        media_type:"music", source:"library", root_id:rootId, rel:rel,
+        title:title, artist:artist, album:album, liked:optimistic
+      });
       const js = (res && res.json) ? res.json : null;
 
       if(res && res.ok && js && js.ok){
-        lastfmState.loved = !!js.loved;
+        lastfmState.loved = !!(js.like && js.like.liked);
         lastfmState.lovedKnown = true;
         updateWheelLabels();
 
@@ -322,7 +326,7 @@
     return nav;
   }
 
-  async function openNavContext(nav){
+  async function openNavContext(nav, options){
     try{
       if(!nav || !nav.root_id){
         return;
@@ -332,8 +336,8 @@
       if(!root) return;
 
       state.root = root;
-      state.history = [];
-      state.current = null;
+      const opts = options || {};
+      if(opts.history && Array.isArray(opts.history)) state.history = opts.history.slice();
 
       if(nav.kind === "folder"){
         const rel = (nav.rel || "").trim();
@@ -380,7 +384,6 @@
   }
 
   function lastfmOnTrack(meta){
-    if(!lastfmIsEnabled()) return;
     if(!meta) return;
     const k = lastfmTrackKey(meta);
     if(!k.trim()) return;
