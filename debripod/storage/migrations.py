@@ -161,6 +161,25 @@ def _v6(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _v7(conn: sqlite3.Connection) -> None:
+    conn.executescript("""
+    CREATE TABLE IF NOT EXISTS indexer_status(
+      indexer_id TEXT PRIMARY KEY,
+      initial_failure_time REAL,
+      most_recent_failure_time REAL,
+      escalation_level INTEGER NOT NULL DEFAULT 0,
+      disabled_until REAL,
+      last_success REAL,
+      last_error_category TEXT NOT NULL DEFAULT '',
+      cookies_json TEXT NOT NULL DEFAULT '[]',
+      cookies_expiration REAL,
+      last_challenge_solve REAL,
+      last_response_duration REAL NOT NULL DEFAULT 0,
+      user_agent TEXT NOT NULL DEFAULT ''
+    );
+    """)
+
+
 MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (1, "structured_state", _v1),
     (2, "compact_palettes", _v2),
@@ -168,6 +187,7 @@ MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = 
     (4, "large_value_envelopes", _v4),
     (5, "user_scoped_media_likes", _v5),
     (6, "device_scoped_push_notifications", _v6),
+    (7, "indexer_status", _v7),
 )
 
 

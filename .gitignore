@@ -33,6 +33,10 @@ dist/
 
 # Debripod runtime output created while starting or using the app
 data/
+data/indexer-definitions/staging/
+data/indexer-definitions/backups/
+data/browser-profiles/
+data/browser-drivers/
 _debripod_cache/
 init.mp4
 cache/
@@ -94,3 +98,7 @@ Thumbs.db
 desktop.ini
 inter4-1/
 Roadmap.md
+
+# Tracked Cardigann definitions are source, not runtime data.
+!indexer-definitions/
+!indexer-definitions/**

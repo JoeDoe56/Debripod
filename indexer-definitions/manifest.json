@@ -1,0 +1,22 @@
+{
+  "schema_version": 11,
+  "source": "Prowlarr Cardigann definitions",
+  "active_revision": "",
+  "package_sha256": "",
+  "updated_at": "",
+  "default_enabled_public_indexers": [
+    "1337x",
+    "thepiratebay",
+    "yts",
+    "internetarchive",
+    "torrentproject2",
+    "showrss-yml",
+    "torrentsome",
+    "magnetdownload",
+    "torrent9",
+    "world-torrent",
+    "elitetorrent-wf",
+    "nyaasi",
+    "nekobt"
+  ]
+}

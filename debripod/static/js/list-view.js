@@ -37,7 +37,10 @@
     byIndexType: new Map(),
     fallback: 56,
     prefix: null,
-    prefixSignature: ""
+    prefixSignature: "",
+    prefixItemsVersion: -1,
+    prefixRowHeightRevision: -1,
+    prefixCount: -1
   };
 
   function virtualViewDescriptor(){
@@ -79,7 +82,7 @@
         item.settingRow ? "setting" : "",
         item.sub_label ? "sub" : "",
         item.expanded ? "expanded" : "",
-        item.sub_row ? JSON.stringify(item.sub_row) : "",
+        item.row_layout_key || (item.sub_row ? "sub-row" : ""),
         Array.isArray(item.pills) ? "p" + item.pills.length : "p0"
       ];
       return flags.join(":");
@@ -139,24 +142,12 @@
     }
   }
 
-  function virtualPrefixSignature(){
-    try{
-      const items = state && Array.isArray(state.items) ? state.items : [];
-      const parts = [String(items.length)];
-      for(let i = 0; i < items.length; i++){
-        parts.push(virtualMetricKey(i, items[i]));
-      }
-      return parts.join("\n");
-    }catch(e){
-      return "";
-    }
-  }
-
   function virtualPrefixHeights(){
     const count = state && Array.isArray(state.items) ? state.items.length : 0;
     const metrics = rowViewMetrics();
-    const signature = virtualPrefixSignature();
-    if(metrics.prefix && metrics.prefixSignature === signature && metrics.prefix.length === count + 1){
+    const itemsVersion = Number(state.itemsVersion || 0);
+    const heightRevision = Number(state.rowHeightRevision || 0);
+    if(metrics.prefix && metrics.prefixItemsVersion === itemsVersion && metrics.prefixRowHeightRevision === heightRevision && metrics.prefixCount === count && metrics.prefix.length === count + 1){
       return metrics.prefix;
     }
     const prefix = new Array(count + 1);
@@ -165,7 +156,9 @@
       prefix[i + 1] = prefix[i] + Math.max(1, virtualHeightForIndex(i));
     }
     metrics.prefix = prefix;
-    metrics.prefixSignature = signature;
+    metrics.prefixItemsVersion = itemsVersion;
+    metrics.prefixRowHeightRevision = heightRevision;
+    metrics.prefixCount = count;
     return prefix;
   }
 
@@ -190,6 +183,8 @@
       libList.querySelectorAll(".ipodItem[data-index]").forEach((row)=>{
         const idx = Number(row.dataset.index);
         if(!Number.isFinite(idx) || !state.items[idx]) return;
+        const fixedKind = String(state.items[idx].kind || "");
+        if(fixedKind === "libsearch_result" || fixedKind === "libsearch_file" || fixedKind === "libsearch_status" || fixedKind === "libsearch_filter") return;
         const h = row.getBoundingClientRect ? row.getBoundingClientRect().height : row.offsetHeight;
         if(h > 0){
           const safeH = Math.max(24, h);
@@ -204,6 +199,7 @@
       });
       if(count){
         metrics.fallback = Math.max(metrics.fallback || 0, Math.ceil(total / count));
+        state.rowHeightRevision = Number(state.rowHeightRevision || 0) + 1;
         invalidateVirtualPrefix();
       }
       while(dpRowHeightCache.size > 600){
@@ -279,6 +275,7 @@
       if(item.sub_label) return 68;
       if(item.forceTwoLine || item.settingRow || item.kind === "setting_value" || item.kind === "settings_library_folder" || item.kind === "settings_library_remove") return 76;
       if(item.kind === "libsearch_result" || item.kind === "libsearch_file" || item.kind === "libtask_file") return 76;
+      if(item.kind === "libsearch_status" || item.kind === "libsearch_filter") return 56;
       if(item.kind === "song" || item.kind === "track" || item.kind === "file" || item.kind === "liked_song" || item.media === "audio") return item.pills && item.pills.length > 2 ? 64 : 56;
     }catch(e){}
     return 44;
@@ -288,14 +285,19 @@
     const opts = Object.assign({animate:true, preserveSelection:true, preserveScroll:true, reason:"list update", pageTransition:false}, options || {});
     const previous = Array.isArray(state.items) ? state.items : [];
     const next = Array.isArray(nextItems) ? nextItems.slice() : [];
+    let changedRows = Math.abs(previous.length - next.length);
+    for(let ci=0;ci<Math.min(previous.length,next.length) && changedRows<=100;ci++) if(virtualItemIdentity(previous[ci],ci)!==virtualItemIdentity(next[ci],ci)) changedRows++;
+    if(previous.length > 500 || next.length > 500 || changedRows > 100) opts.animate = false;
     const selectedIdentity = previous[state.sel] ? virtualItemIdentity(previous[state.sel], state.sel) : "";
     const oldScroll = libList ? libList.scrollTop : 0;
     const oldRects = new Map();
-    if(libList){
+    if(opts.animate && libList){
       libList.querySelectorAll(".ipodItem[data-index]").forEach(row=>{
         const index = Number(row.dataset.index || 0);
         const item = previous[index];
-        if(item) oldRects.set(virtualItemIdentity(item, index), row.getBoundingClientRect());
+        const kind = String((item && item.kind) || "");
+        const fixedSearchRow = kind === "libsearch_result" || kind === "libsearch_file" || kind === "libsearch_status" || kind === "libsearch_filter";
+        if(item && !fixedSearchRow) oldRects.set(virtualItemIdentity(item, index), row.getBoundingClientRect());
       });
     }
     const transitionApi = window.DebriPod && DebriPod.rowTransitions;
@@ -321,6 +323,7 @@
       });
     }
     state.items = next;
+    state.itemsVersion = Number(state.itemsVersion || 0) + 1;
     if(opts.preserveSelection && plan && plan.selectionIndex >= 0) state.sel = plan.selectionIndex;
     else if(typeof opts.selectionIndex === "number") state.sel = Math.max(0, Math.min(Math.max(0, next.length - 1), opts.selectionIndex));
     else state.sel = Math.max(0, Math.min(Math.max(0, next.length - 1), state.sel || 0));
@@ -493,11 +496,10 @@
     const totalHeight = prefix[count] || 0;
     const viewportTop = Math.max(0, libList.scrollTop || 0);
     const viewportBottom = viewportTop + Math.max(1, libList.clientHeight || 1);
-    const overscan = Math.max(280, (libList.clientHeight || 360) * 0.8);
-    const startTarget = Math.max(0, viewportTop - overscan);
-    const endTarget = Math.min(totalHeight, viewportBottom + overscan);
-    const start = Math.max(0, Math.min(count, virtualLowerBound(prefix, startTarget) - 1));
-    const end = Math.max(start + 1, Math.min(count, virtualLowerBound(prefix, endTarget) + 1));
+    const firstVisible = Math.max(0, virtualLowerBound(prefix, viewportTop) - 1);
+    const lastVisible = Math.min(count, virtualLowerBound(prefix, viewportBottom) + 1);
+    const start = Math.max(0, firstVisible - 10);
+    const end = Math.max(start + 1, Math.min(count, lastVisible + 10));
     const top = prefix[start] || 0;
     const bottom = Math.max(0, totalHeight - (prefix[end] || top));
     return {enabled:true, start, end, top, bottom, visible:end - start, total:count, height:totalHeight};
@@ -601,6 +603,7 @@
       const it = state.items[i];
       const li = document.createElement("li");
       li.dataset.index = String(i);
+      li.dataset.kind = String((it && it.kind) || "");
 
       const isSel = (i === state.sel);
       const settingsTall = (
@@ -884,6 +887,7 @@
                 if(!state.libSearch) return;
                 state.libSearch.editValue = inp.value || "";
                 state.libSearch[field] = inp.value || "";
+                if(field === "filter" && typeof libUnifiedSearchModel === "function") libUnifiedSearchModel().applyFilters(inp.value || "");
               }
             }catch(e){}
           });
@@ -928,7 +932,7 @@
                     if(intake && intake.classify(inp.value || "") !== "query") intake.inspect(inp.value || "");
                     else libDoSearch((state.libSearch && state.libSearch.engine) ? state.libSearch.engine : "combined", inp.value || "");
                   }catch(e){}
-                }
+                }else if(typeof libUnifiedSearchModel === "function") libUnifiedSearchModel().applyFilters(inp.value || "");
               }
               return;
             }
@@ -1242,6 +1246,7 @@
               renderList();
             });
           }
+          if(p.filter_kind){ sp.dataset.filterKind=String(p.filter_kind); sp.dataset.filterValue=String(p.filter_value || p.text || ""); }
           wrap.appendChild(sp);
         }
         li.appendChild(wrap);
@@ -1252,7 +1257,8 @@
       }
       appendExpandedSubRow(li, it);
 
-      li.addEventListener("click", ()=>{
+      if(it.kind === "libsearch_result") li.dataset.searchResultDelegated = "1";
+      else li.addEventListener("click", ()=>{
         setSelectionFast(i);
         try{
           if(typeof rangeEditorOwnsIndex === "function" && rangeEditorOwnsIndex(i)){
@@ -1698,6 +1704,27 @@ function vibeTick(){
   }
 
   try{
+    if(libList && !libList._dpUnifiedSearchDelegated){
+      libList._dpUnifiedSearchDelegated = true;
+      libList.addEventListener("click", function(event){
+        const pill = event.target && event.target.closest ? event.target.closest(".ipodPill[data-filter-kind]") : null;
+        if(pill && libList.contains(pill)){
+          event.preventDefault();
+          event.stopPropagation();
+          if(typeof libUnifiedSearchModel === "function"){
+            libUnifiedSearchModel().toggleFilter(String(pill.dataset.filterKind || ""), String(pill.dataset.filterValue || ""));
+          }
+          return;
+        }
+        const row = event.target && event.target.closest ? event.target.closest(".ipodItem[data-search-result-delegated]") : null;
+        if(!row || !libList.contains(row)) return;
+        const index = Number(row.dataset.index);
+        if(!Number.isFinite(index) || !state.items[index]) return;
+        state.sel = index;
+        renderList({pointerSelection:true});
+        if(typeof selectItem === "function") Promise.resolve(selectItem(state.items[index])).catch(function(error){ alert(String(error && error.message ? error.message : error)); });
+      });
+    }
     DebriPod.listDiagnostics = {
       rows: function(){
         const virtual = listVirtualWindow();

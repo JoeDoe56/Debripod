@@ -21,6 +21,19 @@ from . import runtime_state as state_module
 from .Services import lastfm as lastfm_module
 from .Services import soulseek as soulseek_module
 from .Services.youtube import ytdlp_comments, ytdlp_inspect
+from .Services.ytdlp_runner import run_flat_entries
+from .Services.ytdlp_search import YtdlpSearchProvider
+from .Services.soundcloud_directory import SoundCloudDirectoryService
+from .Services.library_search import LibrarySearchProvider
+from .Services.soulseek_search import SoulseekSearchProvider
+from .Services.indexers.definition_store import DefinitionStore
+from .Services.indexers.status import IndexerStatusStore
+from .Services.indexers.http_client import IndexerHttpClient
+from .Services.indexers.service import IndexerService
+from .Services.indexers.browsers.solver import BrowserChallengeSolver
+from .Services.search.pipeline import SearchPipeline
+from .Services.search.providers import SearchContext
+from .Services.search.runtime import configure_search_runtime, get_search_runtime, reset_search_runtime
 from .Services.link_intake import classify_link_input
 from .Library.tvmaze import normalized_episode_information
 from .factory import DeferredApp
@@ -33,6 +46,7 @@ from .Library.metadata import file_meta_cached
 from .Library.video_parse import duration_text, normalize_show_key, show_keys_close
 from .Library.library_db import load_show_aliases, save_show_aliases
 from .Library.search_ranker import infer_query_intent, normalize_search_text, rank_combined_results, source_priority_for_intent
+from .Library.search_cache import SEARCH_CACHE_SCHEMA
 from .storage.tasks import save_task_metadata
 from .storage.palettes import load_video_timeline
 from .storage.media_likes import get_media_like, list_media_likes, set_media_like
@@ -176,6 +190,7 @@ def _clear_active_user_runtime_settings() -> None:
     _ACTIVE_SETTINGS_USERNAME = ""
     _ACTIVE_SETTINGS_SIGNATURE = (0, 0)
     _ACTIVE_SETTINGS_DATA = {}
+    reset_search_runtime()
 
 
 def _apply_runtime_settings_for_user(username: str, force: bool = False) -> dict[str, Any]:
@@ -236,7 +251,57 @@ def _apply_runtime_settings_for_user(username: str, force: bool = False) -> dict
         _ACTIVE_SETTINGS_USERNAME = username
     _ACTIVE_SETTINGS_SIGNATURE = signature
     _ACTIVE_SETTINGS_DATA = dict(settings)
+    _configure_unified_search_runtime(settings)
     return settings
+
+
+class _UnifiedSearchDiskCache:
+    def set(self, cache_key: str, payload: dict[str, Any]) -> None:
+        stored = {**payload, "schema_version": SEARCH_CACHE_SCHEMA}
+        with _SEARCH_DISK_LOCK:
+            _disk_cache_set(cache_key, "combined", str(payload.get("query") or ""), {"schema": SEARCH_CACHE_SCHEMA}, stored)
+
+
+def _configure_unified_search_runtime(settings: dict[str, Any] | None = None):
+    current = dict(settings or ensure_app_settings(username=_current_settings_username(), defaults_overrides=_default_app_overrides()))
+    definition_store = DefinitionStore(
+        package_url=str(current.get("INDEXER_DEFINITION_PACKAGE_URL") or ""),
+        schema_version=int(current.get("INDEXER_DEFINITION_SCHEMA_VERSION") or 11),
+    )
+    status_store = IndexerStatusStore()
+    solver = BrowserChallengeSolver(
+        status_store=status_store,
+        timeout=float(current.get("INDEXER_CHALLENGE_TIMEOUT_SECONDS") or 45),
+    ) if current.get("INDEXER_CHALLENGE_SOLVER_ENABLED", True) else None
+    client_factory = lambda indexer_id: IndexerHttpClient(
+        indexer_id,
+        status_store=status_store,
+        timeout=float(current.get("REQUEST_TIMEOUT_SECONDS") or 25),
+        retries=int(current.get("INDEXER_REQUEST_RETRIES") or 2),
+        solver=solver,
+    )
+    torrent = IndexerService(
+        definition_store,
+        enabled_ids=list(current.get("INDEXER_ENABLED_IDS") or []),
+        status_store=status_store,
+        client_factory=client_factory,
+        max_concurrent=int(current.get("INDEXER_MAX_CONCURRENT") or 6),
+    )
+    library = LibrarySearchProvider(root_objects, get_index, library_root_versions)
+    soulseek = SoulseekSearchProvider(lambda: getattr(state_module, "SOULSEEK_SERVICE", None))
+    ytdlp = YtdlpSearchProvider(max_concurrent=int(current.get("YTDLP_SEARCH_MAX_CONCURRENT") or 4))
+    pipeline = SearchPipeline([library, soulseek, torrent, ytdlp], cache=_UnifiedSearchDiskCache(), max_workers=4)
+    return configure_search_runtime(
+        pipeline=pipeline, library_provider=library, soulseek_provider=soulseek, torrent_provider=torrent,
+        ytdlp_provider=ytdlp, definition_store=definition_store, indexer_service=torrent, challenge_solver=solver,
+    )
+
+
+def _active_search_runtime():
+    try:
+        return get_search_runtime()
+    except RuntimeError:
+        return _configure_unified_search_runtime()
 
 
 @app.before_request
@@ -339,571 +404,58 @@ def debripod_service_worker():
     return resp
 
 
-def _search_knaben_cached(q: str, page: int = 1) -> Tuple[List[dict], str, str, str, str]:
-    extra = {"page": int(page or 1)}
-    cache_key = _make_search_cache_key("knaben", q, extra)
-    cached_payload = None
-    with _SEARCH_DISK_LOCK:
-        d = _disk_cache_get(cache_key)
-        if d and isinstance(d.get("payload"), dict):
-            cached_payload = d.get("payload")
-    if cached_payload is not None:
-        results = cached_payload.get("results") or []
-        err = cached_payload.get("error") or ""
-        remaining = cached_payload.get("remaining") or ""
-        reset = cached_payload.get("reset") or ""
-    else:
-        results, err, remaining, reset = knaben_search(q, int(page or 1))
-        with _SEARCH_DISK_LOCK:
-            _disk_cache_set(cache_key, "knaben", q, extra, {"results": results, "error": err, "remaining": remaining, "reset": reset})
-    return results, err, remaining, reset, cache_key
 
 
-def _search_soulseek_cached(q: str) -> Tuple[List[Dict[str, Any]], int, int, str, str]:
-    extra: Dict[str, Any] = {}
-    cache_key = _make_search_cache_key("soulseek", q, extra)
-    cached_payload = None
-    with _SEARCH_DISK_LOCK:
-        d = _disk_cache_get(cache_key)
-        if d and isinstance(d.get("payload"), dict):
-            cached_payload = d.get("payload")
-    slsk_users: List[Dict[str, Any]] = []
-    slsk_total_results = 0
-    dir_count = 0
-    err = ""
-    if cached_payload is not None:
-        slsk_users = cached_payload.get("slsk_users") or []
-        try:
-            slsk_total_results = int(cached_payload.get("slsk_total_results") or 0)
-        except Exception:
-            slsk_total_results = sum(int(u.get("total_files") or 0) for u in (slsk_users or []))
-        try:
-            dir_count = int(cached_payload.get("dir_count") or 0)
-        except Exception:
-            dir_count = sum(len(u.get("dirs") or []) for u in (slsk_users or []))
-    else:
-        svc = SOULSEEK_SERVICE
-        if not svc or not svc.is_ready():
-            start_error = str(svc.start_error() or "") if svc else ""
-            suffix = f": {start_error}" if start_error else ""
-            return [], 0, 0, cache_key, "Soulseek service is not ready" + suffix
-        try:
-            items = svc.search(q)
-        except Exception:
-            return [], 0, 0, cache_key, "Soulseek search failed"
-        users: Dict[str, Dict[str, Any]] = {}
-        for it in items:
-            user = (it.get("user") or "").strip()
-            rp = str(it.get("remote_path") or "")
-            size = int(it.get("size") or 0)
-            speed = int(it.get("speed") or 0)
-            if not user or not rp:
-                continue
-            rp_norm = _slsk_norm_remote_path(rp)
-            parts = rp_norm.split("\\")
-            fname = parts[-1] if parts else rp_norm
-            directory = "\\".join(parts[:-1]) if len(parts) > 1 else ""
-            kind, ext, br, bd, sr, dur, vbr, codec = _slsk_guess_kind_ext_attrs(fname, it)
-            u = users.get(user)
-            if not u:
-                u = {"user": user, "speed": speed, "dirs": {}, "total_size": 0, "total_files": 0}
-                users[user] = u
-            u["speed"] = max(int(u.get("speed") or 0), speed)
-            d2 = (u.get("dirs") or {}).get(directory)
-            if not d2:
-                d2 = {"directory": directory, "files": [], "total_size": 0, "total_files": 0}
-                (u.get("dirs") or {})[directory] = d2
-                u["dirs"] = u.get("dirs") or {}
-                u["dirs"][directory] = d2
-            file_obj = {
-                "name": fname, "remote_path": rp_norm, "size": size, "kind": kind, "ext": ext,
-                "bitrate": br, "bit_depth": bd, "sample_rate": sr, "duration": dur, "vbr": vbr, "codec": codec,
-            }
-            file_obj = _slsk_annotate_file_with_download_state(file_obj, user)
-            d2["files"].append(file_obj)
-            d2["total_size"] += size
-            d2["total_files"] = int(d2.get("total_files") or 0) + 1
-            u["total_size"] = int(u.get("total_size") or 0) + size
-            u["total_files"] = int(u.get("total_files") or 0) + 1
-        for u in users.values():
-            dirs_list = list((u.get("dirs") or {}).values())
-            dirs_list.sort(key=lambda d: (int(d.get("total_size") or 0), len(d.get("files") or [])), reverse=True)
-            slsk_users.append({"user": u.get("user") or "", "speed": int(u.get("speed") or 0), "dirs": dirs_list, "total_size": int(u.get("total_size") or 0), "total_files": int(u.get("total_files") or 0)})
-        slsk_users.sort(key=lambda u: (int(u.get("speed") or 0), int(u.get("total_size") or 0), str(u.get("user") or "").lower()), reverse=True)
-        slsk_total_results = sum(int(u.get("total_files") or 0) for u in slsk_users)
-        dir_count = sum(len(u.get("dirs") or []) for u in (slsk_users or []))
-        with _SEARCH_DISK_LOCK:
-            _disk_cache_set(cache_key, "soulseek", q, extra, {"slsk_users": slsk_users, "slsk_total_results": slsk_total_results, "file_count": slsk_total_results, "dir_count": dir_count})
-    return slsk_users, slsk_total_results, dir_count, cache_key, err
 
 
-def _quality_text_from_attrs(bit_depth: Any, sample_rate: Any, bitrate: Any) -> str:
-    parts: List[str] = []
-    try:
-        bd = int(bit_depth or 0)
-    except Exception:
-        bd = 0
-    try:
-        sr = int(sample_rate or 0)
-    except Exception:
-        sr = 0
-    br = bitrate
-    if bd > 0:
-        parts.append(f"{bd} bit")
-    if sr > 0:
-        parts.append(f"{round(sr / 1000.0, 1):g} kHz")
-    if br:
-        try:
-            parts.append(f"{int(br)} kbps")
-        except Exception:
-            parts.append(str(br))
-    return " ".join(parts)
 
 
-def _standardize_knaben_results(raw_results: List[dict]) -> List[dict]:
-    out: List[dict] = []
-    for r in raw_results or []:
-        if not isinstance(r, dict):
-            continue
-        title = str(r.get("title") or "").strip()
-        if not title:
-            continue
-        size = r.get("size")
-        try:
-            size = int(size) if size is not None else 0
-        except Exception:
-            size = 0
-        seeders = r.get("seeders")
-        leechers = r.get("leechers")
-        out.append({
-            "result_id": "knaben:" + str(r.get("id") or r.get("infohash") or sha1_text(title)),
-            "source": "knaben",
-            "source_label": "Knaben",
-            "user": "",
-            "title": title,
-            "directory": "",
-            "directory_title": title,
-            "file_count": 0,
-            "size": size,
-            "speed": 0,
-            "seeders": int(seeders) if isinstance(seeders, int) else 0,
-            "leechers": int(leechers) if isinstance(leechers, int) else 0,
-            "browse_available": False,
-            "stream_available": True,
-            "download_available": True,
-            "files_loaded": False,
-            "files": [],
-            "magnet": str(r.get("magnet") or ""),
-            "infohash": str(r.get("infohash") or ""),
-            "category": str(r.get("category") or ""),
-            "verified": bool(r.get("verified")),
-            "href": str(r.get("href") or ""),
-        })
-    return out
 
 
-def _standardize_soulseek_results(slsk_users: List[Dict[str, Any]]) -> List[dict]:
-    out: List[dict] = []
-    for u in slsk_users or []:
-        user = str(u.get("user") or "").strip()
-        speed = int(u.get("speed") or 0)
-        for d in (u.get("dirs") or []):
-            directory = str(d.get("directory") or "").strip()
-            files_std: List[dict] = []
-            for f in (d.get("files") or []):
-                if not isinstance(f, dict):
-                    continue
-                files_std.append({
-                    "name": str(f.get("name") or ""),
-                    "title": str(f.get("name") or ""),
-                    "ext": str(f.get("ext") or "").lower(),
-                    "quality": _quality_text_from_attrs(f.get("bit_depth"), f.get("sample_rate"), f.get("bitrate")),
-                    "bitrate": (str(int(f.get("bitrate"))) + " kbps") if f.get("bitrate") else "",
-                    "size": int(f.get("size") or 0),
-                    "remote_path": str(f.get("remote_path") or ""),
-                    "bit_depth": int(f.get("bit_depth") or 0) if f.get("bit_depth") else 0,
-                    "sample_rate": int(f.get("sample_rate") or 0) if f.get("sample_rate") else 0,
-                    "download_state": str(f.get("download_state") or ""),
-                    "codec": str(f.get("codec") or ""),
-                    "source": "soulseek",
-                })
-            base = directory.split("\\")[-1] if directory else ""
-            out.append({
-                "result_id": "soulseek:" + sha1_text(user + "|" + directory),
-                "source": "soulseek",
-                "source_label": "Soulseek",
-                "user": user,
-                "title": base or directory or user or "Soulseek",
-                "directory": directory,
-                "directory_title": base or directory,
-                "file_count": len(files_std),
-                "size": int(d.get("total_size") or 0),
-                "speed": speed,
-                "seeders": 0,
-                "leechers": 0,
-                "browse_available": True,
-                "stream_available": False,
-                "download_available": True,
-                "files_loaded": True,
-                "files": files_std,
-            })
-    return out
 
-
-COMBINED_SEARCH_SOURCES = ("library", "soulseek", "knaben", "youtube")
-
-
-def _library_file_payload(record: dict, media: str) -> dict:
-    rel = str(record.get("rel") or "")
-    name = str(record.get("name") or os.path.basename(rel))
-    ext = os.path.splitext(name)[1].lstrip(".").lower()
-    return {
-        "name": name, "title": str(record.get("title") or name), "root_id": str(record.get("root_id") or ""),
-        "rel": rel, "media": media, "source": "library", "ext": ext,
-        "quality": str(record.get("quality") or _quality_text_from_attrs(record.get("bit_depth"), record.get("sample_rate"), record.get("bitrate"))),
-        "codec": str(record.get("codec") or ""), "bit_depth": record.get("bit_depth") or 0,
-        "sample_rate": record.get("sample_rate") or 0, "bitrate": record.get("bitrate") or 0,
-        "size": int(record.get("size") or 0),
-    }
-
-
-def _standardize_library_record(record: dict, media: str) -> dict:
-    file = _library_file_payload(record, media)
-    title = str(record.get("title") or record.get("name") or "")
-    artist = str(record.get("artist") or "") if media == "audio" else ""
-    album = str(record.get("album") or "") if media == "audio" else ""
-    rel, root_id = file["rel"], file["root_id"]
-    progress = media_progress_for(root_id, rel) if media == "video" else {}
-    return {
-        "result_id": "library:" + root_id + ":" + sha1_text(rel), "source": "library", "source_label": "Library",
-        "root_id": root_id, "rel": rel, "media": media, "title": title, "directory_title": title or file["name"],
-        "directory": os.path.dirname(rel).replace("\\", "/"), "user": artist, "artist": artist, "album": album,
-        "name": file["name"], "size": int(record.get("size") or 0), "speed": 0, "seeders": 0, "leechers": 0,
-        "browse_available": False, "stream_available": True, "download_available": False, "files_loaded": True,
-        "file_count": 1, "quality": file["quality"], "files": [file],
-        "position": float(progress.get("position") or record.get("position") or 0), "duration": float(progress.get("duration") or record.get("duration") or 0),
-        "completion": float(progress.get("completion_percent") or record.get("completion_percent") or 0), "browser_label": str(record.get("browser_label") or title),
-    }
-
-
-def _search_library_indexed(q: str) -> tuple[list[dict], str]:
-    qnorm = normalize_search_text(q)
-    tokens = set(qnorm.split())
-    audio_candidates: list[dict] = []
-    video_candidates: list[dict] = []
-    albums: dict[tuple[str, str, str], list[dict]] = {}
-    for root in root_objects():
-        root_id, root_abs = str(root.get("id") or ""), str(root.get("path") or "")
-        snapshot = get_index(root_id)
-        if snapshot is None:
-            ensure_index_async(root_id, root_abs, mode="metadata")
-            continue
-        for track in snapshot.get("tracks") or []:
-            if not isinstance(track, dict):
-                continue
-            item = dict(track); item["root_id"] = root_id
-            title = normalize_search_text(item.get("title") or item.get("name") or "")
-            artist = normalize_search_text(item.get("artist") or item.get("album_artist") or "")
-            album = normalize_search_text(item.get("album") or "")
-            artist_title = normalize_search_text(f"{artist} {title}")
-            album_artist = normalize_search_text(f"{artist} {album}")
-            artist_words = set(artist.split())
-            artist_match = bool(qnorm and (qnorm == artist or (tokens and tokens.issubset(artist_words))))
-            album_match = bool(qnorm and (qnorm in album_artist or (tokens and tokens.issubset(set(album_artist.split())))))
-            # Artist/album searches should surface albums.  Individual tracks
-            # are reserved for exact or near-exact song searches, avoiding a
-            # wall of songs when the user asks for an artist.
-            if artist_match or album_match:
-                albums.setdefault((root_id, str(item.get("artist") or ""), str(item.get("album") or "")), []).append(item)
-            song_close = bool(qnorm and (
-                qnorm == title or qnorm == artist_title or
-                (len(tokens) > 1 and (qnorm in title or qnorm in artist_title))
-            ))
-            if song_close:
-                audio_candidates.append(item)
-        all_videos: list[dict] = list(snapshot.get("videos") or []) + list(snapshot.get("movies") or [])
-        for show in snapshot.get("shows") or []:
-            if isinstance(show, dict):
-                all_videos.extend(show.get("episodes") or [])
-        for video in all_videos:
-            if not isinstance(video, dict):
-                continue
-            item = dict(video); item["root_id"] = root_id
-            parsed = item.get("parse") if isinstance(item.get("parse"), dict) else {}
-            haystack = normalize_search_text(" ".join(str(value or "") for value in (item.get("title"), item.get("name"), item.get("rel"), parsed.get("show_title"), parsed.get("episode_title"), parsed.get("year"))))
-            if qnorm in haystack or (tokens and tokens.intersection(haystack.split())):
-                video_candidates.append(item)
-    results: list[dict] = []
-    for (root_id, artist, album), tracks in albums.items():
-        if not album or qnorm not in normalize_search_text(f"{artist} {album}") or len(tracks) < 2:
-            continue
-        ordered = sorted(tracks, key=lambda item: track_sort_key(str(item.get("track") or "")) + (str(item.get("title") or ""),))
-        files = [_library_file_payload(item, "audio") for item in ordered]
-        results.append({
-            "result_id": "library:" + root_id + ":album:" + sha1_text(artist + "|" + album), "source": "library",
-            "source_label": "Library", "root_id": root_id, "rel": "", "media": "audio", "title": album,
-            "directory_title": album, "directory": "", "user": artist, "artist": artist, "album": album, "name": album,
-            "size": 0, "speed": 0, "seeders": 0, "leechers": 0, "browse_available": False,
-            "stream_available": True, "download_available": False, "files_loaded": True, "file_count": len(files), "files": files,
-        })
-    results.extend(_standardize_library_record(item, "audio") for item in audio_candidates[:200])
-    results.extend(_standardize_library_record(item, "video") for item in video_candidates[:200])
-    return results, _make_search_cache_key("library", q, {"roots": library_root_versions()})
 
 
 @app.route("/api/libsearch/combined", methods=["GET"])
 def api_libsearch_combined():
     q = (request.args.get("q") or "").strip()
     if not q:
-        return jsonify(ok=False, error="Missing query", results=[], result_count=0, cache_key="")
-    combined_cache_key = _make_search_cache_key("combined", q, {})
+        return jsonify(ok=False, error="Missing query", results=[], result_count=0, cache_key=""), 400
+    username = _current_settings_username()
+    settings = _apply_runtime_settings_for_user(username) if username else ensure_app_settings(defaults_overrides=_default_app_overrides())
+    runtime = _active_search_runtime()
+    combined_cache_key = _make_search_cache_key("combined", q, {"schema": SEARCH_CACHE_SCHEMA, "roots": library_root_versions()})
     debug = str(request.args.get("debug") or "").strip().lower() in {"1", "true", "yes"}
     with _SEARCH_DISK_LOCK:
         cached_entry = _disk_cache_get(combined_cache_key)
     cached_payload = dict((cached_entry or {}).get("payload") or {}) if cached_entry else {}
-    if not (
-        cached_payload.get("ok")
-        and isinstance(cached_payload.get("results"), list)
-        and isinstance(cached_payload.get("source_status"), list)
-        and {str(item.get("source") or "") for item in cached_payload.get("source_status") if isinstance(item, dict)} == set(COMBINED_SEARCH_SOURCES)
-    ):
+    if cached_payload.get("schema_version") != SEARCH_CACHE_SCHEMA or not isinstance(cached_payload.get("results"), list):
         cached_payload = {}
-    if cached_payload:
-        cached_payload.pop("intent", None)
-        cached_payload.pop("source_priority", None)
-        cached_payload.update({"ok": True, "q": q, "cache_key": combined_cache_key, "cached": True})
-        if debug:
-            intent = infer_query_intent(q, library_hits=[item for item in cached_payload.get("results") or [] if item.get("source") == "library"])
-            cached_payload["intent"] = intent
-            cached_payload["source_priority"] = source_priority_for_intent(intent)
+    intent = infer_query_intent(q)
+    context = SearchContext(username, q, normalize_search_text(q), intent, settings, combined_cache_key, threading.Event(), debug)
     if str(request.args.get("stream") or "").strip().lower() in {"1", "true", "yes"}:
         def gen():
-            yield json.dumps({
-                "event": "start", "ok": True, "q": q, "cache_key": combined_cache_key,
-                "sources": list(COMBINED_SEARCH_SOURCES), "cached": bool(cached_payload),
-            }, ensure_ascii=False) + "\n"
             if cached_payload:
-                try:
-                    record_search_history(q, "combined", combined_cache_key)
-                except Exception:
-                    pass
-                yield json.dumps({"event": "cached", **cached_payload}, ensure_ascii=False) + "\n"
-                yield json.dumps({"event": "done", **cached_payload}, ensure_ascii=False) + "\n"
+                yield json.dumps({"event": "start", "search_id": combined_cache_key, "query": q, "cached": True}, ensure_ascii=False) + "\n"
+                yield json.dumps({"event": "done", "search_id": combined_cache_key, "query": q, "cached": True, "results": cached_payload.get("results", []), "provider_status": cached_payload.get("provider_status", [])}, ensure_ascii=False) + "\n"
                 return
-            payloads: dict[str, dict[str, Any]] = {}
-            with concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="dp-search") as executor:
-                future_map = {executor.submit(_libsearch_source_payload, source, q): source for source in COMBINED_SEARCH_SOURCES}
-                for future in concurrent.futures.as_completed(future_map):
-                    source = future_map[future]
-                    try:
-                        payload = future.result()
-                    except Exception as exc:
-                        payload = {"source": source, "source_label": source.title(), "results": [], "result_count": 0, "error": "Search failed", "duration_ms": 0}
-                        try:
-                            app.logger.info("libsearch source failed %s: %s", source, exc)
-                        except Exception:
-                            pass
-                    payloads[source] = payload
-                    yield json.dumps({"event": "source", **payload}, ensure_ascii=False) + "\n"
-            final_payload = _combined_search_response_payload(q, combined_cache_key, payloads, debug=debug)
-            cache_payload = dict(final_payload)
-            cache_payload.pop("intent", None)
-            cache_payload.pop("source_priority", None)
-            with _SEARCH_DISK_LOCK:
-                _disk_cache_set(combined_cache_key, "combined", q, {}, cache_payload)
-            try:
-                record_search_history(q, "combined", combined_cache_key)
-            except Exception:
-                pass
-            yield json.dumps({"event": "done", **final_payload}, ensure_ascii=False) + "\n"
-        return Response(stream_with_context(gen()), mimetype="application/x-ndjson")
-
-    if cached_payload:
-        try:
+            for event in runtime.pipeline.search_stream(q, context):
+                yield json.dumps(event, ensure_ascii=False) + "\n"
             record_search_history(q, "combined", combined_cache_key)
-        except Exception:
-            pass
-        return jsonify(cached_payload)
-    payloads = _run_combined_search_sources(q)
-    response_payload = _combined_search_response_payload(q, combined_cache_key, payloads, debug=debug)
-    cache_payload = dict(response_payload)
-    cache_payload.pop("intent", None)
-    cache_payload.pop("source_priority", None)
-    with _SEARCH_DISK_LOCK:
-        _disk_cache_set(combined_cache_key, "combined", q, {}, cache_payload)
-    try:
+        return Response(stream_with_context(gen()), mimetype="application/x-ndjson")
+    if cached_payload:
         record_search_history(q, "combined", combined_cache_key)
-    except Exception:
-        pass
-    return jsonify(response_payload)
+        return jsonify(ok=True, q=q, cache_key=combined_cache_key, cached=True, results=cached_payload.get("results", []), result_count=len(cached_payload.get("results", [])), provider_status=cached_payload.get("provider_status", []), schema_version=SEARCH_CACHE_SCHEMA)
+    final = runtime.pipeline.search_once(q, context)
+    record_search_history(q, "combined", combined_cache_key)
+    return jsonify(ok=True, q=q, cache_key=combined_cache_key, cached=False, results=final.get("results", []), result_count=len(final.get("results", [])), provider_status=final.get("provider_status", []), schema_version=SEARCH_CACHE_SCHEMA)
 
 
-def _libsearch_source_payload(source: str, q: str) -> dict[str, Any]:
-    started = time.perf_counter()
-    src = str(source or "").strip().lower()
-    try:
-        if src == "library":
-            results, cache_key = _search_library_indexed(q)
-            return {
-                "ok": True, "source": "library", "source_label": "Library", "cache_key": cache_key,
-                "results": results, "result_count": len(results), "error": "",
-                "duration_ms": round((time.perf_counter() - started) * 1000.0, 1),
-            }
-        if src == "youtube":
-            raw_results, err, cache_key = _search_youtube_cached(q)
-            results = _standardize_youtube_results(raw_results)
-            return {
-                "ok": True,
-                "source": "youtube",
-                "source_label": "YouTube",
-                "cache_key": cache_key,
-                "results": results,
-                "youtube_results": raw_results,
-                "result_count": len(results),
-                "error": err,
-                "duration_ms": round((time.perf_counter() - started) * 1000.0, 1),
-            }
-        if src == "soulseek":
-            slsk_users, slsk_total_results, dir_count, cache_key, err = _search_soulseek_cached(q)
-            results = _standardize_soulseek_results(slsk_users)
-            return {
-                "ok": not bool(err),
-                "source": "soulseek",
-                "source_label": "Soulseek",
-                "cache_key": cache_key,
-                "results": results,
-                "slsk_users": slsk_users,
-                "result_count": len(results),
-                "file_count": int(slsk_total_results or 0),
-                "dir_count": int(dir_count or 0),
-                "error": err,
-                "duration_ms": round((time.perf_counter() - started) * 1000.0, 1),
-            }
-        knaben_results, err, remaining, reset, cache_key = _search_knaben_cached(q, 1)
-        results = _standardize_knaben_results(knaben_results)
-        return {
-            "ok": not bool(err),
-            "source": "knaben",
-            "source_label": "Knaben",
-            "cache_key": cache_key,
-            "results": results,
-            "knaben_results": knaben_results,
-            "result_count": len(results),
-            "rate_remaining": remaining,
-            "rate_reset": reset,
-            "error": err,
-            "duration_ms": round((time.perf_counter() - started) * 1000.0, 1),
-        }
-    except Exception:
-        return {
-            "ok": False,
-            "source": src or "unknown",
-            "source_label": (src or "unknown").title(),
-            "cache_key": "",
-            "results": [],
-            "result_count": 0,
-            "error": "Search failed",
-            "duration_ms": round((time.perf_counter() - started) * 1000.0, 1),
-        }
 
 
-def _run_combined_search_sources(q: str) -> dict[str, dict[str, Any]]:
-    out: dict[str, dict[str, Any]] = {}
-    with concurrent.futures.ThreadPoolExecutor(max_workers=4, thread_name_prefix="dp-search") as executor:
-        future_map = {executor.submit(_libsearch_source_payload, source, q): source for source in COMBINED_SEARCH_SOURCES}
-        for future in concurrent.futures.as_completed(future_map):
-            source = future_map[future]
-            try:
-                out[source] = future.result()
-            except Exception:
-                out[source] = {"ok": False, "source": source, "source_label": source.title(), "results": [], "result_count": 0, "error": "Search failed", "duration_ms": 0}
-    return out
 
 
-def _combined_search_response_payload(
-    q: str,
-    combined_cache_key: str,
-    payloads: dict[str, dict[str, Any]],
-    *,
-    debug: bool = False,
-) -> dict[str, Any]:
-    results: list[dict[str, Any]] = []
-    source_status: list[dict[str, Any]] = []
-    errors: list[str] = []
-    for source in COMBINED_SEARCH_SOURCES:
-        payload = payloads.get(source) or {}
-        results.extend([dict(x) for x in (payload.get("results") or []) if isinstance(x, dict)])
-        err = str(payload.get("error") or "").strip()
-        if err:
-            errors.append(f"{payload.get('source_label') or source}: {err}")
-        source_status.append({
-            "source": source,
-            "label": str(payload.get("source_label") or source.title()),
-            "ok": bool(payload.get("ok", not bool(err))),
-            "error": err,
-            "result_count": int(payload.get("result_count") or len(payload.get("results") or []) or 0),
-            "duration_ms": float(payload.get("duration_ms") or 0),
-        })
-    intent = infer_query_intent(q, library_hits=[item for item in results if item.get("source") == "library"])
-    results = rank_combined_results(results, q, intent=intent)
-    slsk_payload = payloads.get("soulseek") or {}
-    response = {
-        "ok": True,
-        "q": q,
-        "cache_key": combined_cache_key,
-        "results": results,
-        "result_count": len(results),
-        "source_status": source_status,
-        "knaben_results": (payloads.get("knaben") or {}).get("knaben_results") or [],
-        "slsk_users": slsk_payload.get("slsk_users") or [],
-        "youtube_results": (payloads.get("youtube") or {}).get("youtube_results") or [],
-        "dir_count": int(slsk_payload.get("dir_count") or 0),
-        "file_count": int(slsk_payload.get("file_count") or 0),
-        "error": "; ".join(errors),
-        "cached": False,
-    }
-    if debug:
-        response["intent"] = intent
-        response["source_priority"] = source_priority_for_intent(intent)
-    return response
 
 
-def api_libsearch_knaben():
-    q = (request.args.get("q") or "").strip()
-    try:
-        page = int(request.args.get("page") or "1")
-    except ValueError:
-        page = 1
-    page = max(1, page)
-    if not q:
-        return jsonify(ok=False, error="Missing query", results=[], page=page, result_count=0, cache_key="")
-
-    extra = {"page": page}
-    cache_key = _make_search_cache_key("knaben", q, extra)
-
-    cached_payload = None
-    with _SEARCH_DISK_LOCK:
-        d = _disk_cache_get(cache_key)
-        if d and isinstance(d.get("payload"), dict):
-            cached_payload = d.get("payload")
-
-    if cached_payload is not None:
-        results = cached_payload.get("results") or []
-        err = cached_payload.get("error") or ""
-        remaining = cached_payload.get("remaining") or ""
-        reset = cached_payload.get("reset") or ""
-    else:
-        results, err, remaining, reset = knaben_search(q, page)
-        with _SEARCH_DISK_LOCK:
-            _disk_cache_set(cache_key, "knaben", q, extra, {"results": results, "error": err, "remaining": remaining, "reset": reset})
-
-    if page == 1:
-        try:
-            record_search_history(q, "knaben", cache_key)
-        except Exception:
-            pass
-
-    return jsonify(ok=True, q=q, page=page, cache_key=cache_key, results=results, error=err, rate_remaining=remaining, rate_reset=reset, result_count=len(results))
 
 
 
@@ -1140,22 +692,11 @@ def api_soulseek_browse_user():
     return jsonify(ok=True, user=user, dirs=dirs, selected_dir=selected_dir, file_count=sum(int(d.get("total_files") or 0) for d in dirs), dir_count=len(dirs))
 
 
-@app.route("/api/libsearch/youtube", methods=["GET"])
-def api_libsearch_youtube():
-    q = (request.args.get('q') or '').strip()
-    if not q:
-        return jsonify(ok=False, error='Missing query', results=[], result_count=0, cache_key='')
-    raw_results, err, cache_key = _search_youtube_cached(q)
-    try:
-        record_search_history(q, 'youtube', cache_key)
-    except Exception:
-        pass
-    results = _standardize_youtube_results(raw_results)
-    return jsonify(ok=True, q=q, cache_key=cache_key, results=results, result_count=len(results), error=err)
 
 
+@app.route("/api/ytdlp/files", methods=["GET"])
 @app.route("/api/youtube/files", methods=["GET"])
-def api_youtube_files():
+def api_ytdlp_files():
     url = (request.args.get('url') or '').strip()
     if not url:
         return jsonify(ok=False, error='Missing URL', files=[], file_count=0, size=0), 400
@@ -1165,6 +706,158 @@ def api_youtube_files():
         return jsonify(ok=True, files=files, file_count=len(files), size=total_size)
     except Exception:
         return jsonify(ok=False, error="Failed to list formats", files=[], file_count=0, size=0), 500
+
+
+@app.route("/api/ytdlp/directory", methods=["GET"])
+def api_ytdlp_directory():
+    url = (request.args.get("url") or "").strip()
+    if not url:
+        return jsonify(ok=False, error="Missing URL", entries=[], result_count=0), 400
+    try:
+        entries = run_flat_entries(url)
+        return jsonify(ok=True, entries=entries, result_count=len(entries))
+    except Exception as exc:
+        return jsonify(ok=False, error=str(exc) or "Failed to load directory", entries=[], result_count=0), 400
+
+
+@app.route("/api/soundcloud/artist-section", methods=["GET"])
+def api_soundcloud_artist_section():
+    url = (request.args.get("url") or "").strip()
+    section = (request.args.get("section") or "").strip().lower()
+    if not url or section not in {"tracks", "albums", "playlists"}:
+        return jsonify(ok=False, error="URL and a valid section are required", results=[], result_count=0), 400
+    try:
+        results = SoundCloudDirectoryService().load_section(url, section)
+        return jsonify(ok=True, source="soundcloud", section=section, results=results, result_count=len(results))
+    except Exception as exc:
+        return jsonify(ok=False, error=str(exc) or "Failed to load SoundCloud section", results=[], result_count=0), 400
+
+
+@app.route("/api/indexers", methods=["GET"])
+def api_indexers():
+    runtime = _active_search_runtime()
+    current = ensure_app_settings(username=_current_settings_username(), defaults_overrides=_default_app_overrides())
+    enabled = set(current.get("INDEXER_ENABLED_IDS") or [])
+    rows = []
+    for definition in runtime.definition_store.list_active_definitions():
+        status = runtime.indexer_service.status_store.get(definition.id) if not definition.parse_error else None
+        metadata = definition.metadata()
+        metadata.update({
+            "enabled": definition.id in enabled,
+            "blocked_until": status.disabled_until if status else None,
+            "last_error": status.last_error_category if status else definition.parse_error,
+        })
+        rows.append(metadata)
+    return jsonify(ok=True, indexers=rows)
+
+
+@app.route("/api/indexers/toggle", methods=["POST"])
+def api_indexers_toggle():
+    data = request.get_json(silent=True) or {}
+    definition_id = str(data.get("id") or "").strip()
+    definition = _active_search_runtime().definition_store.load_definition(definition_id)
+    if definition is None:
+        return jsonify(ok=False, error="Unknown indexer"), 404
+    enabled_value = bool(data.get("enabled"))
+    if enabled_value and definition.requires_setup:
+        return jsonify(ok=False, error="Support for this indexer requires setup"), 400
+    username = _current_settings_username()
+    current = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
+    enabled = list(current.get("INDEXER_ENABLED_IDS") or [])
+    if enabled_value and definition_id not in enabled:
+        enabled.append(definition_id)
+    if not enabled_value:
+        enabled = [item for item in enabled if item != definition_id]
+    saved = save_app_settings({"INDEXER_ENABLED_IDS": enabled}, username=username, defaults_overrides=_default_app_overrides())
+    _configure_unified_search_runtime(saved)
+    return jsonify(ok=True, id=definition_id, enabled=enabled_value, enabled_ids=enabled)
+
+
+@app.route("/api/indexers/test", methods=["POST"])
+def api_indexers_test():
+    data = request.get_json(silent=True) or {}
+    definition_id = str(data.get("id") or "").strip()
+    runtime = _active_search_runtime()
+    definition = runtime.definition_store.load_definition(definition_id)
+    if definition is None:
+        return jsonify(ok=False, error="Unknown indexer"), 404
+    if definition.requires_setup:
+        return jsonify(ok=False, error="Support for this indexer requires setup"), 400
+    try:
+        rows, status = runtime.indexer_service._search_one(definition, "ubuntu")
+        if status.get("status") == "ok":
+            runtime.indexer_service.status_store.record_success(definition_id, manual_test=True)
+        return jsonify(ok=status.get("status") == "ok", status=status, result_count=len(rows))
+    except Exception as exc:
+        return jsonify(ok=False, error=str(exc), status={"indexer_id": definition_id, "status": "error"}), 400
+
+
+@app.route("/api/indexers/resolve", methods=["POST"])
+def api_indexers_resolve():
+    data = request.get_json(silent=True) or {}
+    try:
+        resolved = _active_search_runtime().indexer_service.resolve_release(str(data.get("id") or ""), data)
+        return jsonify(ok=True, magnet=str(resolved.get("magnet") or ""), infohash=str(resolved.get("infohash") or ""))
+    except Exception as exc:
+        return jsonify(ok=False, error=str(exc) or "Failed to resolve torrent source"), 400
+
+
+def _definition_status_payload(store):
+    staging_meta = {}
+    staging_path = store.staging_dir / "staging.json"
+    if staging_path.is_file():
+        try:
+            staging_meta = json.loads(staging_path.read_text(encoding="utf-8"))
+        except Exception:
+            staging_meta = {}
+    return {"manifest": store.load_manifest(), "staged": staging_meta, "backups": [item["name"] for item in store.list_backups()]}
+
+
+@app.route("/api/indexer-definitions/status", methods=["GET"])
+def api_definition_status():
+    return jsonify(ok=True, **_definition_status_payload(_active_search_runtime().definition_store))
+
+
+@app.route("/api/indexer-definitions/stage", methods=["POST"])
+def api_definition_stage():
+    try:
+        store = _active_search_runtime().definition_store
+        result = store.stage_upstream_package()
+        return jsonify(ok=True, staged=result)
+    except Exception as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+
+
+@app.route("/api/indexer-definitions/validate", methods=["POST"])
+def api_definition_validate():
+    result = _active_search_runtime().definition_store.validate_staging()
+    return jsonify(ok=bool(result.get("valid")), validation=result), (200 if result.get("valid") else 400)
+
+
+@app.route("/api/indexer-definitions/activate", methods=["POST"])
+def api_definition_activate():
+    try:
+        result = _active_search_runtime().definition_store.activate_staging()
+        _configure_unified_search_runtime()
+        return jsonify(ok=True, result=result)
+    except Exception as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+
+
+@app.route("/api/indexer-definitions/rollback", methods=["POST"])
+def api_definition_rollback():
+    try:
+        result = _active_search_runtime().definition_store.rollback_last_activation()
+        _configure_unified_search_runtime()
+        return jsonify(ok=True, result=result)
+    except Exception as exc:
+        return jsonify(ok=False, error=str(exc)), 400
+
+
+@app.route("/api/indexer-definitions/discard", methods=["POST"])
+def api_definition_discard():
+    _active_search_runtime().definition_store.discard_staging()
+    return jsonify(ok=True)
 
 
 @app.route("/api/link/inspect", methods=["POST"])
@@ -1192,19 +885,19 @@ def api_link_inspect():
                     "name": name, "title": name, "path": name,
                     "id": item.file_id, "file_id": item.file_id,
                     "size": int(item.bytes or 0), "bytes": int(item.bytes or 0),
-                    "source": "knaben", "selectable": True,
+                    "source": "torrent", "selectable": True,
                 })
+            title = str(data.get("title") or "Magnet link")
             result = {
-                "result_id": "magnet:" + value,
-                "source": "knaben", "source_label": provider.label,
-                "title": str(data.get("title") or "Magnet link"),
-                "directory_title": "Magnet link", "magnet": value,
-                "provider": provider.id, "provider_label": provider.label,
-                "debrid_task_id": preview.provider_task_id,
-                "browse_available": False, "stream_available": True,
-                "download_available": True, "files_loaded": True,
-                "files": files, "file_count": len(files),
+                "result_id": "torrent-url:" + sha1_text(value), "provider_group": "torrents",
+                "source": "torrent", "source_label": "Torrent", "kind": "torrent", "kind_label": "Torrent",
+                "title": title, "subtitle": "Magnet link", "artist": "", "album": "", "year": "", "duration": 0,
+                "thumbnail": "", "canonical_url": value, "stable_source_id": "", "search_blob": title,
+                "filter_values": {"sources": ["Torrent"], "types": ["Torrent"], "indexers": [], "media": []},
+                "match_confidence": 1.0, "rank_score": 0.0, "browse_available": False, "stream_available": True,
+                "download_available": True, "files_loaded": True, "files": files, "file_count": len(files),
                 "size": sum(int(row.get("size") or 0) for row in files),
+                "provider_data": {"infohash": "", "magnet": value, "indexer_ids": [], "indexer_labels": [], "source_urls": [], "seeders": 0, "leechers": 0, "verified": False, "category": "", "provider": provider.id, "debrid_task_id": preview.provider_task_id},
             }
             return jsonify(ok=True, detail_kind="debrid_files", result=result)
         result = ytdlp_inspect(value)
@@ -1216,16 +909,6 @@ def api_link_inspect():
         return jsonify(ok=False, error="This link could not be inspected by yt-dlp."), 400
 
 
-@app.route("/api/youtube/channel", methods=["GET"])
-def api_youtube_channel():
-    channel_id = (request.args.get('channel_id') or '').strip()
-    if not channel_id:
-        return jsonify(ok=False, error='Missing channel id', results=[], result_count=0), 400
-    try:
-        results = youtube_channel_browse(channel_id)
-        return jsonify(ok=True, results=results, result_count=len(results))
-    except Exception:
-        return jsonify(ok=False, error="Failed to browse channel", results=[], result_count=0), 500
 
 
 @app.route("/api/youtube/comments", methods=["GET"])
@@ -1249,7 +932,11 @@ def api_youtube_enqueue():
         data = request.get_json(force=True) or {}
     except Exception:
         data = {}
-    title = str(data.get('title') or '').strip() or 'YouTube'
+    source_label = str(data.get('source_label') or 'YouTube').strip() or 'YouTube'
+    task_source = str(data.get('source') or 'youtube').strip().lower()
+    if task_source not in {'youtube', 'soundcloud'}:
+        task_source = 'youtube'
+    title = str(data.get('title') or '').strip() or source_label
     url = str(data.get('url') or '').strip()
     selected = data.get('selected') or []
     if not url:
@@ -1291,7 +978,7 @@ def api_youtube_enqueue():
     folder = sanitize_folder_name(f"{stamp}_{base}_{task_id[:6]}")
     task_dir = os.path.join(youtube_root, folder)
     os.makedirs(task_dir, exist_ok=True)
-    t = Task(id=task_id, title=title, magnet=url, task_dir=task_dir, owner=_current_settings_username(), source='youtube', source_url=url, origin_client_id=str(request.headers.get("X-DebriPod-Client-Id") or ""), state='queued', message='Queued', youtube_files=entries)
+    t = Task(id=task_id, title=title, magnet=url, task_dir=task_dir, owner=_current_settings_username(), source=task_source, source_url=url, origin_client_id=str(request.headers.get("X-DebriPod-Client-Id") or ""), state='queued', message='Queued', youtube_files=entries)
     with TASKS_LOCK:
         TASKS[task_id] = t
     save_task_metadata(t, original_result_title=title, remote_files=entries, selected_file_ids=[item.get('file_id') for item in entries], version=str(VERSION))
@@ -1412,7 +1099,7 @@ def api_debrid_enqueue_selected():
         data = request.get_json(force=True) or {}
     except Exception:
         data = {}
-    title = str(data.get("title") or "").strip() or "Knaben item"
+    title = str(data.get("title") or "").strip() or "Torrent"
     magnet = str(data.get("magnet") or "").strip()
     provider_task_id = normalize_identifier(data.get("debrid_task_id")) or ""
     file_ids = data.get("file_ids") or []
@@ -1702,7 +1389,6 @@ def api_settings_get():
         "ALLDEBRID_API_KEY": {"set": bool(str(settings.get("ALLDEBRID_API_KEY") or "").strip())},
         "PREMIUMIZE_API_KEY": {"set": bool(str(settings.get("PREMIUMIZE_API_KEY") or "").strip())},
         "TORBOX_API_KEY": {"set": bool(str(settings.get("TORBOX_API_KEY") or "").strip())},
-        "KNABEN_API_KEY": {"set": bool(str(settings.get("KNABEN_API_KEY") or "").strip())},
         "SOULSEEK_USERNAME": {"set": bool(str(settings.get("SOULSEEK_USERNAME") or "").strip())},
         "SOULSEEK_PASSWORD": {"set": bool(str(settings.get("SOULSEEK_PASSWORD") or "").strip())},
         "SOULSEEK": {
@@ -1739,7 +1425,7 @@ def _setup_skipped_services(settings: dict[str, Any]) -> dict[str, str]:
     if isinstance(raw, dict):
         for key, value in raw.items():
             k = str(key or "").strip().lower()
-            if k in {"library", "debrid", "soulseek", "lastfm", "youtube", "ffmpeg", "ffprobe", "ytdlp", "downloads", "knaben"}:
+            if k in {"library", "debrid", "soulseek", "lastfm", "youtube", "ffmpeg", "ffprobe", "ytdlp", "downloads", "indexers"}:
                 out[k] = "skipped" if str(value or "").strip().lower() == "skipped" else str(value or "").strip().lower()
     return out
 
@@ -1790,9 +1476,9 @@ def _service_status_payload(settings: dict[str, Any]) -> dict[str, Any]:
             "session_user": lastfm_username(),
             "status": skipped.get("lastfm") or ("logged_in" if lastfm_username() else ("configured" if str(settings.get("LASTFM_API_KEY") or "").strip() and str(settings.get("LASTFM_API_SECRET") or "").strip() else "not_configured")),
         },
-        "knaben": {
-            "api_key_configured": bool(str(settings.get("KNABEN_API_KEY") or "").strip()),
-            "status": skipped.get("knaben") or ("configured" if str(settings.get("KNABEN_API_KEY") or "").strip() else "optional"),
+        "indexers": {
+            "enabled_ids": list(settings.get("INDEXER_ENABLED_IDS") or []),
+            "status": skipped.get("indexers") or ("configured" if settings.get("INDEXER_ENABLED_IDS") else "not_configured"),
         },
         "youtube": {
             "tool": tools["yt_dlp"],
@@ -1892,7 +1578,7 @@ def api_setup_status():
 def api_setup_skip():
     data = request.get_json(silent=True) or {}
     service = str(data.get("service") or "").strip().lower()
-    allowed = {"library", "debrid", "soulseek", "lastfm", "youtube", "ffmpeg", "ffprobe", "ytdlp", "downloads", "knaben"}
+    allowed = {"library", "debrid", "soulseek", "lastfm", "youtube", "ffmpeg", "ffprobe", "ytdlp", "downloads", "indexers"}
     if service not in allowed:
         return jsonify({"ok": False, "error": "Unknown setup step"}), 400
     username = _current_settings_username()

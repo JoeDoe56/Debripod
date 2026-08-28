@@ -189,7 +189,6 @@
       ],
       services: [
         {key:"DOWNLOAD_DIR", label:"Debrid folder", type:"directory", value:s.DOWNLOAD_DIR},
-        {key:"KNABEN_API_KEY", label:"Knaben API key", type:"secret", value:s.KNABEN_API_KEY},
         {key:"SOULSEEK_USERNAME", label:"Soulseek username", type:"secret", value:s.SOULSEEK_USERNAME},
         {key:"SOULSEEK_PASSWORD", label:"Soulseek password", type:"secret", value:s.SOULSEEK_PASSWORD, sub_label: slsk.set ? (slsk.connected ? "Soulseek is connected for this account." : "Soulseek is configured but not connected. Check username, password, and listening port in Services.") : "Set username and password to connect Soulseek for this account."},
         {key:"LASTFM_API_KEY", label:"Last.fm API key", type:"secret", value:s.LASTFM_API_KEY},
@@ -222,11 +221,6 @@
       {key:"SOULSEEK_SEARCH_MAX_RESULTS", label:"Soulseek search max results", type:"number", value:s.SOULSEEK_SEARCH_MAX_RESULTS},
       {key:"SOULSEEK_SEARCH_IDLE_STOP_SEC", label:"Soulseek idle stop", type:"number", value:s.SOULSEEK_SEARCH_IDLE_STOP_SEC},
       {key:"SOULSEEK_SEARCH_HARD_MAX_SEC", label:"Soulseek hard max", type:"number", value:s.SOULSEEK_SEARCH_HARD_MAX_SEC},
-      {key:"KNABEN_MIN_SECONDS_BETWEEN_REQUESTS", label:"Knaben min interval", type:"number", value:s.KNABEN_MIN_SECONDS_BETWEEN_REQUESTS},
-      {key:"KNABEN_CACHE_TTL_SECONDS", label:"Knaben cache TTL", type:"number", value:s.KNABEN_CACHE_TTL_SECONDS},
-      {key:"KNABEN_MAX_RETRIES", label:"Knaben retries", type:"number", value:s.KNABEN_MAX_RETRIES},
-      {key:"KNABEN_API_BASE", label:"Knaben API base", type:"text", value:s.KNABEN_API_BASE},
-      {key:"KNABEN_WEB_BASE", label:"Knaben web base", type:"text", value:s.KNABEN_WEB_BASE},
       {key:"YOUTUBE_STREAM_CACHE_SUBDIR", label:"YouTube stream cache", type:"text", value:s.YOUTUBE_STREAM_CACHE_SUBDIR},
       {key:"YOUTUBE_WEB_BASE", label:"YouTube web base", type:"text", value:s.YOUTUBE_WEB_BASE},
       {key:"YOUTUBE_SEARCH_LIMIT", label:"YouTube search limit", type:"number", value:s.YOUTUBE_SEARCH_LIMIT},
@@ -402,6 +396,7 @@
         await settingsLoad();
         let services = {};
         if(category === "services"){
+          rows.unshift({kind:"libinfo_action",label:"Torrent Indexers",action:"torrent_indexers",pills:["Cardigann"]});
           try{ const js = await apiGet("/api/services/status"); services = (js && js.services) || {}; }catch(e){}
         }
         const debrid = (services && services.debrid) || (state.connectionStatus && state.connectionStatus.DEBRID) || {};
@@ -440,6 +435,63 @@
       }
     };
     await setView(view, !!push);
+  }
+
+  async function viewTorrentIndexers(push){
+    showNowPlaying(false);
+    await setView({kind:"settings_indexers",label:"Torrent Indexers",load:async function(){
+      const js=await apiGet("/api/indexers");
+      const rows=(js.indexers||[]).map(function(indexer){
+        const pills=[];
+        pills.push({text:indexer.enabled?"Enabled":"Disabled",tone:indexer.enabled?"ok":""});
+        if(indexer.requires_setup) pills.push({text:"Requires setup",tone:"warn"});
+        if(indexer.blocked_until) pills.push({text:"Temporarily blocked",tone:"warn"});
+        if(indexer.origin==="custom") pills.push({text:"Custom"});
+        if(indexer.last_error) pills.push({text:"Error",tone:"warn"});
+        return {kind:"settings_indexer",label:indexer.label||indexer.id,indexer:indexer,pills:pills,forceTwoLine:true,sub_label:indexer.last_error||""};
+      });
+      resetList(rows.length?rows:[{kind:"info",label:"No indexer definitions found"}]);
+    }},!!push);
+  }
+
+  async function viewTorrentIndexerDetail(indexer,push){
+    const item=indexer||{};
+    showNowPlaying(false);
+    await setView({kind:"settings_indexer_detail",label:item.label||item.id||"Indexer",indexer:item,load:async function(){
+      const rows=[];
+      if(item.requires_setup){
+        rows.push({kind:"info",label:"Support for this indexer requires setup",pills:[{text:"Requires setup",tone:"warn"}]});
+        (item.settings_fields||[]).forEach(function(field){ rows.push({kind:"info",label:field.label||field.name||"Setting",sub_label:field.type||"text",forceTwoLine:true}); });
+      }else{
+        rows.push({kind:"settings_indexer_toggle",label:item.enabled?"Disable indexer":"Enable indexer",indexer:item});
+      }
+      rows.push({kind:"settings_indexer_test",label:"Test indexer",indexer:item,pills:["Live request"]});
+      resetList(rows);
+    }},!!push);
+  }
+
+  async function viewIndexerDefinitions(push){
+    showNowPlaying(false);
+    await setView({kind:"settings_indexer_definitions",label:"Indexer Definitions",load:async function(){
+      const js=await apiGet("/api/indexer-definitions/status"), manifest=js.manifest||{}, staged=js.staged||{};
+      resetList([
+        {kind:"info",label:"Active revision",pills:[String(manifest.active_revision||"None")]},
+        {kind:"info",label:"Package SHA256",pills:[String(manifest.package_sha256||"None")]},
+        {kind:"info",label:"Last update",pills:[String(manifest.updated_at||"Never")]},
+        {kind:"info",label:"Staged revision",pills:[String(staged.revision||staged.active_revision||"None")]},
+        {kind:"settings_definition_action",label:"Stage latest definitions",definitionAction:"stage"},
+        {kind:"settings_definition_action",label:"Validate staged definitions",definitionAction:"validate"},
+        {kind:"settings_definition_action",label:"Activate staged definitions",definitionAction:"activate"},
+        {kind:"settings_definition_action",label:"Roll back definitions",definitionAction:"rollback"},
+        {kind:"settings_definition_action",label:"Discard staged definitions",definitionAction:"discard",pills:[{text:"Delete staged copy",tone:"warn"}]}
+      ]);
+    }},!!push);
+  }
+
+  async function runIndexerDefinitionAction(action){
+    const res=await apiPost("/api/indexer-definitions/"+encodeURIComponent(action),{}), js=res&&res.json?res.json:{};
+    if(!res||!res.ok||!js.ok) throw new Error(js.error||("Failed to "+action+" definitions"));
+    await viewIndexerDefinitions(false);
   }
 
   function beginDebridTokenEdit(){
@@ -793,7 +845,7 @@
 
   function libSetStatus(msg, tone){
     try{
-      if(!state.libSearch) state.libSearch = {q:"", filter:"", engine:"combined", cache_key:"", result_source:"combined", last_count:0, results:[], knaben_results:[], slsk_users:[], sourceStatus:{}, searching:false, cached:false, showSourceStatus:false};
+      if(!state.libSearch) state.libSearch = DebriPod.createSearchResultsState();
       state.libSearch.status_msg = msg ? String(msg) : "";
       state.libSearch.status_tone = tone ? String(tone) : "";
     }catch(e){}
@@ -818,7 +870,7 @@
     const out = {exts: new Set(), bitDepth: 0, sampleRate: 0, source: "", rest: []};
 
     for(const t of tokens){
-      if(t === "source:knaben" || t === "src:knaben"){ out.source = "knaben"; continue; }
+      if(t === "source:torrent" || t === "src:torrent"){ out.source = "torrent"; continue; }
       else if(t === "source:soulseek" || t === "src:soulseek" || t === "source:slsk" || t === "src:slsk"){ out.source = "soulseek"; continue; }
       else if(t === "source:youtube" || t === "src:youtube" || t === "source:yt" || t === "src:yt"){ out.source = "youtube"; continue; }
       else if(t === "source:library" || t === "src:library" || t === "source:local" || t === "src:local" || t === "library" || t === "local"){ out.source = "library"; continue; }
@@ -885,7 +937,42 @@
     return String(Math.round(n)) + " Bps";
   }
 
+  let _libUnifiedSearchModel = null;
+  function libUnifiedSearchModel(){
+    if(!state.libSearch) state.libSearch = DebriPod.createSearchResultsState();
+    if(!_libUnifiedSearchModel || _libUnifiedSearchModel.state !== state.libSearch){
+      _libUnifiedSearchModel = new DebriPod.SearchResultsModel(state.libSearch,{onChange:function(){ if(state.current && state.current.kind === "libsearch") libRefreshList(true); }});
+    }
+    return _libUnifiedSearchModel;
+  }
+
   function libResultsToItems(){
+    if(DebriPod.SearchResultsModel){
+      const model = libUnifiedSearchModel();
+      const items = [];
+      const status = Array.isArray(state.libSearch.providerStatus) ? state.libSearch.providerStatus : [];
+      const sourceRows = {Library:{done:false,count:0,error:""},Soulseek:{done:false,count:0,error:""},Torrents:{done:false,count:0,error:""},YouTube:{done:false,count:0,error:""},SoundCloud:{done:false,count:0,error:""}};
+      status.forEach(group=>{
+        const name = String(group.provider_group || "");
+        if(name === "library") Object.assign(sourceRows.Library,{done:true,count:Number(group.result_count||0),error:String(group.error||"")});
+        if(name === "soulseek") Object.assign(sourceRows.Soulseek,{done:true,count:Number(group.result_count||0),error:String(group.error||"")});
+        if(name === "torrents") Object.assign(sourceRows.Torrents,{done:true,count:Number(group.result_count||0),error:String(group.error||"")});
+        if(name === "ytdlp"){
+          (Array.isArray(group.source_status)?group.source_status:[]).forEach(sub=>{
+            const target=String(sub.source||"")==="soundcloud"?sourceRows.SoundCloud:sourceRows.YouTube;
+            target.done=true; target.count+=Number(sub.result_count||0); if(sub.error)target.error=String(sub.error);
+          });
+        }
+      });
+      const progressPills = Object.keys(sourceRows).map(name=>{ const row=sourceRows[name]; return {text:name+(row.error?" ×":row.done?" "+row.count:" …"),tone:row.error?"warn":row.done?"ok":""}; });
+      items.push({kind:"libsearch_query",row_layout_key:"search-query",label:"Enter query or link",pills:[]});
+      const activeCount=Object.values(state.libSearch.filters||{}).reduce((n,set)=>n+(set instanceof Set?set.size:0),0);
+      items.push({kind:"libsearch_filter",row_layout_key:"search-filter-fixed",label:"Enter filters",pills:activeCount?[{text:String(activeCount)+" active"}]:[]});
+      items.push({kind:"libsearch_status",row_layout_key:"search-status-fixed",label:state.libSearch.running?"Searching":"Sources",pills:progressPills});
+      items.push({kind:"libsearch_action",label:"Clear"});
+      items.push({kind:"libsearch_action",label:"Search history"});
+      return items.concat(model.resultRows());
+    }
     const q = state.libSearch.q || "";
     const filt = libParseFilter(state.libSearch.filter || "");
     const items = [];
@@ -893,7 +980,7 @@
     const sourceRows = Object.values((state.libSearch && state.libSearch.sourceStatus) || {});
     const sourceMap = {};
     sourceRows.forEach(src=>{ if(src && src.source) sourceMap[String(src.source).toLowerCase()] = src; });
-    const sourcePills = ["library", "soulseek", "knaben", "youtube"].map(source=>{
+    const sourcePills = ["library", "soulseek", "torrent", "youtube", "soundcloud"].map(source=>{
       const src = sourceMap[source] || {};
       const label = source === "soulseek" ? "Soulseek" : source.charAt(0).toUpperCase() + source.slice(1);
       if(String(src.error || "")) return {text:label + " ×", tone:"warn"};
@@ -961,7 +1048,7 @@
       if(Number(r.size || 0) > 0) pills.push({text: humanBytes(Number(r.size || 0))});
       if(source === "soulseek" && Number(r.speed || 0) > 0){
         pills.push({text: libHumanSpeed(Number(r.speed || 0))});
-      }else if(source === "knaben"){
+      }else if(source === "torrent"){
         const s = Number(r.seeders || 0);
         const l = Number(r.leechers || 0);
         pills.push({text: "S " + String(s) + " L " + String(l)});
@@ -1350,30 +1437,30 @@ async function libDoSearch(engine, q){
         return;
       }
     }catch(e){}
-    const useEngine = String(engine || "combined").toLowerCase() || "combined";
+    const useEngine = "combined";
     state.libSearch.q = qq;
     state.libSearch.engine = useEngine;
     const searchToken = Date.now() + ":" + Math.random().toString(16).slice(2);
     state.libSearch.search_token = searchToken;
     state.libSearch.searching = true;
+    state.libSearch.running = true;
     state.libSearch.sourceStatus = {};
     state.libSearch.cached = false;
     state.libSearch.showSourceStatus = true;
     libSetStatus("Searching", "");
     libRefreshList(true);
     try{
-      const js = useEngine === "combined" ? await libSearchCombinedProgressive(qq, searchToken) : await apiGet("/api/libsearch/youtube?q=" + encodeURIComponent(qq));
+      const js = await libSearchCombinedProgressive(qq, searchToken);
       if(state.libSearch.search_token !== searchToken) return;
       if(!js || !js.ok){
         throw new Error((js && js.error) ? js.error : "Search failed");
       }
       state.libSearch.result_source = useEngine;
       state.libSearch.cache_key = js.cache_key || "";
-      state.libSearch.results = Array.isArray(js.results) ? js.results : [];
-      state.libSearch.knaben_results = js.knaben_results || [];
-      state.libSearch.slsk_users = js.slsk_users || [];
+      if(Array.isArray(js.results)) libUnifiedSearchModel().ingestFinal({results:js.results,provider_status:js.provider_status||[],cached:js.cached});
       state.libSearch.last_count = Number(js.result_count || state.libSearch.results.length || 0);
       state.libSearch.searching = false;
+      state.libSearch.running = false;
       if(Array.isArray(js.source_status)){
       state.libSearch.sourceStatus = {};
         js.source_status.forEach(row=>{ if(row && row.source) state.libSearch.sourceStatus[String(row.source)] = Object.assign({state:row.error ? "error" : "ready", done:true}, row); });
@@ -1882,7 +1969,7 @@ async function libDoSearch(engine, q){
       const key = String((row && row.key) || "");
       if(cat === "search") return key === "RESULTS_PER_PAGE" || key === "MAX_FILES_PER_TORRENT" || key === "MAX_TORRENT_WAIT_SECONDS" || key === "SEARCH_HISTORY_MAX_ITEMS" || key === "SEARCH_DISK_CACHE_TTL_SECONDS" || key === "SEARCH_STREAM_SESSION_TTL_SECONDS";
       if(cat === "downloads") return key === "REPLACE_ORIGINAL";
-      if(cat === "services") return key.indexOf("SOULSEEK_") === 0 || key.indexOf("KNABEN_") === 0 || key.indexOf("LASTFM_") === 0 || key === "YTDLP_CMD" || key.indexOf("YOUTUBE_") === 0 || key === "RD_BASE";
+      if(cat === "services") return key.indexOf("SOULSEEK_") === 0 || key.indexOf("INDEXER_") === 0 || key.indexOf("LASTFM_") === 0 || key === "YTDLP_CMD" || key.indexOf("YOUTUBE_") === 0 || key === "RD_BASE";
       if(cat === "playback") return key === "WHEEL_ROTATION_MAX_DEGREES" || key === "FFMPEG_PATH" || key === "FFPROBE_PATH" || key === "AUDIO_TRANSCODE" || key === "VIDEO_BROWSER_TARGET_EXT" || key === "AUTO_TRANSCODE_FOR_BROWSER_COMPATIBILITY" || key === "PRELOAD_NEXT_CHUNK_BYTES";
       return false;
     }).map(settingRowToListItem);
@@ -1915,6 +2002,7 @@ async function libDoSearch(engine, q){
         await settingsLoad();
         const labels = advancedCategoryLabels();
         const items = [
+          {kind:"libinfo_action",label:"Indexer Definitions",sub_label:"Stage, validate, activate, and roll back Cardigann definitions",action:"indexer_definitions",pills:["Advanced"],forceTwoLine:true,settingRow:true},
           {kind:"libui_action", label:"Review source-default diff", sub_label:"Shows nonsecret, nonprivate changes to review before a Git commit", action:"review_defaults_diff", pills:["Diff"], forceTwoLine:true, settingRow:true},
           {kind:"libui_action", label:"Performance overlay button", sub_label:"Show the compact performance toggle button", action:"toggle_performance_overlay_button", pills:[uiSettings.performanceOverlayButton ? "On" : "Off"], forceTwoLine:true, settingRow:true}
         ].concat(["glass", "text", "ui", "animations", "search", "downloads", "services", "playback", "system"].map((key)=>({
@@ -2094,6 +2182,12 @@ async function libDoSearch(engine, q){
       case "settings_services":
         await viewSettingsCategory("services", true);
         return true;
+      case "torrent_indexers":
+        await viewTorrentIndexers(true);
+        return true;
+      case "indexer_definitions":
+        await viewIndexerDefinitions(true);
+        return true;
       case "settings_playback":
         await viewSettingsCategory("playback", true);
         return true;
@@ -2158,9 +2252,9 @@ async function libDoSearch(engine, q){
     const movie = /\b(movie|film|show|series|season|episode|1080p|2160p|720p|4k|bluray|webrip|webdl|hdtv|x264|x265|hevc|hdr|s\d{1,2}e\d+)\b/.test(query) || /\b(?:19|20)\d{2}\b/.test(query);
     const video = /\b(tutorial|review|explained|interview|podcast|trailer|clip|performance|news|walkthrough|guide)\b/.test(query);
     const sourceBoosts = music
-      ? {library:180, soulseek:150, youtube:95, knaben:30}
-      : (movie ? {library:180, knaben:150, youtube:90, soulseek:25}
-        : (video ? {library:180, youtube:150, soulseek:55, knaben:55} : {library:160, youtube:70, soulseek:65, knaben:60}));
+      ? {library:180, soulseek:150, soundcloud:115, youtube:95, torrent:30}
+      : (movie ? {library:180, torrent:150, youtube:90, soulseek:25, soundcloud:15}
+        : (video ? {library:180, youtube:150, soulseek:55, torrent:55, soundcloud:45} : {library:160, youtube:70, soundcloud:68, soulseek:65, torrent:60}));
     const score = item=>{
       const title = normalize(item.title || item.directory_title || item.name || "");
       const artistTitle = normalize(String(item.artist || item.user || "") + " " + title);
@@ -2191,7 +2285,38 @@ async function libDoSearch(engine, q){
     return String(done) + "/" + String(total) + " sources, " + String(count) + " results";
   }
 
+  async function libUnifiedSearchStream(qq, searchToken){
+    const url="/api/libsearch/combined?q="+encodeURIComponent(qq)+"&stream=1";
+    const model=libUnifiedSearchModel(); model.reset(qq,searchToken);
+    const response=await fetch(url,{cache:"no-store"});
+    if(!response.ok || !response.body || !window.TextDecoder){
+      const fallback=await apiGet("/api/libsearch/combined?q="+encodeURIComponent(qq));
+      model.ingestFinal({results:fallback.results||[],provider_status:fallback.provider_status||[],cached:fallback.cached});
+      return fallback;
+    }
+    const decoder=new TextDecoder(),reader=response.body.getReader(); let buffer="",finalPayload=null;
+    function handle(line){
+      if(!line || state.libSearch.search_token!==searchToken)return;
+      let event=null; try{event=JSON.parse(line);}catch(_error){return;}
+      if(event.event==="source"){
+        model.ingestSource(event);
+        libSetStatus(libSearchCombinedStatusText(model.state.providerStatus),event.error?"warn":"");
+        libRefreshList(true);
+      }else if(event.event==="done"){
+        finalPayload=event; model.ingestFinal(event);
+        libSetStatus(String(model.state.allResults.length)+" results"+(event.cached?" · Cached":""),"ok");
+        libRefreshList(true);
+      }else if(event.event==="start"){
+        state.libSearch.cached=!!event.cached; libSetStatus(event.cached?"Loading cached results":"Searching",""); libRefreshList(true);
+      }
+    }
+    while(true){const chunk=await reader.read();if(chunk.done)break;buffer+=decoder.decode(chunk.value,{stream:true});const lines=buffer.split(/\n/);buffer=lines.pop()||"";lines.forEach(handle);}
+    if(buffer)handle(buffer);
+    return finalPayload||{ok:true,q:qq,cache_key:"",results:model.state.allResults,result_count:model.state.allResults.length,provider_status:model.state.providerStatus};
+  }
+
   async function libSearchCombinedProgressive(qq, searchToken){
+    return await libUnifiedSearchStream(qq, searchToken);
     const url = "/api/libsearch/combined?q=" + encodeURIComponent(qq) + "&stream=1";
     try{
       if(window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.isServerUnavailable && DebriPod.clientSync.isServerUnavailable()){
@@ -2266,8 +2391,8 @@ async function libDoSearch(engine, q){
       }else if(ev.event === "done"){
         finalPayload = ev;
       }else if(ev.event === "start"){
-        const sources = Array.isArray(ev.sources) ? ev.sources : ["library", "soulseek", "knaben", "youtube"];
-        const sourceLabels = {library:"Library", soulseek:"Soulseek", knaben:"Knaben", youtube:"YouTube"};
+        const sources = Array.isArray(ev.sources) ? ev.sources : ["library", "soulseek", "torrent", "youtube", "soundcloud"];
+        const sourceLabels = {library:"Library", soulseek:"Soulseek", torrent:"Torrent", youtube:"YouTube", soundcloud:"SoundCloud"};
         sources.forEach(src=>{ sourceStatus[String(src)] = {source:String(src), label:sourceLabels[String(src)] || String(src), state:"searching", result_count:0, done:false, error:""}; });
         state.libSearch.sourceStatus = Object.assign({}, sourceStatus);
         state.libSearch.cached = !!ev.cached;

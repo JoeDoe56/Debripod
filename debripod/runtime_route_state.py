@@ -206,7 +206,7 @@ def _engine_prepare_stream_session(payload: dict) -> dict:
             rel = _search_stream_rel(session_id, str(it.get('item_id') or ''))
             out_items.append({'root_id': SEARCH_STREAM_ROOT_ID, 'rel': rel, 'media': it.get('media') or '', 'label': it.get('name') or '', 'title': it.get('title') or '', 'artist': it.get('artist') or '', 'album': it.get('album') or '', 'art': it.get('art') or '', 'streamed': True, 'source': it.get('source') or src, 'ext': it.get('ext') or '', 'quality': it.get('quality') or '', 'size': int(it.get('size') or 0)})
         return {'session_id': session_id, 'title': title, 'items': out_items}
-    if src != "knaben":
+    if src != "torrent":
         raise RuntimeError("Streaming is not available for this source")
     provider_task_id = str(payload.get("debrid_task_id") or "").strip()
     selected = payload.get("selected") or []

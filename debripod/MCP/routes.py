@@ -6,6 +6,7 @@ from ..runtime_downloads import *
 from ..runtime_route_state import *
 from ..storage.tasks import save_task_metadata
 from ..Services.debrid import get_active_provider
+from ..Services.search.runtime import get_search_runtime
 
 app = DeferredApp()
 
@@ -272,34 +273,34 @@ def _mcp_group_soulseek_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any
     return out
 
 
-def _mcp_search_knaben(query: str, limit: int) -> dict:
-    results, err, remaining, reset = knaben_search(query, 1)
-    trimmed = list(results or [])[:limit]
+def _mcp_search_torrents(query: str, limit: int) -> dict:
+    response = get_search_runtime().indexer_service.search(query)
+    trimmed = list(response.results or [])[:limit]
     items = []
     for it in trimmed:
+        provider = it.get('provider_data') or {}
         ident = _mcp_identifier_encode({
-            'kind': 'knaben_item',
-            'title': str(it.get('title') or 'Knaben item'),
-            'magnet': str(it.get('magnet') or ''),
-            'infohash': str(it.get('infohash') or ''),
+            'kind': 'torrent_item',
+            'title': str(it.get('title') or 'Torrent'),
+            'magnet': str(provider.get('magnet') or ''),
+            'infohash': str(provider.get('infohash') or ''),
         })
         items.append({
             'identifier': ident,
             'title': str(it.get('title') or ''),
             'size': it.get('size'),
-            'seeders': it.get('seeders'),
-            'leechers': it.get('leechers'),
-            'category': str(it.get('category') or ''),
-            'infohash': str(it.get('infohash') or ''),
-            'href': str(it.get('href') or ''),
+            'seeders': provider.get('seeders'),
+            'leechers': provider.get('leechers'),
+            'category': str(provider.get('category') or ''),
+            'infohash': str(provider.get('infohash') or ''),
+            'indexers': list(provider.get('indexer_labels') or []),
+            'href': str(it.get('canonical_url') or ''),
         })
     return {
-        'engine': 'knaben',
+        'engine': 'torrents',
         'query': query,
         'limit': limit,
-        'error': str(err or ''),
-        'rate_remaining': remaining,
-        'rate_reset': reset,
+        'error': str(response.error or ''),
         'results': items,
         'result_count': len(items),
     }
@@ -357,7 +358,7 @@ def _mcp_start_debrid_download(title: str, magnet: str) -> dict:
     os.makedirs(task_dir, exist_ok=True)
     t = Task(
         id=task_id,
-        title=title or 'Knaben item',
+        title=title or 'Torrent',
         magnet=magnet,
         task_dir=task_dir,
         source='debrid',
@@ -465,12 +466,12 @@ def _mcp_build_library_tree() -> dict:
 def _mcp_handle_tool_call(name: str, args: dict) -> dict:
     name = str(name or '').strip()
     args = args if isinstance(args, dict) else {}
-    if name == 'debripod_knaben_search':
+    if name == 'debripod_torrent_search':
         query = str(args.get('query') or '').strip()
         if not query:
             return _mcp_tool_result({'ok': False, 'error': 'Missing query'}, 'Error: Missing query', is_error=True)
         limit = _mcp_get_limit(args)
-        data = _mcp_search_knaben(query, limit)
+        data = _mcp_search_torrents(query, limit)
         ok = not data.get('error')
         text = json.dumps(data, ensure_ascii=False, indent=2)
         data['ok'] = ok
@@ -507,10 +508,10 @@ def _mcp_handle_tool_call(name: str, args: dict) -> dict:
                 data = {'ok': True, 'source': 'soulseek', 'status': 'started', **out}
                 text = f"Soulseek download started. Files are downloading to {out.get('task_dir')}."
                 return _mcp_tool_result(data, text)
-            if kind == 'knaben_item':
-                out = _mcp_start_debrid_download(str(payload.get('title') or 'Knaben item').strip() or 'Knaben item', str(payload.get('magnet') or '').strip())
-                data = {'ok': True, 'source': 'knaben', 'status': 'started', **out}
-                text = f"Knaben download started. Files are downloading to {out.get('task_dir')}."
+            if kind == 'torrent_item':
+                out = _mcp_start_debrid_download(str(payload.get('title') or 'Torrent').strip() or 'Torrent', str(payload.get('magnet') or '').strip())
+                data = {'ok': True, 'source': 'torrent', 'status': 'started', **out}
+                text = f"Torrent download started. Files are downloading to {out.get('task_dir')}."
                 return _mcp_tool_result(data, text)
             return _mcp_tool_result({'ok': False, 'error': 'Unsupported identifier type'}, 'Error: Unsupported identifier type', is_error=True)
         except Exception:
@@ -547,9 +548,9 @@ def _mcp_handle_tool_call(name: str, args: dict) -> dict:
 def _mcp_tools_list() -> List[dict]:
     return [
         {
-            'name': 'debripod_knaben_search',
-            'title': 'DebriPod Knaben Search',
-            'description': 'Search Knaben torrent results. Returns DebriPod download identifiers.',
+            'name': 'debripod_torrent_search',
+            'title': 'DebriPod Torrent Search',
+            'description': 'Search enabled Cardigann torrent indexers. Returns DebriPod download identifiers.',
             'inputSchema': {
                 'type': 'object',
                 'properties': {
@@ -575,7 +576,7 @@ def _mcp_tools_list() -> List[dict]:
         {
             'name': 'debripod_download',
             'title': 'DebriPod Download',
-            'description': 'Start a DebriPod download from a search result identifier. Soulseek downloads use whole directories. Knaben downloads queue the whole torrent selection.',
+            'description': 'Start a DebriPod download from a search result identifier. Soulseek downloads use whole directories; torrent downloads queue the whole selection.',
             'inputSchema': {
                 'type': 'object',
                 'properties': {'identifier': {'type': 'string'}},

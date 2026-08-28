@@ -148,7 +148,6 @@
           result_source: search.result_source || "",
           last_count: Number(search.last_count || 0),
           results: Array.isArray(search.results) ? search.results : [],
-          knaben_results: Array.isArray(search.knaben_results) ? search.knaben_results : [],
           sourceStatus: search.sourceStatus || {},
           cached: !!search.cached,
           showSourceStatus: !!search.showSourceStatus,

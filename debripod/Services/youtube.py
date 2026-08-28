@@ -79,136 +79,14 @@ def _youtube_channel_url(channel_id: str = "", handle: str = "", browse_url: str
     return base
 
 
-def _extract_json_object_from_html(html: str, anchor: str) -> Optional[dict]:
-    idx = html.find(anchor)
-    if idx < 0:
-        return None
-    start = html.find("{", idx)
-    if start < 0:
-        return None
-    depth = 0
-    in_str = False
-    esc = False
-    for i in range(start, len(html)):
-        ch = html[i]
-        if in_str:
-            if esc:
-                esc = False
-            elif ch == "\\":
-                esc = True
-            elif ch == '"':
-                in_str = False
-            continue
-        if ch == '"':
-            in_str = True
-        elif ch == "{":
-            depth += 1
-        elif ch == "}":
-            depth -= 1
-            if depth == 0:
-                try:
-                    return json.loads(html[start:i + 1])
-                except Exception:
-                    return None
-    return None
 
 
-def _iter_nested_values(obj: Any, key: str):
-    if isinstance(obj, dict):
-        for k, v in obj.items():
-            if k == key:
-                yield v
-            yield from _iter_nested_values(v, key)
-    elif isinstance(obj, list):
-        for v in obj:
-            yield from _iter_nested_values(v, key)
 
 
-def _youtube_text_runs(node: Any) -> str:
-    if isinstance(node, dict):
-        if isinstance(node.get("simpleText"), str):
-            return node.get("simpleText") or ""
-        runs = node.get("runs")
-        if isinstance(runs, list):
-            return "".join(str(r.get("text") or "") for r in runs if isinstance(r, dict))
-    if isinstance(node, list):
-        return "".join(_youtube_text_runs(x) for x in node)
-    return str(node or "")
 
 
-def _youtube_parse_video_renderer(vr: dict) -> Optional[dict]:
-    if not isinstance(vr, dict):
-        return None
-    video_id = str(vr.get("videoId") or "").strip()
-    if not video_id:
-        return None
-    title = _youtube_text_runs(vr.get("title")) or "YouTube video"
-    owner = _youtube_text_runs(vr.get("ownerText") or vr.get("longBylineText") or vr.get("shortBylineText"))
-    length = _youtube_text_runs(vr.get("lengthText"))
-    published = _youtube_text_runs(vr.get("publishedTimeText"))
-    view_count = _youtube_text_runs(vr.get("viewCountText"))
-    owner_runs = None
-    for k in ("ownerText", "longBylineText", "shortBylineText"):
-        cur = vr.get(k)
-        if isinstance(cur, dict) and isinstance(cur.get("runs"), list) and cur.get("runs"):
-            owner_runs = cur.get("runs")
-            break
-    channel_id = ""
-    browse_url = ""
-    handle = ""
-    if owner_runs:
-        run0 = owner_runs[0] if isinstance(owner_runs[0], dict) else {}
-        nav = run0.get("navigationEndpoint") or {}
-        browse = nav.get("browseEndpoint") or {}
-        channel_id = str(browse.get("browseId") or "").strip()
-        browse_url = str(browse.get("canonicalBaseUrl") or "").strip()
-        if browse_url.startswith("/@"):
-            handle = browse_url[2:]
-    thumb = ""
-    thumbs = (vr.get("thumbnail") or {}).get("thumbnails") or []
-    if isinstance(thumbs, list) and thumbs:
-        thumb = str((thumbs[-1] or {}).get("url") or "")
-    return {
-        "video_id": video_id,
-        "url": _youtube_watch_url(video_id),
-        "title": title,
-        "channel": owner,
-        "channel_id": channel_id,
-        "channel_url": _youtube_channel_url(channel_id, handle, browse_url),
-        "browse_url": browse_url,
-        "handle": handle,
-        "length": length,
-        "published": published,
-        "view_count": view_count,
-        "thumbnail": thumb,
-    }
 
 
-def youtube_search(query: str, limit: Optional[int] = None) -> List[dict]:
-    q = str(query or "").strip()
-    if not q:
-        return []
-    max_results = int(limit or _search_limit_provider() or 24)
-    url = _youtube_web_base() + "/results?search_query=" + quote(q)
-    resp = requests.get(url, headers=_request_headers_provider(), timeout=_timeout_provider())
-    resp.raise_for_status()
-    data = _extract_json_object_from_html(resp.text, "var ytInitialData =") or _extract_json_object_from_html(resp.text, "ytInitialData =")
-    if not isinstance(data, dict):
-        return []
-    out: List[dict] = []
-    seen = set()
-    for vr in _iter_nested_values(data, "videoRenderer"):
-        item = _youtube_parse_video_renderer(vr)
-        if not item:
-            continue
-        vid = item.get("video_id") or ""
-        if vid in seen:
-            continue
-        seen.add(vid)
-        out.append(item)
-        if len(out) >= max_results:
-            break
-    return out
 
 
 def _youtube_channel_feed_url(channel_id: str) -> str:
@@ -712,71 +590,8 @@ def ytdlp_inspect(url: str) -> dict:
     }
 
 
-def _search_youtube_cached(q: str) -> Tuple[List[dict], str, str]:
-    extra: Dict[str, Any] = {}
-    cache_key = _make_search_cache_key("youtube", q, extra)
-    cached_payload = None
-    with _SEARCH_DISK_LOCK:
-        d = _disk_cache_get(cache_key)
-        if d and isinstance(d.get("payload"), dict):
-            cached_payload = d.get("payload")
-    if cached_payload is not None:
-        return list(cached_payload.get("results") or []), str(cached_payload.get("error") or ""), cache_key
-    try:
-        results = youtube_search(q)
-        err = ""
-    except Exception as e:
-        results = []
-        err = "YouTube search failed: " + str(e)
-    with _SEARCH_DISK_LOCK:
-        _disk_cache_set(cache_key, "youtube", q, extra, {"results": results, "error": err})
-    return results, err, cache_key
 
 
-def _standardize_youtube_results(raw_results: List[dict]) -> List[dict]:
-    out: List[dict] = []
-    for r in raw_results or []:
-        if not isinstance(r, dict):
-            continue
-        video_id = str(r.get("video_id") or "").strip()
-        title = str(r.get("title") or "").strip()
-        if not video_id or not title:
-            continue
-        published = str(r.get("published") or "").strip()
-        view_count = str(r.get("view_count") or "").strip()
-        length = str(r.get("length") or "").strip()
-        channel = str(r.get("channel") or "").strip()
-        channel_id = str(r.get("channel_id") or "").strip()
-        out.append({
-            "result_id": "youtube:" + video_id,
-            "source": "youtube",
-            "source_label": "YouTube",
-            "user": channel,
-            "title": title,
-            "directory": str(r.get("url") or ""),
-            "directory_title": published or length or view_count,
-            "file_count": 0,
-            "size": 0,
-            "speed": 0,
-            "seeders": 0,
-            "leechers": 0,
-            "browse_available": bool(channel_id),
-            "stream_available": True,
-            "download_available": True,
-            "files_loaded": False,
-            "files": [],
-            "video_id": video_id,
-            "url": str(r.get("url") or _youtube_watch_url(video_id)),
-            "channel": channel,
-            "channel_id": channel_id,
-            "channel_url": str(r.get("channel_url") or ""),
-            "published": published,
-            "view_count": view_count,
-            "length": length,
-            "thumbnail": str(r.get("thumbnail") or ""),
-            "description": str(r.get("description") or ""),
-        })
-    return out
 
 
 def youtube_load_result_files(raw: dict) -> dict:
@@ -793,7 +608,3 @@ def youtube_load_result_files(raw: dict) -> dict:
     out["size"] = total_size
     out["files_loaded"] = True
     return out
-
-
-def youtube_channel_browse(channel_id: str) -> List[dict]:
-    return _standardize_youtube_results(youtube_channel_videos(channel_id))

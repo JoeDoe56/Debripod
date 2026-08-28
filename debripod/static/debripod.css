@@ -881,6 +881,41 @@
       border-top-color:rgba(255,255,255,0.92);
       animation:dpSpin .75s linear infinite;
     }
+
+    .ipodItem[data-kind="libsearch_result"],
+    .ipodItem[data-kind="libsearch_file"]{
+      height:76px;
+      min-height:76px;
+      max-height:76px;
+      overflow:hidden;
+    }
+    .ipodItem[data-kind="libsearch_status"],
+    .ipodItem[data-kind="libsearch_filter"]{
+      height:56px;
+      min-height:56px;
+      max-height:56px;
+      overflow:hidden;
+    }
+    .ipodItem[data-kind="libsearch_result"] .ipodLabel,
+    .ipodItem[data-kind="libsearch_result"] .ipodSubLabel,
+    .ipodItem[data-kind="libsearch_file"] .ipodLabel,
+    .ipodItem[data-kind="libsearch_file"] .ipodSubLabel{
+      display:block;
+      min-width:0;
+      overflow:hidden;
+      text-overflow:ellipsis;
+      white-space:nowrap;
+    }
+    .ipodItem[data-kind="libsearch_result"] .ipodPills,
+    .ipodItem[data-kind="libsearch_file"] .ipodPills{
+      flex-wrap:nowrap;
+      min-width:0;
+      max-width:48%;
+      overflow-x:auto;
+      overflow-y:hidden;
+      scrollbar-width:none;
+      white-space:nowrap;
+    }
     .ipodItem.isExpandedRow{
       align-items:stretch;
       flex-direction:column;

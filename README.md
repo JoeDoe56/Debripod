@@ -2,7 +2,7 @@
 
 DebriPod is a local Flask media app for browsing, streaming, downloading, organizing, and playing media from your own computer. It opens in your browser at a local address, usually `http://127.0.0.1:8083`.
 
-DebriPod supports local audio and video libraries, unified metadata and folder browsing, playlists, YouTube, Soulseek, Knaben, multiple debrid providers, Last.fm, local accounts, passkeys, a first run setup wizard, task tracking, per user settings, SQLite backed library caches, cached client state, a PWA service worker, LiquidGL glass UI, a WebGL visualizer, and optional MCP access.
+DebriPod supports local audio and video libraries, unified metadata and folder browsing, playlists, YouTube and YouTube Music, SoundCloud, Soulseek, public Cardigann torrent indexers, multiple debrid providers, Last.fm, local accounts, passkeys, a first run setup wizard, task tracking, per user settings, SQLite backed library caches, cached client state, a PWA service worker, LiquidGL glass UI, a WebGL visualizer, and optional MCP access.
 
 ## Quick install
 
@@ -78,11 +78,21 @@ ffmpeg and ffprobe are used for metadata, artwork extraction, muxing, transcodin
 
 ### Search, downloads, and tasks
 
-DebriPod combines the indexed local library, Soulseek, Knaben, and YouTube into one intent-aware search flow. Local results play directly, YouTube results can be streamed or downloaded, Soulseek results are grouped by user and folder, and Knaben magnet results use the active debrid provider.
+DebriPod searches the indexed Library, Soulseek, enabled torrent indexers, and yt-dlp concurrently, then presents one globally ranked feed. Rows retain visible source and type pills: Library, Soulseek, Torrent plus every contributing indexer, YouTube, or SoundCloud. The existing text filter row accepts ordinary terms plus `source:`, `type:`, `indexer:`, and `media:` filters; quote values containing spaces. Clicking a result pill toggles the corresponding text-backed filter.
+
+YouTube Music searches Songs, Music Videos, Albums, Artists, Music Playlists, Podcasts, and Episodes. Ordinary YouTube adds Videos, Playlists, and Channels. YouTube Music wins duplicate YouTube identities. SoundCloud searches Songs, Artists, Albums, and Music Playlists independently and does not require OAuth.
+
+Torrent search uses tracked Prowlarr Cardigann definitions. Thirteen public definitions are enabled on a new profile: twelve live-checked sources centered on movies, television, and general media, plus 1337x as a browser-challenge-capable source. Only Nyaa and NekoBT are anime-focused. Enable, disable, and test indexers under **Settings > Services > Torrent Indexers**; those per-user choices survive definition pulls and activation. Duplicate info hashes merge into one Torrent row while retaining every contributing indexer pill. Opening a torrent resolves definition-driven detail links lazily, then previews it through the active debrid provider.
 
 Long running work appears in the task panel. Debrid, Soulseek, YouTube, and video processing jobs can show queued, active, paused, failed, canceled, and completed states. Search history and completed combined search payloads are cached locally.
 
-YouTube support uses `yt-dlp`, installed from `requirements.txt`. Set `YOUTUBE_DOWNLOAD_DIR` to the folder where YouTube downloads should be saved. Soulseek support uses `aioslsk`; set `SOULSEEK_USERNAME`, `SOULSEEK_PASSWORD`, and `SOULSEEK_DOWNLOAD_DIR`, then restart DebriPod after changing credentials so the client starts with the new settings. Configure one supported debrid provider token, select it with `DEBRID_PROVIDER`, and set `DOWNLOAD_DIR`. Knaben can work without an API key when the public free tier is available.
+YouTube and SoundCloud support use the `yt-dlp` CLI and DebriPod's local extractor plugin. Set `YOUTUBE_DOWNLOAD_DIR` for generic yt-dlp downloads. Soulseek uses `aioslsk`; set `SOULSEEK_USERNAME`, `SOULSEEK_PASSWORD`, and `SOULSEEK_DOWNLOAD_DIR`, then restart DebriPod after changing credentials. Configure one supported debrid provider token, select it with `DEBRID_PROVIDER`, and set `DOWNLOAD_DIR` for torrent previews and downloads.
+
+Official definitions live in `indexer-definitions/official`; user definitions live in `indexer-definitions/custom`, and a custom definition with the same ID overrides official. **Settings > Advanced > Indexer Definitions** can stage the current Prowlarr package, validate it, activate it, roll it back, or discard staging. Activation replaces only official definitions; custom definitions remain untouched. Runtime staging and backups live under `data/indexer-definitions/`.
+
+When—and only when—an indexer response is positively identified as an anti-bot browser challenge, DebriPod can use the installed default browser, then other supported installed browsers, to obtain clearance. It uses an isolated profile under `data/browser-profiles/` and installs no extension or bundled browser.
+
+The normal tests are offline. To opt into live yt-dlp and public-indexer smoke tests, run with `DEBRIPOD_RUN_NETWORK_TESTS=1`.
 
 ### Playlists and smart playlists
 
@@ -168,7 +178,7 @@ debripod/
   storage/                primary SQLite database, migrations, codecs, and repositories
   MCP/                    optional MCP HTTP and SSE route helpers
   Routes/                 modular Flask route groups
-  Services/               Debrid providers, Knaben, Soulseek, and Last.fm helpers
+  Services/               Unified search, Cardigann indexers, Debrid, Soulseek, yt-dlp, and Last.fm helpers
   Tasks/                  task model and task manager helpers
   playback/               streaming, range responses, ffprobe, and command helpers
   static/                 browser UI, JS modules, LiquidGL, visualizer, service worker, fonts
@@ -259,7 +269,7 @@ Confirm the username and password are correct. Restart DebriPod after changing S
 
 ### Debrid downloads do not start
 
-Confirm one supported provider token is set, that `DEBRID_PROVIDER` names that provider, and that the provider account is active. Try a different Knaben result because not every torrent will be cached or available.
+Confirm one supported provider token is set, that `DEBRID_PROVIDER` names that provider, and that the provider account is active. Try another torrent because not every release is cached or available through every debrid provider.
 
 ### YouTube streaming or downloading fails
 
@@ -318,4 +328,4 @@ Attributions for direct runtime dependencies:
 | watchdog | File watching support | Apache 2.0 |
 | ffmpeg and ffprobe | Metadata, muxing, transcoding, and compatibility checks | License depends on the installed build |
 
-DebriPod interacts with external services including YouTube, Soulseek, Knaben, Real Debrid, AllDebrid, Premiumize, TorBox, and Last.fm. Users are responsible for following the terms of the services they enable and for only downloading or streaming media they are allowed to access.
+DebriPod interacts with external services including YouTube, SoundCloud, Soulseek, configured public torrent indexers, Real Debrid, AllDebrid, Premiumize, TorBox, and Last.fm. Users are responsible for following the terms of the services they enable and for only downloading or streaming media they are allowed to access.

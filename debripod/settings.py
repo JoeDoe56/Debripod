@@ -67,12 +67,28 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {'APP_NAME': 'DebriPod',
  'MCP_SEARCH_RESULT_LIMIT': 20,
  'MCP_SSE_KEEPALIVE_SECONDS': 15,
  'MCP_SESSION_TTL_SECONDS': 43200,
- 'KNABEN_API_KEY': '',
- 'KNABEN_MIN_SECONDS_BETWEEN_REQUESTS': 0.6,
- 'KNABEN_CACHE_TTL_SECONDS': 120,
- 'KNABEN_MAX_RETRIES': 5,
- 'KNABEN_API_BASE': 'https://api.knaben.org/v1',
- 'KNABEN_WEB_BASE': 'https://knaben.org',
+ 'INDEXER_ENABLED_IDS': ['1337x',
+                         'thepiratebay',
+                         'yts',
+                         'internetarchive',
+                         'torrentproject2',
+                         'showrss-yml',
+                         'torrentsome',
+                         'magnetdownload',
+                         'torrent9',
+                         'world-torrent',
+                         'elitetorrent-wf',
+                         'nyaasi',
+                         'nekobt'],
+ 'INDEXER_MAX_CONCURRENT': 6,
+ 'INDEXER_REQUEST_RETRIES': 2,
+ 'INDEXER_DEFINITION_SCHEMA_VERSION': 11,
+ 'INDEXER_DEFINITION_PACKAGE_URL': 'https://indexers.prowlarr.com/master/11/package.zip',
+ 'INDEXER_CHALLENGE_SOLVER_ENABLED': True,
+ 'INDEXER_CHALLENGE_TIMEOUT_SECONDS': 45,
+ 'INDEXER_BROWSER_IDLE_SECONDS': 300,
+ 'INDEXER_BROWSER_MAX_WARM': 2,
+ 'YTDLP_SEARCH_MAX_CONCURRENT': 4,
  'YTDLP_CMD': 'yt-dlp',
  'YOUTUBE_DOWNLOAD_DIR': '',
  'YOUTUBE_STREAM_CACHE_SUBDIR': 'youtube_streams',
@@ -123,7 +139,6 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {'APP_NAME': 'DebriPod',
 APP_SETTING_KEYS = set(DEFAULT_APP_SETTINGS)
 NON_PERSISTED_APP_SETTING_KEYS: set[str] = set()
 SECRET_SETTING_KEYS = {
-    "KNABEN_API_KEY",
     "REAL_DEBRID_API_KEY",
     "ALLDEBRID_API_KEY",
     "PREMIUMIZE_API_KEY",
@@ -206,6 +221,9 @@ def _coerce_setting(key: str, value: Any) -> Any:
                     if path:
                         out.append({"path": path, "mode": "meta"})
         return out
+    if key == "INDEXER_ENABLED_IDS":
+        values = value if isinstance(value, list) else (str(value or "").split(",") if isinstance(value, str) else [])
+        return list(dict.fromkeys(str(item).strip() for item in values if str(item).strip()))
     if isinstance(default, bool):
         return bool(value)
     if isinstance(default, int) and not isinstance(default, bool):

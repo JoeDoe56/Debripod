@@ -12,7 +12,7 @@
     return "";
   }
 
-  function libStandardizePreviewFilesForKnaben(preview){
+  function libStandardizePreviewFilesForTorrent(preview){
     const out = [];
     const files = Array.isArray(preview && preview.files) ? preview.files : [];
     for(const ff of files){
@@ -33,7 +33,7 @@
         file_id: identifierText(ff.id),
         bit_depth: bitDepth,
         sample_rate: sampleRate,
-        source: "knaben",
+        source: "torrent",
         provider: String((preview && preview.provider) || ""),
         debrid_task_id: String((preview && preview.debrid_task_id) || ""),
         selectable: true
@@ -109,7 +109,7 @@
         if(f.bitDepth && (!bd || bd !== f.bitDepth)) continue;
         if(f.sampleRate && (!sr || sr !== f.sampleRate)) continue;
         visibleFileCount += 1;
-        const key = src === "knaben" ? ("file:" + firstIdentifierText(ff.file_id, name)) : (src === "youtube" ? ("itag:" + firstIdentifierText(ff.itag, ff.file_id, name)) : (src === "library" ? ("library:" + String(ff.root_id || rr.root_id || "") + ":" + String(ff.rel || "")) : (String(ff.remote_path || name))));
+        const key = src === "torrent" ? ("file:" + firstIdentifierText(ff.file_id, name)) : ((src === "youtube" || src === "soundcloud") ? ("format:" + firstIdentifierText(ff.itag, ff.file_id, name)) : (src === "library" ? ("library:" + String(ff.root_id || rr.root_id || "") + ":" + String(ff.rel || "")) : (String(ff.remote_path || name))));
         const dlState = normalizeSlskDownloadState(String(ff.download_state || ""));
         const pills = [];
         // yt-dlp keeps "youtube" as its internal source for format handling,
@@ -213,17 +213,61 @@
       source:String((result && result.source) || ""),
       raw:result || {}
     };
+    const canonical = Object.assign({}, item.raw || {});
+    const providerData = Object.assign({}, canonical.provider_data || {});
+    const source = String(canonical.source || item.source || "").toLowerCase();
+    const kind = String(canonical.kind || "").toLowerCase();
+    if(source === "library" && canonical.browse_available){
+      const nav = providerData.navigation || {};
+      const root = {id:String(providerData.root_id || nav.root_id || ""),name:"Library",mode:"metadata"};
+      if(nav.view === "folder") return await viewFolder(root,String(nav.rel || providerData.rel || ""),canonical.title || "Folder",push !== false);
+      if(nav.view === "artist") return await viewMetaList(root,"albums",String(nav.artist || providerData.entity_key || ""),canonical.title || "Artist",push !== false);
+      if(nav.view === "album") return await viewMetaList(root,"tracks",JSON.stringify({artist:String(nav.artist || canonical.artist || ""),album:String(nav.album || canonical.album || canonical.title || "")}),canonical.title || "Album",push !== false);
+      if(nav.view === "playlist") return await viewMetaList(root,"playlist_tracks",String(nav.playlist || providerData.rel || ""),canonical.title || "Playlist",push !== false);
+      if(nav.view === "show") return await viewMetaList(root,"show_seasons",String(nav.show || providerData.entity_key || ""),canonical.title || "Show",push !== false);
+      if(nav.view === "season") return await viewMetaList(root,"show_episodes",JSON.stringify({show_key:String(nav.show || ""),season:Number(nav.season || 0)}),canonical.title || "Season",push !== false);
+    }
+    if(source === "soundcloud" && kind === "artist") return await viewSoundCloudArtistSections(canonical,push !== false);
+    if((source === "youtube" && ["album","music_playlist","podcast","playlist","artist","channel"].includes(kind)) || (source === "soundcloud" && ["album","music_playlist"].includes(kind))){
+      return await viewYtdlpResultDirectory(canonical,push !== false);
+    }
     showNowPlaying(false);
     await setView({
       kind:"libsearch_result_detail",
       label:"Files",
       source:String(item.source || ""),
       load: async function(){
-        const raw = Object.assign({}, item.raw || {});
+        const raw = Object.assign({}, canonical);
+        raw.source = source;
+        raw.url = String(raw.canonical_url || providerData.permalink_url || "");
+        raw.user = String(providerData.user || raw.artist || "");
+        raw.directory = String(providerData.directory || raw.subtitle || "");
+        raw.root_id = String(providerData.root_id || "");
+        raw.rel = String(providerData.rel || "");
+        raw.magnet = String(providerData.magnet || "");
+        raw.provider = String(providerData.provider || "");
+        raw.debrid_task_id = String(providerData.debrid_task_id || "");
+        raw.source_urls = Array.isArray(providerData.source_urls) ? providerData.source_urls.slice() : [];
+        raw.files = Array.isArray(raw.files) ? raw.files.map(function(file){
+          const fileData=file.provider_data||{};
+          return Object.assign({},file,{root_id:String(fileData.root_id||providerData.root_id||""),rel:String(fileData.rel||file.rel||file.path||"")});
+        }) : [];
         resetList([{kind:"loading", label:"Loading files", loading:true}]);
         libSetFileStatus("", "");
         try{
-          if(String(raw.source || item.source || "") === "knaben" && !raw.files_loaded){
+          if(source === "torrent" && !raw.files_loaded){
+            if(!raw.magnet){
+              const indexerIds = Array.isArray(providerData.indexer_ids) ? providerData.indexer_ids : [];
+              let resolveError = "Torrent source did not provide a magnet";
+              for(let index=0; index<indexerIds.length && !raw.magnet; index++){
+                const sourceUrl = raw.source_urls[index] || raw.source_urls[0] || raw.url || "";
+                const resolved = await apiPost("/api/indexers/resolve", {id:indexerIds[index],canonical_url:sourceUrl,title:raw.title||"",infohash:String(providerData.infohash||"")});
+                const resolvedJson = (resolved && resolved.json) ? resolved.json : {};
+                if(resolved && resolved.ok && resolvedJson.ok && resolvedJson.magnet) raw.magnet=String(resolvedJson.magnet);
+                else if(resolvedJson.error) resolveError=String(resolvedJson.error);
+              }
+              if(!raw.magnet) throw new Error(resolveError);
+            }
             const res = await apiPost("/api/debrid/preview_files", {magnet: raw.magnet || ""});
             const js = (res && res.json) ? res.json : {};
             if(!res || !res.ok || !js.ok){
@@ -233,13 +277,13 @@
             raw.provider = js.provider || "";
             raw.provider_label = js.provider_label || "";
             raw.debrid_task_id = js.debrid_task_id || "";
-            raw.files = libStandardizePreviewFilesForKnaben(js);
+            raw.files = libStandardizePreviewFilesForTorrent(js);
             raw.file_count = raw.files.length;
             raw.files_loaded = true;
-          }else if(String(raw.source || item.source || "") === "youtube" && !raw.files_loaded){
-            const js = await apiGet("/api/youtube/files?url=" + encodeURIComponent(raw.url || ""));
+          }else if((source === "youtube" || source === "soundcloud") && !raw.files_loaded){
+            const js = await apiGet("/api/ytdlp/files?url=" + encodeURIComponent(raw.url || ""));
             if(!js || !js.ok){
-              throw new Error((js && js.error) ? js.error : "Failed to load YouTube formats");
+              throw new Error((js && js.error) ? js.error : "Failed to load media formats");
             }
             raw.files = Array.isArray(js.files) ? js.files : [];
             raw.file_count = Number(js.file_count || raw.files.length || 0);
@@ -254,6 +298,46 @@
         }
       }
     }, push !== false);
+  }
+
+  function canonicalDirectoryEntry(entry, parent){
+    const source=String(parent.source||"youtube"), id=String(entry.id||entry.url||entry.webpage_url||"");
+    const url=String(entry.webpage_url||entry.url||"");
+    return {result_id:source+":"+id,provider_group:"ytdlp",source:source,source_label:source==="soundcloud"?"SoundCloud":"YouTube",kind:source==="soundcloud"?"song":"video",kind_label:source==="soundcloud"?"Songs":"Videos",title:String(entry.title||entry.name||"Item"),subtitle:String(entry.uploader||entry.channel||""),artist:String(entry.uploader||entry.channel||""),album:"",year:"",duration:Number(entry.duration||0),thumbnail:String(entry.thumbnail||""),canonical_url:url,stable_source_id:id,search_blob:String(entry.title||""),filter_values:{sources:[source],types:[source==="soundcloud"?"song":"video"],indexers:[],media:[source==="soundcloud"?"audio":"video"]},match_confidence:1,rank_score:0,browse_available:false,stream_available:true,download_available:true,files_loaded:false,file_count:0,size:0,files:[],provider_data:source==="soundcloud"?{soundcloud_id:id,permalink_url:url,set_type:"",track_count:0}:{video_id:id,playlist_id:"",channel_id:"",browse_id:"",youtube_music:false,search_category:"videos"}};
+  }
+
+  async function viewYtdlpResultDirectory(result,push){
+    showNowPlaying(false);
+    await setView({kind:"libsearch_result_list",label:result.title||"Directory",source:result.source,load:async function(){
+      resetList([{kind:"loading",label:"Loading items",loading:true}]);
+      try{
+        const js=await apiGet("/api/ytdlp/directory?url="+encodeURIComponent(result.canonical_url||((result.provider_data||{}).permalink_url)||""));
+        if(!js||!js.ok) throw new Error((js&&js.error)||"Failed to load directory");
+        const rows=(js.entries||[]).map(function(entry){ return libUnifiedSearchModel().toRow(canonicalDirectoryEntry(entry,result)); });
+        resetList(rows.length?rows:[{kind:"info",label:"No items found"}]);
+      }catch(error){ resetList([{kind:"info",label:"Failed to load items"}]); alert(String(error&&error.message?error.message:error)); }
+    }},push);
+  }
+
+  async function viewSoundCloudArtistSections(result,push){
+    showNowPlaying(false);
+    await setView({kind:"soundcloud_artist",label:result.title||"SoundCloud",source:"soundcloud",load:async function(){
+      resetList(["tracks","albums","playlists"].map(function(section){ return {kind:"soundcloud_artist_section",label:section.charAt(0).toUpperCase()+section.slice(1),section:section,result:result}; }));
+    }},push);
+  }
+
+  async function viewSoundCloudArtistSection(result,section,push){
+    showNowPlaying(false);
+    await setView({kind:"libsearch_result_list",label:section.charAt(0).toUpperCase()+section.slice(1),source:"soundcloud",load:async function(){
+      resetList([{kind:"loading",label:"Loading "+section,loading:true}]);
+      try{
+        const url=result.canonical_url||((result.provider_data||{}).permalink_url)||"";
+        const js=await apiGet("/api/soundcloud/artist-section?url="+encodeURIComponent(url)+"&section="+encodeURIComponent(section));
+        if(!js||!js.ok) throw new Error((js&&js.error)||"Failed to load section");
+        const rows=(js.results||[]).map(function(raw){ return libUnifiedSearchModel().toRow(raw); });
+        resetList(rows.length?rows:[{kind:"info",label:"No items found"}]);
+      }catch(error){ resetList([{kind:"info",label:"Failed to load section"}]); alert(String(error&&error.message?error.message:error)); }
+    }},push);
   }
 
   function normalizeSlskDownloadState(v){

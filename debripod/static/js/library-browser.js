@@ -1186,7 +1186,7 @@ if(!it) return;
     if(it.kind === "libsearch_query" || it.kind === "libsearch_filter"){
       const field = (it.kind === "libsearch_filter") ? "filter" : "q";
       try{
-        if(!state.libSearch) state.libSearch = {q:"", filter:"", engine:"combined", cache_key:"", result_source:"combined", last_count:0, results:[], knaben_results:[], slsk_users:[], sourceStatus:{}, searching:false, cached:false, showSourceStatus:false, editField:"", editValue:""};
+        if(!state.libSearch) state.libSearch = DebriPod.createSearchResultsState();
         if(field === "q") state.libSearch.showSourceStatus = false;
         state.libSearch.editField = field;
         state.libSearch.editValue = (typeof state.libSearch[field] === "string") ? state.libSearch[field] : "";
@@ -1434,18 +1434,11 @@ if(it.kind === "libtasks_entry"){
 
     if(it.kind === "libsearch_action"){
       if(it.label === "Clear"){
-        state.libSearch.q = "";
-        state.libSearch.filter = "";
-        state.libSearch.engine = "combined";
-        state.libSearch.cache_key = "";
-        state.libSearch.result_source = "combined";
-        state.libSearch.results = [];
-        state.libSearch.knaben_results = [];
-        state.libSearch.slsk_users = [];
-        state.libSearch.last_count = 0;
+        const model = libUnifiedSearchModel();
+        model.clearFilters();
+        model.reset("", "");
+        state.libSearch.running = false;
         state.libSearch.searching = false;
-        state.libSearch.showSourceStatus = false;
-        state.libSearch.sourceStatus = {};
         libSetStatus("", "");
         await viewLibSearch(false);
         return;
@@ -1586,6 +1579,41 @@ if(it.kind === "libsearch_history_action"){
       return;
     }
 
+    if(it.kind === "settings_indexer"){
+      const indexer=it.indexer||{};
+      if(indexer.requires_setup) await viewTorrentIndexerDetail(indexer,true);
+      else{
+        const res=await apiPost("/api/indexers/toggle",{id:indexer.id,enabled:!indexer.enabled});
+        const js=res&&res.json?res.json:{};
+        if(!res||!res.ok||!js.ok) throw new Error(js.error||"Failed to update indexer");
+        await viewTorrentIndexers(false);
+      }
+      return;
+    }
+    if(it.kind === "settings_indexer_toggle"){
+      const indexer=it.indexer||{};
+      const res=await apiPost("/api/indexers/toggle",{id:indexer.id,enabled:!indexer.enabled});
+      const js=res&&res.json?res.json:{};
+      if(!res||!res.ok||!js.ok) throw new Error(js.error||"Failed to update indexer");
+      await viewTorrentIndexers(false);
+      return;
+    }
+    if(it.kind === "settings_indexer_test"){
+      const indexer=it.indexer||{};
+      const res=await apiPost("/api/indexers/test",{id:indexer.id}),js=res&&res.json?res.json:{};
+      alert((res&&res.ok&&js.ok)?("Indexer works: "+String(js.result_count||0)+" results"):(js.error||"Indexer test failed"));
+      return;
+    }
+    if(it.kind === "settings_definition_action"){
+      await runIndexerDefinitionAction(String(it.definitionAction||""));
+      return;
+    }
+
+    if(it.kind === "soundcloud_artist_section"){
+      await viewSoundCloudArtistSection(it.result || {},String(it.section || "tracks"),true);
+      return;
+    }
+
     if(it.kind === "libsearch_file_action"){
       const view = state.current || {};
       if((it.action === "result_selectall" || it.action === "result_clear" || it.action === "result_download" || it.action === "result_browse" || it.action === "result_stream") && view._searchResult){
@@ -1611,19 +1639,19 @@ if(it.kind === "libsearch_history_action"){
           const visible = (state.items || []).filter(x=>x && x.kind === "libsearch_file" && x.selectable);
           let anyUnsel = false;
           for(const v of visible){
-            const key = src === "knaben" ? ("file:" + firstIdentifierText(v.file_id, v.label)) : (src === "youtube" ? ("itag:" + firstIdentifierText(v.itag, v.file_id, v.label)) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
+            const key = src === "torrent" ? ("file:" + firstIdentifierText(v.file_id, v.label)) : ((src === "youtube" || src === "soundcloud") ? ("format:" + firstIdentifierText(v.itag, v.file_id, v.label)) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
             if(key && !target.selected.has(key)){ anyUnsel = true; break; }
           }
           target.downloadQueued = false;
           if(anyUnsel){
             for(const v of visible){
-              const key = src === "knaben" ? ("file:" + firstIdentifierText(v.file_id, v.label)) : (src === "youtube" ? ("itag:" + firstIdentifierText(v.itag, v.file_id, v.label)) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
+              const key = src === "torrent" ? ("file:" + firstIdentifierText(v.file_id, v.label)) : ((src === "youtube" || src === "soundcloud") ? ("format:" + firstIdentifierText(v.itag, v.file_id, v.label)) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
               if(!key) continue;
               target.selected.set(key, {key:key, remote_path:String(v.remote_path || ""), file_id:identifierText(v.file_id), itag:firstIdentifierText(v.itag, v.format_id, v.file_id), format_id:firstIdentifierText(v.format_id, v.itag, v.file_id), size:Number(v.size || 0), name:String(v.label || ""), label:String(v.label || ""), source:String(v.source || src || ""), ext:String(v.ext || ((((v.pills || [])[1] && typeof (v.pills || [])[1] === "string") ? (v.pills || [])[1] : "") || "")), quality:String(v.quality || ""), bitrate:String(v.bitrate || ""), media:String(v.media || (target.result && target.result.media) || ""), root_id:String(v.root_id || (target.result && target.result.root_id) || ""), rel:String(v.rel || ""), direct_url:String(v.direct_url || ""), url:String((target.result && target.result.url) || "")});
             }
           }else{
             for(const v of visible){
-              const key = src === "knaben" ? ("file:" + firstIdentifierText(v.file_id, v.label)) : (src === "youtube" ? ("itag:" + firstIdentifierText(v.itag, v.file_id, v.label)) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
+              const key = src === "torrent" ? ("file:" + firstIdentifierText(v.file_id, v.label)) : ((src === "youtube" || src === "soundcloud") ? ("format:" + firstIdentifierText(v.itag, v.file_id, v.label)) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
               if(key) target.selected.delete(key);
             }
           }
@@ -1678,13 +1706,13 @@ if(it.kind === "libsearch_history_action"){
           }
           libSetFileStatus("Queuing", "");
           try{
-            if(src === "knaben"){
+            if(src === "torrent"){
               const ids = Array.from(target.selected.values()).map(x=>identifierText(x.file_id)).filter(Boolean);
               const rr = target.result || {};
-              const res = await apiPost("/api/debrid/enqueue_selected", {provider: rr.provider || "", debrid_task_id: rr.debrid_task_id || "", file_ids: ids, title: rr.title || "Knaben item", magnet: rr.magnet || ""});
+              const res = await apiPost("/api/debrid/enqueue_selected", {provider: rr.provider || "", debrid_task_id: rr.debrid_task_id || "", file_ids: ids, title: rr.title || "Torrent", magnet: rr.magnet || ""});
               const js = (res && res.json) ? res.json : {};
               if(!res || !res.ok || !js.ok) throw new Error((js && js.error) ? js.error : "Failed to queue download");
-            }else if(src === "youtube"){
+            }else if(src === "youtube" || src === "soundcloud"){
               const rr = target.result || {};
               const sel = Array.from(target.selected.values()).map(x=>({
                 file_id:firstIdentifierText(x.file_id, x.itag, x.format_id),
@@ -1699,7 +1727,9 @@ if(it.kind === "libsearch_history_action"){
                 size:Number(x.size || 0)
               })).filter(x=>x.itag || x.format_id || x.file_id || x.url);
               const res = await apiPost("/api/youtube/enqueue", {
-                title: rr.title || rr.directory_title || rr.name || "YouTube",
+                title: rr.title || rr.directory_title || rr.name || rr.source_label || "Media",
+                source: src,
+                source_label: rr.source_label || (src === "soundcloud" ? "SoundCloud" : "YouTube"),
                 url: rr.url || "",
                 selected: sel
               });

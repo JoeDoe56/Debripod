@@ -90,7 +90,6 @@ from .Routes.lastfm import register_lastfm_routes
 from .Routes.shell import register_shell_routes
 from .Routes.tasks import register_task_routes
 from .version import app_version, app_version_info
-from .Services.knaben import configure_knaben, knaben_search, make_magnet
 from .Services.lastfm import (
     configure_lastfm,
     initialize_lastfm_cache,
@@ -130,14 +129,11 @@ from .Services.soulseek import (
 )
 from .Services.youtube import (
     _prepare_youtube_stream_file,
-    _search_youtube_cached,
-    _standardize_youtube_results,
     _yt_dlp_base_args,
     _yt_selected_output_ext,
     _yt_stream_format_selector,
     _youtube_download_root,
     configure_youtube,
-    youtube_channel_browse,
     youtube_load_result_files,
     ytdlp_list_formats,
 )
@@ -243,6 +239,7 @@ configure_library_roots(
         "youtube": YOUTUBE_DOWNLOAD_DIR,
     },
 )
+from .Services.ytdlp_runner import configure_ytdlp_runner
 configure_playlists(
     file_meta_provider=lambda abs_path: file_meta_cached(abs_path),
     track_sort_key_provider=lambda track: track_sort_key(track),
@@ -250,16 +247,6 @@ configure_playlists(
     get_index_provider=lambda root_id: get_index(root_id),
     build_index_provider=lambda root_abs: build_index_for_root(root_abs),
     set_index_provider=lambda root_id, data: set_index_cache(root_id, data),
-)
-configure_knaben(
-    api_key_provider=lambda: KNABEN_API_KEY,
-    min_interval_provider=lambda: KNABEN_MIN_SECONDS_BETWEEN_REQUESTS,
-    cache_ttl_provider=lambda: KNABEN_CACHE_TTL_SECONDS,
-    max_retries_provider=lambda: KNABEN_MAX_RETRIES,
-    api_base_provider=lambda: KNABEN_API_BASE,
-    web_base_provider=lambda: KNABEN_WEB_BASE,
-    timeout_provider=lambda: REQUEST_TIMEOUT_SECONDS,
-    results_per_page_provider=lambda: RESULTS_PER_PAGE,
 )
 configure_youtube(
     ytdlp_cmd_provider=lambda: YTDLP_CMD,
@@ -273,6 +260,7 @@ configure_youtube(
     timeout_provider=lambda: REQUEST_TIMEOUT_SECONDS,
     ffmpeg_path_provider=lambda: FFMPEG_PATH,
 )
+configure_ytdlp_runner(ytdlp_cmd_provider=lambda: YTDLP_CMD, ffmpeg_path_provider=lambda: FFMPEG_PATH)
 configure_soulseek_module(
     download_dir=SOULSEEK_DOWNLOAD_DIR,
     search_idle_stop_sec=SOULSEEK_SEARCH_IDLE_STOP_SEC,
