@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from collections import defaultdict
@@ -117,8 +118,7 @@ class LibrarySearchProvider:
             self._cache_key = key
         return self._entities
 
-    def search(self, query: str, context: Any = None) -> ProviderSearchResponse:
-        started = time.monotonic()
+    def _search_rows(self, query: str) -> list[dict[str, Any]]:
         qnorm = normalize_text(query)
         results: list[dict[str, Any]] = []
         for raw in self._entity_index():
@@ -132,4 +132,12 @@ class LibrarySearchProvider:
             if not assessment.unrelated:
                 row["match_confidence"] = assessment.confidence
                 results.append(row)
+        return results
+
+    async def search(self, query: str, context: Any = None) -> ProviderSearchResponse:
+        started = time.monotonic()
+        results = await asyncio.to_thread(self._search_rows, query)
         return ProviderSearchResponse("library", {"status": "ok", "root_versions": self.versions_provider()}, results, duration_ms=int((time.monotonic() - started) * 1000))
+
+    async def search_stream(self, query: str, context: Any = None):
+        yield await self.search(query, context)

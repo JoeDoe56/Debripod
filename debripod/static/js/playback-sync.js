@@ -715,9 +715,7 @@
       {kind:"info", label:"Loading playlists..."}
     ]);
     showNowPlaying(false);
-    await runLibraryPageTransition(async ()=>{
-      await view.load();
-    });
+    await view.load();
     updateWheelLabels();
   }
 

@@ -267,39 +267,35 @@ async function goBack(){
       return;
     }
     if(state.history.length){
-      await runLibraryPageTransition(async ()=>{
-        state.current = state.history.pop();
-        setHeader();
-        try{
-          await state.current.load();
-        }catch(loadErr){
-          let restored = false;
-          try{ restored = await restoreCachedLibraryView(state.current); }catch(e){ restored = false; }
-          if(!restored) throw loadErr;
-        }
-        if(state.pendingLibSearch && state.current && state.current.kind === "libsearch"){
-          const p = state.pendingLibSearch;
-          state.pendingLibSearch = null;
-          try{
-            if(p && p.q) state.libSearch.q = p.q;
-            const inQ = document.getElementById("libSearchInput");
-            if(inQ && p && p.q) inQ.value = p.q;
-            if(p && p.engine && p.q){
-              await libDoSearch(p.engine, p.q);
-            }
-          }catch(e){}
-        }
-      });
-      return;
-    }
-    await runLibraryPageTransition(async ()=>{
+      state.current = state.history.pop();
+      setHeader();
       try{
-        await showRoots();
+        await state.current.load();
       }catch(loadErr){
-        const restored = await restoreCachedLibraryView({kind:"roots"});
+        let restored = false;
+        try{ restored = await restoreCachedLibraryView(state.current); }catch(e){ restored = false; }
         if(!restored) throw loadErr;
       }
-    });
+      if(state.pendingLibSearch && state.current && state.current.kind === "libsearch"){
+        const p = state.pendingLibSearch;
+        state.pendingLibSearch = null;
+        try{
+          if(p && p.q) state.libSearch.q = p.q;
+          const inQ = document.getElementById("libSearchInput");
+          if(inQ && p && p.q) inQ.value = p.q;
+          if(p && p.engine && p.q){
+            await libDoSearch(p.engine, p.q);
+          }
+        }catch(e){}
+      }
+      return;
+    }
+    try{
+      await showRoots();
+    }catch(loadErr){
+      const restored = await restoreCachedLibraryView({kind:"roots"});
+      if(!restored) throw loadErr;
+    }
   }
 
   function buildPlaylistFromItems(items){
@@ -1542,9 +1538,7 @@ if(it.kind === "libtasks_entry"){
     }
     if(it.kind === "range_editor_input"){
       try{
-        const editor = state.inlineRangeEditor || ((state.current && state.current.kind === "range_editor") ? state.current : null);
-        if(editor && editor.rangeWheelArmed) openRangeEditorKeyboard();
-        else armRangeEditorWheel();
+        rangeEditorCenterPress();
       }catch(e){}
       return;
     }
@@ -1579,38 +1573,12 @@ if(it.kind === "libsearch_history_action"){
       return;
     }
 
-    if(it.kind === "settings_indexer"){
-      const indexer=it.indexer||{};
-      if(indexer.requires_setup) await viewTorrentIndexerDetail(indexer,true);
-      else{
-        const res=await apiPost("/api/indexers/toggle",{id:indexer.id,enabled:!indexer.enabled});
-        const js=res&&res.json?res.json:{};
-        if(!res||!res.ok||!js.ok) throw new Error(js.error||"Failed to update indexer");
-        await viewTorrentIndexers(false);
-      }
-      return;
-    }
-    if(it.kind === "settings_indexer_toggle"){
-      const indexer=it.indexer||{};
-      const res=await apiPost("/api/indexers/toggle",{id:indexer.id,enabled:!indexer.enabled});
-      const js=res&&res.json?res.json:{};
-      if(!res||!res.ok||!js.ok) throw new Error(js.error||"Failed to update indexer");
-      await viewTorrentIndexers(false);
-      return;
-    }
-    if(it.kind === "settings_indexer_test"){
-      const indexer=it.indexer||{};
-      const res=await apiPost("/api/indexers/test",{id:indexer.id}),js=res&&res.json?res.json:{};
-      alert((res&&res.ok&&js.ok)?("Indexer works: "+String(js.result_count||0)+" results"):(js.error||"Indexer test failed"));
-      return;
-    }
-    if(it.kind === "settings_definition_action"){
-      await runIndexerDefinitionAction(String(it.definitionAction||""));
-      return;
-    }
-
-    if(it.kind === "soundcloud_artist_section"){
-      await viewSoundCloudArtistSection(it.result || {},String(it.section || "tracks"),true);
+    if(it.kind === "settings_torrent_source_toggle"){
+      const enabled=new Set((((state.appSettings||{}).TORRENT_SEARCH_ENABLED_SOURCES)||[]).map(String));
+      if(it.enabled) enabled.delete(String(it.sourceId||""));
+      else enabled.add(String(it.sourceId||""));
+      await settingsSave({TORRENT_SEARCH_ENABLED_SOURCES:Array.from(enabled)},{});
+      await viewTorrentSources(false);
       return;
     }
 
@@ -1639,19 +1607,19 @@ if(it.kind === "libsearch_history_action"){
           const visible = (state.items || []).filter(x=>x && x.kind === "libsearch_file" && x.selectable);
           let anyUnsel = false;
           for(const v of visible){
-            const key = src === "torrent" ? ("file:" + firstIdentifierText(v.file_id, v.label)) : ((src === "youtube" || src === "soundcloud") ? ("format:" + firstIdentifierText(v.itag, v.file_id, v.label)) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
+            const key = src === "torrent" ? ("file:" + firstIdentifierText(v.file_id, v.label)) : (src === "youtube" ? ("format:" + firstIdentifierText(v.itag, v.file_id, v.label)) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
             if(key && !target.selected.has(key)){ anyUnsel = true; break; }
           }
           target.downloadQueued = false;
           if(anyUnsel){
             for(const v of visible){
-              const key = src === "torrent" ? ("file:" + firstIdentifierText(v.file_id, v.label)) : ((src === "youtube" || src === "soundcloud") ? ("format:" + firstIdentifierText(v.itag, v.file_id, v.label)) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
+              const key = src === "torrent" ? ("file:" + firstIdentifierText(v.file_id, v.label)) : (src === "youtube" ? ("format:" + firstIdentifierText(v.itag, v.file_id, v.label)) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
               if(!key) continue;
               target.selected.set(key, {key:key, remote_path:String(v.remote_path || ""), file_id:identifierText(v.file_id), itag:firstIdentifierText(v.itag, v.format_id, v.file_id), format_id:firstIdentifierText(v.format_id, v.itag, v.file_id), size:Number(v.size || 0), name:String(v.label || ""), label:String(v.label || ""), source:String(v.source || src || ""), ext:String(v.ext || ((((v.pills || [])[1] && typeof (v.pills || [])[1] === "string") ? (v.pills || [])[1] : "") || "")), quality:String(v.quality || ""), bitrate:String(v.bitrate || ""), media:String(v.media || (target.result && target.result.media) || ""), root_id:String(v.root_id || (target.result && target.result.root_id) || ""), rel:String(v.rel || ""), direct_url:String(v.direct_url || ""), url:String((target.result && target.result.url) || "")});
             }
           }else{
             for(const v of visible){
-              const key = src === "torrent" ? ("file:" + firstIdentifierText(v.file_id, v.label)) : ((src === "youtube" || src === "soundcloud") ? ("format:" + firstIdentifierText(v.itag, v.file_id, v.label)) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
+              const key = src === "torrent" ? ("file:" + firstIdentifierText(v.file_id, v.label)) : (src === "youtube" ? ("format:" + firstIdentifierText(v.itag, v.file_id, v.label)) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
               if(key) target.selected.delete(key);
             }
           }
@@ -1712,7 +1680,7 @@ if(it.kind === "libsearch_history_action"){
               const res = await apiPost("/api/debrid/enqueue_selected", {provider: rr.provider || "", debrid_task_id: rr.debrid_task_id || "", file_ids: ids, title: rr.title || "Torrent", magnet: rr.magnet || ""});
               const js = (res && res.json) ? res.json : {};
               if(!res || !res.ok || !js.ok) throw new Error((js && js.error) ? js.error : "Failed to queue download");
-            }else if(src === "youtube" || src === "soundcloud"){
+            }else if(src === "youtube"){
               const rr = target.result || {};
               const sel = Array.from(target.selected.values()).map(x=>({
                 file_id:firstIdentifierText(x.file_id, x.itag, x.format_id),
@@ -1729,7 +1697,7 @@ if(it.kind === "libsearch_history_action"){
               const res = await apiPost("/api/youtube/enqueue", {
                 title: rr.title || rr.directory_title || rr.name || rr.source_label || "Media",
                 source: src,
-                source_label: rr.source_label || (src === "soundcloud" ? "SoundCloud" : "YouTube"),
+                source_label: rr.source_label || "YouTube",
                 url: rr.url || "",
                 selected: sel
               });

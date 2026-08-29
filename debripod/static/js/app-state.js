@@ -18,10 +18,7 @@ var normalizeTextTransparency = DebriPod.uiSettings.normalizeTextTransparency;
 var cloneTextModes = DebriPod.uiSettings.cloneTextModes;
 var normalizeAnimationFps = DebriPod.uiSettings.normalizeAnimationFps;
 var cloneAnimationFps = DebriPod.uiSettings.cloneAnimationFps;
-var normalizeLiquidGlassMode = DebriPod.uiSettings.normalizeLiquidGlassMode;
-var normalizeLiquidGlassTint = DebriPod.uiSettings.normalizeLiquidGlassTint;
-var liquidGlassTintMode = DebriPod.uiSettings.liquidGlassTintMode;
-var liquidGlassModeToTint = DebriPod.uiSettings.liquidGlassModeToTint;
+var normalizeLiquidGlassMaterial = DebriPod.uiSettings.normalizeLiquidGlassMaterial;
 var cloneGlassElementSettings = DebriPod.uiSettings.cloneGlassElementSettings;
 var loadUiSettings = DebriPod.uiSettings.loadUiSettings;
 function saveUiSettings(){ DebriPod.uiSettings.saveUiSettings(uiSettings); }

@@ -1,16 +1,16 @@
 ﻿from __future__ import annotations
 
 import hashlib
+import asyncio
 import threading
 import time
 from typing import Any, Dict, Optional
 from urllib.parse import quote
 
-import requests
-
 from ..secrets import get_secret, set_secret
 from ..storage.lastfm import load_loved, save_loved
 from ..storage import settings as settings_repository
+from .http import HttpClient
 
 LASTFM_API_KEY = ""
 LASTFM_API_SECRET = ""
@@ -18,6 +18,8 @@ LASTFM_SESSION_KEY = ""
 LASTFM_CALLBACK_URL = ""
 LASTFM_API_ROOT = ""
 LASTFM_REQUEST_TIMEOUT_SECONDS = 0
+_LASTFM_HTTP: HttpClient | None = None
+_LASTFM_BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
 
 def configure_lastfm(
     *,
@@ -38,6 +40,18 @@ def configure_lastfm(
         LASTFM_API_ROOT = api_root
     if request_timeout_seconds:
         LASTFM_REQUEST_TIMEOUT_SECONDS = int(request_timeout_seconds)
+
+
+def configure_lastfm_http(http: HttpClient) -> None:
+    """Attach the one application-scoped HTTP client after aiohttp startup."""
+    global _LASTFM_HTTP
+    _LASTFM_HTTP = http
+
+
+def _lastfm_http() -> HttpClient:
+    if _LASTFM_HTTP is None:
+        raise RuntimeError("Last.fm HTTP transport is not initialized")
+    return _LASTFM_HTTP
 
 def initialize_lastfm_cache() -> None:
     _lastfm_load_session_cache()
@@ -115,7 +129,7 @@ def _lastfm_sign(params: Dict[str, Any]) -> str:
     return _md5_hex(s)
 
 
-def _lastfm_api_post(method: str, params: Dict[str, Any], require_auth: bool = True) -> Dict[str, Any]:
+async def _lastfm_api_post(method: str, params: Dict[str, Any], require_auth: bool = True) -> Dict[str, Any]:
     if not (LASTFM_API_KEY or "").strip() or not (LASTFM_API_SECRET or "").strip():
         raise RuntimeError("Last.fm API key/secret not configured")
 
@@ -131,22 +145,19 @@ def _lastfm_api_post(method: str, params: Dict[str, Any], require_auth: bool = T
 
     base["api_sig"] = _lastfm_sign(base)
 
-    r = requests.post(
+    js = await _lastfm_http().json(
+        "POST",
         LASTFM_API_ROOT,
         data={k: _lastfm_param_str(v) for k, v in base.items()},
         timeout=LASTFM_REQUEST_TIMEOUT_SECONDS,
     )
-    try:
-        js = r.json()
-    except Exception:
-        js = {}
     if isinstance(js, dict) and js.get("error"):
         raise RuntimeError(str(js.get("message") or "Last.fm API error"))
     return js if isinstance(js, dict) else {}
 
 
 
-def _lastfm_api_get(method: str, params: Optional[Dict[str, Any]] = None, require_auth: bool = False) -> Dict[str, Any]:
+async def _lastfm_api_get(method: str, params: Optional[Dict[str, Any]] = None, require_auth: bool = False) -> Dict[str, Any]:
     # Some Last.fm methods are typically called via GET. This helper mirrors _lastfm_api_post.
     if not (LASTFM_API_KEY or "").strip() or not (LASTFM_API_SECRET or "").strip():
         raise RuntimeError("Last.fm API key/secret not configured")
@@ -164,15 +175,12 @@ def _lastfm_api_get(method: str, params: Optional[Dict[str, Any]] = None, requir
     # Only sign if we have a secret; keep consistent with authspec rules.
     base["api_sig"] = _lastfm_sign(base)
 
-    r = requests.get(
+    js = await _lastfm_http().json(
+        "GET",
         LASTFM_API_ROOT,
         params={k: _lastfm_param_str(v) for k, v in base.items()},
         timeout=LASTFM_REQUEST_TIMEOUT_SECONDS,
     )
-    try:
-        js = r.json()
-    except Exception:
-        js = {}
     if isinstance(js, dict) and js.get("error"):
         raise RuntimeError(str(js.get("message") or "Last.fm API error"))
     return js if isinstance(js, dict) else {}
@@ -196,10 +204,10 @@ def _lastfm_save_session_cache(sk: str, username: str = "") -> None:
         _LASTFM_SESSION.update(js)
 
 
-def lastfm_auth_start() -> Dict[str, Any]:
+async def lastfm_auth_start() -> Dict[str, Any]:
     # Desktop auth flow: auth.getToken + user approves in browser.
     # Docs: https://www.last.fm/api/authspec
-    js = _lastfm_api_post("auth.getToken", {}, require_auth=False)
+    js = await _lastfm_api_post("auth.getToken", {}, require_auth=False)
     token = ""
     try:
         token = str(((js.get("token") or {}).get("#text") if isinstance(js.get("token"), dict) else js.get("token")) or "").strip()
@@ -214,11 +222,11 @@ def lastfm_auth_start() -> Dict[str, Any]:
     return {"token": token, "auth_url": auth_url}
 
 
-def lastfm_auth_finish(token: str) -> Dict[str, Any]:
+async def lastfm_auth_finish(token: str) -> Dict[str, Any]:
     token = (token or "").strip()
     if not token:
         raise RuntimeError("Missing token")
-    js = _lastfm_api_post("auth.getSession", {"token": token}, require_auth=False)
+    js = await _lastfm_api_post("auth.getSession", {"token": token}, require_auth=False)
     sess = js.get("session") if isinstance(js, dict) else None
     if not isinstance(sess, dict):
         raise RuntimeError("Invalid session response")
@@ -233,7 +241,7 @@ def lastfm_auth_finish(token: str) -> Dict[str, Any]:
 
 
 
-def lastfm_sync_loved_from_remote(username: str = "", max_pages: int = 20, limit: int = 200) -> int:
+async def lastfm_sync_loved_from_remote(username: str = "", max_pages: int = 20, limit: int = 200) -> int:
     # Fetch the user's loved tracks from Last.fm and cache them locally.
     # This allows fast loved lookups without hitting Last.fm for every track.
     user = (username or "").strip() or lastfm_username()
@@ -248,7 +256,7 @@ def lastfm_sync_loved_from_remote(username: str = "", max_pages: int = 20, limit
     total_pages = None
 
     while page <= max_pages_i and (total_pages is None or page <= total_pages):
-        js = _lastfm_api_get("user.getLovedTracks", {"user": user, "limit": str(limit_i), "page": str(page)}, require_auth=False)
+        js = await _lastfm_api_get("user.getLovedTracks", {"user": user, "limit": str(limit_i), "page": str(page)}, require_auth=False)
         loved = js.get("lovedtracks") if isinstance(js, dict) else None
         if not isinstance(loved, dict):
             break
@@ -337,7 +345,7 @@ def lastfm_is_loved(artist: str, title: str, album: str = "") -> bool:
         return bool(tracks.get(k) or tracks.get(k2))
 
 
-def lastfm_remote_is_loved(artist: str, title: str, username: str = "") -> Optional[bool]:
+async def lastfm_remote_is_loved(artist: str, title: str, username: str = "") -> Optional[bool]:
     # Best-effort remote check for whether the user has loved this track.
     # Uses track.getInfo with username; returns True/False on success, or None on failure.
     a = (artist or "").strip()
@@ -348,7 +356,7 @@ def lastfm_remote_is_loved(artist: str, title: str, username: str = "") -> Optio
     if not user:
         return None
     try:
-        js = _lastfm_api_get(
+        js = await _lastfm_api_get(
             "track.getInfo",
             {"artist": a, "track": t, "username": user, "autocorrect": "1"},
             require_auth=False,
@@ -387,25 +395,25 @@ def lastfm_set_loved_local(artist: str, title: str, album: str, loved: bool) -> 
     return True
 
 
-def lastfm_love_track(artist: str, title: str) -> bool:
+async def lastfm_love_track(artist: str, title: str) -> bool:
     artist = (artist or "").strip()
     title = (title or "").strip()
     if not artist or not title:
         return False
-    _lastfm_api_post("track.love", {"artist": artist, "track": title}, require_auth=True)
+    await _lastfm_api_post("track.love", {"artist": artist, "track": title}, require_auth=True)
     return True
 
 
-def lastfm_unlove_track(artist: str, title: str) -> bool:
+async def lastfm_unlove_track(artist: str, title: str) -> bool:
     artist = (artist or "").strip()
     title = (title or "").strip()
     if not artist or not title:
         return False
-    _lastfm_api_post("track.unlove", {"artist": artist, "track": title}, require_auth=True)
+    await _lastfm_api_post("track.unlove", {"artist": artist, "track": title}, require_auth=True)
     return True
 
 
-def lastfm_update_now_playing(artist: str, title: str, album: str = "", duration: Optional[int] = None) -> bool:
+async def lastfm_update_now_playing(artist: str, title: str, album: str = "", duration: Optional[int] = None) -> bool:
     artist = (artist or "").strip()
     title = (title or "").strip()
     album = (album or "").strip()
@@ -416,11 +424,11 @@ def lastfm_update_now_playing(artist: str, title: str, album: str = "", duration
         params["album"] = album
     if duration and int(duration) > 0:
         params["duration"] = str(int(duration))
-    _lastfm_api_post("track.updateNowPlaying", params, require_auth=True)
+    await _lastfm_api_post("track.updateNowPlaying", params, require_auth=True)
     return True
 
 
-def lastfm_scrobble(artist: str, title: str, album: str = "", duration: Optional[int] = None, start_ts: Optional[int] = None) -> bool:
+async def lastfm_scrobble(artist: str, title: str, album: str = "", duration: Optional[int] = None, start_ts: Optional[int] = None) -> bool:
     artist = (artist or "").strip()
     title = (title or "").strip()
     album = (album or "").strip()
@@ -432,7 +440,7 @@ def lastfm_scrobble(artist: str, title: str, album: str = "", duration: Optional
         params["album[0]"] = album
     if duration and int(duration) > 0:
         params["duration[0]"] = str(int(duration))
-    _lastfm_api_post("track.scrobble", params, require_auth=True)
+    await _lastfm_api_post("track.scrobble", params, require_auth=True)
     return True
 
 
@@ -440,11 +448,16 @@ def _lastfm_async(fn, *args, **kwargs) -> None:
     if not lastfm_enabled():
         return
 
-    def _run():
+    async def _run() -> None:
         try:
-            fn(*args, **kwargs)
+            await fn(*args, **kwargs)
         except Exception:
             pass
 
-    th = threading.Thread(target=_run, daemon=True)
-    th.start()
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    task = loop.create_task(_run(), name=f"lastfm:{getattr(fn, '__name__', 'request')}")
+    _LASTFM_BACKGROUND_TASKS.add(task)
+    task.add_done_callback(_LASTFM_BACKGROUND_TASKS.discard)

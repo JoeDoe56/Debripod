@@ -110,7 +110,7 @@ def browser_friendly_video(path: str, metadata: dict | None = None) -> bool:
     return False
 
 
-def extract_quality(value: str, metadata: dict | None = None, source: str = "") -> str:
+def extract_resolution(value: str, metadata: dict | None = None) -> str:
     text = str(value or "")
     match = re.search(r"(?<!\d)(4320|2160|1440|1080|720|576|480)[pi](?!\d)", text, re.I)
     if match:
@@ -123,6 +123,11 @@ def extract_quality(value: str, metadata: dict | None = None, source: str = "") 
     for threshold, label in ((4000, "4320p"), (1900, "2160p"), (1300, "1440p"), (900, "1080p"), (650, "720p"), (430, "480p")):
         if height >= threshold:
             return label
+    return ""
+
+
+def extract_source_quality(value: str, source: str = "") -> str:
+    text = str(value or "")
     lower = text.lower()
     for pattern, label in ((r"blu[ ._-]?ray|bdrip|brrip", "BluRay"), (r"web[ ._-]?(?:dl|rip)?", "WEB"), (r"hdtv", "HDTV"), (r"dvd", "DVD"), (r"remux", "Remux"), (r"\bcam\b|telesync", "Cam")):
         if re.search(pattern, lower):
@@ -130,12 +135,13 @@ def extract_quality(value: str, metadata: dict | None = None, source: str = "") 
     return "YouTube" if source == "youtube" else ""
 
 
+def extract_quality(value: str, metadata: dict | None = None, source: str = "") -> str:
+    """Return the historical combined resolution/source label for existing callers."""
+    return extract_resolution(value, metadata) or extract_source_quality(value, source)
+
+
 def _source_tag(value: str, source: str) -> str:
-    lower = value.lower()
-    for pattern, label in ((r"blu[ ._-]?ray|bdrip|brrip", "BluRay"), (r"web[ ._-]?(?:dl|rip)?", "WEB"), (r"hdtv", "HDTV"), (r"dvd", "DVD"), (r"remux", "Remux"), (r"\bcam\b|telesync", "Cam")):
-        if re.search(pattern, lower):
-            return label
-    return "YouTube" if source == "youtube" else ""
+    return extract_source_quality(value, source)
 
 
 def _codec_tag(value: str, metadata: dict | None = None) -> str:

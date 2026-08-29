@@ -1,1 +1,0 @@
-"""Cardigann definition execution support."""

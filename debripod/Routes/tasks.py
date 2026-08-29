@@ -4,7 +4,9 @@ import time
 import os
 from typing import List
 
-from flask import jsonify, request, session
+from aiohttp import web
+
+from ..factory import json_response, session_for
 
 from ..Tasks.manager import (
     cancel_task,
@@ -42,16 +44,15 @@ def _task_library_nav(task) -> dict:
 
 
 def register_task_routes(app) -> None:
-    def current_owner() -> str:
-        return str(session.get("username") or "").strip()
+    def current_owner(request: web.Request) -> str:
+        return str(session_for(request).get("username") or "").strip()
 
-    def owns_task(task_id: str) -> bool:
-        return task_belongs_to_owner(task_id, current_owner())
+    def owns_task(request: web.Request, task_id: str) -> bool:
+        return task_belongs_to_owner(task_id, current_owner(request))
 
-    @app.route("/api/tasks", methods=["GET"])
-    def api_tasks_list():
+    async def api_tasks_list(request: web.Request):
         out: List[dict] = []
-        for t in list_tasks_for_owner(current_owner()):
+        for t in list_tasks_for_owner(current_owner(request)):
             try:
                 payload = task_public_dict(t)
                 payload["library_nav"] = _task_library_nav(t)
@@ -91,60 +92,62 @@ def register_task_routes(app) -> None:
                     })
                 except Exception:
                     continue
-        return jsonify({"tasks": out})
+        return json_response({"tasks": out})
 
-    @app.route("/api/tasks/pause", methods=["POST"])
-    def api_tasks_pause():
-        data = request.get_json(silent=True) or {}
+    async def api_tasks_pause(request: web.Request):
+        data = await request.json()
         task_id = (data.get("task_id") or "").strip()
-        if not owns_task(task_id):
-            return jsonify({"ok": False}), 404
+        if not owns_task(request, task_id):
+            return json_response({"ok": False}, status=404)
         ok = pause_task(task_id)
-        return jsonify({"ok": bool(ok)})
+        return json_response({"ok": bool(ok)})
 
-    @app.route("/api/tasks/resume", methods=["POST"])
-    def api_tasks_resume():
-        data = request.get_json(silent=True) or {}
+    async def api_tasks_resume(request: web.Request):
+        data = await request.json()
         task_id = (data.get("task_id") or "").strip()
-        if not owns_task(task_id):
-            return jsonify({"ok": False}), 404
+        if not owns_task(request, task_id):
+            return json_response({"ok": False}, status=404)
         ok = resume_task(task_id)
-        return jsonify({"ok": bool(ok)})
+        return json_response({"ok": bool(ok)})
 
-    @app.route("/api/tasks/file_action", methods=["POST"])
-    def api_tasks_file_action():
-        data = request.get_json(silent=True) or {}
+    async def api_tasks_file_action(request: web.Request):
+        data = await request.json()
         task_id = (data.get("task_id") or "").strip()
         file_id = (data.get("file_id") or "").strip()
         action = (data.get("action") or "").strip()
-        if not owns_task(task_id):
-            return jsonify({"ok": False}), 404
+        if not owns_task(request, task_id):
+            return json_response({"ok": False}, status=404)
         ok = task_file_action(task_id, file_id, action)
-        return jsonify({"ok": bool(ok)})
+        return json_response({"ok": bool(ok)})
 
-    @app.route("/api/tasks/cancel", methods=["POST"])
-    def api_tasks_cancel():
-        data = request.get_json(silent=True) or {}
-        tid = (data.get("task_id") or request.form.get("task_id") or "").strip()
+    async def api_tasks_cancel(request: web.Request):
+        data = await request.json()
+        tid = (data.get("task_id") or "").strip()
         if not tid:
-            return jsonify({"ok": False, "error": "missing task_id"}), 400
-        if not owns_task(tid):
-            return jsonify({"ok": False}), 404
+            return json_response({"ok": False, "error": "missing task_id"}, status=400)
+        if not owns_task(request, tid):
+            return json_response({"ok": False}, status=404)
         ok = bool(cancel_task(tid))
-        return jsonify({"ok": ok})
+        return json_response({"ok": ok})
 
-    @app.route("/api/tasks/clear", methods=["POST"])
-    def api_tasks_clear():
-        data = request.get_json(silent=True) or {}
-        tid = (data.get("task_id") or request.form.get("task_id") or "").strip()
+    async def api_tasks_clear(request: web.Request):
+        data = await request.json()
+        tid = (data.get("task_id") or "").strip()
         if not tid:
-            return jsonify({"ok": False, "error": "missing task_id"}), 400
-        if not owns_task(tid):
-            return jsonify({"ok": False}), 404
+            return json_response({"ok": False, "error": "missing task_id"}, status=400)
+        if not owns_task(request, tid):
+            return json_response({"ok": False}, status=404)
         ok = bool(clear_task(tid))
-        return jsonify({"ok": ok})
+        return json_response({"ok": ok})
 
-    @app.route("/api/tasks/clear_all", methods=["POST"])
-    def api_tasks_clear_all():
-        clear_all_tasks(current_owner())
-        return jsonify({"ok": True})
+    async def api_tasks_clear_all(request: web.Request):
+        clear_all_tasks(current_owner(request))
+        return json_response({"ok": True})
+
+    app.router.add_get("/api/tasks", api_tasks_list)
+    app.router.add_post("/api/tasks/pause", api_tasks_pause)
+    app.router.add_post("/api/tasks/resume", api_tasks_resume)
+    app.router.add_post("/api/tasks/file_action", api_tasks_file_action)
+    app.router.add_post("/api/tasks/cancel", api_tasks_cancel)
+    app.router.add_post("/api/tasks/clear", api_tasks_clear)
+    app.router.add_post("/api/tasks/clear_all", api_tasks_clear_all)

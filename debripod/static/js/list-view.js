@@ -282,7 +282,7 @@
   }
 
   function replaceListItems(nextItems, options){
-    const opts = Object.assign({animate:true, preserveSelection:true, preserveScroll:true, reason:"list update", pageTransition:false}, options || {});
+    const opts = Object.assign({animate:true, preserveSelection:true, preserveScroll:true, reason:"list update"}, options || {});
     const previous = Array.isArray(state.items) ? state.items : [];
     const next = Array.isArray(nextItems) ? nextItems.slice() : [];
     let changedRows = Math.abs(previous.length - next.length);
@@ -328,7 +328,7 @@
     else if(typeof opts.selectionIndex === "number") state.sel = Math.max(0, Math.min(Math.max(0, next.length - 1), opts.selectionIndex));
     else state.sel = Math.max(0, Math.min(Math.max(0, next.length - 1), state.sel || 0));
     invalidateVirtualPrefix();
-    renderList({rowMutation:true, pageTransition:!!opts.pageTransition});
+    renderList({rowMutation:true, preserveEntryAnchor:!!opts.preserveEntryAnchor});
     if(opts.preserveScroll && libList) libList.scrollTop = oldScroll;
     const animateRows = ()=>{
       if(!(opts.animate && plan && plan.animate && libList)) return;
@@ -356,18 +356,7 @@
         }
       });
     };
-    if(opts.pageTransition && libList){
-      const animateWhenPageIsVisible = ()=>{
-        if(libList._dpPageTransitionActive){
-          requestAnimationFrame(animateWhenPageIsVisible);
-          return;
-        }
-        animateRows();
-      };
-      requestAnimationFrame(animateWhenPageIsVisible);
-    }else{
-      animateRows();
-    }
+    animateRows();
     invalidateVirtualPrefix();
     return plan;
   }
@@ -494,8 +483,9 @@
     if(!enabled) return {enabled:false, start:0, end:count, top:0, bottom:0, visible:count, total:count};
     const prefix = virtualPrefixHeights();
     const totalHeight = prefix[count] || 0;
-    const viewportTop = Math.max(0, libList.scrollTop || 0);
-    const viewportBottom = viewportTop + Math.max(1, libList.clientHeight || 1);
+    const anchorOffset = Math.max(0, Number(state.pageAnchorOffset || 0));
+    const viewportTop = Math.max(0, (libList.scrollTop || 0) - anchorOffset);
+    const viewportBottom = Math.max(viewportTop + 1, (libList.scrollTop || 0) + Math.max(1, libList.clientHeight || 1) - anchorOffset);
     const firstVisible = Math.max(0, virtualLowerBound(prefix, viewportTop) - 1);
     const lastVisible = Math.min(count, virtualLowerBound(prefix, viewportBottom) + 1);
     const start = Math.max(0, firstVisible - 10);
@@ -512,6 +502,16 @@
     spacer.setAttribute("aria-hidden", "true");
     spacer.dataset.virtualSpacer = pos || "";
     spacer.style.height = Math.max(0, height).toFixed(1) + "px";
+    layer.appendChild(spacer);
+  }
+
+  function appendPageAnchorSpacer(layer){
+    const height = Math.max(0, Number(state.pageAnchorOffset || 0));
+    if(!(height > 0)) return;
+    const spacer = document.createElement("li");
+    spacer.className = "ipodPageAnchorSpacer";
+    spacer.setAttribute("aria-hidden", "true");
+    spacer.style.height = height.toFixed(1) + "px";
     layer.appendChild(spacer);
   }
 
@@ -564,7 +564,7 @@
     try{
       const n = Math.max(0, Math.min((state.items.length || 1) - 1, Number(index || 0)));
       const prefix = virtualPrefixHeights();
-      return prefix[n] || 0;
+      return Math.max(0, Number(state.pageAnchorOffset || 0)) + (prefix[n] || 0);
     }catch(e){
       return 0;
     }
@@ -595,15 +595,18 @@
     }
     try{
     try{ if(!renderOptions.virtualScroll && typeof hideTransientListGlass === "function") hideTransientListGlass("before list render"); }catch(e){}
+    if(libList) libList.classList.toggle("dpLibraryRoot", !!(state.current && state.current.kind === "roots"));
     const itemsLayer = document.createDocumentFragment();
     const virtual = listVirtualWindow();
     if(libList) libList._dpVirtualized = !!virtual.enabled;
+    appendPageAnchorSpacer(itemsLayer);
     appendVirtualSpacer(itemsLayer, virtual.top, "top");
     for(let i=virtual.start;i<virtual.end;i++){
       const it = state.items[i];
       const li = document.createElement("li");
       li.dataset.index = String(i);
       li.dataset.kind = String((it && it.kind) || "");
+      if(it && it.row_layout_key) li.dataset.rowLayoutKey = String(it.row_layout_key);
 
       const isSel = (i === state.sel);
       const settingsTall = (
@@ -635,19 +638,44 @@
             try{
               const editor = state.inlineRangeEditor || ((state.current && state.current.kind === "range_editor") ? state.current : null);
               if(editor){
-                editor.rangeValue = Number(inp.value);
+                const parsed = Number(inp.value);
+                if(Number.isFinite(parsed)){
+                  const meta = editor.rangeMeta || settingRangeMeta("", 0, 1);
+                  const next = rangeEditorClamp(parsed, meta, Number(editor.rangeValue || 0));
+                  editor.rangeValue = next;
+                  const config = editor.rangeConfig || {};
+                  if(typeof config.onPreview === "function") Promise.resolve(config.onPreview(next)).catch(()=>{});
+                }
               }
             }catch(e){}
           });
           inp.addEventListener("keydown", (ev)=>{
             if(ev.key === "Enter"){
               ev.preventDefault();
+              let valid = false;
               try{
                 const editor = state.inlineRangeEditor || ((state.current && state.current.kind === "range_editor") ? state.current : null);
-                if(editor) editor.rangeValue = Number(inp.value);
+                const parsed = Number(inp.value);
+                if(editor && Number.isFinite(parsed)){
+                  const meta = editor.rangeMeta || settingRangeMeta("", 0, 1);
+                  editor.rangeValue = rangeEditorClamp(parsed, meta, Number(editor.rangeValue || 0));
+                  valid = true;
+                }
               }catch(e){}
-              try{ applyRangeEditor(); }catch(e){}
+              if(!valid) return;
+              try{
+                const result = applyRangeEditor();
+                if(result && typeof result.catch === "function") result.catch(()=>{});
+              }catch(e){}
             }
+          });
+          inp.addEventListener("blur", ()=>{
+            const editor = state.inlineRangeEditor || ((state.current && state.current.kind === "range_editor") ? state.current : null);
+            if(!editor || editor.committing || editor.cancelling || !editor.rangeKeyboardOpen) return;
+            setTimeout(()=>{
+              const active = state.inlineRangeEditor || ((state.current && state.current.kind === "range_editor") ? state.current : null);
+              if(active === editor && !editor.committing && !editor.cancelling) cancelRangeEditor();
+            }, 0);
           });
           li.appendChild(inp);
           editInputToFocus = inp;
@@ -685,11 +713,7 @@
           li.appendChild(wrap);
           li.addEventListener("click", ()=>{
             state.sel = i;
-            try{
-              const editor = state.inlineRangeEditor || ((state.current && state.current.kind === "range_editor") ? state.current : null);
-              if(editor && editor.rangeWheelArmed) openRangeEditorKeyboard();
-              else armRangeEditorWheel();
-            }catch(e){}
+            try{ rangeEditorCenterPress(); }catch(e){}
           });
         }
         itemsLayer.appendChild(li);
@@ -1163,7 +1187,14 @@
             const syncValue = ()=>{
               try{
                 const editor = state.inlineRangeEditor || ((state.current && state.current.kind === "range_editor") ? state.current : null);
-                if(editor) editor.rangeValue = Number(inp.value);
+                const parsed = Number(inp.value);
+                if(editor && Number.isFinite(parsed)){
+                  const meta = editor.rangeMeta || settingRangeMeta("", 0, 1);
+                  const next = rangeEditorClamp(parsed, meta, Number(editor.rangeValue || 0));
+                  editor.rangeValue = next;
+                  const config = editor.rangeConfig || {};
+                  if(typeof config.onPreview === "function") Promise.resolve(config.onPreview(next)).catch(()=>{});
+                }
               }catch(e){}
             };
             const commit = ()=>{
@@ -1187,7 +1218,17 @@
                 try{ cancelRangeEditor(); }catch(e){}
               }
             });
-            inp.addEventListener("blur", commit);
+            inp.addEventListener("blur", ()=>{
+              if(committed) return;
+              const editor = state.inlineRangeEditor || ((state.current && state.current.kind === "range_editor") ? state.current : null);
+              if(!editor || editor.committing || editor.cancelling) return;
+              setTimeout(()=>{
+                const active = state.inlineRangeEditor || ((state.current && state.current.kind === "range_editor") ? state.current : null);
+                if(active === editor && !editor.committing && !editor.cancelling){
+                  try{ cancelRangeEditor(); }catch(e){}
+                }
+              }, 0);
+            });
             sp.appendChild(inp);
             editInputToFocus = inp;
           }else if(p.bar != null && isFinite(Number(p.bar))){
@@ -1321,7 +1362,7 @@
       });
     }
     const selEl = libList.querySelector(".ipodItem.sel");
-    if(selEl && !renderOptions.virtualScroll){
+    if(selEl && !renderOptions.virtualScroll && !renderOptions.preserveEntryAnchor){
       ensureLibItemVisible(selEl);
     }
     if(editInputToFocus){
@@ -1605,7 +1646,19 @@ function vibeTick(){
       state.sel = 0;
     }
 
-    replaceListItems(arr, {animate:true, preserveSelection:false, preserveScroll:false, selectionIndex:state.sel, reason:"page load", pageTransition:true});
+    let preserveEntryAnchor = false;
+    state.pageAnchorOffset = 0;
+    if(libList){
+      libList.classList.toggle("dpLibraryRoot", !!(state.current && state.current.kind === "roots"));
+      if(state.current && Number.isFinite(Number(state.current.entryAnchorY))){
+        const style = window.getComputedStyle ? window.getComputedStyle(libList) : null;
+        const paddingTop = style ? (parseFloat(style.paddingTop || "0") || 0) : 0;
+        state.pageAnchorOffset = Math.max(0, Number(state.current.entryAnchorY) - paddingTop);
+        preserveEntryAnchor = state.pageAnchorOffset > 0;
+      }
+      libList.scrollTop = 0;
+    }
+    replaceListItems(arr, {animate:false, preserveSelection:false, preserveScroll:false, preserveEntryAnchor:preserveEntryAnchor, selectionIndex:state.sel, reason:"page load"});
     setHeader();
     try{ if(typeof applySelectedTextContrast === "function") applySelectedTextContrast(); }catch(e){}
 
@@ -1629,66 +1682,46 @@ function vibeTick(){
     }catch(e){}
   }
 
-  async function runLibraryPageTransition(loadFn){
-    let fadeTimer = 0;
-    let faded = false;
+  function selectedRowViewportY(){
     try{
-      try{ if(typeof hideTransientListGlass === "function") hideTransientListGlass("page transition"); }catch(e){}
-      if(libList){
-        libList._dpPageTransitionActive = true;
-        fadeTimer = setTimeout(()=>{
-          faded = true;
-          try{ libList.classList.add("pageFadeHidden"); }catch(e){}
-        }, 80);
-      }
-      await loadFn();
-      if(fadeTimer) clearTimeout(fadeTimer);
-      if(libList){
-        if(faded){
-          requestAnimationFrame(()=>{
-            requestAnimationFrame(()=>{
-              try{ libList.classList.remove("pageFadeHidden"); }catch(e){}
-              libList._dpPageTransitionActive = false;
-            });
-          });
-        }else{
-          try{ libList.classList.remove("pageFadeHidden"); }catch(e){}
-          libList._dpPageTransitionActive = false;
-        }
-      }
+      if(!libList) return null;
+      const row = libList.querySelector(".ipodItem.sel");
+      if(!row) return null;
+      const listRect = libList.getBoundingClientRect();
+      const rowRect = row.getBoundingClientRect();
+      const y = rowRect.top - listRect.top;
+      return Number.isFinite(y) ? Math.max(0, y) : null;
     }catch(e){
-      if(fadeTimer) clearTimeout(fadeTimer);
-      try{ if(libList){ libList.classList.remove("pageFadeHidden"); libList._dpPageTransitionActive = false; } }catch(_e){}
-      throw e;
+      return null;
     }
   }
 
   async function setView(view, push){
-    await runLibraryPageTransition(async ()=>{
-      if(push && state.current){
-        snapshotListState();
-        state.history.push(state.current);
-      }
-      state.current = view;
-      setHeader();
+    if(push && state.current){
+      const entryAnchorY = selectedRowViewportY();
+      if(entryAnchorY != null) view.entryAnchorY = entryAnchorY;
+      snapshotListState();
+      state.history.push(state.current);
+    }
+    state.current = view;
+    setHeader();
+    try{
+      await view.load();
+    }catch(loadErr){
+      let restored = false;
       try{
-        await view.load();
-      }catch(loadErr){
-        let restored = false;
-        try{
-          if(window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.restoreCachedView){
-            restored = await DebriPod.clientSync.restoreCachedView(view);
-          }
-        }catch(e){ restored = false; }
-        if(!restored) throw loadErr;
-      }
-      setHeader();
-      try{
-        if(window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.saveCurrentViewState){
-          DebriPod.clientSync.saveCurrentViewState();
+        if(window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.restoreCachedView){
+          restored = await DebriPod.clientSync.restoreCachedView(view);
         }
-      }catch(e){}
-    });
+      }catch(e){ restored = false; }
+      if(!restored) throw loadErr;
+    }
+    setHeader();
+    try{
+      if(window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.saveCurrentViewState){
+        DebriPod.clientSync.saveCurrentViewState();
+      }
+    }catch(e){}
   }
 
   function rootViewObj(){

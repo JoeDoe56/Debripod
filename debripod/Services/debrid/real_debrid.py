@@ -2,12 +2,12 @@ from __future__ import annotations
 
 import mimetypes
 import os
-import time
+import asyncio
+import json
 from typing import Any, Iterable, List
 
-import requests
-
 from ...media_types import AUDIO_EXTS, VIDEO_EXTS
+from ..http import HttpClient, HttpStatusError
 from .base import DebridAuthError, DebridProviderBase, DebridProviderError
 from .models import DebridFile, DebridPreview, DebridResolvedLink
 from .identifiers import first_identifier, normalize_identifier, normalize_identifier_list
@@ -17,33 +17,35 @@ class RealDebridProvider(DebridProviderBase):
     id = "real_debrid"
     label = "Real Debrid"
 
-    def __init__(self, token: str, base_url: str, timeout_seconds: int = 25):
+    def __init__(self, token: str, base_url: str, timeout_seconds: int, http: HttpClient):
         self.token = str(token or "").strip()
         self.base_url = str(base_url or "").rstrip("/")
         self.timeout_seconds = max(1, int(timeout_seconds or 25))
+        self.http = http
 
-    def _request(self, method: str, path: str, **kwargs: Any) -> Any:
+    async def _request(self, method: str, path: str, **kwargs: Any) -> Any:
         if not self.token:
             raise DebridAuthError("Real Debrid token is missing.")
         try:
-            response = requests.request(
+            body, _headers, status = await self.http.bytes(
                 method,
                 self.base_url + path,
                 headers={"Authorization": f"Bearer {self.token}", "User-Agent": "DebriPod/1.0"},
                 timeout=self.timeout_seconds,
                 **kwargs,
             )
-        except requests.RequestException as exc:
+        except HttpStatusError as exc:
+            if exc.status in {401, 403}:
+                raise DebridAuthError("Real Debrid rejected the configured token.") from exc
+            raise DebridProviderError(f"Debrid request failed ({exc.status}): {exc.body[:300]}") from exc
+        except Exception as exc:
             raise DebridProviderError(f"Debrid request failed: {exc}") from exc
-        if response.status_code in {401, 403}:
-            raise DebridAuthError("Real Debrid rejected the configured token.")
-        if response.status_code >= 400:
-            raise DebridProviderError(f"Debrid request failed ({response.status_code}): {(response.text or '')[:300]}")
-        if response.status_code == 204 or not (response.text or "").strip():
+        text = body.decode("utf-8", "replace")
+        if status == 204 or not text.strip():
             return {}
         try:
-            payload = response.json()
-        except ValueError as exc:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
             raise DebridProviderError("Debrid provider returned an invalid response.") from exc
         # Real Debrid can report invalid credentials as a JSON error payload
         # while still responding with HTTP 200.  Treat that as a failure so a
@@ -73,19 +75,19 @@ class RealDebridProvider(DebridProviderBase):
             raw=dict(raw),
         )
 
-    def validate_token(self) -> dict:
-        data = self._request("GET", "/user")
+    async def validate_token(self) -> dict:
+        data = await self._request("GET", "/user")
         return data if isinstance(data, dict) else {}
 
-    def preview_magnet(self, magnet: str) -> DebridPreview:
-        data = self._request("POST", "/torrents/addMagnet", data={"magnet": magnet})
+    async def preview_magnet(self, magnet: str) -> DebridPreview:
+        data = await self._request("POST", "/torrents/addMagnet", data={"magnet": magnet})
         task_id = first_identifier(data if isinstance(data, dict) else {}, "id")
         if task_id is None:
             raise DebridProviderError("Debrid provider did not return a task id.")
-        return self.refresh_preview(task_id)
+        return await self.refresh_preview(task_id)
 
-    def refresh_preview(self, provider_task_id: str) -> DebridPreview:
-        data = self._request("GET", f"/torrents/info/{provider_task_id}")
+    async def refresh_preview(self, provider_task_id: str) -> DebridPreview:
+        data = await self._request("GET", f"/torrents/info/{provider_task_id}")
         if not isinstance(data, dict):
             raise DebridProviderError("Debrid provider returned an invalid torrent response.")
         files = [self._file(item, provider_task_id) for item in (data.get("files") or []) if isinstance(item, dict)]
@@ -100,17 +102,17 @@ class RealDebridProvider(DebridProviderBase):
             ready=status.lower() == "downloaded" and bool(data.get("links")),
         )
 
-    def prepare_selected_files(
+    async def prepare_selected_files(
         self, *, magnet: str, provider_task_id: str, selected_file_ids: Iterable[str],
         timeout_seconds: int, poll_interval_seconds: int,
     ) -> List[DebridFile]:
         wanted = normalize_identifier_list(selected_file_ids)
         if not wanted:
             raise DebridProviderError("No files selected.")
-        self._request("POST", f"/torrents/selectFiles/{provider_task_id}", data={"files": ",".join(wanted)})
-        deadline = time.time() + max(1, int(timeout_seconds or 0))
-        while time.time() <= deadline:
-            preview = self.refresh_preview(provider_task_id)
+        await self._request("POST", f"/torrents/selectFiles/{provider_task_id}", data={"files": ",".join(wanted)})
+        deadline = asyncio.get_running_loop().time() + max(1, int(timeout_seconds or 0))
+        while asyncio.get_running_loop().time() <= deadline:
+            preview = await self.refresh_preview(provider_task_id)
             status = preview.status.lower()
             if status in {"error", "magnet_error", "virus", "dead"}:
                 raise DebridProviderError(f"Debrid provider reported status: {status}")
@@ -120,11 +122,11 @@ class RealDebridProvider(DebridProviderBase):
                 for item, link in zip(selected, links):
                     item.provider_link = str(link or "")
                 return [item for item in selected if item.provider_link]
-            time.sleep(max(1, int(poll_interval_seconds or 1)))
+            await asyncio.sleep(max(1, int(poll_interval_seconds or 1)))
         raise DebridProviderError("Timed out waiting for debrid provider.")
 
-    def resolve_file_url(self, file: DebridFile) -> DebridResolvedLink:
-        data = self._request("POST", "/unrestrict/link", data={"link": file.provider_link})
+    async def resolve_file_url(self, file: DebridFile) -> DebridResolvedLink:
+        data = await self._request("POST", "/unrestrict/link", data={"link": file.provider_link})
         url = str((data or {}).get("download") or "")
         if not url:
             raise DebridProviderError("No downloadable links available from debrid provider.")
@@ -137,11 +139,11 @@ class RealDebridProvider(DebridProviderBase):
             raw=data if isinstance(data, dict) else {},
         )
 
-    def delete_task_best_effort(self, provider_task_id: str | None) -> None:
+    async def delete_task_best_effort(self, provider_task_id: str | None) -> None:
         provider_task_id = normalize_identifier(provider_task_id)
         if provider_task_id is None:
             return
         try:
-            self._request("DELETE", f"/torrents/delete/{provider_task_id}")
+            await self._request("DELETE", f"/torrents/delete/{provider_task_id}")
         except Exception:
             pass

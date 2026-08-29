@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import mimetypes
 import os
-import time
+import asyncio
+import json
 from typing import Any, Iterable, List
 
-import requests
+import aiohttp
 
 from ...media_types import AUDIO_EXTS, VIDEO_EXTS
+from ..http import HttpClient, HttpStatusError
 from .base import DebridAuthError, DebridProviderBase, DebridProviderError
 from .models import DebridFile, DebridPreview, DebridResolvedLink
 from .identifiers import first_identifier, identifiers_equal, normalize_identifier, normalize_identifier_list
@@ -50,55 +52,62 @@ class TorBoxProvider(DebridProviderBase):
     id = "torbox"
     label = "TorBox"
 
-    def __init__(self, token: str, base_url: str, timeout_seconds: int = 25):
+    def __init__(self, token: str, base_url: str, timeout_seconds: int, http: HttpClient):
         self.token = str(token or "").strip()
         self.base_url = str(base_url or "").rstrip("/")
         self.timeout_seconds = max(1, int(timeout_seconds or 25))
+        self.http = http
 
-    def _request(self, method: str, path: str, *, allow_text: bool = False, **kwargs: Any) -> Any:
+    async def _request(self, method: str, path: str, *, allow_text: bool = False, **kwargs: Any) -> Any:
         if not self.token:
             raise DebridAuthError("TorBox token is missing.")
         try:
-            response = requests.request(
+            body, _headers, status = await self.http.bytes(
                 method,
                 self.base_url + path,
                 headers={"Authorization": f"Bearer {self.token}", "User-Agent": "DebriPod/1.0"},
                 timeout=self.timeout_seconds,
                 **kwargs,
             )
-        except requests.RequestException as exc:
+            text = body.decode("utf-8", "replace")
+        except HttpStatusError as exc:
+            status = exc.status
+            text = exc.body
+        except Exception as exc:
             raise DebridProviderError(f"Debrid request failed: {exc}") from exc
-        if response.status_code in {401, 403}:
+        if status in {401, 403}:
             raise DebridAuthError("TorBox rejected the configured token.")
-        if response.status_code >= 400:
-            raise DebridProviderError(f"Debrid request failed ({response.status_code}): {(response.text or '')[:300]}")
+        if status >= 400:
+            raise DebridProviderError(f"Debrid request failed ({status}): {text[:300]}")
         try:
-            payload = response.json()
-        except ValueError:
+            payload = json.loads(text)
+        except json.JSONDecodeError:
             if allow_text:
-                return (response.text or "").strip()
+                return text.strip()
             raise DebridProviderError("Debrid provider returned an invalid response.")
         if isinstance(payload, dict) and payload.get("success") is False:
             raise DebridProviderError(f"Debrid request failed: {str(payload.get('detail') or payload.get('error') or payload.get('message') or '')[:300]}")
         return payload
 
-    def validate_token(self) -> dict:
+    async def validate_token(self) -> dict:
         # `/me` is the stable authenticated-account endpoint.  Stats can be
         # unavailable for an otherwise valid account/plan, so it must not be
         # used as the token validity probe.
-        data = self._request("GET", "/v1/api/user/me")
+        data = await self._request("GET", "/v1/api/user/me")
         return data if isinstance(data, dict) else {}
 
-    def preview_magnet(self, magnet: str) -> DebridPreview:
-        data = self._request("POST", "/v1/api/torrents/createtorrent", files={"magnet": (None, magnet)})
+    async def preview_magnet(self, magnet: str) -> DebridPreview:
+        form = aiohttp.FormData()
+        form.add_field("magnet", magnet)
+        data = await self._request("POST", "/v1/api/torrents/createtorrent", data=form)
         task = _task_payload(data if isinstance(data, dict) else {}, "")
         task_id = first_identifier(task, "torrent_id", "id") or first_identifier(data if isinstance(data, dict) else {}, "id")
         if task_id is None:
             raise DebridProviderError("Debrid provider did not return a task id.")
-        return self.refresh_preview(task_id)
+        return await self.refresh_preview(task_id)
 
-    def refresh_preview(self, provider_task_id: str) -> DebridPreview:
-        payload = self._request("GET", "/v1/api/torrents/mylist", params={
+    async def refresh_preview(self, provider_task_id: str) -> DebridPreview:
+        payload = await self._request("GET", "/v1/api/torrents/mylist", params={
             "id": provider_task_id, "bypass_cache": "false", "offset": 0, "limit": 1000,
         })
         if not isinstance(payload, dict):
@@ -135,25 +144,25 @@ class TorBoxProvider(DebridProviderBase):
             ready=ready,
         )
 
-    def prepare_selected_files(
+    async def prepare_selected_files(
         self, *, magnet: str, provider_task_id: str, selected_file_ids: Iterable[str],
         timeout_seconds: int, poll_interval_seconds: int,
     ) -> List[DebridFile]:
         wanted = set(normalize_identifier_list(selected_file_ids))
         if not wanted:
             raise DebridProviderError("No files selected.")
-        deadline = time.time() + max(1, int(timeout_seconds or 0))
-        while time.time() <= deadline:
-            preview = self.refresh_preview(provider_task_id)
+        deadline = asyncio.get_running_loop().time() + max(1, int(timeout_seconds or 0))
+        while asyncio.get_running_loop().time() <= deadline:
+            preview = await self.refresh_preview(provider_task_id)
             if preview.ready:
                 return [item for item in preview.files if item.file_id in wanted]
             if preview.status.lower() in {"error", "failed", "dead"}:
                 raise DebridProviderError(f"Debrid provider reported status: {preview.status}")
-            time.sleep(max(1, int(poll_interval_seconds or 1)))
+            await asyncio.sleep(max(1, int(poll_interval_seconds or 1)))
         raise DebridProviderError("Timed out waiting for debrid provider.")
 
-    def resolve_file_url(self, file: DebridFile) -> DebridResolvedLink:
-        data = self._request("GET", "/v1/api/torrents/requestdl", allow_text=True, params={
+    async def resolve_file_url(self, file: DebridFile) -> DebridResolvedLink:
+        data = await self._request("GET", "/v1/api/torrents/requestdl", allow_text=True, params={
             "token": self.token,
             "torrent_id": file.provider_task_id,
             "file_id": normalize_identifier(file.provider_file_id) or normalize_identifier(file.file_id),
@@ -184,11 +193,11 @@ class TorBoxProvider(DebridProviderBase):
             raw=raw,
         )
 
-    def delete_task_best_effort(self, provider_task_id: str | None) -> None:
+    async def delete_task_best_effort(self, provider_task_id: str | None) -> None:
         provider_task_id = normalize_identifier(provider_task_id)
         if provider_task_id is None:
             return
         try:
-            self._request("POST", "/v1/api/torrents/controltorrent", json={"torrent_id": provider_task_id, "action": "delete"})
+            await self._request("POST", "/v1/api/torrents/controltorrent", json_body={"torrent_id": provider_task_id, "action": "delete"})
         except Exception:
             pass

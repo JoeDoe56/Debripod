@@ -1,7 +1,6 @@
 from debripod.Services.search.identity import (
     library_result_id,
     soulseek_result_id,
-    soundcloud_result_id,
     stable_result_id,
     torrent_dedupe_key,
     torrent_result_id,
@@ -14,7 +13,6 @@ def test_provider_identity_rules_are_stable():
     assert library_result_id("root", "song", "artist|title") == library_result_id("root", "song", "artist|title")
     assert soulseek_result_id("user", r"Music\Artist") == soulseek_result_id("user", "music/artist")
     assert torrent_result_id("ABCDEF") == "torrent:abcdef"
-    assert soundcloud_result_id("song", "123") == "soundcloud:song:123"
 
 
 def test_youtube_browse_playlist_and_dedupe_are_stable_across_field_order():

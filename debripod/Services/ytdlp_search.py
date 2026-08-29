@@ -1,15 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+import inspect
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
 from typing import Any, Callable
 from urllib.parse import parse_qs, quote, urlparse
 
 from .search.dedup import deduplicate_youtube
 from .search.identity import youtube_result_id
-from .search.identity import soundcloud_result_id
 from .search.models import ProviderSearchResponse
-from .ytdlp_runner import run_flat_entries
+from .ytdlp_runner import run_flat_entries_async
 
 
 YOUTUBE_MUSIC_SEARCHES = [
@@ -36,14 +36,6 @@ _KIND = {
     "playlists_music": "music_playlist", "podcasts": "podcast", "episodes": "episode",
     "videos": "video", "playlists": "playlist", "channels": "channel",
 }
-SOUNDCLOUD_SEARCHES = [
-    ("tracks", "Songs", "sctracksearch:", "song"),
-    ("artists", "Artists", "scartistsearch:", "artist"),
-    ("albums", "Albums", "scalbumsearch:", "album"),
-    ("playlists", "Music Playlists", "scplaylistsearch:", "music_playlist"),
-]
-
-
 def youtube_music_search_url(query: str, category: str) -> str:
     return f"https://music.youtube.com/search?q={quote(str(query or ''))}&sp={_MUSIC_PARAMS[category]}"
 
@@ -130,69 +122,59 @@ def normalize_youtube_entry(entry: dict[str, Any], category: str, label: str, *,
     }
 
 
-def normalize_soundcloud_entry(entry: dict[str, Any], category: str, label: str, kind: str) -> dict[str, Any] | None:
-    title = str(entry.get("title") or entry.get("username") or entry.get("uploader") or "").strip()
-    permalink = str(entry.get("permalink_url") or entry.get("webpage_url") or entry.get("url") or "").strip()
-    numeric_id = str(entry.get("soundcloud_id") or entry.get("id") or "").strip()
-    if not title or not permalink:
-        return None
-    result_id = soundcloud_result_id(kind, numeric_id, permalink)
-    uploader = str(entry.get("artist") or entry.get("uploader") or entry.get("channel") or "").strip()
-    return {
-        "result_id": result_id, "provider_group": "ytdlp", "source": "soundcloud", "source_label": "SoundCloud",
-        "kind": kind, "kind_label": label, "title": title, "subtitle": uploader, "artist": uploader,
-        "album": str(entry.get("album") or ""), "year": str(entry.get("release_year") or ""),
-        "duration": float(entry.get("duration") or 0), "thumbnail": _thumbnail(entry), "canonical_url": permalink,
-        "stable_source_id": result_id, "search_blob": "", "filter_values": {"sources": [], "types": [], "indexers": [], "media": []},
-        "match_confidence": 0.0, "rank_score": 0.0, "browse_available": kind in {"artist", "album", "music_playlist"},
-        "stream_available": kind == "song", "download_available": True, "files_loaded": False,
-        "file_count": int(entry.get("track_count") or entry.get("playlist_count") or 0), "size": 0, "files": [],
-        "provider_data": {"soundcloud_id": numeric_id, "permalink_url": permalink, "set_type": str(entry.get("set_type") or ""), "track_count": int(entry.get("track_count") or 0)},
-    }
-
-
 class YtdlpSearchProvider:
     provider_group = "ytdlp"
 
-    def __init__(self, runner: Callable[[str], list[dict[str, Any]]] = run_flat_entries, *, max_concurrent: int = 4):
+    def __init__(self, runner: Callable[[str], Any] = run_flat_entries_async, *, max_concurrent: int = 4):
         self.runner = runner
         self.max_concurrent = max(1, int(max_concurrent))
 
-    def _search_youtube(self, query: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    async def search_stream(self, query: str, context: Any):
+        started = time.monotonic()
         jobs: list[tuple[str, str, str, bool]] = []
         jobs.extend((category, label, youtube_music_search_url(query, category), True) for category, label in YOUTUBE_MUSIC_SEARCHES)
         jobs.extend((category, label, youtube_search_url(query, category), False) for category, label, _params in YOUTUBE_SEARCHES)
-        rows: list[dict[str, Any]] = []
-        status: list[dict[str, Any]] = []
-        with ThreadPoolExecutor(max_workers=self.max_concurrent, thread_name_prefix="ytdlp-search") as executor:
-            futures = {executor.submit(self.runner, url): (category, label, url, is_music) for category, label, url, is_music in jobs}
-            for future in as_completed(futures):
-                category, label, _url, is_music = futures[future]
-                try:
-                    entries = future.result()
-                    parsed = [item for entry in entries if (item := normalize_youtube_entry(entry, category, label, youtube_music=is_music))]
-                    rows.extend(parsed)
-                    status.append({"source": "youtube", "category": category, "youtube_music": is_music, "status": "ok", "result_count": len(parsed)})
-                except Exception as exc:
-                    status.append({"source": "youtube", "category": category, "youtube_music": is_music, "status": "error", "error": str(exc), "result_count": 0})
-        return deduplicate_youtube(rows), status
+        semaphore = asyncio.Semaphore(self.max_concurrent)
 
-    def search(self, query: str, context: Any) -> ProviderSearchResponse:
+        async def run_job(job):
+            category, label, url, is_music = job
+            try:
+                async with semaphore:
+                    value = self.runner(url)
+                    entries = await value if inspect.isawaitable(value) else value
+                parsed = [item for entry in entries if (item := normalize_youtube_entry(entry, category, label, youtube_music=is_music))]
+                return category, label, is_music, parsed, None
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                return category, label, is_music, [], exc
+
+        tasks = [asyncio.create_task(run_job(job), name=f"ytdlp:{job[0]}:{'music' if job[3] else 'youtube'}") for job in jobs]
+        try:
+            for completed in asyncio.as_completed(tasks):
+                category, label, is_music, parsed, error = await completed
+                source_id = ("youtube_music:" if is_music else "youtube:") + category
+                status = {
+                    "source_id": source_id,
+                    "source_label": label,
+                    "source": "youtube",
+                    "category": category,
+                    "youtube_music": is_music,
+                    "status": "error" if error else ("ok" if parsed else "empty"),
+                    "result_count": len(parsed),
+                }
+                yield ProviderSearchResponse("ytdlp", status, parsed, error=str(error or ""), duration_ms=int((time.monotonic() - started) * 1000))
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def search(self, query: str, context: Any) -> ProviderSearchResponse:
+        rows: list[dict[str, Any]] = []
+        statuses: list[Any] = []
         started = time.monotonic()
-        rows, status = self._search_youtube(query)
-        # SoundCloud uses separate extractor prefixes and is intentionally
-        # appended only after YouTube's internal duplicate merge.
-        with ThreadPoolExecutor(max_workers=self.max_concurrent, thread_name_prefix="soundcloud-search") as executor:
-            futures = {
-                executor.submit(self.runner, prefix + query): (category, label, kind)
-                for category, label, prefix, kind in SOUNDCLOUD_SEARCHES
-            }
-            for future in as_completed(futures):
-                category, label, kind = futures[future]
-                try:
-                    parsed = [item for entry in future.result() if (item := normalize_soundcloud_entry(entry, category, label, kind))]
-                    rows.extend(parsed)
-                    status.append({"source": "soundcloud", "category": category, "status": "ok", "result_count": len(parsed)})
-                except Exception as exc:
-                    status.append({"source": "soundcloud", "category": category, "status": "error", "error": str(exc), "result_count": 0})
-        return ProviderSearchResponse("ytdlp", status, rows, duration_ms=int((time.monotonic() - started) * 1000))
+        async for response in self.search_stream(query, context):
+            rows.extend(response.results)
+            statuses.append(response.source_status)
+        return ProviderSearchResponse("ytdlp", statuses, deduplicate_youtube(rows), duration_ms=int((time.monotonic() - started) * 1000))

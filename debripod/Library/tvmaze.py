@@ -2,12 +2,12 @@ from __future__ import annotations
 
 """Small, cached TVMaze lookup used only to fill missing episode metadata."""
 
+import asyncio
 import html
 import re
 from typing import Any, Iterable
 
-import requests
-
+from ..Services.http import HttpClient
 from .library_db import load_search_cache, save_search_cache
 from .video_parse import normalize_show_key, show_keys_close
 
@@ -15,6 +15,20 @@ from .video_parse import normalize_show_key, show_keys_close
 _API_URL = "https://api.tvmaze.com/singlesearch/shows"
 _CACHE_SECONDS = 30 * 24 * 60 * 60
 _TIMEOUT_SECONDS = 8
+_HTTP: HttpClient | None = None
+_APP_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def configure_tvmaze_http(http: HttpClient) -> None:
+    global _APP_LOOP, _HTTP
+    _HTTP = http
+    _APP_LOOP = asyncio.get_running_loop()
+
+
+def _http() -> HttpClient:
+    if _HTTP is None:
+        raise RuntimeError("TVMaze HTTP transport is not initialized")
+    return _HTTP
 
 
 def _cache_key(show_title: str) -> str:
@@ -42,52 +56,11 @@ def _episode_map(payload: dict[str, Any]) -> dict[tuple[int, int], dict[str, str
     return result
 
 
-def episodes_for_show(show_title: str) -> dict[tuple[int, int], dict[str, str]]:
-    """Get a show's episode names/dates once, with a persistent cache."""
+def _load_cached_payload(show_title: str) -> dict[str, Any]:
     title = str(show_title or "").strip()
     key = _cache_key(title)
     if not title or key.endswith(":"):
         return {}
-    try:
-        cached = load_search_cache(key)
-        payload = cached.get("payload") if isinstance(cached, dict) else None
-        if isinstance(payload, dict):
-            return _episode_map(payload)
-    except Exception:
-        pass
-    try:
-        response = requests.get(
-            _API_URL,
-            params={"q": title, "embed": "episodes"},
-            headers={"Accept": "application/json", "User-Agent": "Debripod/1.0"},
-            timeout=_TIMEOUT_SECONDS,
-        )
-        if not response.ok:
-            return {}
-        payload = response.json()
-        if not isinstance(payload, dict):
-            return {}
-        if not show_keys_close(title, str(payload.get("name") or "")):
-            return {}
-        save_search_cache(key, "tvmaze", title, {"kind": "episode-metadata"}, payload, ttl_seconds=_CACHE_SECONDS)
-        return _episode_map(payload)
-    except (requests.RequestException, ValueError):
-        return {}
-
-
-def _cached_show_payload(show_title: str) -> dict[str, Any]:
-    title = str(show_title or "").strip()
-    key = _cache_key(title)
-    if not title or key.endswith(":"):
-        return {}
-    try:
-        cached = load_search_cache(key)
-        payload = cached.get("payload") if isinstance(cached, dict) else None
-        if isinstance(payload, dict):
-            return payload
-    except Exception:
-        pass
-    episodes_for_show(title)
     try:
         cached = load_search_cache(key)
         payload = cached.get("payload") if isinstance(cached, dict) else None
@@ -96,14 +69,53 @@ def _cached_show_payload(show_title: str) -> dict[str, Any]:
         return {}
 
 
+async def episodes_for_show(show_title: str) -> dict[tuple[int, int], dict[str, str]]:
+    """Get a show's episode names/dates once, with a persistent cache."""
+    title = str(show_title or "").strip()
+    key = _cache_key(title)
+    if not title or key.endswith(":"):
+        return {}
+    payload = _load_cached_payload(title)
+    if payload:
+        return _episode_map(payload)
+    try:
+        payload = await _http().json(
+            "GET",
+            _API_URL,
+            params={"q": title, "embed": "episodes"},
+            headers={"Accept": "application/json", "User-Agent": "Debripod/1.0"},
+            timeout=_TIMEOUT_SECONDS,
+        )
+        if not isinstance(payload, dict):
+            return {}
+        if not show_keys_close(title, str(payload.get("name") or "")):
+            return {}
+        save_search_cache(key, "tvmaze", title, {"kind": "episode-metadata"}, payload, ttl_seconds=_CACHE_SECONDS)
+        return _episode_map(payload)
+    except (OSError, RuntimeError, ValueError):
+        return {}
+
+
+async def _cached_show_payload(show_title: str) -> dict[str, Any]:
+    title = str(show_title or "").strip()
+    key = _cache_key(title)
+    if not title or key.endswith(":"):
+        return {}
+    payload = _load_cached_payload(title)
+    if payload:
+        return payload
+    await episodes_for_show(title)
+    return _load_cached_payload(title)
+
+
 def _plain_summary(value: Any) -> str:
     text = re.sub(r"<[^>]+>", " ", str(value or ""))
     return " ".join(html.unescape(text).split())
 
 
-def normalized_episode_information(show_title: str, season: int, episode: int) -> dict[str, Any]:
+async def normalized_episode_information(show_title: str, season: int, episode: int) -> dict[str, Any]:
     """Return only available fields from the existing cached TVmaze show payload."""
-    payload = _cached_show_payload(show_title)
+    payload = await _cached_show_payload(show_title)
     if not payload:
         return {}
     embedded = payload.get("_embedded") if isinstance(payload.get("_embedded"), dict) else {}
@@ -146,26 +158,70 @@ def _needs_lookup(parsed: dict[str, Any]) -> bool:
     return title in {"reenc", "rerip", "proper", "episode"}
 
 
-def enrich_missing_episode_metadata(records: Iterable[dict]) -> None:
-    """Mutate parsed records only where filenames do not supply an episode title."""
-    wanted: dict[str, list[dict]] = {}
+def _apply_episode_metadata(records: Iterable[dict], episodes_by_show: dict[str, dict[tuple[int, int], dict[str, str]]]) -> bool:
+    changed = False
     for record in records:
         parsed = record.get("parse") if isinstance(record.get("parse"), dict) else None
-        if parsed and _needs_lookup(parsed):
-            wanted.setdefault(str(parsed.get("show_title") or ""), []).append(record)
-    for show_title, show_records in wanted.items():
-        episodes = episodes_for_show(show_title)
-        if not episodes:
+        if not parsed or not _needs_lookup(parsed):
             continue
-        for record in show_records:
-            parsed = record.get("parse") or {}
-            try:
-                lookup = episodes.get((int(parsed.get("season") or 0), int(parsed.get("episode") or 0)))
-            except (TypeError, ValueError):
-                lookup = None
-            if not lookup:
-                continue
-            if lookup.get("title"):
-                parsed["episode_title"] = lookup["title"]
-            if lookup.get("airdate"):
-                parsed["airdate"] = lookup["airdate"]
+        show_title = str(parsed.get("show_title") or "")
+        episodes = episodes_by_show.get(show_title) or {}
+        try:
+            lookup = episodes.get((int(parsed.get("season") or 0), int(parsed.get("episode") or 0)))
+        except (TypeError, ValueError):
+            lookup = None
+        if not lookup:
+            continue
+        if lookup.get("title") and parsed.get("episode_title") != lookup["title"]:
+            parsed["episode_title"] = lookup["title"]
+            changed = True
+        if lookup.get("airdate") and parsed.get("airdate") != lookup["airdate"]:
+            parsed["airdate"] = lookup["airdate"]
+            changed = True
+    return changed
+
+
+def enrich_cached_episode_metadata(records: Iterable[dict]) -> bool:
+    """Apply only persistent TVMaze cache data; safe for library worker threads."""
+    rows = list(records)
+    shows = {
+        str(record.get("parse", {}).get("show_title") or "")
+        for record in rows
+        if isinstance(record.get("parse"), dict) and _needs_lookup(record["parse"])
+    }
+    mappings = {title: _episode_map(_load_cached_payload(title)) for title in shows if title}
+    return _apply_episode_metadata(rows, mappings)
+
+
+async def enrich_missing_episode_metadata(records: Iterable[dict]) -> bool:
+    """Mutate parsed records only where filenames do not supply an episode title."""
+    rows = list(records)
+    wanted: set[str] = set()
+    for record in rows:
+        parsed = record.get("parse") if isinstance(record.get("parse"), dict) else None
+        if parsed and _needs_lookup(parsed):
+            wanted.add(str(parsed.get("show_title") or ""))
+    mappings: dict[str, dict[tuple[int, int], dict[str, str]]] = {}
+    for show_title in sorted(wanted):
+        if show_title:
+            mappings[show_title] = await episodes_for_show(show_title)
+    return _apply_episode_metadata(rows, mappings)
+
+
+def schedule_episode_metadata_enrichment(records: Iterable[dict], on_changed=None) -> bool:
+    """Schedule TVMaze lookups from a library worker without creating another HTTP session."""
+    loop = _APP_LOOP
+    rows = list(records)
+    if loop is None or loop.is_closed() or not rows:
+        return False
+
+    async def _run() -> None:
+        changed = await enrich_missing_episode_metadata(rows)
+        if changed and callable(on_changed):
+            await asyncio.to_thread(on_changed)
+
+    def _start() -> None:
+        loop.create_task(_run(), name="tvmaze-library-enrichment")
+
+    loop.call_soon_threadsafe(_start)
+    return True

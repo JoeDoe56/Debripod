@@ -39,7 +39,8 @@ function responseLooksLikeAppShell(response){
 
 function isShellAsset(url){
   if(url.pathname === "/" || url.pathname === "/site.webmanifest") return true;
-  if(url.pathname === "/icons/debripod-app-icon.svg") return true;
+  if(url.pathname === "/favicon.ico" || url.pathname === "/apple-touch-icon.png") return true;
+  if(url.pathname === "/icon-192.png" || url.pathname === "/icon-512.png") return true;
   return url.pathname.startsWith("/static/");
 }
 

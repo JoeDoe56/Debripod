@@ -12,7 +12,7 @@ configure_task_manager(
     soulseek_service_provider=lambda: _state.SOULSEEK_SERVICE,
     retry_worker_provider=lambda source: (
         youtube_download_remaining_worker if source == "youtube"
-        else debrid_download_remaining_worker if source == "debrid"
+        else schedule_debrid_download_remaining if source == "debrid"
         else None
     ),
     completion_notifier=enqueue_task_completion,

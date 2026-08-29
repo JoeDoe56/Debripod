@@ -55,20 +55,60 @@
     const side = Math.min(width, height);
     return {width:side, height:side};
   }
+  function stableViewportChange(previous, candidate, signals){
+    const next = candidate || previous || {width:0, height:0};
+    if(!previous || (signals && signals.force)) return next;
+    if(signals && (signals.zoomed || signals.keyboardOpen)) return previous;
+    if(signals && signals.touchViewport && Number(previous.width) === Number(next.width)) return previous;
+    return next;
+  }
   function createBrowserController(win){
     if(!win || !win.document) return null;
     const doc = win.document;
     let frame = 0;
     let generation = 0;
+    let stableViewport = null;
+    function viewportSize(){
+      const root = doc.documentElement;
+      return {
+        width:Math.max(1, Number(root && root.clientWidth || win.innerWidth || 1)),
+        height:Math.max(1, Number(root && root.clientHeight || win.innerHeight || 1))
+      };
+    }
+    function editableFocused(){
+      const active = doc.activeElement;
+      if(!active || !active.matches) return false;
+      return active.matches("input, textarea, select, [contenteditable='true']");
+    }
+    function captureStableViewport(force){
+      const candidate = viewportSize();
+      const visual = win.visualViewport;
+      const zoomed = !!(visual && Math.abs(Number(visual.scale || 1) - 1) > 0.01);
+      const keyboardOpen = !!(
+        editableFocused() && stableViewport &&
+        candidate.height < Number(stableViewport.height || candidate.height) * 0.9
+      );
+      stableViewport = stableViewportChange(stableViewport, candidate, {
+        force:!!force,
+        zoomed:zoomed,
+        keyboardOpen:keyboardOpen,
+        touchViewport:!!(win.navigator && Number(win.navigator.maxTouchPoints || 0) > 0)
+      });
+      doc.documentElement.style.setProperty("--stable-viewport-width", stableViewport.width + "px");
+      doc.documentElement.style.setProperty("--stable-viewport-height", stableViewport.height + "px");
+      doc.documentElement.classList.toggle("dpStableShortViewport", stableViewport.height <= 760);
+      return !(zoomed || keyboardOpen);
+    }
     function rectFor(element){
       if(!element) return null;
       return element.getBoundingClientRect();
     }
     function viewportRect(){
-      // Layout follows the CSS/window viewport. visualViewport changes during
-      // pinch zoom, which must not resize or reposition the controls.
-      const width = win.innerWidth;
-      const height = win.innerHeight;
+      // Pinch zoom and the software keyboard change the visual viewport. The
+      // controls intentionally remain laid out against this stable viewport.
+      const current = stableViewport || viewportSize();
+      const width = current.width;
+      const height = current.height;
       return {left:0, top:0, right:width, bottom:height, width:width, height:height};
     }
     function measure(){
@@ -125,19 +165,26 @@
       frame = win.requestAnimationFrame(apply);
     }
     function start(){
+      captureStableViewport(true);
       const targets = [doc.querySelector(".ipodStage"), doc.getElementById("ipodScreen"), doc.getElementById("wheelZone"), doc.getElementById("wheel"), doc.getElementById("libHeader"), doc.getElementById("infoPill")].filter(Boolean);
       if("ResizeObserver" in win){
         const observer = new ResizeObserver(schedule);
         targets.forEach(target=>observer.observe(target));
       }
-      win.addEventListener("resize", schedule);
-      win.addEventListener("orientationchange", schedule);
-      if(win.visualViewport) win.visualViewport.addEventListener("resize", schedule);
+      win.addEventListener("resize", ()=>{
+        if(captureStableViewport(false)) schedule();
+      });
+      win.addEventListener("orientationchange", ()=>{
+        win.setTimeout(()=>{
+          captureStableViewport(true);
+          schedule();
+        }, 120);
+      });
       schedule();
     }
     if(doc.readyState === "loading") doc.addEventListener("DOMContentLoaded", start, {once:true});
     else start();
-    return {schedule:schedule, chooseLayout:chooseLayout, mediaBox:mediaBox};
+    return {schedule:schedule, chooseLayout:chooseLayout, mediaBox:mediaBox, stableViewportChange:stableViewportChange};
   }
-  return {chooseLayout:chooseLayout, normalWheelWellLayout:normalWheelWellLayout, mediaBox:mediaBox, createBrowserController:createBrowserController};
+  return {chooseLayout:chooseLayout, normalWheelWellLayout:normalWheelWellLayout, mediaBox:mediaBox, stableViewportChange:stableViewportChange, createBrowserController:createBrowserController};
 });

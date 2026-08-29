@@ -221,6 +221,7 @@
       {key:"SOULSEEK_SEARCH_MAX_RESULTS", label:"Soulseek search max results", type:"number", value:s.SOULSEEK_SEARCH_MAX_RESULTS},
       {key:"SOULSEEK_SEARCH_IDLE_STOP_SEC", label:"Soulseek idle stop", type:"number", value:s.SOULSEEK_SEARCH_IDLE_STOP_SEC},
       {key:"SOULSEEK_SEARCH_HARD_MAX_SEC", label:"Soulseek hard max", type:"number", value:s.SOULSEEK_SEARCH_HARD_MAX_SEC},
+      {key:"AIOSLSK_LOGGING_ENABLED", label:"aioslsk diagnostic logging", type:"bool", value:s.AIOSLSK_LOGGING_ENABLED, sub_label:"Writes verbose Soulseek protocol diagnostics to a dedicated log file. Keep off unless troubleshooting."},
       {key:"YOUTUBE_STREAM_CACHE_SUBDIR", label:"YouTube stream cache", type:"text", value:s.YOUTUBE_STREAM_CACHE_SUBDIR},
       {key:"YOUTUBE_WEB_BASE", label:"YouTube web base", type:"text", value:s.YOUTUBE_WEB_BASE},
       {key:"YOUTUBE_SEARCH_LIMIT", label:"YouTube search limit", type:"number", value:s.YOUTUBE_SEARCH_LIMIT},
@@ -395,10 +396,7 @@
       load: async function(){
         await settingsLoad();
         let services = {};
-        if(category === "services"){
-          rows.unshift({kind:"libinfo_action",label:"Torrent Indexers",action:"torrent_indexers",pills:["Cardigann"]});
-          try{ const js = await apiGet("/api/services/status"); services = (js && js.services) || {}; }catch(e){}
-        }
+        if(category === "services") try{ const js = await apiGet("/api/services/status"); services = (js && js.services) || {}; }catch(e){}
         const debrid = (services && services.debrid) || (state.connectionStatus && state.connectionStatus.DEBRID) || {};
         const activeProvider = String(debrid.active_provider || "");
         const activeInfo = (debrid.providers || {})[activeProvider] || {};
@@ -417,6 +415,7 @@
           pills:(settingConnectionPills(r) || [{text:settingValueLabel(r.value)}]).concat([settingSavePill(r)])
         }));
         if(category === "services"){
+          rows.unshift({kind:"libinfo_action",label:"Torrent Sources",action:"torrent_sources",pills:["Local + 7 remote"]});
           const connectedLabel = String(activeInfo.label || activeProvider || "");
           rows.unshift({
             kind:"debrid_token",
@@ -437,61 +436,31 @@
     await setView(view, !!push);
   }
 
-  async function viewTorrentIndexers(push){
+  async function viewTorrentSources(push){
     showNowPlaying(false);
-    await setView({kind:"settings_indexers",label:"Torrent Indexers",load:async function(){
-      const js=await apiGet("/api/indexers");
-      const rows=(js.indexers||[]).map(function(indexer){
-        const pills=[];
-        pills.push({text:indexer.enabled?"Enabled":"Disabled",tone:indexer.enabled?"ok":""});
-        if(indexer.requires_setup) pills.push({text:"Requires setup",tone:"warn"});
-        if(indexer.blocked_until) pills.push({text:"Temporarily blocked",tone:"warn"});
-        if(indexer.origin==="custom") pills.push({text:"Custom"});
-        if(indexer.last_error) pills.push({text:"Error",tone:"warn"});
-        return {kind:"settings_indexer",label:indexer.label||indexer.id,indexer:indexer,pills:pills,forceTwoLine:true,sub_label:indexer.last_error||""};
+    await setView({kind:"settings_torrent_sources",label:"Torrent Sources",load:async function(){
+      await settingsLoad();
+      let diagnostics={};
+      try{ diagnostics=await apiGet("/api/local-index/status"); }catch(e){ diagnostics={ready:false,error:String(e&&e.message||e)}; }
+      const meta=diagnostics.meta||{};
+      const updater=diagnostics.updater||{};
+      const indexError=String(updater.error||diagnostics.error||"");
+      const lastSuccessful=Math.max(Number(meta.dmm_last_success_unix||0),Number(meta.torrents_csv_last_success_unix||0));
+      const enabled=new Set(((state.appSettings||{}).TORRENT_SEARCH_ENABLED_SOURCES||[]).map(String));
+      const labels={knaben:"Knaben",bitsearch:"BitSearch",magnetz:"Magnetz",torlock:"TorLock",bt4g:"BT4G",torrentclaw:"TorrentClaw",torapi:"TorAPI"};
+      const rows=[
+        {kind:"setting_value",label:"Local Index",key:"LOCAL_INDEX_ENABLED",settingType:"bool",value:!!(state.appSettings||{}).LOCAL_INDEX_ENABLED,pills:[{text:(state.appSettings||{}).LOCAL_INDEX_ENABLED?"Enabled":"Disabled",tone:(state.appSettings||{}).LOCAL_INDEX_ENABLED?"ok":""},{text:indexError?"Error":updater.building?"Building":diagnostics.ready?"Ready":"Pending",tone:indexError?"warn":diagnostics.ready?"ok":"warn"}],sub_label:indexError,settingRow:true},
+        {kind:"info",label:"Indexed torrents",sub_label:[String(diagnostics.total||0)+" total",String(diagnostics.dmm||0)+" DMM",String(diagnostics.torrents_csv||0)+" Torrents CSV",String(diagnostics.overlap||0)+" overlap"].join(" · "),forceTwoLine:true},
+        {kind:"info",label:"Database",sub_label:[String(diagnostics.path||""),String(diagnostics.size_bytes||0)+" bytes"].filter(Boolean).join(" · "),forceTwoLine:true},
+        {kind:"info",label:"Source revisions",sub_label:[meta.dmm_commit_sha?("DMM "+meta.dmm_commit_sha):"DMM pending",meta.torrents_csv_commit_sha?("CSV "+meta.torrents_csv_commit_sha):"CSV pending"].join(" · "),forceTwoLine:true},
+        {kind:"info",label:"Last successful update",sub_label:lastSuccessful?new Date(lastSuccessful*1000).toLocaleString():"Pending",forceTwoLine:true}
+      ];
+      Object.keys(labels).forEach(function(sourceId){
+        const on=enabled.has(sourceId);
+        rows.push({kind:"settings_torrent_source_toggle",label:labels[sourceId],sourceId:sourceId,enabled:on,pills:[{text:on?"Enabled":"Disabled",tone:on?"ok":""}],settingRow:true});
       });
-      resetList(rows.length?rows:[{kind:"info",label:"No indexer definitions found"}]);
-    }},!!push);
-  }
-
-  async function viewTorrentIndexerDetail(indexer,push){
-    const item=indexer||{};
-    showNowPlaying(false);
-    await setView({kind:"settings_indexer_detail",label:item.label||item.id||"Indexer",indexer:item,load:async function(){
-      const rows=[];
-      if(item.requires_setup){
-        rows.push({kind:"info",label:"Support for this indexer requires setup",pills:[{text:"Requires setup",tone:"warn"}]});
-        (item.settings_fields||[]).forEach(function(field){ rows.push({kind:"info",label:field.label||field.name||"Setting",sub_label:field.type||"text",forceTwoLine:true}); });
-      }else{
-        rows.push({kind:"settings_indexer_toggle",label:item.enabled?"Disable indexer":"Enable indexer",indexer:item});
-      }
-      rows.push({kind:"settings_indexer_test",label:"Test indexer",indexer:item,pills:["Live request"]});
       resetList(rows);
     }},!!push);
-  }
-
-  async function viewIndexerDefinitions(push){
-    showNowPlaying(false);
-    await setView({kind:"settings_indexer_definitions",label:"Indexer Definitions",load:async function(){
-      const js=await apiGet("/api/indexer-definitions/status"), manifest=js.manifest||{}, staged=js.staged||{};
-      resetList([
-        {kind:"info",label:"Active revision",pills:[String(manifest.active_revision||"None")]},
-        {kind:"info",label:"Package SHA256",pills:[String(manifest.package_sha256||"None")]},
-        {kind:"info",label:"Last update",pills:[String(manifest.updated_at||"Never")]},
-        {kind:"info",label:"Staged revision",pills:[String(staged.revision||staged.active_revision||"None")]},
-        {kind:"settings_definition_action",label:"Stage latest definitions",definitionAction:"stage"},
-        {kind:"settings_definition_action",label:"Validate staged definitions",definitionAction:"validate"},
-        {kind:"settings_definition_action",label:"Activate staged definitions",definitionAction:"activate"},
-        {kind:"settings_definition_action",label:"Roll back definitions",definitionAction:"rollback"},
-        {kind:"settings_definition_action",label:"Discard staged definitions",definitionAction:"discard",pills:[{text:"Delete staged copy",tone:"warn"}]}
-      ]);
-    }},!!push);
-  }
-
-  async function runIndexerDefinitionAction(action){
-    const res=await apiPost("/api/indexer-definitions/"+encodeURIComponent(action),{}), js=res&&res.json?res.json:{};
-    if(!res||!res.ok||!js.ok) throw new Error(js.error||("Failed to "+action+" definitions"));
-    await viewIndexerDefinitions(false);
   }
 
   function beginDebridTokenEdit(){
@@ -938,6 +907,7 @@
   }
 
   let _libUnifiedSearchModel = null;
+  let _libUnifiedSearchAbortController = null;
   function libUnifiedSearchModel(){
     if(!state.libSearch) state.libSearch = DebriPod.createSearchResultsState();
     if(!_libUnifiedSearchModel || _libUnifiedSearchModel.state !== state.libSearch){
@@ -951,26 +921,31 @@
       const model = libUnifiedSearchModel();
       const items = [];
       const status = Array.isArray(state.libSearch.providerStatus) ? state.libSearch.providerStatus : [];
-      const sourceRows = {Library:{done:false,count:0,error:""},Soulseek:{done:false,count:0,error:""},Torrents:{done:false,count:0,error:""},YouTube:{done:false,count:0,error:""},SoundCloud:{done:false,count:0,error:""}};
+      const sourceRows = {Library:{done:false,count:0,error:""},"Local Index":{done:false,count:0,error:""},Torrents:{done:false,count:0,error:""},Soulseek:{done:false,count:0,error:""},YouTube:{done:false,count:0,error:""}};
       status.forEach(group=>{
         const name = String(group.provider_group || "");
-        if(name === "library") Object.assign(sourceRows.Library,{done:true,count:Number(group.result_count||0),error:String(group.error||"")});
-        if(name === "soulseek") Object.assign(sourceRows.Soulseek,{done:true,count:Number(group.result_count||0),error:String(group.error||"")});
-        if(name === "torrents") Object.assign(sourceRows.Torrents,{done:true,count:Number(group.result_count||0),error:String(group.error||"")});
-        if(name === "ytdlp"){
-          (Array.isArray(group.source_status)?group.source_status:[]).forEach(sub=>{
-            const target=String(sub.source||"")==="soundcloud"?sourceRows.SoundCloud:sourceRows.YouTube;
-            target.done=true; target.count+=Number(sub.result_count||0); if(sub.error)target.error=String(sub.error);
-          });
-        }
+        const target = name === "library" ? sourceRows.Library : name === "local_index" ? sourceRows["Local Index"] : name === "torrents" ? sourceRows.Torrents : name === "soulseek" ? sourceRows.Soulseek : (name === "ytdlp" || name === "youtube") ? sourceRows.YouTube : null;
+        if(!target) return;
+        target.done = true;
+        target.count += Number(group.result_count || 0);
+        if(group.error) target.error = String(group.error);
       });
-      const progressPills = Object.keys(sourceRows).map(name=>{ const row=sourceRows[name]; return {text:name+(row.error?" ×":row.done?" "+row.count:" …"),tone:row.error?"warn":row.done?"ok":""}; });
+      const selectedSources = state.libSearch.filters && state.libSearch.filters.sources instanceof Set ? state.libSearch.filters.sources : new Set();
+      const sourcePills = Object.keys(sourceRows).map(name=>{
+        const row = sourceRows[name];
+        return {
+          text:name + (row.error ? " ×" : (row.done ? " " + row.count : (state.libSearch.running ? " …" : ""))),
+          filter_kind:"sources",
+          filter_value:name,
+          tone:row.error ? "warn" : (selectedSources.has(name) ? "ok" : "")
+        };
+      });
       items.push({kind:"libsearch_query",row_layout_key:"search-query",label:"Enter query or link",pills:[]});
+      items.push({kind:"libsearch_action",label:"Search history"});
       const activeCount=Object.values(state.libSearch.filters||{}).reduce((n,set)=>n+(set instanceof Set?set.size:0),0);
       items.push({kind:"libsearch_filter",row_layout_key:"search-filter-fixed",label:"Enter filters",pills:activeCount?[{text:String(activeCount)+" active"}]:[]});
-      items.push({kind:"libsearch_status",row_layout_key:"search-status-fixed",label:state.libSearch.running?"Searching":"Sources",pills:progressPills});
       items.push({kind:"libsearch_action",label:"Clear"});
-      items.push({kind:"libsearch_action",label:"Search history"});
+      items.push({kind:"libsearch_status",row_layout_key:"search-sources",label:"",pills:sourcePills});
       return items.concat(model.resultRows());
     }
     const q = state.libSearch.q || "";
@@ -980,34 +955,25 @@
     const sourceRows = Object.values((state.libSearch && state.libSearch.sourceStatus) || {});
     const sourceMap = {};
     sourceRows.forEach(src=>{ if(src && src.source) sourceMap[String(src.source).toLowerCase()] = src; });
-    const sourcePills = ["library", "soulseek", "torrent", "youtube", "soundcloud"].map(source=>{
+    const sourcePills = ["library", "local_index", "torrent", "soulseek", "youtube"].map(source=>{
       const src = sourceMap[source] || {};
-      const label = source === "soulseek" ? "Soulseek" : source.charAt(0).toUpperCase() + source.slice(1);
+      const label = source === "local_index" ? "Local Index" : (source === "soulseek" ? "Soulseek" : source.charAt(0).toUpperCase() + source.slice(1));
       if(String(src.error || "")) return {text:label + " ×", tone:"warn"};
       if(src.done === false || !sourceMap[source]) return {text:label + " …", tone:""};
       return {text:label + " " + String(Number(src.result_count || 0)), tone:"ok"};
     });
-    const visibleTotal = Number((state.libSearch && state.libSearch.last_count) || sourceRows.reduce((sum, src)=>sum + Number(src && src.result_count || 0), 0));
-    sourcePills.push({text:"Total " + String(visibleTotal) + ((state.libSearch && state.libSearch.cached) ? " ↻" : ""), tone:""});
     items.push({
       kind:"libsearch_query",
       label:"Enter query or link",
       pills: [],
-      expanded: !!(state.libSearch && (state.libSearch.searching || state.libSearch.showSourceStatus)),
-      sub_row: (state.libSearch && (state.libSearch.searching || state.libSearch.showSourceStatus)) ? {loading:false, label:"", pills:sourcePills} : null
+      expanded:false,
+      sub_row:null
     });
+    items.push({kind:"libsearch_action", label:"Search history"});
     items.push({kind:"libsearch_filter", label:"Enter filters"});
 
     items.push({kind:"libsearch_action", label:"Clear"});
-    items.push({kind:"libsearch_action", label:"Search history"});
-    if(sourceRows.length){
-      for(const src of sourceRows){
-        const err = String((src && src.error) || "").trim();
-        if(err){
-          items.push({kind:"info", label:String(src.label || src.source || "Source") + ": " + err});
-        }
-      }
-    }
+    items.push({kind:"libsearch_status", row_layout_key:"search-sources", label:"", pills:sourcePills});
 
     for(const r of (state.libSearch.results || [])){
       const source = String(r.source || "").toLowerCase();
@@ -1457,7 +1423,7 @@ async function libDoSearch(engine, q){
       }
       state.libSearch.result_source = useEngine;
       state.libSearch.cache_key = js.cache_key || "";
-      if(Array.isArray(js.results)) libUnifiedSearchModel().ingestFinal({results:js.results,provider_status:js.provider_status||[],cached:js.cached});
+      if(Array.isArray(js.results)) libUnifiedSearchModel().ingestFinal({search_id:libUnifiedSearchModel().state.searchId,results:js.results,provider_status:js.provider_status||[],cached:js.cached});
       state.libSearch.last_count = Number(js.result_count || state.libSearch.results.length || 0);
       state.libSearch.searching = false;
       state.libSearch.running = false;
@@ -1469,6 +1435,7 @@ async function libDoSearch(engine, q){
       libSetStatus(String(state.libSearch.last_count) + " results" + (state.libSearch.cached ? " · Cached" : ""), "ok");
       libRefreshList(true);
     }catch(e){
+      if(state.libSearch.search_token !== searchToken || (e && e.name === "AbortError")) return;
       state.libSearch.searching = false;
       libSetStatus("Error", "warn");
       libRefreshList(true);
@@ -1494,11 +1461,10 @@ async function libDoSearch(engine, q){
             const when = Number(h.ts || 0) > 0 ? new Date(Number(h.ts) * 1000).toLocaleString() : "";
             const lbl = q ? q : "(empty)";
             const pills = [];
-            if(engine) pills.push(engine);
             if(when) pills.push(String(when));
             items.push({kind:"libsearch_history_entry", label: lbl, engine: engine, q: q, cache_key:String(h.cache_key || ""), pills: pills});
           }
-          if(!items.length){
+          if(!hist.length){
             items.push({kind:"info", label:"No search history"});
           }
         }catch(e){
@@ -1711,26 +1677,23 @@ async function libDoSearch(engine, q){
     }, !!push);
   }
 
-  function glassTintLabel(value){
-    const tint = normalizeLiquidGlassTint(value, 1);
-    if(tint < 0.995) return tint.toFixed(2) + " Dark";
-    if(tint > 1.005) return tint.toFixed(2) + " Light";
-    return "1.00 Clear";
+  function glassMaterialLabel(value){
+    const material = normalizeLiquidGlassMaterial(value, 0);
+    const signed = (material > 0 ? "+" : "") + material.toFixed(2);
+    if(material < -0.005) return signed + " Dark";
+    if(material > 0.005) return signed + " Light";
+    return "0.00 Transparent";
   }
 
   function glassElementSummary(key){
     const settings = cloneGlassElementSettings(uiSettings.liquidGlassElements);
     const item = settings[key] || {};
-    const rows = [
-      glassTintLabel(item.glassTint),
-      "R " + String(item.refraction),
-      "B " + String(item.bevelDepth)
-    ];
+    return [glassMaterialLabel(item.material)];
   }
 
   async function viewLibUiSettings(push){
     showNowPlaying(false, {immediate:true});
-    try{ if(libList){ libList.style.display = "block"; libList.classList.remove("pageFadeHidden"); } }catch(e){}
+    try{ if(libList) libList.style.display = "block"; }catch(e){}
     const restoreSel = (!push && state.current && state.current.kind === "libuisettings") ? state.sel : null;
     const restoreScroll = (!push && state.current && state.current.kind === "libuisettings" && libList) ? libList.scrollTop : null;
     await setView({
@@ -1812,34 +1775,6 @@ async function libDoSearch(engine, q){
     }, push);
   }
 
-  async function viewGlassElementSettings(elementKey, push){
-    showNowPlaying(false);
-    const settings = cloneGlassElementSettings(uiSettings.liquidGlassElements);
-    const item = settings[elementKey];
-    if(!item) return viewLibAdvancedCategory("glass", false);
-    await setView({
-      kind:"libglasselement",
-      label:item.label,
-      glassElementKey:elementKey,
-      load: async function(){
-        libControlsHide();
-        const rows = [
-          {label:"Glass tint", field:"glassTint", value:glassTintLabel(item.glassTint), action:"set_glass_value:" + elementKey + ":glassTint"},
-          {label:"Resolution", field:"resolution", value:item.resolution, action:"set_glass_value:" + elementKey + ":resolution"},
-          {label:"Refraction", field:"refraction", value:item.refraction, action:"set_glass_value:" + elementKey + ":refraction"},
-          {label:"Refraction fill", field:"refractionFill", value:item.refractionFill, action:"set_glass_value:" + elementKey + ":refractionFill"},
-          {label:"Bevel depth", field:"bevelDepth", value:item.bevelDepth, action:"set_glass_value:" + elementKey + ":bevelDepth"},
-          {label:"Bevel width", field:"bevelWidth", value:item.bevelWidth, action:"set_glass_value:" + elementKey + ":bevelWidth"},
-          {label:"Frost", field:"frost", value:item.frost, action:"set_glass_value:" + elementKey + ":frost"},
-          {label:"Magnification", field:"magnify", value:item.magnify, action:"set_glass_value:" + elementKey + ":magnify"},
-          {label:"Specular", field:"specular", value:item.specular ? "On" : "Off", action:"toggle_glass_specular:" + elementKey},
-          {label:"Shadow", field:"shadow", value:item.shadow ? "On" : "Off", action:"toggle_glass_shadow:" + elementKey}
-        ];
-        resetList(rows.map((row)=>({kind:"libui_action", label:row.label, action:row.action, pills:[String(row.value)]})));
-      }
-    }, push);
-  }
-
   function uiTuningRows(){
     return [
       {action:"set_center_bounce_amount", label:"Center bounce amount", value:uiSettings.centerBounceAmount},
@@ -1853,12 +1788,9 @@ async function libDoSearch(engine, q){
     ];
   }
 
-  const TEXT_MODE_ORDER = ["black", "white", "engraved", "contrast", "transparent"];
+  const TEXT_MODE_ORDER = ["contrast", "transparent"];
   const ANIMATION_FPS_ORDER = [30, 60, 120];
   const TEXT_MODE_LABELS = {
-    black:"Black",
-    white:"White",
-    engraved:"Engraved",
     contrast:"Contrast",
     transparent:"Transparent"
   };
@@ -1904,9 +1836,7 @@ async function libDoSearch(engine, q){
       {key:"libraryList", label:"Library list moving animation"},
       {key:"infoPill", label:"Info pill animations"},
       {key:"albumArtTransition", label:"Album art transition animation"},
-      {key:"pageTransition", label:"Page transition animation"},
       {key:"pathPill", label:"Path pill animations"},
-      {key:"rowExpansion", label:"Row expansion animations"},
       {key:"rowInsertion", label:"Row insertion animations"}
     ].map((row)=>({
       kind:"libui_action",
@@ -1939,7 +1869,7 @@ async function libDoSearch(engine, q){
     if(cat === "glass"){
       const items = [];
       GLASS_ELEMENT_KEYS.forEach((key)=>{
-        items.push({kind:"libui_action", label:glassElementLabel(key), sub_label:"Liquid Glass element controls", action:"glass_section:" + key, pills:glassElementSummary(key), forceTwoLine:true, settingRow:true});
+        items.push({kind:"libui_action", label:glassElementLabel(key), sub_label:"Dark ↔ transparent ↔ light", action:"set_glass_value:" + key + ":material", pills:glassElementSummary(key), forceTwoLine:true, settingRow:true});
       });
       return items;
     }
@@ -1969,7 +1899,7 @@ async function libDoSearch(engine, q){
       const key = String((row && row.key) || "");
       if(cat === "search") return key === "RESULTS_PER_PAGE" || key === "MAX_FILES_PER_TORRENT" || key === "MAX_TORRENT_WAIT_SECONDS" || key === "SEARCH_HISTORY_MAX_ITEMS" || key === "SEARCH_DISK_CACHE_TTL_SECONDS" || key === "SEARCH_STREAM_SESSION_TTL_SECONDS";
       if(cat === "downloads") return key === "REPLACE_ORIGINAL";
-      if(cat === "services") return key.indexOf("SOULSEEK_") === 0 || key.indexOf("INDEXER_") === 0 || key.indexOf("LASTFM_") === 0 || key === "YTDLP_CMD" || key.indexOf("YOUTUBE_") === 0 || key === "RD_BASE";
+      if(cat === "services") return key.indexOf("SOULSEEK_") === 0 || key === "AIOSLSK_LOGGING_ENABLED" || key.indexOf("LOCAL_INDEX_") === 0 || key.indexOf("TORRENT_SEARCH_") === 0 || key.indexOf("LASTFM_") === 0 || key === "YTDLP_CMD" || key.indexOf("YOUTUBE_") === 0 || key === "RD_BASE";
       if(cat === "playback") return key === "WHEEL_ROTATION_MAX_DEGREES" || key === "FFMPEG_PATH" || key === "FFPROBE_PATH" || key === "AUDIO_TRANSCODE" || key === "VIDEO_BROWSER_TARGET_EXT" || key === "AUTO_TRANSCODE_FOR_BROWSER_COMPATIBILITY" || key === "PRELOAD_NEXT_CHUNK_BYTES";
       return false;
     }).map(settingRowToListItem);
@@ -2002,7 +1932,6 @@ async function libDoSearch(engine, q){
         await settingsLoad();
         const labels = advancedCategoryLabels();
         const items = [
-          {kind:"libinfo_action",label:"Indexer Definitions",sub_label:"Stage, validate, activate, and roll back Cardigann definitions",action:"indexer_definitions",pills:["Advanced"],forceTwoLine:true,settingRow:true},
           {kind:"libui_action", label:"Review source-default diff", sub_label:"Shows nonsecret, nonprivate changes to review before a Git commit", action:"review_defaults_diff", pills:["Diff"], forceTwoLine:true, settingRow:true},
           {kind:"libui_action", label:"Performance overlay button", sub_label:"Show the compact performance toggle button", action:"toggle_performance_overlay_button", pills:[uiSettings.performanceOverlayButton ? "On" : "Off"], forceTwoLine:true, settingRow:true}
         ].concat(["glass", "text", "ui", "animations", "search", "downloads", "services", "playback", "system"].map((key)=>({
@@ -2182,11 +2111,8 @@ async function libDoSearch(engine, q){
       case "settings_services":
         await viewSettingsCategory("services", true);
         return true;
-      case "torrent_indexers":
-        await viewTorrentIndexers(true);
-        return true;
-      case "indexer_definitions":
-        await viewIndexerDefinitions(true);
+      case "torrent_sources":
+        await viewTorrentSources(true);
         return true;
       case "settings_playback":
         await viewSettingsCategory("playback", true);
@@ -2252,9 +2178,9 @@ async function libDoSearch(engine, q){
     const movie = /\b(movie|film|show|series|season|episode|1080p|2160p|720p|4k|bluray|webrip|webdl|hdtv|x264|x265|hevc|hdr|s\d{1,2}e\d+)\b/.test(query) || /\b(?:19|20)\d{2}\b/.test(query);
     const video = /\b(tutorial|review|explained|interview|podcast|trailer|clip|performance|news|walkthrough|guide)\b/.test(query);
     const sourceBoosts = music
-      ? {library:180, soulseek:150, soundcloud:115, youtube:95, torrent:30}
-      : (movie ? {library:180, torrent:150, youtube:90, soulseek:25, soundcloud:15}
-        : (video ? {library:180, youtube:150, soulseek:55, torrent:55, soundcloud:45} : {library:160, youtube:70, soundcloud:68, soulseek:65, torrent:60}));
+      ? {library:180, soulseek:150, youtube:95, torrent:30, local_index:30}
+      : (movie ? {library:180, torrent:150, local_index:150, youtube:90, soulseek:25}
+        : (video ? {library:180, youtube:150, soulseek:55, torrent:55, local_index:55} : {library:160, youtube:70, soulseek:65, torrent:60, local_index:60}));
     const score = item=>{
       const title = normalize(item.title || item.directory_title || item.name || "");
       const artistTitle = normalize(String(item.artist || item.user || "") + " " + title);
@@ -2287,149 +2213,63 @@ async function libDoSearch(engine, q){
 
   async function libUnifiedSearchStream(qq, searchToken){
     const url="/api/libsearch/combined?q="+encodeURIComponent(qq)+"&stream=1";
-    const model=libUnifiedSearchModel(); model.reset(qq,searchToken);
-    const response=await fetch(url,{cache:"no-store"});
-    if(!response.ok || !response.body || !window.TextDecoder){
-      const fallback=await apiGet("/api/libsearch/combined?q="+encodeURIComponent(qq));
-      model.ingestFinal({results:fallback.results||[],provider_status:fallback.provider_status||[],cached:fallback.cached});
-      return fallback;
-    }
-    const decoder=new TextDecoder(),reader=response.body.getReader(); let buffer="",finalPayload=null;
-    function handle(line){
-      if(!line || state.libSearch.search_token!==searchToken)return;
-      let event=null; try{event=JSON.parse(line);}catch(_error){return;}
-      if(event.event==="source"){
-        model.ingestSource(event);
-        libSetStatus(libSearchCombinedStatusText(model.state.providerStatus),event.error?"warn":"");
-        libRefreshList(true);
-      }else if(event.event==="done"){
-        finalPayload=event; model.ingestFinal(event);
-        libSetStatus(String(model.state.allResults.length)+" results"+(event.cached?" · Cached":""),"ok");
-        libRefreshList(true);
-      }else if(event.event==="start"){
-        state.libSearch.cached=!!event.cached; libSetStatus(event.cached?"Loading cached results":"Searching",""); libRefreshList(true);
+    const model=libUnifiedSearchModel(); model.reset(qq,"");
+    if(_libUnifiedSearchAbortController) _libUnifiedSearchAbortController.abort();
+    const controller = new AbortController();
+    _libUnifiedSearchAbortController = controller;
+    try{
+      const response=await fetch(url,{cache:"no-store",signal:controller.signal});
+      if(!response.ok || !response.body || !window.TextDecoder){
+        const fallbackResponse=await fetch("/api/libsearch/combined?q="+encodeURIComponent(qq),{cache:"no-store",signal:controller.signal});
+        const fallback=await fallbackResponse.json();
+        if(!fallbackResponse.ok || !fallback || !fallback.ok) throw new Error((fallback && fallback.error) || "Search failed");
+        model.setSearchId(fallback.search_id || searchToken);
+        model.ingestFinal({search_id:model.state.searchId,results:fallback.results||[],provider_status:fallback.provider_status||[],cached:fallback.cached});
+        return fallback;
       }
+      const decoder=new TextDecoder(),reader=response.body.getReader(); let buffer="",finalPayload=null,validSources=0,parseErrors=0;
+      function handle(line){
+        if(!line || state.libSearch.search_token!==searchToken)return;
+        let event=null; try{event=JSON.parse(line);}catch(_error){parseErrors++;return;}
+        if(event.event==="source"){
+          if(!model.ingestSource(event)) return;
+          validSources++;
+          libSetStatus(libSearchCombinedStatusText(model.state.providerStatus),event.error?"warn":"");
+          libRefreshList(true);
+        }else if(event.event==="done"){
+          if(!model.ingestFinal(event)) return;
+          finalPayload=event;
+          libSetStatus(String(model.state.allResults.length)+" results"+(event.cached?" · Cached":""),"ok");
+          libRefreshList(true);
+        }else if(event.event==="start"){
+          model.setSearchId(event.search_id || searchToken);
+          state.libSearch.cached=!!event.cached; libSetStatus(event.cached?"Loading cached results":"Searching",""); libRefreshList(true);
+        }
+      }
+      try{
+        while(true){const chunk=await reader.read();if(chunk.done)break;buffer+=decoder.decode(chunk.value,{stream:true});const lines=buffer.split(/\n/);buffer=lines.pop()||"";lines.forEach(handle);}
+        if(buffer)handle(buffer);
+      }catch(error){
+        if(error && error.name === "AbortError") throw error;
+        if(!validSources) throw error;
+      }
+      if(!finalPayload && !validSources && parseErrors) throw new Error("Search stream was incomplete");
+      if(!finalPayload){
+        model.ingestFinal({search_id:model.state.searchId,results:model.state.allResults,provider_status:model.state.providerStatus,cached:false});
+      }
+      return finalPayload||{ok:true,search_id:model.state.searchId,q:qq,cache_key:"",results:model.state.allResults,result_count:model.state.allResults.length,provider_status:model.state.providerStatus};
+    }finally{
+      if(_libUnifiedSearchAbortController === controller) _libUnifiedSearchAbortController = null;
     }
-    while(true){const chunk=await reader.read();if(chunk.done)break;buffer+=decoder.decode(chunk.value,{stream:true});const lines=buffer.split(/\n/);buffer=lines.pop()||"";lines.forEach(handle);}
-    if(buffer)handle(buffer);
-    return finalPayload||{ok:true,q:qq,cache_key:"",results:model.state.allResults,result_count:model.state.allResults.length,provider_status:model.state.providerStatus};
   }
 
   async function libSearchCombinedProgressive(qq, searchToken){
     return await libUnifiedSearchStream(qq, searchToken);
-    const url = "/api/libsearch/combined?q=" + encodeURIComponent(qq) + "&stream=1";
-    try{
-      if(window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.isServerUnavailable && DebriPod.clientSync.isServerUnavailable()){
-        throw new Error(DebriPod.clientSync.serverRequiredMessage ? DebriPod.clientSync.serverRequiredMessage("Search") : "Search requires the local DebriPod server.");
-      }
-    }catch(e){
-      if(e && e.message) throw e;
-    }
-    const started = (performance && performance.now) ? performance.now() : Date.now();
-    const res = await fetch(url, {cache:"no-store"});
-    try{
-      if(window.DebriPod && DebriPod.apiClient && DebriPod.apiClient.rememberTiming){
-        DebriPod.apiClient.rememberTiming("GET", url, res.status, started);
-      }
-    }catch(e){}
-    if(!res.ok || !res.body || !window.TextDecoder){
-      return await apiGet("/api/libsearch/combined?q=" + encodeURIComponent(qq));
-    }
-    const decoder = new TextDecoder();
-    const reader = res.body.getReader();
-    let buffer = "";
-    const sourceResults = {};
-    const sourceStatus = {};
-    let finalPayload = null;
-    function upsertStatus(payload, done){
-      const source = String(payload.source || "");
-      if(!source) return;
-      const row = {
-        source:source,
-        label:String(payload.source_label || payload.label || source),
-        ok:payload.ok !== false,
-        error:String(payload.error || ""),
-        result_count:Number(payload.result_count || (Array.isArray(payload.results) ? payload.results.length : 0) || 0),
-        duration_ms:Number(payload.duration_ms || 0),
-        state:String(payload.error || "") ? "error" : (done !== false ? "ready" : "searching"),
-        done:done !== false
-      };
-      sourceStatus[source] = row;
-    }
-    function applyProgress(){
-      if(state.libSearch.search_token !== searchToken) return;
-      const merged = [];
-      Object.keys(sourceResults).forEach((key)=>{
-        merged.push.apply(merged, sourceResults[key] || []);
-      });
-      state.libSearch.results = libSearchSortResults(merged);
-      state.libSearch.last_count = state.libSearch.results.length;
-      state.libSearch.sourceStatus = Object.assign({}, sourceStatus);
-      libSetStatus(libSearchCombinedStatusText(sourceStatus), Object.values(sourceStatus).some(x=>x && x.error) ? "warn" : "");
-      libRefreshList(true);
-    }
-    function handleLine(line){
-      if(!line) return;
-      let ev = null;
-      try{ ev = JSON.parse(line); }catch(e){ return; }
-      if(!ev || state.libSearch.search_token !== searchToken) return;
-      if(ev.event === "source"){
-        sourceResults[String(ev.source || "")] = Array.isArray(ev.results) ? ev.results : [];
-        upsertStatus(ev, true);
-        applyProgress();
-      }else if(ev.event === "cached"){
-        finalPayload = ev;
-        state.libSearch.cached = true;
-        state.libSearch.results = Array.isArray(ev.results) ? ev.results.slice() : [];
-        state.libSearch.last_count = state.libSearch.results.length;
-        if(Array.isArray(ev.source_status)){
-          ev.source_status.forEach(row=>{ if(row && row.source) sourceStatus[String(row.source)] = Object.assign({state:row.error ? "error" : "ready", done:true}, row); });
-        }
-        state.libSearch.sourceStatus = Object.assign({}, sourceStatus);
-        libSetStatus(String(state.libSearch.last_count) + " results · Cached", "ok");
-        libRefreshList(true);
-      }else if(ev.event === "done"){
-        finalPayload = ev;
-      }else if(ev.event === "start"){
-        const sources = Array.isArray(ev.sources) ? ev.sources : ["library", "soulseek", "torrent", "youtube", "soundcloud"];
-        const sourceLabels = {library:"Library", soulseek:"Soulseek", torrent:"Torrent", youtube:"YouTube", soundcloud:"SoundCloud"};
-        sources.forEach(src=>{ sourceStatus[String(src)] = {source:String(src), label:sourceLabels[String(src)] || String(src), state:"searching", result_count:0, done:false, error:""}; });
-        state.libSearch.sourceStatus = Object.assign({}, sourceStatus);
-        state.libSearch.cached = !!ev.cached;
-        libSetStatus(ev.cached ? "Loading cached results" : "Searching", "");
-        libRefreshList(true);
-      }
-    }
-    while(true){
-      const chunk = await reader.read();
-      if(chunk.done) break;
-      buffer += decoder.decode(chunk.value, {stream:true});
-      const lines = buffer.split(/\n/);
-      buffer = lines.pop() || "";
-      lines.forEach(handleLine);
-    }
-    if(buffer) handleLine(buffer);
-    if(finalPayload) return finalPayload;
-    return {
-      ok:true,
-      q:qq,
-      cache_key:"",
-      results:state.libSearch.results || [],
-      result_count:(state.libSearch.results || []).length,
-      source_status:Object.values(sourceStatus)
-    };
   }
 
   function settingRangeMeta(field, fallbackMin, fallbackMax){
     const ranges = {
-      glassTint: {min:0, max:2, step:0.01},
-      resolution: {min:0.25, max:3, step:0.05},
-      refraction: {min:0, max:0.25, step:0.001},
-      refractionFill: {min:0, max:1, step:0.01},
-      bevelDepth: {min:0, max:0.35, step:0.001},
-      bevelWidth: {min:0, max:0.5, step:0.001},
-      frost: {min:0, max:5, step:0.01},
-      magnify: {min:0.001, max:3, step:0.001}
+      material: {min:-1, max:1, step:0.01}
     };
     if(ranges[field]) return ranges[field];
     const min = Number.isFinite(Number(fallbackMin)) ? Number(fallbackMin) : 0;
@@ -2462,6 +2302,7 @@ async function libDoSearch(engine, q){
       rangeConfig:config,
       rangeMeta:meta,
       rangeValue:current,
+      originalValue:current,
       rangeWheelArmed:true,
       rangeKeyboardOpen:false,
       itemIndex: state.sel,
@@ -2505,6 +2346,8 @@ async function libDoSearch(engine, q){
       const step = rangeEditorWheelStep(meta);
       const next = rangeEditorClamp(Number(view.rangeValue || 0) + Number(delta || 0) * step, meta, Number(view.rangeValue || 0));
       view.rangeValue = next;
+      const config = view.rangeConfig || {};
+      if(typeof config.onPreview === "function") Promise.resolve(config.onPreview(next)).catch(()=>{});
       renderRangeEditor();
       return true;
     }catch(e){
@@ -2581,8 +2424,17 @@ async function libDoSearch(engine, q){
     const view = activeRangeEditor() || {};
     if(view.kind !== "range_editor") return false;
     if(view.rangeKeyboardOpen) return false;
-    if(view.rangeWheelArmed) return openRangeEditorKeyboard();
+    if(view.rangeWheelArmed){
+      Promise.resolve(applyRangeEditor()).catch(()=>{});
+      return true;
+    }
     return armRangeEditorWheel();
+  }
+
+  function rangeEditorCenterHold(){
+    const view = activeRangeEditor() || {};
+    if(view.kind !== "range_editor" || view.rangeKeyboardOpen) return false;
+    return openRangeEditorKeyboard();
   }
 
   function rangeEditorCancelActive(){
@@ -2614,11 +2466,22 @@ async function libDoSearch(engine, q){
 
   async function cancelRangeEditor(){
     const view = activeRangeEditor() || {};
+    if(view.kind !== "range_editor" || view.committing || view.cancelling) return false;
+    view.cancelling = true;
     const config = view.rangeConfig || {};
-    state.inlineRangeEditor = null;
-    if(typeof config.onReturn === "function") await config.onReturn();
-    else if(state.current && state.current.kind === "range_editor") goBack();
-    else if(typeof renderList === "function") renderList();
+    const original = rangeEditorClamp(view.originalValue, view.rangeMeta, Number((view.rangeMeta || {}).min || 0));
+    view.rangeValue = original;
+    try{
+      if(typeof config.onPreview === "function") await config.onPreview(original);
+    }catch(e){}
+    try{
+      state.inlineRangeEditor = null;
+      if(typeof config.onReturn === "function") await config.onReturn();
+      else if(state.current && state.current.kind === "range_editor") goBack();
+      else if(typeof renderList === "function") renderList();
+    }finally{
+      view.cancelling = false;
+    }
     return true;
   }
 
@@ -2650,8 +2513,11 @@ async function libDoSearch(engine, q){
         label:glassElementLabel(elementKey) + " " + field,
         current:current,
         meta:settingRangeMeta(field, 0, 1),
+        onPreview: async function(value){
+          if(typeof previewLiquidGlassElementMaterial === "function") previewLiquidGlassElementMaterial(elementKey, Number(value));
+        },
         onCommit: async function(value){ setLiquidGlassElementSetting(elementKey, field, Number(value)); },
-        onReturn: async function(){ await viewGlassElementSettings(elementKey, false); }
+        onReturn: async function(){ await viewLibAdvancedCategory("glass", false); }
       }, true);
       return true;
     };
@@ -2698,27 +2564,9 @@ async function libDoSearch(engine, q){
           uiSettings.animationFps = cloneAnimationFps(fps);
           return await returnAdvancedCategory("animations");
         }
-        if(String(action || "").indexOf("glass_section:") === 0){
-          await viewGlassElementSettings(String(action).split(":")[1] || "", true);
-          return true;
-        }
         if(String(action || "").indexOf("advanced_category:") === 0){
           await viewLibAdvancedCategory(String(action).split(":")[1] || "system", true);
           if(String(action).split(":")[1] === "system") refreshFullReindexStatus();
-          return true;
-        }
-        if(String(action || "").indexOf("toggle_glass_specular:") === 0){
-          const key = String(action).split(":")[1] || "";
-          const settings = cloneGlassElementSettings(uiSettings.liquidGlassElements);
-          if(settings[key]) setLiquidGlassElementSetting(key, "specular", !settings[key].specular);
-          await viewGlassElementSettings(key, false);
-          return true;
-        }
-        if(String(action || "").indexOf("toggle_glass_shadow:") === 0){
-          const key = String(action).split(":")[1] || "";
-          const settings = cloneGlassElementSettings(uiSettings.liquidGlassElements);
-          if(settings[key]) setLiquidGlassElementSetting(key, "shadow", !settings[key].shadow);
-          await viewGlassElementSettings(key, false);
           return true;
         }
         if(String(action || "").indexOf("set_glass_value:") === 0){

@@ -3,17 +3,17 @@ from __future__ import annotations
 import secrets
 import time
 import json
+import logging
 import traceback
-from datetime import timedelta
-from functools import wraps
-from typing import Any, Callable
-from urllib.parse import urlparse
+from typing import Any
+from urllib.parse import quote, urlparse
 
-from flask import Response, abort, jsonify, redirect, render_template_string, request, session, url_for
-from werkzeug.security import check_password_hash, generate_password_hash
+from aiohttp import web
 
 from .config import ensure_startup_security_config, save_config
-from .settings import default_app_settings, save_app_settings
+from .factory import json_response, session_for
+from .passwords import generate_password_hash, password_hash_supported, verify_password_hash
+from .settings import ensure_app_settings
 from .Library.library_db import (
     passkey_by_credential_id,
     passkeys_for_user,
@@ -55,134 +55,6 @@ except Exception:
     UserVerificationRequirement = None  # type: ignore[assignment]
 
 
-LOGIN_TEMPLATE = """<!doctype html>
-<html>
-<head>
-  <meta charset="utf-8">
-  <title>{{ title }} - DebriPod</title>
-  <meta name="viewport" content="width=device-width, initial-scale=1">
-  <style>
-    :root{color-scheme:dark}
-    body{margin:0;min-height:100vh;display:grid;place-items:center;background:#07080a;color:#f5f5f5;font-family:system-ui,-apple-system,Segoe UI,sans-serif}
-    main{width:min(360px,calc(100vw - 32px));display:grid;gap:14px}
-    h1{font-size:22px;margin:0 0 2px}
-    p{margin:0;color:#aaa;line-height:1.45}
-    form{display:grid;gap:12px}
-    label{display:grid;gap:6px;font-size:13px;color:#cfcfcf}
-    input{box-sizing:border-box;width:100%;border:1px solid #2b2f36;background:#11151b;color:#fff;border-radius:8px;padding:12px;font:inherit}
-    button{border:0;border-radius:8px;background:#f5f5f5;color:#111;padding:12px;font-weight:700;cursor:pointer}
-    button.secondary{background:#1b222c;color:#f5f5f5;border:1px solid #303846}
-    .error{color:#ff9d9d;min-height:20px}
-    .passkey-state{display:none;padding:12px;border-radius:8px;background:#11151b;color:#d7dce4}
-    .passkey-state.active{display:block}
-    form.passkey-pending label,form.passkey-pending>button[type=submit]{display:none}
-  </style>
-</head>
-<body>
-  <main>
-    <h1>{{ title }}</h1>
-    <p>{{ subtitle }}</p>
-    <form id="loginForm" method="post" action="{{ action }}">
-      <input type="hidden" name="csrf_token" value="{{ csrf_token }}">
-      <label>Username<input name="username" autocomplete="username" required autofocus></label>
-      <label>Password<input name="password" type="password" autocomplete="{{ password_autocomplete }}" required></label>
-      {% if setup %}
-      <label>Confirm password<input name="confirm_password" type="password" autocomplete="new-password" required></label>
-      {% endif %}
-      <button type="submit">{{ button }}</button>
-      {% if not setup %}
-      <button class="secondary" type="button" id="passkeyBtn">Sign in with passkey</button>
-      {% endif %}
-      <div class="error">{{ error }}</div>
-      {% if not setup %}<div class="passkey-state" id="passkeyState">Signing in with passkey</div>{% endif %}
-    </form>
-    {% if not setup %}
-    <script>
-      function b64urlToBuffer(value){
-        var s = String(value || "").replace(/-/g, "+").replace(/_/g, "/");
-        while(s.length % 4) s += "=";
-        var raw = atob(s);
-        var out = new Uint8Array(raw.length);
-        for(var i = 0; i < raw.length; i++) out[i] = raw.charCodeAt(i);
-        return out.buffer;
-      }
-      function bufferToB64url(buffer){
-        var bytes = new Uint8Array(buffer || new ArrayBuffer(0));
-        var s = "";
-        for(var i = 0; i < bytes.length; i++) s += String.fromCharCode(bytes[i]);
-        return btoa(s).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/g, "");
-      }
-      function publicKeyFromServer(options){
-        var out = Object.assign({}, options || {});
-        out.challenge = b64urlToBuffer(out.challenge);
-        if(Array.isArray(out.allowCredentials)){
-          out.allowCredentials = out.allowCredentials.map(function(c){
-            return Object.assign({}, c, {id:b64urlToBuffer(c.id)});
-          });
-        }
-        return out;
-      }
-      function credentialToJSON(cred){
-        return {
-          id: cred.id,
-          rawId: bufferToB64url(cred.rawId),
-          type: cred.type,
-          response: {
-            clientDataJSON: bufferToB64url(cred.response.clientDataJSON),
-            authenticatorData: bufferToB64url(cred.response.authenticatorData),
-            signature: bufferToB64url(cred.response.signature),
-            userHandle: cred.response.userHandle ? bufferToB64url(cred.response.userHandle) : null
-          }
-        };
-      }
-      var btn = document.getElementById("passkeyBtn");
-      var form = document.getElementById("loginForm");
-      var passkeyState = document.getElementById("passkeyState");
-      var supported = !!(window.PublicKeyCredential && navigator.credentials);
-      function pending(active){
-        if(form) form.classList.toggle("passkey-pending", !!active);
-        if(passkeyState) passkeyState.classList.toggle("active", !!active);
-        if(btn) btn.disabled = !!active;
-      }
-      async function signInWithPasskey(automatic){
-        pending(true);
-        try{
-          var optRes = await fetch("/api/auth/passkey/login/options", {method:"POST", headers:{"Content-Type":"application/json"}, body:"{}"});
-          var opt = await optRes.json();
-          if(!opt.available) return false;
-          if(!optRes.ok || !opt.ok) throw new Error(opt.error || "Passkey sign in is not available.");
-          var cred = await navigator.credentials.get({publicKey: publicKeyFromServer(opt.publicKey)});
-          var verifyRes = await fetch("/api/auth/passkey/login/verify", {
-            method:"POST",
-            headers:{"Content-Type":"application/json"},
-            body:JSON.stringify({challenge_id:opt.challenge_id, credential:credentialToJSON(cred)})
-          });
-          var verify = await verifyRes.json();
-          if(!verifyRes.ok || !verify.ok) throw new Error(verify.error || "Passkey sign in failed.");
-          window.location.replace({{ next_url|tojson }});
-          return true;
-        }catch(e){
-          if(!automatic || (e && e.name !== "NotAllowedError")){
-            document.querySelector(".error").textContent = e && e.message ? e.message : String(e);
-          }
-          return false;
-        }finally{
-          pending(false);
-        }
-      }
-      if(btn){
-        btn.hidden = !supported;
-        btn.addEventListener("click", function(){ signInWithPasskey(false); });
-      }
-      document.addEventListener("DOMContentLoaded", function(){
-        if(!supported) return pending(false);
-        signInWithPasskey(true);
-      });
-    </script>
-    {% endif %}
-  </main>
-</body>
-</html>"""
 
 
 FAILED_LOGINS: dict[str, dict[str, Any]] = {}
@@ -195,7 +67,8 @@ def _now() -> float:
     return time.time()
 
 
-def _csrf_token() -> str:
+def _csrf_token(request: web.Request) -> str:
+    session = session_for(request)
     token = session.get("csrf_token")
     if not token:
         token = secrets.token_urlsafe(32)
@@ -203,35 +76,41 @@ def _csrf_token() -> str:
     return str(token)
 
 
-def _request_csrf_token() -> str:
-    return (request.headers.get("X-CSRF-Token") or request.form.get("csrf_token") or "").strip()
+async def _request_csrf_token(request: web.Request) -> str:
+    header = (request.headers.get("X-CSRF-Token") or "").strip()
+    if header:
+        return header
+    if request.can_read_body and request.content_type in {"application/x-www-form-urlencoded", "multipart/form-data"}:
+        form = await request.post()
+        return str(form.get("csrf_token") or "").strip()
+    return ""
 
 
-def _client_ip() -> str:
-    return (request.remote_addr or "").strip()
+def _client_ip(request: web.Request) -> str:
+    return (request.remote or "").strip()
 
 
-def _login_key(username: str) -> str:
-    return f"{username.strip().lower()}|{_client_ip()}"
+def _login_key(request: web.Request, username: str) -> str:
+    return f"{username.strip().lower()}|{_client_ip(request)}"
 
 
-def _login_locked(username: str) -> bool:
-    rec = FAILED_LOGINS.get(_login_key(username))
+def _login_locked(request: web.Request, username: str) -> bool:
+    rec = FAILED_LOGINS.get(_login_key(request, username))
     if not rec:
         return False
     return float(rec.get("locked_until") or 0.0) > _now()
 
 
-def _login_failed(username: str) -> None:
-    key = _login_key(username)
+def _login_failed(request: web.Request, username: str) -> None:
+    key = _login_key(request, username)
     rec = FAILED_LOGINS.setdefault(key, {"count": 0, "locked_until": 0.0})
     rec["count"] = int(rec.get("count") or 0) + 1
     if rec["count"] >= FAILED_LOGINS_LOCKOUT_AFTER:
         rec["locked_until"] = _now() + FAILED_LOGINS_LOCKOUT_SECONDS
 
 
-def _login_succeeded(username: str) -> None:
-    FAILED_LOGINS.pop(_login_key(username), None)
+def _login_succeeded(request: web.Request, username: str) -> None:
+    FAILED_LOGINS.pop(_login_key(request, username), None)
 
 
 def _security_config() -> dict[str, Any]:
@@ -250,7 +129,7 @@ def _valid_users() -> list[dict[str, Any]]:
             continue
         username = str(user.get("username") or "").strip()
         password_hash = str(user.get("password_hash") or "").strip()
-        if username and password_hash:
+        if username and password_hash_supported(password_hash):
             out.append(user)
     return out
 
@@ -270,26 +149,46 @@ def _find_user(username: str) -> dict[str, Any] | None:
     return None
 
 
-def _is_logged_in() -> bool:
-    return bool(session.get("username"))
+def _is_logged_in(request: web.Request) -> bool:
+    return bool(session_for(request).get("username"))
 
 
 def _public_user(user: dict[str, Any]) -> dict[str, Any]:
     return {"username": str(user.get("username") or "").strip()}
 
 
-def _current_user_password_valid(password: str) -> bool:
+def _current_user_password_valid(request: web.Request, password: str) -> bool:
+    session = session_for(request)
     username = str(session.get("username") or "")
     user = _find_user(username)
     password_hash = str((user or {}).get("password_hash") or "")
-    return bool(user and password_hash and check_password_hash(password_hash, password or ""))
+    return bool(user and password_hash and _verify_user_password(user, password or ""))
 
 
-def _mark_recent_password_auth() -> None:
+def _verify_user_password(user: dict[str, Any] | None, password: str) -> bool:
+    if not user:
+        return False
+    encoded = str(user.get("password_hash") or "")
+    valid, needs_upgrade = verify_password_hash(encoded, password)
+    if valid and needs_upgrade:
+        username = str(user.get("username") or "").strip().lower()
+        upgraded = []
+        for item in _valid_users():
+            replacement = dict(item)
+            if str(item.get("username") or "").strip().lower() == username:
+                replacement["password_hash"] = generate_password_hash(password)
+            upgraded.append(replacement)
+        _save_users(upgraded)
+    return valid
+
+
+def _mark_recent_password_auth(request: web.Request) -> None:
+    session = session_for(request)
     session["password_authenticated_at"] = _now()
 
 
-def _has_recent_password_auth() -> bool:
+def _has_recent_password_auth(request: web.Request) -> bool:
+    session = session_for(request)
     try:
         ts = float(session.get("password_authenticated_at") or 0.0)
     except Exception:
@@ -319,20 +218,21 @@ def _create_user(username: str, password: str) -> tuple[bool, str]:
 
 
 def _initialize_new_user_settings(username: str) -> None:
-    settings = default_app_settings(username)
-    settings["SETUP_WIZARD_COMPLETE"] = False
-    settings["SETUP_SKIPPED_SERVICES"] = {}
-    settings["LIBRARY_FOLDERS"] = []
-    save_app_settings(settings, username=username)
+    # ``ensure_app_settings`` restores a retired legacy settings file when one
+    # exists and otherwise creates defaults for a genuinely new username.  Do
+    # not overwrite an existing user's library and completed-wizard state when
+    # repairing or recreating only their login credential.
+    ensure_app_settings(username=username)
 
 
-def _delete_current_user(password: str) -> tuple[bool, str, bool]:
+def _delete_current_user(request: web.Request, password: str) -> tuple[bool, str, bool]:
+    session = session_for(request)
     username = str(session.get("username") or "").strip()
     if not username:
         return False, "Authentication required", _setup_needed()
     user = _find_user(username)
     password_hash = str((user or {}).get("password_hash") or "")
-    if not user or not password_hash or not check_password_hash(password_hash, password or ""):
+    if not user or not password_hash or not _verify_user_password(user, password or ""):
         return False, "Password did not match.", _setup_needed()
     remaining = [u for u in _valid_users() if str(u.get("username") or "").strip().lower() != username.lower()]
     try:
@@ -347,7 +247,7 @@ def _delete_current_user(password: str) -> tuple[bool, str, bool]:
     return True, "", not bool(remaining)
 
 
-def _mcp_bearer_token_valid() -> bool:
+def _mcp_bearer_token_valid(request: web.Request) -> bool:
     cfg = _security_config()
     token = str(cfg.get("MCP_TOKEN") or "").strip()
     auth = (request.headers.get("Authorization") or "").strip()
@@ -360,7 +260,7 @@ def _mcp_enabled() -> bool:
     return bool(_security_config().get("ENABLE_MCP"))
 
 
-def _is_static_or_public_path() -> bool:
+def _is_static_or_public_path(request: web.Request) -> bool:
     path = request.path or "/"
     if path.startswith("/static/"):
         return True
@@ -368,45 +268,34 @@ def _is_static_or_public_path() -> bool:
         return True
     if path in {"/favicon.ico", "/apple-touch-icon.png", "/apple-touch-icon-precomposed.png", "/site.webmanifest", "/debripod-sw.js"}:
         return True
-    if path in {"/login", "/logout", "/setup"}:
+    if path in {"/login", "/logout", "/setup", "/api/auth/bootstrap"}:
         return True
     if path in {"/api/auth/passkey/login/options", "/api/auth/passkey/login/verify"}:
         return True
     return False
 
 
-def _wants_json() -> bool:
+def _wants_json(request: web.Request) -> bool:
     if request.path.startswith("/api/") or request.path == "/mcp":
         return True
     return "application/json" in (request.headers.get("Accept") or "")
 
 
-def login_required(fn: Callable[..., Any]) -> Callable[..., Any]:
-    @wraps(fn)
-    def wrapper(*args: Any, **kwargs: Any) -> Any:
-        if not _is_logged_in():
-            if _wants_json():
-                return jsonify(ok=False, error="Authentication required"), 401
-            return redirect(url_for("login", next=request.full_path if request.query_string else request.path))
-        return fn(*args, **kwargs)
-
-    return wrapper
+def _forbidden(request: web.Request, message: str = "Forbidden") -> web.Response:
+    if _wants_json(request):
+        return json_response(ok=False, error=message, status=403)
+    return web.Response(text=message, status=403, content_type="text/plain")
 
 
-def _forbidden(message: str = "Forbidden") -> Response:
-    if _wants_json():
-        return jsonify(ok=False, error=message), 403
-    return Response(message, status=403, mimetype="text/plain")
+def _auth_required_response(request: web.Request) -> web.Response:
+    if _wants_json(request):
+        return json_response(ok=False, error="Authentication required", status=401)
+    next_url = request.path_qs if request.query_string else request.path
+    raise web.HTTPFound(location="/login?next=" + next_url)
 
 
-def _auth_required_response() -> Response:
-    if _wants_json():
-        return jsonify(ok=False, error="Authentication required"), 401
-    return redirect(url_for("login", next=request.full_path if request.query_string else request.path))
-
-
-def _safe_next_url(default: str = "/") -> str:
-    next_url = (request.args.get("next") or default).strip() or default
+def _safe_next_url(request: web.Request, default: str = "/") -> str:
+    next_url = (request.query.get("next") or default).strip() or default
     if not next_url.startswith("/") or next_url.startswith("//"):
         return default
     return next_url
@@ -424,12 +313,18 @@ def _webauthn_available() -> bool:
     )
 
 
-def _webauthn_rp_id() -> str:
+def _passkey_login_available() -> bool:
+    if not _webauthn_available():
+        return False
+    return any(passkeys_for_user(str(user.get("username") or "")) for user in _valid_users())
+
+
+def _webauthn_rp_id(request: web.Request) -> str:
     host = (request.host or "localhost").split(":", 1)[0].strip().lower()
     return host or "localhost"
 
 
-def _external_scheme() -> str:
+def _external_scheme(request: web.Request) -> str:
     forwarded_proto = (request.headers.get("X-Forwarded-Proto") or "").split(",", 1)[0].strip().lower()
     if forwarded_proto in {"http", "https"}:
         return forwarded_proto
@@ -440,14 +335,14 @@ def _external_scheme() -> str:
             proto = value.strip('"').lower()
             if proto in {"http", "https"}:
                 return proto
-    return "https" if request.is_secure else "http"
+    return "https" if request.secure else "http"
 
 
-def _webauthn_origin() -> str:
-    return f"{_external_scheme()}://{request.host}"
+def _webauthn_origin(request: web.Request) -> str:
+    return f"{_external_scheme(request)}://{request.host}"
 
 
-def _same_host_origin_from_header() -> str:
+def _same_host_origin_from_header(request: web.Request) -> str:
     origin = (request.headers.get("Origin") or "").strip()
     if not origin:
         return ""
@@ -462,18 +357,18 @@ def _same_host_origin_from_header() -> str:
     return ""
 
 
-def _webauthn_expected_origins() -> list[str]:
-    origin = _webauthn_origin()
+def _webauthn_expected_origins(request: web.Request) -> list[str]:
+    origin = _webauthn_origin(request)
     host = (request.host or "").strip()
     out = [origin]
-    header_origin = _same_host_origin_from_header()
+    header_origin = _same_host_origin_from_header(request)
     if header_origin and header_origin not in out:
         out.append(header_origin)
     if ":" in host:
         _name, port = host.rsplit(":", 1)
         if port:
             for loopback in ("localhost", "127.0.0.1"):
-                candidate = f"{_external_scheme()}://{loopback}:{port}"
+                candidate = f"{_external_scheme(request)}://{loopback}:{port}"
                 if candidate not in out:
                     out.append(candidate)
     return out
@@ -489,209 +384,197 @@ def _public_passkey(item: dict[str, Any]) -> dict[str, Any]:
     }
 
 
-def _passkey_error(status: int = 501) -> tuple[Any, int]:
-    return jsonify({
+def _passkey_error(status: int = 501) -> web.Response:
+    return json_response({
         "ok": False,
         "error": "Passkey support requires the optional WebAuthn server package. Password login remains available.",
         "available": False,
-    }), status
+    }, status=status)
 
 
-def register_auth(app: Any) -> None:
-    cfg = _security_config()
-    app.secret_key = str(cfg.get("APP_SECRET_KEY") or "")
-    app.config.update(
-        SESSION_COOKIE_HTTPONLY=True,
-        SESSION_COOKIE_SAMESITE="Lax",
-        PERMANENT_SESSION_LIFETIME=timedelta(days=30),
-        SESSION_REFRESH_EACH_REQUEST=True,
-    )
+def _auth_page() -> web.FileResponse:
+    from pathlib import Path
 
-    @app.before_request
-    def require_auth_and_csrf() -> Any:
-        if request.method.upper() == "POST" and request.path in {"/login", "/setup"} and _is_logged_in():
-            return redirect(_safe_next_url("/"))
+    return web.FileResponse(Path(__file__).resolve().parent / "static" / "auth.html")
 
-        if request.path == "/mcp":
-            if not _mcp_enabled():
-                abort(404)
-            if not (_is_logged_in() or _mcp_bearer_token_valid()):
-                return _auth_required_response()
-        elif _setup_needed():
-            if not _is_static_or_public_path():
-                return redirect(url_for("setup"))
-        elif not (_is_static_or_public_path() or _is_logged_in()):
-            return _auth_required_response()
 
-        if request.method.upper() in {"POST", "PUT", "PATCH", "DELETE"}:
-            if request.path == "/mcp" and _mcp_bearer_token_valid():
-                return None
-            if request.path in {"/api/auth/passkey/login/options", "/api/auth/passkey/login/verify"}:
-                return None
-            expected = session.get("csrf_token")
-            if not expected or not secrets.compare_digest(str(expected), _request_csrf_token()):
-                return _forbidden("Invalid CSRF token")
-        return None
+@web.middleware
+async def auth_middleware(request: web.Request, handler):
+    if request.method == "POST" and request.path in {"/login", "/setup"} and _is_logged_in(request):
+        raise web.HTTPFound(location=_safe_next_url(request, "/"))
 
-    @app.context_processor
-    def inject_auth_state() -> dict[str, str]:
-        return {"csrf_token": _csrf_token()}
+    if request.path == "/mcp":
+        if not _mcp_enabled():
+            raise web.HTTPNotFound()
+        if not (_is_logged_in(request) or _mcp_bearer_token_valid(request)):
+            return _auth_required_response(request)
+    elif _setup_needed():
+        if not _is_static_or_public_path(request):
+            raise web.HTTPFound(location="/setup")
+    elif not (_is_static_or_public_path(request) or _is_logged_in(request)):
+        return _auth_required_response(request)
 
-    @app.route("/setup", methods=["GET", "POST"])
-    def setup() -> Any:
+    if request.method in {"POST", "PUT", "PATCH", "DELETE"}:
+        if request.path == "/mcp" and _mcp_bearer_token_valid(request):
+            return await handler(request)
+        if request.path in {"/api/auth/passkey/login/options", "/api/auth/passkey/login/verify"}:
+            return await handler(request)
+        expected = session_for(request).get("csrf_token")
+        supplied = await _request_csrf_token(request)
+        if not expected or not secrets.compare_digest(str(expected), supplied):
+            return _forbidden(request, "Invalid CSRF token")
+    return await handler(request)
+
+
+def register_auth_routes(app: web.Application) -> None:
+    async def api_auth_bootstrap(request: web.Request) -> web.Response:
+        mode = str(request.query.get("mode") or "login").strip().lower()
+        if _setup_needed():
+            mode = "setup"
+        elif mode == "setup":
+            mode = "login"
+        if mode not in {"login", "setup", "create"}:
+            mode = "login"
+        next_url = _safe_next_url(request, "/")
+        descriptions = {
+            "login": ("Log In", "Use your local DebriPod account.", "Log In", "/login"),
+            "setup": ("Set Up DebriPod", "Create the first local admin account.", "Create Account", "/setup"),
+            "create": ("Create Account", "Create another local DebriPod user.", "Create Account", "/account/create"),
+        }
+        title, subtitle, button, action = descriptions[mode]
+        if mode == "login" and next_url != "/":
+            action += "?next=" + quote(next_url, safe="/")
+        return json_response(
+            ok=True,
+            title=title,
+            subtitle=subtitle,
+            button=button,
+            action=action,
+            setup=mode in {"setup", "create"},
+            passkey=mode == "login" and _passkey_login_available(),
+            next_url=next_url,
+            csrf_token=_csrf_token(request),
+            error="Invalid username or password." if request.query.get("error") else "",
+        )
+
+    async def setup(request: web.Request) -> web.Response:
         if not _setup_needed():
-            return redirect(url_for("login"))
-        error = ""
+            raise web.HTTPFound(location="/login")
+        session = session_for(request)
         if request.method == "POST":
-            username = (request.form.get("username") or "").strip()
-            password = request.form.get("password") or ""
-            confirm = request.form.get("confirm_password") or ""
-            if len(username) < 2:
-                error = "Could not create account."
-            elif len(password) < 8 or password != confirm:
-                error = "Could not create account."
+            form = await request.post()
+            username = str(form.get("username") or "").strip()
+            password = str(form.get("password") or "")
+            confirm = str(form.get("confirm_password") or "")
+            if len(username) < 2 or len(password) < 8 or password != confirm:
+                raise web.HTTPFound(location="/setup?error=1")
             else:
                 _save_users([{"username": username, "password_hash": generate_password_hash(password)}])
                 _initialize_new_user_settings(username)
                 session.clear()
-                session.permanent = True
                 session["username"] = username
-                _mark_recent_password_auth()
-                _csrf_token()
-                return redirect("/")
-        return render_template_string(
-            LOGIN_TEMPLATE,
-            title="Set Up DebriPod",
-            subtitle="Create the first local admin account.",
-            action=url_for("setup"),
-            button="Create Account",
-            error=error,
-            setup=True,
-            csrf_token=_csrf_token(),
-            password_autocomplete="new-password",
-        )
+                _mark_recent_password_auth(request)
+                _csrf_token(request)
+                raise web.HTTPFound(location="/")
+        return _auth_page()
 
-    @app.route("/login", methods=["GET", "POST"])
-    def login() -> Any:
+    async def login(request: web.Request) -> web.Response:
         if _setup_needed():
-            return redirect(url_for("setup"))
-        error = ""
+            raise web.HTTPFound(location="/setup")
+        session = session_for(request)
         if request.method == "POST":
-            username = (request.form.get("username") or "").strip()
-            password = request.form.get("password") or ""
-            user = None if _login_locked(username) else _find_user(username)
+            form = await request.post()
+            username = str(form.get("username") or "").strip()
+            password = str(form.get("password") or "")
+            user = None if _login_locked(request, username) else _find_user(username)
             password_hash = str((user or {}).get("password_hash") or "")
-            if user and password_hash and check_password_hash(password_hash, password):
-                _login_succeeded(username)
+            if user and password_hash and _verify_user_password(user, password):
+                _login_succeeded(request, username)
                 session.clear()
-                session.permanent = True
                 session["username"] = str(user.get("username") or username)
-                _mark_recent_password_auth()
-                _csrf_token()
-                return redirect(_safe_next_url("/"))
-            _login_failed(username)
-            error = "Invalid username or password."
-        return render_template_string(
-            LOGIN_TEMPLATE,
-            title="Log In",
-            subtitle="Use your local DebriPod account.",
-            action=url_for("login", next=request.args.get("next") or ""),
-            button="Log In",
-            error=error,
-            setup=False,
-            csrf_token=_csrf_token(),
-            password_autocomplete="current-password",
-            next_url=_safe_next_url("/"),
-        )
+                _mark_recent_password_auth(request)
+                _csrf_token(request)
+                raise web.HTTPFound(location=_safe_next_url(request, "/"))
+            _login_failed(request, username)
+            next_url = _safe_next_url(request, "/")
+            location = "/login?error=1"
+            if next_url != "/":
+                location += "&next=" + quote(next_url, safe="/")
+            raise web.HTTPFound(location=location)
+        return _auth_page()
 
-    @app.route("/logout", methods=["GET", "POST"])
-    def logout() -> Any:
-        session.clear()
-        return redirect(url_for("login"))
+    async def logout(request: web.Request) -> web.Response:
+        session_for(request).clear()
+        raise web.HTTPFound(location="/login")
 
-    @app.route("/account/create", methods=["GET", "POST"])
-    def account_create() -> Any:
+    async def account_create(request: web.Request) -> web.Response:
         if _setup_needed():
-            return redirect(url_for("setup"))
-        error = ""
+            raise web.HTTPFound(location="/setup")
+        session = session_for(request)
         if request.method == "POST":
-            username = (request.form.get("username") or "").strip()
-            password = request.form.get("password") or ""
-            confirm = request.form.get("confirm_password") or ""
+            form = await request.post()
+            username = str(form.get("username") or "").strip()
+            password = str(form.get("password") or "")
+            confirm = str(form.get("confirm_password") or "")
             if password != confirm:
-                error = "Could not create account."
+                raise web.HTTPFound(location="/account/create?error=1")
             else:
                 ok, _err = _create_user(username, password)
                 if ok:
                     session.clear()
-                    session.permanent = True
                     session["username"] = username
-                    _mark_recent_password_auth()
-                    _csrf_token()
-                    return redirect("/?setup=1")
-                error = "Could not create account."
-        return render_template_string(
-            LOGIN_TEMPLATE,
-            title="Create Account",
-            subtitle="Create another local DebriPod user. After creation, DebriPod will open setup for that user.",
-            action=url_for("account_create"),
-            button="Create Account",
-            error=error,
-            setup=True,
-            csrf_token=_csrf_token(),
-            password_autocomplete="new-password",
-            next_url="/",
-        )
+                    _mark_recent_password_auth(request)
+                    _csrf_token(request)
+                    raise web.HTTPFound(location="/?setup=1")
+                raise web.HTTPFound(location="/account/create?error=1")
+        return _auth_page()
 
-    @app.route("/api/auth/passkeys", methods=["GET"])
-    def api_auth_passkeys() -> Any:
-        if not _is_logged_in():
-            return jsonify({"ok": False, "error": "Authentication required"}), 401
-        return jsonify({"ok": True, "passkeys": [_public_passkey(p) for p in passkeys_for_user(str(session.get("username") or ""))]})
+    async def api_auth_passkeys(request: web.Request) -> web.Response:
+        if not _is_logged_in(request):
+            return json_response(ok=False, error="Authentication required", status=401)
+        username = str(session_for(request).get("username") or "")
+        return json_response(ok=True, passkeys=[_public_passkey(p) for p in passkeys_for_user(username)])
 
-    @app.route("/api/auth/passkeys/revoke", methods=["POST"])
-    def api_auth_passkey_revoke() -> Any:
-        if not _is_logged_in():
-            return jsonify({"ok": False, "error": "Authentication required"}), 401
-        js = request.get_json(silent=True) or {}
-        credential_id = str(js.get("credential_id") or "").strip()
+    async def api_auth_passkey_revoke(request: web.Request) -> web.Response:
+        if not _is_logged_in(request):
+            return json_response(ok=False, error="Authentication required", status=401)
+        data = await request.json()
+        credential_id = str(data.get("credential_id") or "").strip()
         if not credential_id:
-            return jsonify({"ok": False, "error": "Missing credential id"}), 400
-        revoke_passkey(str(session.get("username") or ""), credential_id)
-        return jsonify({"ok": True})
+            return json_response(ok=False, error="Missing credential id", status=400)
+        revoke_passkey(str(session_for(request).get("username") or ""), credential_id)
+        return json_response(ok=True)
 
-    @app.route("/api/auth/passkeys/rename", methods=["POST"])
-    def api_auth_passkey_rename() -> Any:
-        if not _is_logged_in():
-            return jsonify({"ok": False, "error": "Authentication required"}), 401
-        js = request.get_json(silent=True) or {}
-        credential_id = str(js.get("credential_id") or "").strip()
-        device_label = str(js.get("device_label") or "").strip()
+    async def api_auth_passkey_rename(request: web.Request) -> web.Response:
+        if not _is_logged_in(request):
+            return json_response(ok=False, error="Authentication required", status=401)
+        data = await request.json()
+        credential_id = str(data.get("credential_id") or "").strip()
+        device_label = str(data.get("device_label") or "").strip()
         if not credential_id:
-            return jsonify({"ok": False, "error": "Missing credential id"}), 400
+            return json_response(ok=False, error="Missing credential id", status=400)
         if not device_label:
-            return jsonify({"ok": False, "error": "Missing passkey label"}), 400
-        rename_passkey(str(session.get("username") or ""), credential_id, device_label)
-        return jsonify({"ok": True})
+            return json_response(ok=False, error="Missing passkey label", status=400)
+        rename_passkey(str(session_for(request).get("username") or ""), credential_id, device_label)
+        return json_response(ok=True)
 
-    @app.route("/api/auth/passkey/register/options", methods=["POST"])
-    def api_auth_passkey_register_options() -> Any:
-        if not _is_logged_in():
-            return jsonify({"ok": False, "error": "Authentication required"}), 401
+    async def api_auth_passkey_register_options(request: web.Request) -> web.Response:
+        if not _is_logged_in(request):
+            return json_response(ok=False, error="Authentication required", status=401)
         if not _webauthn_available():
             return _passkey_error()
-        js = request.get_json(silent=True) or {}
-        if not _has_recent_password_auth() and not _current_user_password_valid(str(js.get("password") or "")):
-            return jsonify({"ok": False, "error": "Enter your DebriPod password before adding a passkey."}), 403
-        username = str(session.get("username") or "")
+        data = await request.json()
+        if not _has_recent_password_auth(request) and not _current_user_password_valid(request, str(data.get("password") or "")):
+            return json_response(ok=False, error="Enter your DebriPod password before adding a passkey.", status=403)
+        username = str(session_for(request).get("username") or "")
         existing = []
         for item in passkeys_for_user(username):
             try:
                 existing.append(PublicKeyCredentialDescriptor(id=base64url_to_bytes(str(item.get("credential_id") or ""))))  # type: ignore[misc]
             except Exception:
                 pass
-        opts = generate_registration_options(  # type: ignore[misc]
-            rp_id=_webauthn_rp_id(),
+        options = generate_registration_options(  # type: ignore[misc]
+            rp_id=_webauthn_rp_id(request),
             rp_name="DebriPod",
             user_name=username,
             user_display_name=username,
@@ -701,152 +584,156 @@ def register_auth(app: Any) -> None:
             ),
             exclude_credentials=existing,
         )
-        public_key = json.loads(options_to_json(opts))  # type: ignore[misc]
+        public_key = json.loads(options_to_json(options))  # type: ignore[misc]
         challenge_id = secrets.token_urlsafe(24)
         save_passkey_challenge(challenge_id, username=username, action="register", challenge=public_key)
-        return jsonify({"ok": True, "available": True, "challenge_id": challenge_id, "publicKey": public_key})
+        return json_response(ok=True, available=True, challenge_id=challenge_id, publicKey=public_key)
 
-    @app.route("/api/auth/passkey/register/verify", methods=["POST"])
-    def api_auth_passkey_register_verify() -> Any:
-        if not _is_logged_in():
-            return jsonify({"ok": False, "error": "Authentication required"}), 401
+    async def api_auth_passkey_register_verify(request: web.Request) -> web.Response:
+        if not _is_logged_in(request):
+            return json_response(ok=False, error="Authentication required", status=401)
         if not _webauthn_available():
             return _passkey_error()
-        js = request.get_json(silent=True) or {}
-        pending = pop_passkey_challenge(str(js.get("challenge_id") or ""), action="register")
+        data = await request.json()
+        pending = pop_passkey_challenge(str(data.get("challenge_id") or ""), action="register")
         if not pending:
-            return jsonify({"ok": False, "error": "Passkey setup expired. Try again."}), 400
-        username = str(session.get("username") or "")
+            return json_response(ok=False, error="Passkey setup expired. Try again.", status=400)
+        username = str(session_for(request).get("username") or "")
         if str(pending.get("username") or "") != username:
-            return jsonify({"ok": False, "error": "Passkey setup user changed. Try again."}), 400
+            return json_response(ok=False, error="Passkey setup user changed. Try again.", status=400)
         public_key = pending.get("challenge") if isinstance(pending.get("challenge"), dict) else {}
-        credential = js.get("credential")
+        credential = data.get("credential")
         try:
             verified = verify_registration_response(  # type: ignore[misc]
                 credential=credential,
                 expected_challenge=base64url_to_bytes(str(public_key.get("challenge") or "")),  # type: ignore[misc]
-                expected_rp_id=_webauthn_rp_id(),
-                expected_origin=_webauthn_expected_origins(),
+                expected_rp_id=_webauthn_rp_id(request),
+                expected_origin=_webauthn_expected_origins(request),
                 require_user_verification=False,
             )
             credential_id = bytes_to_base64url(verified.credential_id)  # type: ignore[misc]
             public_key_b64 = bytes_to_base64url(verified.credential_public_key)  # type: ignore[misc]
-            transports = []
-            try:
-                transports = list((credential or {}).get("response", {}).get("transports") or [])
-            except Exception:
-                transports = []
+            transports = list((credential or {}).get("response", {}).get("transports") or [])
             save_user_passkey(
                 username=username,
                 credential_id=credential_id,
                 public_key=public_key_b64,
                 sign_count=int(getattr(verified, "sign_count", 0) or 0),
-                transports=[str(x) for x in transports],
+                transports=[str(value) for value in transports],
                 aaguid=str(getattr(verified, "aaguid", "") or ""),
-                device_label=str(js.get("device_label") or "This device"),
+                device_label=str(data.get("device_label") or "This device"),
             )
             saved = passkeys_for_user(username)
-            app.logger.info("Passkey registered for user %s; active passkeys: %s", username, len(saved))
-            return jsonify({"ok": True, "message": "Passkey enabled for this device.", "passkey_count": len(saved)})
+            logging.info("Passkey registered for user %s; active passkeys: %s", username, len(saved))
+            return json_response(ok=True, message="Passkey enabled for this device.", passkey_count=len(saved))
         except Exception as exc:
-            app.logger.warning("Passkey registration verification failed: %s\n%s", exc, traceback.format_exc())
-            return jsonify({"ok": False, "error": "Passkey setup failed. Use your password and try again."}), 400
+            logging.warning("Passkey registration verification failed: %s\n%s", exc, traceback.format_exc())
+            return json_response(ok=False, error="Passkey setup failed. Use your password and try again.", status=400)
 
-    @app.route("/api/auth/passkey/login/options", methods=["POST"])
-    def api_auth_passkey_login_options() -> Any:
+    async def api_auth_passkey_login_options(request: web.Request) -> web.Response:
         if _setup_needed():
-            return jsonify({"ok": False, "available": False, "error": "Set up DebriPod before adding passkeys."}), 400
+            return json_response(ok=False, available=False, error="Set up DebriPod before adding passkeys.", status=400)
         if not _webauthn_available():
             return _passkey_error()
         allow = []
-        checked_users = []
         for user in _valid_users():
             username = str(user.get("username") or "")
             user_passkeys = passkeys_for_user(username)
-            checked_users.append({"username": username, "passkeys": len(user_passkeys)})
             for item in user_passkeys:
                 try:
                     allow.append(PublicKeyCredentialDescriptor(id=base64url_to_bytes(str(item.get("credential_id") or ""))))  # type: ignore[misc]
                 except Exception:
                     pass
         if not allow:
-            app.logger.warning("Passkey login requested but no active credentials were found; checked=%s", checked_users)
-            return jsonify({"ok": False, "available": False, "error": "No passkeys are registered. Use your password."}), 400
-        opts = generate_authentication_options(  # type: ignore[misc]
-            rp_id=_webauthn_rp_id(),
+            return json_response(ok=True, available=False, error="No passkeys are registered. Use your password.")
+        options = generate_authentication_options(  # type: ignore[misc]
+            rp_id=_webauthn_rp_id(request),
             allow_credentials=allow,
             user_verification=UserVerificationRequirement.PREFERRED,  # type: ignore[union-attr]
         )
-        public_key = json.loads(options_to_json(opts))  # type: ignore[misc]
+        public_key = json.loads(options_to_json(options))  # type: ignore[misc]
         challenge_id = secrets.token_urlsafe(24)
         save_passkey_challenge(challenge_id, username="", action="login", challenge=public_key)
-        return jsonify({"ok": True, "available": True, "challenge_id": challenge_id, "publicKey": public_key})
+        return json_response(ok=True, available=True, challenge_id=challenge_id, publicKey=public_key)
 
-    @app.route("/api/auth/passkey/login/verify", methods=["POST"])
-    def api_auth_passkey_login_verify() -> Any:
+    async def api_auth_passkey_login_verify(request: web.Request) -> web.Response:
         if not _webauthn_available():
             return _passkey_error()
-        js = request.get_json(silent=True) or {}
-        pending = pop_passkey_challenge(str(js.get("challenge_id") or ""), action="login")
+        data = await request.json()
+        pending = pop_passkey_challenge(str(data.get("challenge_id") or ""), action="login")
         if not pending:
-            return jsonify({"ok": False, "error": "Passkey sign in expired. Try again."}), 400
-        credential = js.get("credential") or {}
+            return json_response(ok=False, error="Passkey sign in expired. Try again.", status=400)
+        credential = data.get("credential") or {}
         credential_id = str(credential.get("id") or credential.get("rawId") or "")
         item = passkey_by_credential_id(credential_id)
         if not item:
-            return jsonify({"ok": False, "error": "Passkey is not registered for this DebriPod server."}), 400
+            return json_response(ok=False, error="Passkey is not registered for this DebriPod server.", status=400)
         public_key = pending.get("challenge") if isinstance(pending.get("challenge"), dict) else {}
         try:
             verified = verify_authentication_response(  # type: ignore[misc]
                 credential=credential,
                 expected_challenge=base64url_to_bytes(str(public_key.get("challenge") or "")),  # type: ignore[misc]
-                expected_rp_id=_webauthn_rp_id(),
-                expected_origin=_webauthn_expected_origins(),
+                expected_rp_id=_webauthn_rp_id(request),
+                expected_origin=_webauthn_expected_origins(request),
                 credential_public_key=base64url_to_bytes(str(item.get("public_key") or "")),  # type: ignore[misc]
                 credential_current_sign_count=int(item.get("sign_count") or 0),
                 require_user_verification=False,
             )
             update_passkey_sign_count(credential_id, int(getattr(verified, "new_sign_count", 0) or 0))
+            session = session_for(request)
             session.clear()
-            session.permanent = True
             session["username"] = str(item.get("username") or "")
-            _csrf_token()
-            return jsonify({"ok": True, "username": str(item.get("username") or "")})
+            _csrf_token(request)
+            return json_response(ok=True, username=str(item.get("username") or ""))
         except Exception as exc:
-            app.logger.warning("Passkey login verification failed: %s\n%s", exc, traceback.format_exc())
-            return jsonify({"ok": False, "error": "Passkey sign in failed. Use your password."}), 400
+            logging.warning("Passkey login verification failed: %s\n%s", exc, traceback.format_exc())
+            return json_response(ok=False, error="Passkey sign in failed. Use your password.", status=400)
 
-    @app.route("/api/auth/status", methods=["GET"])
-    def api_auth_status() -> Any:
-        return jsonify(
-            {
-                "ok": True,
-                "setup_required": _setup_needed(),
-                "logged_in": _is_logged_in(),
-                "username": str(session.get("username") or ""),
-                "users": [_public_user(u) for u in _valid_users()],
-            }
+    async def api_auth_status(request: web.Request) -> web.Response:
+        return json_response(
+            ok=True,
+            setup_required=_setup_needed(),
+            logged_in=_is_logged_in(request),
+            username=str(session_for(request).get("username") or ""),
+            users=[_public_user(user) for user in _valid_users()],
         )
 
-    @app.route("/api/auth/users", methods=["POST"])
-    def api_auth_create_user() -> Any:
-        js = request.get_json(silent=True) or {}
-        username = str(js.get("username") or "").strip()
-        password = str(js.get("password") or "")
-        confirm = str(js.get("confirm_password") or "")
+    async def api_auth_create_user(request: web.Request) -> web.Response:
+        data = await request.json()
+        username = str(data.get("username") or "").strip()
+        password = str(data.get("password") or "")
+        confirm = str(data.get("confirm_password") or "")
         if password != confirm:
-            return jsonify({"ok": False, "error": "Could not create user"}), 400
+            return json_response(ok=False, error="Could not create user", status=400)
         ok, _err = _create_user(username, password)
         if not ok:
-            return jsonify({"ok": False, "error": "Could not create user"}), 400
-        return jsonify({"ok": True, "users": [_public_user(u) for u in _valid_users()], "setup_required": True})
+            return json_response(ok=False, error="Could not create user", status=400)
+        return json_response(ok=True, users=[_public_user(user) for user in _valid_users()], setup_required=True)
 
-    @app.route("/api/auth/users/delete_current", methods=["POST"])
-    def api_auth_delete_current_user() -> Any:
-        if not _is_logged_in():
-            return jsonify({"ok": False, "error": "Authentication required"}), 401
-        js = request.get_json(silent=True) or {}
-        ok, err, setup_required = _delete_current_user(str(js.get("password") or ""))
+    async def api_auth_delete_current_user(request: web.Request) -> web.Response:
+        if not _is_logged_in(request):
+            return json_response(ok=False, error="Authentication required", status=401)
+        data = await request.json()
+        ok, error, setup_required = _delete_current_user(request, str(data.get("password") or ""))
         if not ok:
-            return jsonify({"ok": False, "error": err or "Could not delete user"}), 400
-        return jsonify({"ok": True, "setup_required": bool(setup_required)})
+            return json_response(ok=False, error=error or "Could not delete user", status=400)
+        return json_response(ok=True, setup_required=bool(setup_required))
+
+    app.router.add_get("/api/auth/bootstrap", api_auth_bootstrap)
+    app.router.add_route("*", "/setup", setup)
+    app.router.add_route("*", "/login", login)
+    app.router.add_route("*", "/logout", logout)
+    app.router.add_route("*", "/account/create", account_create)
+    app.router.add_get("/api/auth/passkeys", api_auth_passkeys)
+    app.router.add_post("/api/auth/passkeys/revoke", api_auth_passkey_revoke)
+    app.router.add_post("/api/auth/passkeys/rename", api_auth_passkey_rename)
+    app.router.add_post("/api/auth/passkey/register/options", api_auth_passkey_register_options)
+    app.router.add_post("/api/auth/passkey/register/verify", api_auth_passkey_register_verify)
+    app.router.add_post("/api/auth/passkey/login/options", api_auth_passkey_login_options)
+    app.router.add_post("/api/auth/passkey/login/verify", api_auth_passkey_login_verify)
+    app.router.add_get("/api/auth/status", api_auth_status)
+    app.router.add_post("/api/auth/users", api_auth_create_user)
+    app.router.add_post("/api/auth/users/delete_current", api_auth_delete_current_user)
+
+
+__all__ = ["auth_middleware", "register_auth_routes"]

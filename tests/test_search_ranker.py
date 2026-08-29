@@ -1,4 +1,4 @@
-from debripod.Library.search_ranker import infer_query_intent, rank_combined_results
+from debripod.Library.search_ranker import infer_query_intent, rank_combined_results, score_combined_result
 
 
 def _result(result_id, source, kind, title, **extra):
@@ -27,3 +27,11 @@ def test_intent_and_kind_quality_terms():
         _result("torrent:b", "torrent", "torrent", "The Sopranos S06E02", provider_data={"seeders": 100, "verified": True}),
     ]
     assert rank_combined_results(rows, "The Sopranos S06E02", intent=intent)[0]["result_id"] == "torrent:b"
+
+
+def test_local_index_uses_exactly_the_torrent_rank_semantics():
+    intent = infer_query_intent("The Sopranos S06E02")
+    data = {"seeders": 12, "verified": True}
+    torrent = _result("torrent:a", "torrent", "torrent", "The Sopranos S06E02", provider_data=data)
+    local = _result("torrent:a", "local_index", "torrent", "The Sopranos S06E02", provider_data=data)
+    assert score_combined_result(torrent, "The Sopranos S06E02", intent)["total_score"] == score_combined_result(local, "The Sopranos S06E02", intent)["total_score"]

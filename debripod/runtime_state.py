@@ -17,8 +17,6 @@ import logging
 from typing import Dict, Optional, List, Tuple, Any
 from urllib.parse import quote, unquote, urlparse
 
-import requests
-from flask import Flask, request, redirect, url_for, render_template, abort, Response, jsonify
 
 from .Library.search_cache import (
     _SEARCH_DISK_LOCK,
@@ -65,6 +63,7 @@ from .Library.index import (
     library_metadata_facets,
     library_root_version,
     library_root_versions,
+    library_stop_watchers,
     library_watch_root,
     queue_video_analysis_warm,
     pause_enrichment_writes,

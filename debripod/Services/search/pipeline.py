@@ -1,11 +1,15 @@
 from __future__ import annotations
 
+import asyncio
+import copy
+import inspect
 import time
-from concurrent.futures import ThreadPoolExecutor, as_completed
-from typing import Any, Iterable
+from typing import Any, AsyncIterator, Iterable
 
 from ...Library.search_ranker import rank_combined_results
-from .dedup import deduplicate_torrents, deduplicate_youtube
+from ..http import HttpStatusError
+from ..torrent_sources.base import SourceUnavailable
+from .dedup import IncrementalDeduplicator, TorrentAccumulator
 from .models import ProviderSearchResponse, SearchResult
 from .providers import SearchContext, SearchProvider
 from .relevance import assess_match, build_search_blob
@@ -17,8 +21,6 @@ def _plain(result: Any) -> dict[str, Any]:
 
 def normalize_result(result: Any) -> dict[str, Any]:
     raw = _plain(result)
-    # Keep strict schema validation without a dataclass -> asdict deep-copy on
-    # every row. That conversion is measurable at 30,000 results.
     known = set(SearchResult.__dataclass_fields__)
     unknown = set(raw) - known
     if unknown:
@@ -46,21 +48,52 @@ def normalize_result(result: Any) -> dict[str, Any]:
         media = "music"
     elif validated["kind"] in {"movie", "show", "season", "episode", "video"}:
         media = "video"
-    indexers = list(provider.get("indexer_labels") or []) if validated["source"] == "torrent" else []
+    indexers = list(provider.get("indexer_labels") or []) if validated["source"] in {"torrent", "local_index"} else []
+    incoming_filters = validated.get("filter_values") if isinstance(validated.get("filter_values"), dict) else {}
     validated["filter_values"] = {
-        "sources": [validated["source_label"]],
-        "types": [validated["kind_label"]],
-        "indexers": list(dict.fromkeys(str(value) for value in indexers if str(value))),
-        "media": [media] if media else [],
+        "sources": list(dict.fromkeys([*(incoming_filters.get("sources") or []), validated["source_label"]])),
+        "types": list(dict.fromkeys([*(incoming_filters.get("types") or []), validated["kind_label"]])),
+        "indexers": list(dict.fromkeys([*(incoming_filters.get("indexers") or []), *(str(value) for value in indexers if str(value))])),
+        "media": list(dict.fromkeys([*(incoming_filters.get("media") or []), *([media] if media else [])])),
     }
     return validated
 
 
+async def _provider_responses(provider: Any, query: str, context: SearchContext) -> AsyncIterator[ProviderSearchResponse]:
+    stream = getattr(provider, "search_stream", None)
+    if callable(stream):
+        iterator = stream(query, context)
+        if hasattr(iterator, "__aiter__"):
+            async for response in iterator:
+                yield response if isinstance(response, ProviderSearchResponse) else ProviderSearchResponse(**dict(response))
+            return
+    value = provider.search(query, context)
+    response = await value if inspect.isawaitable(value) else value
+    yield response if isinstance(response, ProviderSearchResponse) else ProviderSearchResponse(**dict(response))
+
+
+def _error_state(error: BaseException) -> str:
+    if isinstance(error, asyncio.TimeoutError):
+        return "timeout"
+    if isinstance(error, SourceUnavailable):
+        return error.code
+    if isinstance(error, HttpStatusError) and error.status == 429:
+        return "rate_limited"
+    return "error"
+
+
 class SearchPipeline:
-    def __init__(self, providers: Iterable[SearchProvider], *, cache: Any = None, max_workers: int | None = None):
+    def __init__(
+        self,
+        providers: Iterable[SearchProvider],
+        *,
+        cache: Any = None,
+        torrent_accumulator_factory=TorrentAccumulator,
+        max_workers: int | None = None,
+    ):
         self.providers = list(providers)
         self.cache = cache
-        self.max_workers = max_workers or max(1, len(self.providers))
+        self.torrent_accumulator_factory = torrent_accumulator_factory
 
     def _cache_set(self, context: SearchContext, payload: dict[str, Any]) -> None:
         if self.cache is None:
@@ -76,71 +109,120 @@ class SearchPipeline:
         elif callable(self.cache):
             self.cache(context.search_id, safe_payload)
 
-    def search_stream(self, query: str, context: SearchContext):
+    async def search_stream(self, query: str, context: SearchContext) -> AsyncIterator[dict[str, Any]]:
+        if not str(query or "").strip():
+            raise ValueError("search query is required")
         yield {"event": "start", "search_id": context.search_id, "query": query}
-        retained: list[dict[str, Any]] = []
+        queue: asyncio.Queue[tuple[str, Any, Any]] = asyncio.Queue()
+        deduplicator = IncrementalDeduplicator(self.torrent_accumulator_factory)
         statuses: list[dict[str, Any]] = []
-        with ThreadPoolExecutor(max_workers=self.max_workers, thread_name_prefix="debripod-search") as executor:
-            futures = {executor.submit(provider.search, query, context): provider for provider in self.providers}
-            for future in as_completed(futures):
-                provider = futures[future]
-                started = time.monotonic()
-                try:
-                    response = future.result()
-                    if not isinstance(response, ProviderSearchResponse):
-                        response = ProviderSearchResponse(**dict(response))
-                except Exception as exc:
-                    response = ProviderSearchResponse(
-                        provider_group=provider.provider_group,
-                        source_status={"status": "error"},
+        has_local_index = any(str(getattr(provider, "provider_group", "")) == "local_index" for provider in self.providers)
+        local_index_seeded = not has_local_index
+        buffered_torrent_responses: list[ProviderSearchResponse] = []
+
+        async def run_provider(provider: Any) -> None:
+            started = time.monotonic()
+            try:
+                async for response in _provider_responses(provider, query, context):
+                    await queue.put(("response", provider, response))
+            except asyncio.CancelledError:
+                raise
+            except BaseException as exc:
+                await queue.put((
+                    "response",
+                    provider,
+                    ProviderSearchResponse(
+                        provider_group=str(getattr(provider, "provider_group", "unknown")),
+                        source_status={"status": _error_state(exc)},
                         error=str(exc),
                         duration_ms=int((time.monotonic() - started) * 1000),
-                    )
-                normalized: list[dict[str, Any]] = []
-                invalid_errors: list[str] = []
-                for row in response.results:
-                    try:
-                        normalized.append(normalize_result(row))
-                    except Exception as exc:
-                        invalid_errors.append(str(exc))
-                if response.provider_group == "ytdlp":
-                    normalized = deduplicate_youtube(normalized)
-                if response.provider_group == "torrents":
-                    normalized = deduplicate_torrents(normalized)
-                filtered: list[dict[str, Any]] = []
-                for row in normalized:
+                    ),
+                ))
+            finally:
+                await queue.put(("done", provider, None))
+
+        def ingest_response(response: ProviderSearchResponse) -> dict[str, Any]:
+            normalized: list[dict[str, Any]] = []
+            invalid_errors: list[str] = []
+            for raw in response.results:
+                try:
+                    row = normalize_result(raw)
                     assessment = assess_match(query, row)
                     row["match_confidence"] = assessment.confidence
                     if not assessment.unrelated:
-                        filtered.append(row)
-                retained.extend(filtered)
-                status = {
-                    "provider_group": response.provider_group,
-                    "source_status": response.source_status,
-                    "error": response.error or ("; ".join(invalid_errors) if invalid_errors else ""),
-                    "duration_ms": response.duration_ms,
-                    "cached": response.cached,
-                    "result_count": len(filtered),
-                }
-                statuses.append(status)
-                yield {"event": "source", "search_id": context.search_id, **status, "results": filtered}
-        ranked = rank_combined_results(retained, query, intent=context.intent)
-        payload = {"event": "done", "search_id": context.search_id, "query": query, "results": ranked, "provider_status": statuses}
-        self._cache_set(context, payload)
-        yield payload
+                        normalized.append(row)
+                except Exception as exc:
+                    invalid_errors.append(str(exc))
+            upserts = [copy.deepcopy(deduplicator.ingest(row)) for row in normalized]
+            source_state = "ok" if upserts else "empty"
+            if response.error:
+                raw_state = response.source_status.get("status") if isinstance(response.source_status, dict) else ""
+                source_state = str(raw_state or "error")
+            status = {
+                "provider_group": response.provider_group,
+                "source_id": str(response.source_status.get("source_id") or response.provider_group) if isinstance(response.source_status, dict) else response.provider_group,
+                "source_label": str(response.source_status.get("source_label") or "") if isinstance(response.source_status, dict) else "",
+                "source_status": response.source_status,
+                "status": source_state,
+                "error": response.error or ("; ".join(invalid_errors) if invalid_errors else ""),
+                "duration_ms": response.duration_ms,
+                "cached": response.cached,
+                "result_count": len(upserts),
+            }
+            statuses.append(status)
+            return {"event": "source", "search_id": context.search_id, **status, "results": upserts}
 
-    def search_once(self, query: str, context: SearchContext) -> dict[str, Any]:
+        tasks = [asyncio.create_task(run_provider(provider), name=f"search:{getattr(provider, 'provider_group', 'provider')}") for provider in self.providers]
+        completed = 0
+        try:
+            while completed < len(tasks):
+                message, provider, response = await queue.get()
+                if message == "done":
+                    completed += 1
+                    if str(getattr(provider, "provider_group", "")) == "local_index" and not local_index_seeded:
+                        local_index_seeded = True
+                        for buffered in buffered_torrent_responses:
+                            yield ingest_response(buffered)
+                        buffered_torrent_responses.clear()
+                    continue
+                if response.provider_group == "torrents" and not local_index_seeded:
+                    buffered_torrent_responses.append(response)
+                    continue
+                yield ingest_response(response)
+                if response.provider_group == "local_index" and not local_index_seeded:
+                    local_index_seeded = True
+                    for buffered in buffered_torrent_responses:
+                        yield ingest_response(buffered)
+                    buffered_torrent_responses.clear()
+            ranked = rank_combined_results(deduplicator.values(), query, intent=context.intent)
+            payload = {
+                "event": "done", "ok": True, "search_id": context.search_id,
+                "cache_key": context.search_id, "query": query,
+                "results": ranked, "result_count": len(ranked), "provider_status": statuses,
+            }
+            self._cache_set(context, payload)
+            yield payload
+        except asyncio.CancelledError:
+            raise
+        finally:
+            for task in tasks:
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(*tasks, return_exceptions=True)
+
+    async def search_once(self, query: str, context: SearchContext) -> dict[str, Any]:
         final: dict[str, Any] = {}
-        for event in self.search_stream(query, context):
+        async for event in self.search_stream(query, context):
             if event.get("event") == "done":
                 final = event
         return final
 
 
-def search_stream(query: str, context: SearchContext, providers: Iterable[SearchProvider] | None = None, *, pipeline: SearchPipeline | None = None):
+async def search_stream(query: str, context: SearchContext, providers: Iterable[SearchProvider] | None = None, *, pipeline: SearchPipeline | None = None):
     active = pipeline or SearchPipeline(providers or [])
-    yield from active.search_stream(query, context)
+    async for event in active.search_stream(query, context):
+        yield event
 
 
-def search_once(query: str, context: SearchContext, providers: Iterable[SearchProvider] | None = None, *, pipeline: SearchPipeline | None = None) -> dict[str, Any]:
-    return (pipeline or SearchPipeline(providers or [])).search_once(query, context)
+async def search_once(query: str, context: SearchContext, providers: Iterable[SearchProvider] | None = None, *, pipeline: SearchPipeline | None = None) -> dict[str, Any]:
+    return await (pipeline or SearchPipeline(providers or [])).search_once(query, context)

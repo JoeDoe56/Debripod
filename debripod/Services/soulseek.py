@@ -587,9 +587,52 @@ class _DropAioslskFilter(logging.Filter):
             return True
 
 
-def configure_aioslsk_logging() -> str:
-    """Route aioslsk logs to a dedicated file and prevent them from printing to the terminal."""
+_AIOSLSK_FILE_HANDLER: logging.FileHandler | None = None
+_AIOSLSK_ROOT_FILTER: _DropAioslskFilter | None = None
+
+
+def configure_aioslsk_logging(enabled: bool = True) -> str:
+    """Enable dedicated aioslsk diagnostics, or fully silence them when disabled."""
+    global _AIOSLSK_FILE_HANDLER, _AIOSLSK_ROOT_FILTER
     log_file = soulseek_log_file_path()
+
+    try:
+        names = list(logging.root.manager.loggerDict.keys())
+    except Exception:
+        names = []
+    if "aioslsk" not in names:
+        names.append("aioslsk")
+    loggers = [
+        logging.getLogger(name)
+        for name in names
+        if name == "aioslsk" or str(name).startswith("aioslsk.")
+    ]
+
+    if _AIOSLSK_FILE_HANDLER is not None:
+        for logger in loggers:
+            logger.removeHandler(_AIOSLSK_FILE_HANDLER)
+        try:
+            _AIOSLSK_FILE_HANDLER.close()
+        finally:
+            _AIOSLSK_FILE_HANDLER = None
+
+    root = logging.getLogger()
+    if _AIOSLSK_ROOT_FILTER is not None:
+        for handler in list(getattr(root, "handlers", []) or []):
+            handler.removeFilter(_AIOSLSK_ROOT_FILTER)
+        _AIOSLSK_ROOT_FILTER = None
+
+    for logger in loggers:
+        logger.handlers.clear()
+        logger.propagate = False
+        logger.disabled = False
+
+    if not enabled:
+        parent = logging.getLogger("aioslsk")
+        parent.setLevel(logging.CRITICAL + 1)
+        parent.addHandler(logging.NullHandler())
+        return ""
+
     try:
         os.makedirs(os.path.dirname(log_file), exist_ok=True)
     except Exception:
@@ -598,10 +641,11 @@ def configure_aioslsk_logging() -> str:
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
     fh = logging.FileHandler(log_file, encoding="utf-8")
     fh.setFormatter(fmt)
+    _AIOSLSK_FILE_HANDLER = fh
 
     # Prevent any existing root handlers from printing aioslsk logs.
     drop = _DropAioslskFilter()
-    root = logging.getLogger()
+    _AIOSLSK_ROOT_FILTER = drop
     for h in list(getattr(root, "handlers", []) or []):
         try:
             h.addFilter(drop)
@@ -609,26 +653,9 @@ def configure_aioslsk_logging() -> str:
             pass
 
     # Attach our handler to aioslsk loggers and stop propagation.
-    try:
-        names = list(logging.root.manager.loggerDict.keys())
-    except Exception:
-        names = []
-    if "aioslsk" not in names:
-        names.append("aioslsk")
-    for name in names:
-        if name == "aioslsk" or str(name).startswith("aioslsk."):
-            lg = logging.getLogger(name)
-            lg.setLevel(logging.DEBUG)
-            try:
-                lg.handlers.clear()
-            except Exception:
-                for old in list(getattr(lg, "handlers", []) or []):
-                    try:
-                        lg.removeHandler(old)
-                    except Exception:
-                        pass
-            lg.addHandler(fh)
-            lg.propagate = False
+    for logger in loggers:
+        logger.setLevel(logging.DEBUG)
+        logger.addHandler(fh)
 
     return log_file
 
@@ -1393,8 +1420,8 @@ class SoulseekService:
         self.search_timeout_sec = max(2, int(search_timeout_sec))
         self.search_max_results = max(10, int(search_max_results))
 
-        self._thread = None
-        self._loop = None
+        self._loop = asyncio.get_running_loop()
+        self._start_task = None
         self._ready = threading.Event()
         self._stop = threading.Event()
         self._client = None
@@ -1419,11 +1446,13 @@ class SoulseekService:
         self.incoming_dir = soulseek_incoming_dir()
         os.makedirs(self.incoming_dir, exist_ok=True)
 
-        self._thread = threading.Thread(target=self._thread_main, name="SoulseekLoop", daemon=True)
-        self._thread.start()
-
-        # Wait briefly for startup to either succeed or fail
-        self._ready.wait(timeout=15)
+    async def start(self) -> None:
+        """Start the long-lived aioslsk client on the aiohttp application loop."""
+        if asyncio.get_running_loop() is not self._loop:
+            raise RuntimeError("Soulseek must start on the aiohttp application event loop")
+        if self._start_task is None or self._start_task.done():
+            self._stop.clear()
+            self._start_task = self._loop.create_task(self._async_start(), name="soulseek-client-start")
 
     def is_ready(self) -> bool:
         return bool(self._ready.is_set() and self._client is not None and self._start_error is None)
@@ -1439,56 +1468,40 @@ class SoulseekService:
         return status
 
     def shutdown(self) -> None:
+        """Request shutdown from synchronous compatibility call sites."""
         self._stop.set()
         loop = self._loop
-        client = self._client
-
-        async def _stop_client():
-            for name in ("stop", "close", "disconnect"):
-                fn = getattr(client, name, None)
-                if not fn:
-                    continue
-                try:
-                    result = fn()
-                    if hasattr(result, "__await__"):
-                        await result
-                    break
-                except Exception:
-                    continue
-
-        if loop:
-            try:
-                if client:
-                    fut = asyncio.run_coroutine_threadsafe(_stop_client(), loop)
-                    try:
-                        fut.result(timeout=5)
-                    except Exception:
-                        pass
-                loop.call_soon_threadsafe(loop.stop)
-            except Exception:
-                pass
+        if not loop or not loop.is_running():
+            return
         try:
-            if self._thread and self._thread.is_alive():
-                self._thread.join(timeout=5)
-        except Exception:
-            pass
+            running = asyncio.get_running_loop()
+        except RuntimeError:
+            running = None
+        if running is loop:
+            loop.create_task(self.shutdown_async(), name="soulseek-client-stop")
+        else:
+            loop.call_soon_threadsafe(
+                lambda: loop.create_task(self.shutdown_async(), name="soulseek-client-stop")
+            )
 
-    def _thread_main(self):
-        try:
-            loop = asyncio.new_event_loop()
-            asyncio.set_event_loop(loop)
-            self._loop = loop
-            loop.create_task(self._async_start())
-            loop.run_forever()
-        except Exception as e:
-            self._start_error = str(e)
+    async def stop(self) -> None:
+        """Stop the aioslsk client on the aiohttp application loop."""
+        if asyncio.get_running_loop() is not self._loop:
+            raise RuntimeError("Soulseek must stop on the aiohttp application event loop")
+        await self.shutdown_async()
+
+    async def shutdown_async(self) -> None:
+        self._stop.set()
+        start_task = self._start_task
+        if start_task is not None and not start_task.done():
+            start_task.cancel()
             try:
-                self._startup_status["error"] = self._start_error
-                self._startup_status["ready"] = False
-            except Exception:
+                await start_task
+            except (asyncio.CancelledError, Exception):
                 pass
-        finally:
-            self._ready.set()
+        await self._stop_client_obj(self._client)
+        self._client = None
+        self._ready.clear()
 
     def _is_non_obfuscated_listen_error(self, exc: Exception) -> bool:
         text = str(exc or "").lower().replace("_", "-")
@@ -1611,17 +1624,23 @@ class SoulseekService:
             self._startup_status["ready"] = False
             self._ready.set()
 
-    def submit(self, coro, timeout: int = 30):
-        if not self._loop:
+    def _schedule(self, coroutine_factory, *, name: str) -> None:
+        """Schedule a Soulseek operation on the application loop without blocking."""
+        loop = self._loop
+        if loop is None or loop.is_closed():
             raise RuntimeError("Soulseek loop not initialized")
-        fut = asyncio.run_coroutine_threadsafe(coro, self._loop)
-        return fut.result(timeout=timeout)
 
-    def submit_nowait(self, coro):
-        if not self._loop:
-            raise RuntimeError("Soulseek loop not initialized")
-        return asyncio.run_coroutine_threadsafe(coro, self._loop)
+        def _start() -> None:
+            loop.create_task(coroutine_factory(), name=name)
 
+        try:
+            running_loop = asyncio.get_running_loop()
+        except RuntimeError:
+            running_loop = None
+        if running_loop is loop:
+            _start()
+        else:
+            loop.call_soon_threadsafe(_start)
 
     def start_search_session(self, session_id: str, query: str) -> None:
         q = (query or "").strip()
@@ -1629,15 +1648,20 @@ class SoulseekService:
             _slsk_session_mark_done(session_id, error="Missing query")
             return
         try:
-            self.submit_nowait(self._search_stream_coro(q, session_id))
+            self._schedule(
+                lambda: self._search_stream_coro(q, session_id),
+                name=f"soulseek-search:{session_id}",
+            )
         except Exception as e:
             _slsk_session_mark_done(session_id, error=str(e))
 
-    def search(self, query: str) -> List[Dict[str, Any]]:
+    async def search_async(self, query: str) -> List[Dict[str, Any]]:
         q = (query or "").strip()
         if not q:
             return []
-        return self.submit(self._search_coro(q), timeout=self.search_timeout_sec + 10)
+        if self._loop is not asyncio.get_running_loop():
+            raise RuntimeError("Soulseek must run on the aiohttp application event loop")
+        return await self._search_coro(q)
 
     async def _search_coro(self, query: str) -> List[Dict[str, Any]]:
         if not self._client:
@@ -1862,13 +1886,13 @@ class SoulseekService:
 
         _slsk_session_mark_done(session_id, error="")
 
-
-    def browse_user(self, username: str) -> List[Dict[str, Any]]:
+    async def browse_user_async(self, username: str) -> List[Dict[str, Any]]:
         user = (username or "").strip()
         if not user:
             return []
-        timeout = max(20, int(self.search_timeout_sec) + 20)
-        return self.submit(self._browse_user_coro(user), timeout=timeout)
+        if self._loop is not asyncio.get_running_loop():
+            raise RuntimeError("Soulseek must run on the aiohttp application event loop")
+        return await self._browse_user_coro(user)
 
     async def _browse_user_coro(self, username: str) -> List[Dict[str, Any]]:
         if not self._client:
@@ -2046,8 +2070,10 @@ class SoulseekService:
         out.sort(key=lambda x: str(x.get("remote_path") or "").lower())
         return out
 
-    def enqueue_downloads(self, task_id: str, username: str, remote_paths: List[str]) -> None:
-        self.submit(self._enqueue_coro(task_id, username, remote_paths), timeout=30)
+    async def enqueue_downloads_async(self, task_id: str, username: str, remote_paths: List[str]) -> None:
+        if self._loop is not asyncio.get_running_loop():
+            raise RuntimeError("Soulseek must run on the aiohttp application event loop")
+        await self._enqueue_coro(task_id, username, remote_paths)
 
     async def _enqueue_coro(self, task_id: str, username: str, remote_paths: List[str]) -> None:
         if not self._client:
@@ -2077,7 +2103,7 @@ class SoulseekService:
 
     def abort_task(self, task_id: str) -> None:
         try:
-            self.submit(self._abort_task_coro(task_id), timeout=20)
+            self._schedule(lambda: self._abort_task_coro(task_id), name=f"soulseek-abort:{task_id}")
         except Exception:
             pass
 
@@ -2133,37 +2159,49 @@ class SoulseekService:
 
     def pause_task(self, task_id: str) -> None:
         try:
-            self.submit(self._pause_task_coro(task_id), timeout=20)
+            self._schedule(lambda: self._pause_task_coro(task_id), name=f"soulseek-pause:{task_id}")
         except Exception:
             pass
 
     def resume_task(self, task_id: str) -> None:
         try:
-            self.submit(self._resume_task_coro(task_id), timeout=20)
+            self._schedule(lambda: self._resume_task_coro(task_id), name=f"soulseek-resume:{task_id}")
         except Exception:
             pass
 
     def pause_file(self, task_id: str, file_id: str) -> None:
         try:
-            self.submit(self._pause_file_coro(task_id, file_id), timeout=20)
+            self._schedule(
+                lambda: self._pause_file_coro(task_id, file_id),
+                name=f"soulseek-pause-file:{task_id}:{file_id}",
+            )
         except Exception:
             pass
 
     def resume_file(self, task_id: str, file_id: str) -> None:
         try:
-            self.submit(self._resume_file_coro(task_id, file_id), timeout=20)
+            self._schedule(
+                lambda: self._resume_file_coro(task_id, file_id),
+                name=f"soulseek-resume-file:{task_id}:{file_id}",
+            )
         except Exception:
             pass
 
     def cancel_file(self, task_id: str, file_id: str) -> None:
         try:
-            self.submit(self._cancel_file_coro(task_id, file_id), timeout=20)
+            self._schedule(
+                lambda: self._cancel_file_coro(task_id, file_id),
+                name=f"soulseek-cancel-file:{task_id}:{file_id}",
+            )
         except Exception:
             pass
 
     def retry_file(self, task_id: str, file_id: str) -> None:
         try:
-            self.submit(self._retry_file_coro(task_id, file_id), timeout=20)
+            self._schedule(
+                lambda: self._retry_file_coro(task_id, file_id),
+                name=f"soulseek-retry-file:{task_id}:{file_id}",
+            )
         except Exception:
             pass
 

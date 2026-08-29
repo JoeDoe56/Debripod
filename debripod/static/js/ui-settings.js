@@ -3,90 +3,12 @@
 
   // GLASS_DEFAULTS_BEGIN
   const DEFAULT_LIQUID_GLASS_ELEMENT_SETTINGS = {
-    "libraryList": {
-      "label": "Library list",
-      "mode": "clear",
-      "glassTint": 1.0,
-      "resolution": 0.25,
-      "refraction": 0.045,
-      "bevelDepth": 0.02,
-      "bevelWidth": 0.1,
-      "frost": 3.0,
-      "refractionFill": 0.0,
-      "magnify": 1.0,
-      "specular": false,
-      "shadow": true
-    },
-    "wheel": {
-      "label": "Wheel",
-      "mode": "clear",
-      "glassTint": 1.0,
-      "resolution": 0.25,
-      "refraction": 0.047,
-      "bevelDepth": 0.136,
-      "bevelWidth": 0.076,
-      "frost": 2.0,
-      "refractionFill": 0.0,
-      "magnify": 1.0,
-      "specular": false,
-      "shadow": false
-    },
-    "pathPill": {
-      "label": "Path pill",
-      "mode": "clear",
-      "glassTint": 1.0,
-      "resolution": 0.25,
-      "refraction": 0.047,
-      "bevelDepth": 0.136,
-      "bevelWidth": 0.076,
-      "frost": 2.0,
-      "refractionFill": 0.0,
-      "magnify": 1.0,
-      "specular": false,
-      "shadow": true
-    },
-    "infoPill": {
-      "label": "Info pill",
-      "mode": "clear",
-      "glassTint": 1.0,
-      "resolution": 0.25,
-      "refraction": 0.047,
-      "bevelDepth": 0.136,
-      "bevelWidth": 0.076,
-      "frost": 2.0,
-      "refractionFill": 0.0,
-      "magnify": 1.0,
-      "specular": false,
-      "shadow": true
-    },
-    "listPills": {
-      "label": "List pills",
-      "mode": "clear",
-      "glassTint": 1.0,
-      "resolution": 0.25,
-      "refraction": 0.047,
-      "bevelDepth": 0.136,
-      "bevelWidth": 0.076,
-      "frost": 2.0,
-      "refractionFill": 0.0,
-      "magnify": 1.0,
-      "specular": false,
-      "shadow": true
-    },
-    "selectedRow": {
-      "label": "Selected row",
-      "mode": "clear",
-      "glassTint": 1.0,
-      "resolution": 0.25,
-      "refraction": 0.25,
-      "bevelDepth": 0.01,
-      "bevelWidth": 0.07,
-      "frost": 4.0,
-      "refractionFill": 0.3,
-      "magnify": 1.0,
-      "specular": false,
-      "shadow": true
-    }
+    "libraryList": {"label": "Library list", "material": 0.0},
+    "wheel": {"label": "Wheel", "material": 0.0},
+    "pathPill": {"label": "Path pill", "material": 0.0},
+    "infoPill": {"label": "Info pill", "material": 0.0},
+    "listPills": {"label": "List pills", "material": 0.0},
+    "selectedRow": {"label": "Selected row", "material": 0.0}
   };
   // GLASS_DEFAULTS_END
   const GLASS_ELEMENT_KEYS = ["libraryList", "wheel", "pathPill", "infoPill", "listPills", "selectedRow"];
@@ -106,9 +28,7 @@
     libraryList: 60,
     infoPill: 60,
     albumArtTransition: 60,
-    pageTransition: 60,
     pathPill: 60,
-    rowExpansion: 60,
     rowInsertion: 60
   };
   const BOOTSTRAP_UI_DEFAULTS = (window.DEBRIPOD_UI_DEFAULTS && typeof window.DEBRIPOD_UI_DEFAULTS === "object") ? window.DEBRIPOD_UI_DEFAULTS : {};
@@ -148,7 +68,6 @@
           "libraryList": 60,
           "infoPill": 60,
           "albumArtTransition": 60,
-          "pageTransition": 60,
           "pathPill": 60
       },
       "performanceOverlayButton": true,
@@ -201,9 +120,11 @@
     return 60;
   }
 
-  function normalizeTextMode(value){
+  function normalizeTextMode(value, fallback){
     const k = String(value || "transparent").trim().toLowerCase();
-    return (k === "black" || k === "white" || k === "engraved" || k === "contrast" || k === "transparent") ? k : "transparent";
+    if(k === "black" || k === "white" || k === "engraved") return "contrast";
+    if(k === "contrast" || k === "transparent") return k;
+    return fallback === "contrast" ? "contrast" : "transparent";
   }
 
   function normalizeTextTransparency(value){
@@ -215,7 +136,7 @@
     const out = {};
     Object.keys(DEFAULT_TEXT_MODES).forEach((key)=>{
       const inherit = key === "infoPill" && src.infoPill == null && src.pathPill != null ? src.pathPill : null;
-      out[key] = normalizeTextMode(inherit || src[key] || DEFAULT_TEXT_MODES[key]);
+      out[key] = normalizeTextMode(inherit || src[key] || DEFAULT_TEXT_MODES[key], DEFAULT_TEXT_MODES[key]);
     });
     return out;
   }
@@ -236,27 +157,24 @@
     return out;
   }
 
-  function normalizeLiquidGlassMode(name){
-    const key = String(name || "clear").trim().toLowerCase();
-    return (key === "dark" || key === "light" || key === "clear") ? key : "clear";
+  function normalizeLiquidGlassMaterial(value, fallback){
+    return clampNumber(value, fallback == null ? 0 : fallback, -1, 1);
   }
 
-  function liquidGlassModeToTint(modeName){
-    const mode = normalizeLiquidGlassMode(modeName);
-    if(mode === "dark") return 0;
-    if(mode === "light") return 2;
-    return 1;
-  }
-
-  function normalizeLiquidGlassTint(value, fallback){
-    return clampNumber(value, fallback == null ? 1 : fallback, 0, 2);
-  }
-
-  function liquidGlassTintMode(value){
-    const tint = normalizeLiquidGlassTint(value, 1);
-    if(tint < 0.995) return "dark";
-    if(tint > 1.005) return "light";
-    return "clear";
+  function migrateLegacyGlassMaterial(src, fallback){
+    if(src && Number.isFinite(Number(src.material))){
+      return normalizeLiquidGlassMaterial(src.material, fallback);
+    }
+    const tint = src && Number.isFinite(Number(src.glassTint)) ? Math.max(0, Math.min(2, Number(src.glassTint))) : 1;
+    let material = tint < 1 ? -(1 - tint) * 0.52 : (tint > 1 ? (tint - 1) * 0.52 : fallback);
+    const legacyMode = String((src && src.mode) || "").trim().toLowerCase();
+    if(material === 0 && legacyMode === "dark") material = -0.52;
+    if(material === 0 && legacyMode === "light") material = 0.52;
+    if(src && Number.isFinite(Number(src.transparency))){
+      const opacityScale = 1 - Math.max(0, Math.min(1, Number(src.transparency)));
+      material *= opacityScale;
+    }
+    return normalizeLiquidGlassMaterial(material, fallback);
   }
 
   function cloneGlassElementSettings(value){
@@ -267,21 +185,9 @@
     GLASS_ELEMENT_KEYS.forEach((key)=>{
       const def = DEFAULT_LIQUID_GLASS_ELEMENT_SETTINGS[key];
       const src = input[key] && typeof input[key] === "object" ? input[key] : {};
-      const tintFallback = def.glassTint == null ? liquidGlassModeToTint(def.mode) : def.glassTint;
-      const srcTint = src.glassTint == null ? liquidGlassModeToTint(src.mode || def.mode) : src.glassTint;
       out[key] = {
         label: def.label,
-        mode: normalizeLiquidGlassMode(src.mode || liquidGlassTintMode(srcTint)),
-        glassTint: normalizeLiquidGlassTint(srcTint, tintFallback),
-        resolution: clampNumber(src.resolution, def.resolution, 0.25, 3),
-        refraction: clampNumber(src.refraction, def.refraction, 0, 0.25),
-        bevelDepth: clampNumber(src.bevelDepth, def.bevelDepth, 0, 0.35),
-        bevelWidth: clampNumber(src.bevelWidth, def.bevelWidth, 0, 0.5),
-        frost: clampNumber(src.frost, def.frost, 0, 5),
-        magnify: clampNumber(src.magnify, def.magnify == null ? 1 : def.magnify, 0.001, 3),
-        specular: src.specular === undefined ? !!def.specular : !!src.specular,
-        shadow: src.shadow === undefined ? !!def.shadow : !!src.shadow,
-        refractionFill: clampNumber(src.refractionFill, def.refractionFill, 0, 1)
+        material: migrateLegacyGlassMaterial(src, normalizeLiquidGlassMaterial(def.material, 0))
       };
     });
     return out;
@@ -336,12 +242,11 @@
     out.textTransparency = normalizeTextTransparency(out.textTransparency);
     out.animationFps = cloneAnimationFps(out.animationFps);
     try{
-      const mode = normalizeLiquidGlassMode(localStorage.getItem("debripod_liquid_gl_mode") || "");
-      if(mode) {
+      const legacyMode = String(localStorage.getItem("debripod_liquid_gl_mode") || "").trim().toLowerCase();
+      if(legacyMode === "dark" || legacyMode === "light") {
         out.liquidGlassElements = cloneGlassElementSettings(out.liquidGlassElements);
         GLASS_ELEMENT_KEYS.forEach((key)=>{
-          out.liquidGlassElements[key].mode = mode;
-          out.liquidGlassElements[key].glassTint = liquidGlassModeToTint(mode);
+          out.liquidGlassElements[key].material = legacyMode === "dark" ? -0.52 : 0.52;
         });
       }
     }catch(e){}
@@ -379,13 +284,13 @@
   function appSettingsToUiSettings(settings){
     const s = settings && typeof settings === "object" ? settings : {};
     const out = {visualizer:s.UI_VISUALIZER, visualizerMaxBrightnessPct:s.UI_VISUALIZER_MAX_BRIGHTNESS_PCT, visualizerPreset:s.UI_VISUALIZER_PRESET, visualizerFpsLock:s.UI_VISUALIZER_FPS_LOCK, textTransparency:s.UI_TEXT_TRANSPARENCY, performanceOverlayButton:s.UI_PERFORMANCE_OVERLAY_BUTTON, performanceOverlayText:s.UI_PERFORMANCE_OVERLAY_TEXT, centerBounceAmount:s.UI_CENTER_BOUNCE_AMOUNT, centerBounceDuration:s.UI_CENTER_BOUNCE_DURATION, centerBounceOvershoot:s.UI_CENTER_BOUNCE_OVERSHOOT, wheelClickTiltAmount:s.UI_WHEEL_CLICK_TILT_AMOUNT, wheelTiltRampDuration:s.UI_WHEEL_TILT_RAMP_DURATION, wheelTiltReleaseDuration:s.UI_WHEEL_TILT_RELEASE_DURATION, infoPillDarkMultiplier:s.UI_INFO_PILL_DARK_MULTIPLIER, infoPillLightMultiplier:s.UI_INFO_PILL_LIGHT_MULTIPLIER,
-      textModes:{wheelLabels:s.UI_TEXT_WHEEL_LABELS,pathPill:s.UI_TEXT_PATH_PILL,infoPill:s.UI_TEXT_INFO_PILL,rows:s.UI_TEXT_ROWS,rowPills:s.UI_TEXT_ROW_PILLS,selectedRow:s.UI_TEXT_SELECTED_ROW,selectedRowPills:s.UI_TEXT_SELECTED_ROW_PILLS}, animationFps:{selectedRow:s.UI_ANIMATION_SELECTED_ROW_FPS,wheelTilt:s.UI_ANIMATION_WHEEL_TILT_FPS,libraryList:s.UI_ANIMATION_LIBRARY_LIST_FPS,infoPill:s.UI_ANIMATION_INFO_PILL_FPS,albumArtTransition:s.UI_ANIMATION_ALBUM_ART_TRANSITION_FPS,pageTransition:s.UI_ANIMATION_PAGE_TRANSITION_FPS,pathPill:s.UI_ANIMATION_PATH_PILL_FPS,rowExpansion:s.UI_ANIMATION_ROW_EXPANSION_FPS,rowInsertion:s.UI_ANIMATION_ROW_INSERTION_FPS}, liquidGlassElements:{libraryList:s.UI_GLASS_LIBRARY_LIST,wheel:s.UI_GLASS_WHEEL,pathPill:s.UI_GLASS_PATH_PILL,infoPill:s.UI_GLASS_INFO_PILL,listPills:s.UI_GLASS_LIST_PILLS,selectedRow:s.UI_GLASS_SELECTED_ROW}};
+      textModes:{wheelLabels:s.UI_TEXT_WHEEL_LABELS,pathPill:s.UI_TEXT_PATH_PILL,infoPill:s.UI_TEXT_INFO_PILL,rows:s.UI_TEXT_ROWS,rowPills:s.UI_TEXT_ROW_PILLS,selectedRow:s.UI_TEXT_SELECTED_ROW,selectedRowPills:s.UI_TEXT_SELECTED_ROW_PILLS}, animationFps:{selectedRow:s.UI_ANIMATION_SELECTED_ROW_FPS,wheelTilt:s.UI_ANIMATION_WHEEL_TILT_FPS,libraryList:s.UI_ANIMATION_LIBRARY_LIST_FPS,infoPill:s.UI_ANIMATION_INFO_PILL_FPS,albumArtTransition:s.UI_ANIMATION_ALBUM_ART_TRANSITION_FPS,pathPill:s.UI_ANIMATION_PATH_PILL_FPS,rowInsertion:s.UI_ANIMATION_ROW_INSERTION_FPS}, liquidGlassElements:{libraryList:s.UI_GLASS_LIBRARY_LIST,wheel:s.UI_GLASS_WHEEL,pathPill:s.UI_GLASS_PATH_PILL,infoPill:s.UI_GLASS_INFO_PILL,listPills:s.UI_GLASS_LIST_PILLS,selectedRow:s.UI_GLASS_SELECTED_ROW}};
     return out;
   }
 
   function uiSettingsToAppSettings(s){
     const u=s||{}; const text=u.textModes||{}, fps=u.animationFps||{}, glass=u.liquidGlassElements||{};
-    return {UI_VISUALIZER:u.visualizer,UI_VISUALIZER_MAX_BRIGHTNESS_PCT:u.visualizerMaxBrightnessPct,UI_VISUALIZER_PRESET:u.visualizerPreset,UI_VISUALIZER_FPS_LOCK:u.visualizerFpsLock,UI_TEXT_TRANSPARENCY:u.textTransparency,UI_PERFORMANCE_OVERLAY_BUTTON:u.performanceOverlayButton,UI_PERFORMANCE_OVERLAY_TEXT:u.performanceOverlayText,UI_CENTER_BOUNCE_AMOUNT:u.centerBounceAmount,UI_CENTER_BOUNCE_DURATION:u.centerBounceDuration,UI_CENTER_BOUNCE_OVERSHOOT:u.centerBounceOvershoot,UI_WHEEL_CLICK_TILT_AMOUNT:u.wheelClickTiltAmount,UI_WHEEL_TILT_RAMP_DURATION:u.wheelTiltRampDuration,UI_WHEEL_TILT_RELEASE_DURATION:u.wheelTiltReleaseDuration,UI_INFO_PILL_DARK_MULTIPLIER:u.infoPillDarkMultiplier,UI_INFO_PILL_LIGHT_MULTIPLIER:u.infoPillLightMultiplier,UI_TEXT_WHEEL_LABELS:text.wheelLabels,UI_TEXT_PATH_PILL:text.pathPill,UI_TEXT_INFO_PILL:text.infoPill,UI_TEXT_ROWS:text.rows,UI_TEXT_ROW_PILLS:text.rowPills,UI_TEXT_SELECTED_ROW:text.selectedRow,UI_TEXT_SELECTED_ROW_PILLS:text.selectedRowPills,UI_ANIMATION_SELECTED_ROW_FPS:fps.selectedRow,UI_ANIMATION_WHEEL_TILT_FPS:fps.wheelTilt,UI_ANIMATION_LIBRARY_LIST_FPS:fps.libraryList,UI_ANIMATION_INFO_PILL_FPS:fps.infoPill,UI_ANIMATION_ALBUM_ART_TRANSITION_FPS:fps.albumArtTransition,UI_ANIMATION_PAGE_TRANSITION_FPS:fps.pageTransition,UI_ANIMATION_PATH_PILL_FPS:fps.pathPill,UI_ANIMATION_ROW_EXPANSION_FPS:fps.rowExpansion,UI_ANIMATION_ROW_INSERTION_FPS:fps.rowInsertion,UI_GLASS_LIBRARY_LIST:glass.libraryList,UI_GLASS_WHEEL:glass.wheel,UI_GLASS_PATH_PILL:glass.pathPill,UI_GLASS_INFO_PILL:glass.infoPill,UI_GLASS_LIST_PILLS:glass.listPills,UI_GLASS_SELECTED_ROW:glass.selectedRow};
+    return {UI_VISUALIZER:u.visualizer,UI_VISUALIZER_MAX_BRIGHTNESS_PCT:u.visualizerMaxBrightnessPct,UI_VISUALIZER_PRESET:u.visualizerPreset,UI_VISUALIZER_FPS_LOCK:u.visualizerFpsLock,UI_TEXT_TRANSPARENCY:u.textTransparency,UI_PERFORMANCE_OVERLAY_BUTTON:u.performanceOverlayButton,UI_PERFORMANCE_OVERLAY_TEXT:u.performanceOverlayText,UI_CENTER_BOUNCE_AMOUNT:u.centerBounceAmount,UI_CENTER_BOUNCE_DURATION:u.centerBounceDuration,UI_CENTER_BOUNCE_OVERSHOOT:u.centerBounceOvershoot,UI_WHEEL_CLICK_TILT_AMOUNT:u.wheelClickTiltAmount,UI_WHEEL_TILT_RAMP_DURATION:u.wheelTiltRampDuration,UI_WHEEL_TILT_RELEASE_DURATION:u.wheelTiltReleaseDuration,UI_INFO_PILL_DARK_MULTIPLIER:u.infoPillDarkMultiplier,UI_INFO_PILL_LIGHT_MULTIPLIER:u.infoPillLightMultiplier,UI_TEXT_WHEEL_LABELS:text.wheelLabels,UI_TEXT_PATH_PILL:text.pathPill,UI_TEXT_INFO_PILL:text.infoPill,UI_TEXT_ROWS:text.rows,UI_TEXT_ROW_PILLS:text.rowPills,UI_TEXT_SELECTED_ROW:text.selectedRow,UI_TEXT_SELECTED_ROW_PILLS:text.selectedRowPills,UI_ANIMATION_SELECTED_ROW_FPS:fps.selectedRow,UI_ANIMATION_WHEEL_TILT_FPS:fps.wheelTilt,UI_ANIMATION_LIBRARY_LIST_FPS:fps.libraryList,UI_ANIMATION_INFO_PILL_FPS:fps.infoPill,UI_ANIMATION_ALBUM_ART_TRANSITION_FPS:fps.albumArtTransition,UI_ANIMATION_PATH_PILL_FPS:fps.pathPill,UI_ANIMATION_ROW_INSERTION_FPS:fps.rowInsertion,UI_GLASS_LIBRARY_LIST:glass.libraryList,UI_GLASS_WHEEL:glass.wheel,UI_GLASS_PATH_PILL:glass.pathPill,UI_GLASS_INFO_PILL:glass.infoPill,UI_GLASS_LIST_PILLS:glass.listPills,UI_GLASS_SELECTED_ROW:glass.selectedRow};
   }
 
   function applyServerAppSettings(settings){
@@ -428,10 +333,8 @@
     cloneTextModes,
     normalizeAnimationFps,
     cloneAnimationFps,
-    normalizeLiquidGlassMode,
-    normalizeLiquidGlassTint,
-    liquidGlassTintMode,
-    liquidGlassModeToTint,
+    normalizeLiquidGlassMaterial,
+    migrateLegacyGlassMaterial,
     cloneGlassElementSettings,
     applyUiSettingsObject,
     applyServerAppSettings,

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from ..http import HttpClient
 from .alldebrid import AllDebridProvider
 from .base import DebridAuthError, DebridProviderBase
 from .models import DebridProviderSpec
@@ -46,7 +47,7 @@ def provider_status(settings: dict) -> dict:
     return {"active_provider": active, "configured": bool(active), "providers": providers}
 
 
-def get_provider(provider_id: str, settings: dict, timeout_seconds: int) -> DebridProviderBase:
+def get_provider(provider_id: str, settings: dict, timeout_seconds: int, http: HttpClient) -> DebridProviderBase:
     provider_id = str(provider_id or "").strip().lower()
     spec = PROVIDER_SPECS.get(provider_id)
     if not spec:
@@ -56,18 +57,18 @@ def get_provider(provider_id: str, settings: dict, timeout_seconds: int) -> Debr
         raise DebridAuthError(f"{spec.label} token is missing.")
     base_url = str((settings or {}).get(spec.base_setting_key) or "").strip()
     if provider_id == "real_debrid":
-        return RealDebridProvider(token, base_url, timeout_seconds)
+        return RealDebridProvider(token, base_url, timeout_seconds, http)
     if provider_id == "alldebrid":
-        return AllDebridProvider(token, base_url, timeout_seconds)
+        return AllDebridProvider(token, base_url, timeout_seconds, http)
     if provider_id == "premiumize":
-        return PremiumizeProvider(token, base_url, timeout_seconds, int((settings or {}).get("SEARCH_STREAM_SESSION_TTL_SECONDS") or 3600))
+        return PremiumizeProvider(token, base_url, timeout_seconds, int((settings or {}).get("SEARCH_STREAM_SESSION_TTL_SECONDS") or 3600), http)
     if provider_id == "torbox":
-        return TorBoxProvider(token, base_url, timeout_seconds)
+        return TorBoxProvider(token, base_url, timeout_seconds, http)
     raise DebridAuthError("No debrid provider is configured.")
 
 
-def get_active_provider(settings: dict, timeout_seconds: int) -> DebridProviderBase:
+def get_active_provider(settings: dict, timeout_seconds: int, http: HttpClient) -> DebridProviderBase:
     provider_id = configured_provider_id(settings)
     if not provider_id:
         raise DebridAuthError("No debrid provider is configured.")
-    return get_provider(provider_id, settings, timeout_seconds)
+    return get_provider(provider_id, settings, timeout_seconds, http)

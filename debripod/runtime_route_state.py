@@ -4,17 +4,6 @@ from .runtime_state import *
 from .runtime_downloads import *
 from .Services.debrid import get_active_provider
 
-class _DropStaticAccessLogFilter(logging.Filter):
-    def filter(self, record: logging.LogRecord) -> bool:
-        try:
-            msg = record.getMessage()
-            return " /static/" not in msg
-        except Exception:
-            return True
-
-
-logging.getLogger("werkzeug").addFilter(_DropStaticAccessLogFilter())
-
 SEARCH_STREAMS: Dict[str, Dict[str, Any]] = {}
 SEARCH_STREAMS_LOCK = threading.Lock()
 
@@ -140,16 +129,16 @@ def _search_stream_get_or_restore(rel: str) -> Optional[Dict[str, Any]]:
     return _search_stream_get(rel) or restored
 
 
-def _active_debrid_provider():
+def _active_debrid_provider(http):
     keys = (
         "DEBRID_PROVIDER", "REAL_DEBRID_API_KEY", "RD_BASE",
         "ALLDEBRID_API_KEY", "ALLDEBRID_BASE", "PREMIUMIZE_API_KEY", "PREMIUMIZE_BASE",
         "TORBOX_API_KEY", "TORBOX_BASE", "SEARCH_STREAM_SESSION_TTL_SECONDS",
     )
-    return get_active_provider({key: globals().get(key) for key in keys}, int(REQUEST_TIMEOUT_SECONDS or 25))
+    return get_active_provider({key: globals().get(key) for key in keys}, int(REQUEST_TIMEOUT_SECONDS or 25), http)
 
 
-def _engine_prepare_stream_session(payload: dict) -> dict:
+async def _engine_prepare_stream_session(payload: dict, http) -> dict:
     src = str(payload.get("source") or "").strip().lower()
     if src == "youtube":
         url = str(payload.get('url') or '').strip()
@@ -225,11 +214,11 @@ def _engine_prepare_stream_session(payload: dict) -> dict:
         selected_by_id[fid] = it
     if not clean_ids:
         raise RuntimeError("No files selected")
-    provider = _active_debrid_provider()
+    provider = _active_debrid_provider(http)
     requested_provider = str(payload.get("provider") or "").strip().lower()
     if requested_provider and requested_provider != provider.id:
         raise RuntimeError("The preview provider is no longer active. Preview the result again.")
-    prepared = provider.prepare_selected_files(
+    prepared = await provider.prepare_selected_files(
         magnet=str(payload.get("magnet") or ""),
         provider_task_id=provider_task_id,
         selected_file_ids=clean_ids,
@@ -247,7 +236,7 @@ def _engine_prepare_stream_session(payload: dict) -> dict:
         file = prepared_by_id.get(fid)
         if not file:
             continue
-        resolved = provider.resolve_file_url(file)
+        resolved = await provider.resolve_file_url(file)
         item_id = uuid.uuid4().hex[:12]
         items.append({
             "item_id": item_id,

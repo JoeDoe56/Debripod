@@ -162,21 +162,30 @@ def _v6(conn: sqlite3.Connection) -> None:
 
 
 def _v7(conn: sqlite3.Connection) -> None:
+    # Retired before release; retained as a no-op so historical user_version
+    # values still advance monotonically.
+    pass
+
+
+def _v8(conn: sqlite3.Connection) -> None:
+    # Remove the obsolete generic torrent-source status table from databases
+    # that ran the original v7 migration before the fixed-adapter rewrite.
+    conn.execute("DROP TABLE IF EXISTS indexer_status")
+
+
+def _v9(conn: sqlite3.Connection) -> None:
     conn.executescript("""
-    CREATE TABLE IF NOT EXISTS indexer_status(
-      indexer_id TEXT PRIMARY KEY,
-      initial_failure_time REAL,
-      most_recent_failure_time REAL,
-      escalation_level INTEGER NOT NULL DEFAULT 0,
-      disabled_until REAL,
-      last_success REAL,
-      last_error_category TEXT NOT NULL DEFAULT '',
-      cookies_json TEXT NOT NULL DEFAULT '[]',
-      cookies_expiration REAL,
-      last_challenge_solve REAL,
-      last_response_duration REAL NOT NULL DEFAULT 0,
-      user_agent TEXT NOT NULL DEFAULT ''
+    CREATE TABLE IF NOT EXISTS auth_sessions(
+      token_hash BLOB PRIMARY KEY,
+      user_id TEXT NOT NULL DEFAULT '',
+      csrf_token TEXT NOT NULL,
+      data_json TEXT NOT NULL DEFAULT '{}',
+      created_unix INTEGER NOT NULL,
+      last_seen_unix INTEGER NOT NULL,
+      expires_unix INTEGER NOT NULL
     );
+    CREATE INDEX IF NOT EXISTS idx_auth_sessions_expiry ON auth_sessions(expires_unix);
+    CREATE INDEX IF NOT EXISTS idx_auth_sessions_user ON auth_sessions(user_id,expires_unix);
     """)
 
 
@@ -187,7 +196,9 @@ MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = 
     (4, "large_value_envelopes", _v4),
     (5, "user_scoped_media_likes", _v5),
     (6, "device_scoped_push_notifications", _v6),
-    (7, "indexer_status", _v7),
+    (7, "retired_torrent_source_state", _v7),
+    (8, "drop_legacy_torrent_source_state", _v8),
+    (9, "server_side_auth_sessions", _v9),
 )
 
 

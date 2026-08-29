@@ -3,19 +3,19 @@ from __future__ import annotations
 import hashlib
 import mimetypes
 import os
-import threading
+import asyncio
+import json
 import time
 from typing import Any, Iterable, Iterator, List
 
-import requests
-
 from ...media_types import AUDIO_EXTS, VIDEO_EXTS
+from ..http import HttpClient, HttpStatusError
 from .base import DebridAuthError, DebridProviderBase, DebridProviderError
 from .models import DebridFile, DebridPreview, DebridResolvedLink
 from .identifiers import first_identifier, identifiers_equal, normalize_identifier, normalize_identifier_list
 
 
-_RATE_LOCK = threading.Lock()
+_RATE_LOCK = asyncio.Lock()
 _LAST_REQUEST_AT = 0.0
 
 
@@ -76,64 +76,69 @@ class AllDebridProvider(DebridProviderBase):
     id = "alldebrid"
     label = "AllDebrid"
 
-    def __init__(self, token: str, base_url: str, timeout_seconds: int = 25):
+    def __init__(self, token: str, base_url: str, timeout_seconds: int, http: HttpClient):
         self.token = str(token or "").strip()
         self.base_url = str(base_url or "").rstrip("/")
         self.timeout_seconds = max(1, int(timeout_seconds or 25))
+        self.http = http
 
-    def _request(self, method: str, path: str, **kwargs: Any) -> dict:
+    async def _request(self, method: str, path: str, **kwargs: Any) -> dict:
         global _LAST_REQUEST_AT
         if not self.token:
             raise DebridAuthError("AllDebrid token is missing.")
-        with _RATE_LOCK:
+        async with _RATE_LOCK:
             delay = (1.0 / 12.0) - (time.monotonic() - _LAST_REQUEST_AT)
             if delay > 0:
-                time.sleep(delay)
+                await asyncio.sleep(delay)
             _LAST_REQUEST_AT = time.monotonic()
         try:
-            response = requests.request(
+            body, _headers, status = await self.http.bytes(
                 method,
                 self.base_url + path,
                 headers={"Authorization": f"Bearer {self.token}", "User-Agent": "DebriPod/1.0"},
                 timeout=self.timeout_seconds,
                 **kwargs,
             )
-        except requests.RequestException as exc:
+            text = body.decode("utf-8", "replace")
+        except HttpStatusError as exc:
+            status = exc.status
+            text = exc.body
+        except Exception as exc:
             raise DebridProviderError(f"Debrid request failed: {exc}") from exc
-        if response.status_code in {401, 403}:
+        if status in {401, 403}:
             raise DebridAuthError("AllDebrid rejected the configured token.")
         try:
-            payload = response.json()
-        except ValueError as exc:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
             raise DebridProviderError("Debrid provider returned an invalid response.") from exc
-        if response.status_code >= 400 or not isinstance(payload, dict) or str(payload.get("status") or "").lower() == "error":
+        if status >= 400 or not isinstance(payload, dict) or str(payload.get("status") or "").lower() == "error":
             error = payload.get("error") if isinstance(payload, dict) else None
             if isinstance(error, dict):
                 error = error.get("message") or error.get("code")
-            raise DebridProviderError(f"Debrid request failed: {str(error or response.text or response.status_code)[:300]}")
+            raise DebridProviderError(f"Debrid request failed: {str(error or text or status)[:300]}")
         data = payload.get("data")
         return data if isinstance(data, dict) else {"value": data}
 
-    def validate_token(self) -> dict:
-        return self._request("GET", "/v4/user")
+    async def validate_token(self) -> dict:
+        return await self._request("GET", "/v4/user")
 
-    def preview_magnet(self, magnet: str) -> DebridPreview:
-        data = self._request("POST", "/v4/magnet/upload", data={"magnets[]": magnet})
+    async def preview_magnet(self, magnet: str) -> DebridPreview:
+        data = await self._request("POST", "/v4/magnet/upload", data={"magnets[]": magnet})
         item = _pick_magnet(data)
         task_id = first_identifier(item, "id", "magnet")
         if task_id is None:
             raise DebridProviderError("Debrid provider did not return a task id.")
-        return self.refresh_preview(task_id)
+        return await self.refresh_preview(task_id)
 
-    def refresh_preview(self, provider_task_id: str) -> DebridPreview:
-        status_data = self._request("POST", "/v4.1/magnet/status", data={"id": provider_task_id})
+    async def refresh_preview(self, provider_task_id: str) -> DebridPreview:
+        status_data = await self._request("POST", "/v4.1/magnet/status", data={"id": provider_task_id})
         item = _pick_magnet(status_data, provider_task_id)
         status = str(item.get("status") or item.get("statusCode") or "")
         ready = status.lower() in {"ready", "downloaded", "complete", "completed"} or bool(item.get("links"))
         tree: Any = item.get("files") or item.get("links") or []
         if ready or not tree:
             try:
-                files_data = self._request("POST", "/v4/magnet/files", data={"id[]": provider_task_id})
+                files_data = await self._request("POST", "/v4/magnet/files", data={"id[]": provider_task_id})
                 files_item = _pick_magnet(files_data, provider_task_id)
                 tree = files_item.get("files") or files_item.get("links") or files_data.get("files") or tree
             except DebridProviderError:
@@ -150,36 +155,36 @@ class AllDebridProvider(DebridProviderBase):
             ready=bool(ready and files),
         )
 
-    def prepare_selected_files(
+    async def prepare_selected_files(
         self, *, magnet: str, provider_task_id: str, selected_file_ids: Iterable[str],
         timeout_seconds: int, poll_interval_seconds: int,
     ) -> List[DebridFile]:
         wanted = set(normalize_identifier_list(selected_file_ids))
         if not wanted:
             raise DebridProviderError("No files selected.")
-        deadline = time.time() + max(1, int(timeout_seconds or 0))
-        while time.time() <= deadline:
-            preview = self.refresh_preview(provider_task_id)
+        deadline = asyncio.get_running_loop().time() + max(1, int(timeout_seconds or 0))
+        while asyncio.get_running_loop().time() <= deadline:
+            preview = await self.refresh_preview(provider_task_id)
             if preview.ready:
                 return [item for item in preview.files if item.file_id in wanted]
             if preview.status.lower() in {"error", "failed", "dead"}:
                 raise DebridProviderError(f"Debrid provider reported status: {preview.status}")
-            time.sleep(max(1, int(poll_interval_seconds or 1)))
+            await asyncio.sleep(max(1, int(poll_interval_seconds or 1)))
         raise DebridProviderError("Timed out waiting for debrid provider.")
 
-    def resolve_file_url(self, file: DebridFile) -> DebridResolvedLink:
-        data = self._request("POST", "/v4/link/unlock", data={"link": file.provider_link})
+    async def resolve_file_url(self, file: DebridFile) -> DebridResolvedLink:
+        data = await self._request("POST", "/v4/link/unlock", data={"link": file.provider_link})
         url = str(data.get("link") or "")
         delayed = data.get("delayed")
         if not url and delayed:
-            deadline = time.time() + self.timeout_seconds
-            while time.time() <= deadline:
-                result = self._request("POST", "/v4/link/delayed", data={"id": delayed})
+            deadline = asyncio.get_running_loop().time() + self.timeout_seconds
+            while asyncio.get_running_loop().time() <= deadline:
+                result = await self._request("POST", "/v4/link/delayed", data={"id": delayed})
                 url = str(result.get("link") or "")
                 if url:
                     data = result
                     break
-                time.sleep(1)
+                await asyncio.sleep(1)
         if not url and isinstance(data.get("streams"), list):
             streams = [item for item in data["streams"] if isinstance(item, dict)]
             streams.sort(key=lambda item: (0 if str(item.get("ext") or "").lower() == "mp4" else 1, str(item.get("name") or "")))
@@ -187,7 +192,7 @@ class AllDebridProvider(DebridProviderBase):
                 stream = streams[0]
                 stream_id = first_identifier(stream, "id", "stream")
                 unlock_id = first_identifier(data, "id", "link")
-                result = self._request("POST", "/v4/link/streaming", data={"id": unlock_id, "stream": stream_id})
+                result = await self._request("POST", "/v4/link/streaming", data={"id": unlock_id, "stream": stream_id})
                 url = str(result.get("link") or result.get("url") or "")
                 data = result
         if not url:
@@ -202,11 +207,11 @@ class AllDebridProvider(DebridProviderBase):
             raw=data,
         )
 
-    def delete_task_best_effort(self, provider_task_id: str | None) -> None:
+    async def delete_task_best_effort(self, provider_task_id: str | None) -> None:
         provider_task_id = normalize_identifier(provider_task_id)
         if provider_task_id is None:
             return
         try:
-            self._request("POST", "/v4/magnet/delete", data={"id": provider_task_id})
+            await self._request("POST", "/v4/magnet/delete", data={"id": provider_task_id})
         except Exception:
             pass

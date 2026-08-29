@@ -1,0 +1,122 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <title>DebriPod</title>
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <link rel="icon" href="/favicon.ico" sizes="any">
+  <link rel="icon" type="image/png" sizes="32x32" href="/icons/icon-32.png">
+  <link rel="icon" type="image/png" sizes="16x16" href="/icons/icon-16.png">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <link rel="apple-touch-icon-precomposed" href="/apple-touch-icon-precomposed.png">
+  <link rel="manifest" href="/site.webmanifest">
+  <meta name="theme-color" content="#000000">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-title" content="DebriPod">
+  <link rel="stylesheet" href="/static/debripod.css?v=__DEBRIPOD_ASSET_VERSION__">
+
+</head>
+<body>
+  <div class="passkeyGate" id="passkeyGate" hidden>
+    <div class="passkeyGatePanel">
+      <div class="passkeyGateKicker">Account security</div>
+      <h1>Create a passkey?</h1>
+      <p>Use this device or your system credential manager to sign in faster next time. Your DebriPod password will still work.</p>
+      <div class="passkeyGateError" id="passkeyGateError" role="status"></div>
+      <div class="passkeyGateActions">
+        <button type="button" id="passkeyGateAdd">Create Passkey</button>
+        <button type="button" class="secondary" id="passkeyGateSkip">Not Now</button>
+      </div>
+    </div>
+  </div>
+  <div class="wrap" id="divwrap">
+    <canvas class="visualizerBg off" id="visualizerBg" aria-hidden="true"></canvas>
+    <div style="margin-top:0;">
+      <div id="tab-library">
+        <div class="ipodStage">
+          <div class="topPills">
+            <div class="pathPill" id="libHeader">
+              <div class="pathPillGlass liquidGlass" aria-hidden="true"></div>
+              <div class="pathPillRows" data-liquid-ignore>
+                <div class="pathPillRow pathPillPathRow">
+                  <span class="pathPillText hScrollText glassText" id="libHeaderText" data-text="Library" data-liquid-ignore>Library</span>
+                </div>
+                <div class="pathPillRow pathPillNowRow" id="pathPillNowRow">
+                  <span class="pathPillNowText glassText" id="pathPillNowText" data-text="" data-liquid-ignore></span>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="ipodScreen" id="ipodScreen">
+            <div class="ipodScreenContent">
+              <div id="libListSelectedGlass" class="libListSelectedGlass liquidGlass" aria-hidden="true"></div>
+              <ul class="ipodList liquidGlass" id="libList" data-liquid-list-surface></ul>
+
+              <div class="nowPlaying" id="nowPlaying">
+                <img class="npArtStill" id="npArtStill" alt="" aria-hidden="true" data-liquid-ignore>
+                <canvas class="npArt" id="npArt" aria-label="Album art" data-liquid-ignore></canvas>
+
+                <div class="npVideoOverlay" id="npVideoOverlay" style="display:none;">
+                  <video id="npVideo" controls autoplay playsinline></video>
+                </div>
+
+                <audio id="audioMain" preload="auto" playsinline></audio>
+              </div>
+            </div>
+          </div>
+
+          <div class="bottomPills" id="bottomPills">
+            <div class="infoPill infoPillHidden" id="infoPill">
+              <div class="infoPillGlass liquidGlass" aria-hidden="true"></div>
+              <div class="infoPillContent" id="infoPillContent" data-liquid-ignore>
+                <div class="npBarArea">
+                  <div class="npProgressWrap" id="npProgressWrap">
+                    <input class="npSeek" id="npSeek" type="range" min="0" max="1000" value="0">
+                    <div class="npSeekIndicator" id="npSeekIndicator"></div>
+                  </div>
+                  <div class="npVolumeWrap" id="npVolumeWrap">
+                    <div class="npVolumeBar"><div class="npVolumeFill" id="npVolumeFill"></div></div>
+                  </div>
+                </div>
+                <div class="npTime">
+                  <div id="npCur">0:00</div>
+                  <div class="npTechInline" id="npTech"></div>
+                  <div id="npDur">0:00</div>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <div class="wheelZone" id="wheelZone">
+            <div class="ipodWheelWrap">
+              <div class="wheel" id="wheel">
+                <div class="wheelGlassRing liquidGlass" id="wheelGlassRing" aria-hidden="true"></div>
+                <div class="wheelLabel wlTop" data-liquid-ignore><span class="menuWord glassText" data-text="MENU">MENU</span><img class="wheelIcon" alt="" aria-hidden="true" hidden src="/icons/button2_seek-mode_liked-inactive.svg?v=__DEBRIPOD_ASSET_VERSION__"></div>
+                <div class="wheelLabel wlLeft" data-liquid-ignore><span class="menuWord glassText" data-text="MENU" hidden>MENU</span><img class="wheelIcon" alt="" aria-hidden="true" src="/icons/button5_previous-track.svg?v=__DEBRIPOD_ASSET_VERSION__"></div>
+                <div class="wheelLabel wlRight" data-liquid-ignore><span class="menuWord glassText" data-text="MENU" hidden>MENU</span><img class="wheelIcon" alt="" aria-hidden="true" src="/icons/button3_next-track.svg?v=__DEBRIPOD_ASSET_VERSION__"></div>
+                <div class="wheelLabel wlBottom" data-liquid-ignore><span class="menuWord glassText" data-text="MENU" hidden>MENU</span><img class="wheelIcon" alt="" aria-hidden="true" src="/icons/button4_media-paused.svg?v=__DEBRIPOD_ASSET_VERSION__"></div>
+
+                <div class="wheelHit hitTop wheelBtn" id="btnMenu" title="Menu"></div>
+                <div class="wheelHit hitLeft wheelBtn" id="btnRev" title="Previous track"></div>
+                <div class="wheelHit hitRight wheelBtn" id="btnFwd" title="Next track"></div>
+                <div class="wheelHit hitBottom wheelBtn" id="btnPlay" title="Play or pause"></div>
+
+                <div class="wheelCenter" id="btnCenter" title="Select">
+                  <div class="wheelCenterGlass liquidGlass" id="wheelCenterGlass" aria-hidden="true"></div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+      </div>
+    </div>
+  </div>
+
+  
+
+<script src="/static/js/bootstrap-loader.js?v=__DEBRIPOD_ASSET_VERSION__"></script>
+</body>
+</html>
+

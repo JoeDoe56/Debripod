@@ -1,0 +1,60 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <title>LiquidGL signed material regression</title>
+  <style>
+    * { box-sizing: border-box; }
+    html, body { width: 100%; min-height: 100%; margin: 0; overflow: hidden; background: #111; color: white; font: 14px/1.25 system-ui, sans-serif; }
+    #sourceCanvas { position: fixed; inset: 0; width: 100%; height: 100%; }
+    main { position: relative; z-index: 10; display: grid; grid-template-columns: repeat(4, minmax(150px, 1fr)); gap: 34px 24px; padding: 54px 44px; }
+    .sample { display: grid; justify-items: center; gap: 9px; }
+    .glass { width: min(190px, 20vw); height: 64px; border-radius: 32px; }
+    .circle { width: 92px; height: 92px; border-radius: 50%; }
+    .label { padding: 2px 8px; border-radius: 10px; background: rgb(0 0 0 / .72); text-shadow: 0 1px 2px #000; }
+  </style>
+</head>
+<body>
+  <canvas id="sourceCanvas" width="1280" height="800"></canvas>
+  <main>
+    <div class="sample"><div class="glass" id="material-n1"></div><div class="label">-1.00 dark</div></div>
+    <div class="sample"><div class="glass" id="material-n52"></div><div class="label">-0.52 dark tinted</div></div>
+    <div class="sample"><div class="glass" id="material-n12"></div><div class="label">-0.12 dark clear</div></div>
+    <div class="sample"><div class="glass" id="material-0"></div><div class="label">0.00 transparent</div></div>
+    <div class="sample"><div class="glass" id="material-p12"></div><div class="label">+0.12 light clear</div></div>
+    <div class="sample"><div class="glass" id="material-p52"></div><div class="label">+0.52 light tinted</div></div>
+    <div class="sample"><div class="glass" id="material-p1"></div><div class="label">+1.00 light</div></div>
+    <div class="sample"><div class="glass circle" id="material-tilt"></div><div class="label">+0.52 circle + tilt</div></div>
+  </main>
+  <script src="/debripod/static/liquidGL.js"></script>
+  <script>
+    const source = document.getElementById("sourceCanvas");
+    const ctx = source.getContext("2d");
+    const rainbow = ctx.createLinearGradient(0, 0, source.width, 0);
+    [[0,"#f22"],[.17,"#fc0"],[.34,"#3d5"],[.5,"#1de"],[.67,"#36f"],[.84,"#c4f"],[1,"#f28"]].forEach(([at,color]) => rainbow.addColorStop(at,color));
+    ctx.fillStyle = rainbow;
+    ctx.fillRect(0, 0, source.width, source.height);
+    for(let y = 0; y < source.height; y += 24){
+      for(let x = 0; x < source.width; x += 24){
+        ctx.fillStyle = ((x / 24 + y / 24) % 2) ? "rgba(0,0,0,.34)" : "rgba(255,255,255,.34)";
+        ctx.fillRect(x, y, 12, 12);
+      }
+    }
+    const samples = [
+      ["material-n1", -1], ["material-n52", -.52], ["material-n12", -.12], ["material-0", 0],
+      ["material-p12", .12], ["material-p52", .52], ["material-p1", 1], ["material-tilt", .52]
+    ];
+    samples.forEach(([id, material]) => window.liquidGL({
+      target: "#" + id,
+      rendererKey: "fixture-" + id,
+      sourceType: "albumArtCanvasOrImage",
+      sourceElement: "#sourceCanvas",
+      material,
+      reveal: "none",
+      tilt: id === "material-tilt",
+      resolution: 1
+    }));
+  </script>
+</body>
+</html>

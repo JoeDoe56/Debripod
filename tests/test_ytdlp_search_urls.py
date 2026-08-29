@@ -1,15 +1,17 @@
+import asyncio
+
 from debripod.Services.ytdlp_search import YtdlpSearchProvider, youtube_music_search_url, youtube_search_url
 
 
 def test_exact_category_urls_and_counts():
     calls = []
 
-    def runner(url):
+    async def runner(url):
         calls.append(url)
         return []
 
     provider = YtdlpSearchProvider(runner)
-    provider._search_youtube("Alice in Chains")
+    asyncio.run(provider.search("Alice in Chains", None))
     music = [url for url in calls if url.startswith("https://music.youtube.com/")]
     ordinary = [url for url in calls if url.startswith("https://www.youtube.com/")]
     assert len(music) == 7
@@ -21,20 +23,15 @@ def test_exact_category_urls_and_counts():
 
 
 def test_youtube_search_concurrency_is_bounded():
-    import threading
-    import time
     active = maximum = 0
-    lock = threading.Lock()
 
-    def runner(_url):
+    async def runner(_url):
         nonlocal active, maximum
-        with lock:
-            active += 1
-            maximum = max(maximum, active)
-        time.sleep(.01)
-        with lock:
-            active -= 1
+        active += 1
+        maximum = max(maximum, active)
+        await asyncio.sleep(.01)
+        active -= 1
         return []
 
-    YtdlpSearchProvider(runner, max_concurrent=4)._search_youtube("test")
+    asyncio.run(YtdlpSearchProvider(runner, max_concurrent=4).search("test", None))
     assert maximum <= 4

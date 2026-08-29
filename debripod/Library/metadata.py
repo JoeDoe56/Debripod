@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import math
+import subprocess
 import struct
 import threading
 import zlib
@@ -31,7 +32,7 @@ def _ffmpeg_path_value() -> str:
 META_CACHE: Dict[str, Tuple[float, dict]] = {}
 META_LOCK = threading.Lock()
 ANALYSIS_LOCK = threading.BoundedSemaphore(1)
-PALETTE_ALGORITHM_VERSION = 3
+PALETTE_ALGORITHM_VERSION = 4
 PALETTE_COLOR_COUNT = 16
 DEFAULT_VISUALIZER_PALETTE: list[tuple[int, int, int]] = [
     (10, 132, 255),
@@ -450,20 +451,37 @@ def _palette_object(colors: list[tuple[int, int, int]]) -> dict:
 
 def _extract_palette_from_image(path: str) -> Optional[dict]:
     try:
-        from PIL import Image
-    except Exception:
-        return None
-    try:
-        with Image.open(path) as img:
-            img = img.convert("RGBA")
-            counts: Counter[tuple[int, int, int]] = Counter()
-            for r, g, b, a in img.getdata():
-                if a < 24:
-                    continue
-                counts[(int(r), int(g), int(b))] += 1
-            if not counts:
-                return None
-            return _palette_object(_palette_from_counts(counts))
+        proc = subprocess.run(
+            [
+                _ffmpeg_path_value(),
+                "-v",
+                "error",
+                "-i",
+                path,
+                "-vf",
+                "scale=48:48:force_original_aspect_ratio=decrease",
+                "-frames:v",
+                "1",
+                "-f",
+                "rawvideo",
+                "-pix_fmt",
+                "rgb24",
+                "pipe:1",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+        if proc.returncode != 0 or not proc.stdout:
+            return None
+        raw = proc.stdout
+        counts: Counter[tuple[int, int, int]] = Counter(
+            (raw[i], raw[i + 1], raw[i + 2]) for i in range(0, len(raw) - 2, 3)
+        )
+        if not counts:
+            return None
+        return _palette_object(_palette_from_counts(counts))
     except Exception:
         return None
 

@@ -1,0 +1,100 @@
+from __future__ import annotations
+
+import asyncio
+import struct
+from pathlib import Path
+from types import SimpleNamespace
+
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
+
+from debripod.Library import metadata
+from debripod.Routes.icons import register_icon_routes
+
+
+ROOT = Path(__file__).resolve().parents[1]
+STATIC_ICONS = ROOT / "debripod" / "static" / "icons"
+
+
+def _png_dimensions(path: Path) -> tuple[int, int]:
+    raw = path.read_bytes()
+    assert raw.startswith(b"\x89PNG\r\n\x1a\n")
+    assert raw[12:16] == b"IHDR"
+    return struct.unpack(">II", raw[16:24])
+
+
+def test_committed_icon_assets_have_expected_formats_and_sizes():
+    expected = {16, 32, 180, 192, 512}
+    for size in expected:
+        assert _png_dimensions(STATIC_ICONS / f"icon-{size}.png") == (size, size)
+    assert (STATIC_ICONS / "favicon.ico").read_bytes()[:4] == b"\x00\x00\x01\x00"
+
+
+def test_icon_routes_serve_static_immutable_assets_and_png_manifest():
+    async def scenario() -> None:
+        app = web.Application()
+        register_icon_routes(app)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            for path in ("/favicon.ico", "/apple-touch-icon.png", "/icon-192.png", "/icon-512.png"):
+                response = await client.get(path)
+                assert response.status == 200
+                assert response.headers["Cache-Control"] == "public, max-age=31536000, immutable"
+                await response.read()
+
+            response = await client.get("/site.webmanifest")
+            manifest = await response.json(content_type=None)
+            assert [icon["src"].split("?", 1)[0] for icon in manifest["icons"]] == [
+                "/icon-192.png",
+                "/icon-512.png",
+            ]
+        finally:
+            await client.close()
+
+    asyncio.run(scenario())
+
+
+def test_palette_extraction_decodes_one_small_rgb24_frame_with_ffmpeg(monkeypatch):
+    pixels = bytes([240, 30, 20] * 8 + [20, 80, 220] * 3)
+    calls = []
+
+    def fake_run(args, **kwargs):
+        calls.append((args, kwargs))
+        return SimpleNamespace(returncode=0, stdout=pixels, stderr=b"")
+
+    monkeypatch.setattr(metadata.subprocess, "run", fake_run)
+    palette = metadata._extract_palette_from_image("cover.png")
+
+    assert palette and palette["version"] == metadata.PALETTE_ALGORITHM_VERSION
+    assert [240, 30, 20] in palette["colors"]
+    args, kwargs = calls[0]
+    assert args[args.index("-vf") + 1] == "scale=48:48:force_original_aspect_ratio=decrease"
+    assert args[-3:] == ["-pix_fmt", "rgb24", "pipe:1"]
+    assert kwargs["timeout"] == 30
+
+
+def test_wheel_uses_repository_svg_assets_and_no_generated_image_markup():
+    shell = (ROOT / "debripod" / "static" / "shell.html").read_text(encoding="utf-8")
+    css = (ROOT / "debripod" / "static" / "debripod.css").read_text(encoding="utf-8")
+    now_playing = (ROOT / "debripod" / "static" / "js" / "now-playing-ui.js").read_text(encoding="utf-8")
+    wheel_icons = (ROOT / "debripod" / "static" / "js" / "wheel-icons.js").read_text(encoding="utf-8")
+
+    for filename in (
+        "button5_previous-track.svg", "button3_next-track.svg",
+        "button5_seek-mode_skip-back.svg", "button3_seek-mode_skip-forward.svg",
+        "button4_media-paused.svg", "button4_media-playing.svg",
+        "button2_seek-mode_liked-inactive.svg", "button2_seek-mode_liked-active.svg",
+        "shuffleinactivefull-fixed.svg", "shuffleactivefull-fixed.svg",
+    ):
+        assert filename in shell or filename in wheel_icons
+    wheel_label_lines = [line for line in shell.splitlines() if 'class="wheelLabel ' in line]
+    assert len(wheel_label_lines) == 4
+    assert all(line.count("<img ") == 1 for line in wheel_label_lines)
+    wheel_update = now_playing[now_playing.index("function setWheelLabel"):now_playing.index("function adjustSeekPreview")]
+    forbidden = ("data:image", "base64,", "mask-image", "innerHTML", "replaceChildren", "createElement")
+    assert all(token not in wheel_update for token in forbidden)
+    assert all(token not in wheel_icons for token in forbidden)
+    assert ".wheelLabel .menuWord[hidden]" in css
+    assert ".wheelLabel .wheelIcon[hidden]" in css
+    assert "display:none !important" in css

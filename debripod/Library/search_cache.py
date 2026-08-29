@@ -17,7 +17,7 @@ _SEARCH_DISK_LOCK = threading.Lock()
 _cache_dir_provider: Callable[[], str] = lambda: ""
 _history_max_items_provider: Callable[[], int] = lambda: 0
 _disk_cache_ttl_seconds_provider: Callable[[], int] = lambda: 0
-SEARCH_CACHE_SCHEMA = 2
+SEARCH_CACHE_SCHEMA = 3
 
 
 def configure_search_cache(

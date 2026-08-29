@@ -1,4 +1,4 @@
-import threading
+import asyncio
 import time
 
 from debripod.Services.search.models import ProviderSearchResponse
@@ -7,7 +7,7 @@ from debripod.Services.search.providers import SearchContext
 
 
 def _canonical(result_id, group, source, title):
-    labels = {"library": "Library", "soulseek": "Soulseek", "torrent": "Torrent", "youtube": "YouTube", "soundcloud": "SoundCloud"}
+    labels = {"library": "Library", "soulseek": "Soulseek", "torrent": "Torrent", "youtube": "YouTube", "local_index": "Local Index"}
     kind = "torrent" if source == "torrent" else "song"
     return {
         "result_id": result_id, "provider_group": group, "source": source, "source_label": labels[source],
@@ -25,15 +25,15 @@ class Provider:
     def __init__(self, group, rows, delay=0, error=None):
         self.provider_group, self.rows, self.delay, self.error = group, rows, delay, error
 
-    def search(self, query, context):
-        time.sleep(self.delay)
+    async def search(self, query, context):
+        await asyncio.sleep(self.delay)
         if self.error:
             raise self.error
         return ProviderSearchResponse(self.provider_group, {"status": "ok"}, self.rows)
 
 
 def _context():
-    return SearchContext("user", "Alice in Chains", "alice in chains", {}, {}, "search-1", threading.Event())
+    return SearchContext("user", "Alice in Chains", "alice in chains", {}, {}, "search-1")
 
 
 def test_pipeline_streams_completion_order_keeps_partial_success_and_rejects_unrelated():
@@ -42,7 +42,9 @@ def test_pipeline_streams_completion_order_keeps_partial_success_and_rejects_unr
         Provider("soulseek", [_canonical("soulseek:1", "soulseek", "soulseek", "Chainsaw Repair Manual")]),
         Provider("torrents", [], error=RuntimeError("offline")),
     ]
-    events = list(SearchPipeline(providers).search_stream("Alice in Chains", _context()))
+    async def collect():
+        return [event async for event in SearchPipeline(providers).search_stream("Alice in Chains", _context())]
+    events = asyncio.run(collect())
     assert events[0]["event"] == "start" and events[-1]["event"] == "done"
     assert len([event for event in events if event["event"] == "source"]) == 3
     assert [row["result_id"] for row in events[-1]["results"]] == ["library:1"]
@@ -51,5 +53,5 @@ def test_pipeline_streams_completion_order_keeps_partial_success_and_rejects_unr
 
 def test_pipeline_has_no_total_cap():
     rows = [_canonical(f"library:{index}", "library", "library", f"Alice in Chains song {index}") for index in range(1000)]
-    final = SearchPipeline([Provider("library", rows)]).search_once("Alice in Chains", _context())
+    final = asyncio.run(SearchPipeline([Provider("library", rows)]).search_once("Alice in Chains", _context()))
     assert len(final["results"]) == 1000

@@ -3,7 +3,7 @@ import {createRequire} from "node:module";
 import test from "node:test";
 
 const require = createRequire(import.meta.url);
-const {chooseLayout, normalWheelWellLayout, mediaBox} = require("../../debripod/static/js/layout-controller.js");
+const {chooseLayout, normalWheelWellLayout, mediaBox, stableViewportChange} = require("../../debripod/static/js/layout-controller.js");
 
 const rect = (left, top, width, height) => ({left, top, right: left + width, bottom: top + height, width, height});
 const base = {
@@ -80,4 +80,12 @@ test("subpixel overlap below one pixel is tolerated", () => {
 test("image media is square and video uses the full box", () => {
   assert.deepEqual(mediaBox("image", {width: 500, height: 300}), {width: 300, height: 300});
   assert.deepEqual(mediaBox("video", {width: 500, height: 300}), {width: 500, height: 300});
+});
+
+test("pinch zoom and software keyboard preserve stable viewport geometry", () => {
+  const stable = {width:390, height:844};
+  assert.equal(stableViewportChange(stable, {width:390, height:520}, {keyboardOpen:true}), stable);
+  assert.equal(stableViewportChange(stable, {width:260, height:560}, {zoomed:true}), stable);
+  assert.equal(stableViewportChange(stable, {width:390, height:810}, {touchViewport:true}), stable);
+  assert.deepEqual(stableViewportChange(stable, {width:844, height:390}, {force:true}), {width:844, height:390});
 });

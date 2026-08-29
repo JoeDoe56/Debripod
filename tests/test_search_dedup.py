@@ -1,4 +1,4 @@
-from debripod.Services.search.dedup import deduplicate_torrents, deduplicate_youtube
+from debripod.Services.search.dedup import TorrentAccumulator, deduplicate_torrents, deduplicate_youtube
 
 
 def _row(result_id, source, kind, label, provider_data, **extra):
@@ -22,12 +22,6 @@ def test_youtube_music_wins_and_fills_only_missing_metadata():
     assert rows[0]["artist"] == "music"
 
 
-def test_soundcloud_is_never_youtube_deduplicated():
-    youtube = _row("yt", "youtube", "video", "Videos", {"video_id": "1", "youtube_music": False})
-    soundcloud = _row("sc", "soundcloud", "song", "Songs", {"soundcloud_id": "1"})
-    assert len(deduplicate_youtube([youtube, soundcloud])) == 2
-
-
 def test_torrents_merge_by_hash_and_retain_all_indexers():
     first = _row("torrent:abc", "torrent", "torrent", "Torrent", {"infohash": "ABC", "magnet": "", "indexer_ids": ["a"], "indexer_labels": ["Alpha"], "source_urls": ["https://a"], "seeders": 2, "leechers": 8, "verified": False})
     second = _row("torrent:abc", "torrent", "torrent", "Torrent", {"infohash": "abc", "magnet": "magnet:?xt=urn:btih:abc", "indexer_ids": ["b"], "indexer_labels": ["Beta"], "source_urls": ["https://b"], "seeders": 10, "leechers": 3, "verified": True})
@@ -46,3 +40,53 @@ def test_hashless_torrents_only_merge_on_exact_magnet():
     two = _row("two", "torrent", "torrent", "Torrent", {"infohash": "", "magnet": "magnet:?dn=one", "indexer_ids": [], "indexer_labels": [], "source_urls": []})
     three = _row("three", "torrent", "torrent", "Torrent", {"infohash": "", "magnet": "magnet:?dn=One", "indexer_ids": [], "indexer_labels": [], "source_urls": []})
     assert len(deduplicate_torrents([one, two, three])) == 2
+
+
+def test_local_index_baseline_merges_two_remote_sources_and_keeps_remote_only_hash():
+    shared_hash = "a" * 40
+    remote_hash = "b" * 40
+    local = _row(
+        "torrent:" + shared_hash, "local_index", "torrent", "Torrent",
+        {"infohash": shared_hash, "magnet": "magnet:?xt=urn:btih:" + shared_hash,
+         "indexer_ids": ["dmm"], "indexer_labels": ["DMM"], "source_urls": [],
+         "seeders": 0, "leechers": 0, "verified": False},
+        filter_values={"sources": ["Local Index"], "types": ["Torrent"], "indexers": ["DMM"], "media": []},
+    )
+    local.update(provider_group="local_index", source_label="Local Index")
+    knaben = _row(
+        "torrent:" + shared_hash, "torrent", "torrent", "Torrent",
+        {"infohash": shared_hash, "magnet": "magnet:?xt=urn:btih:" + shared_hash,
+         "indexer_ids": ["knaben"], "indexer_labels": ["Knaben"], "source_urls": ["https://knaben.invalid/detail"],
+         "seeders": 200, "leechers": 2, "verified": False},
+        filter_values={"sources": ["Torrents"], "types": ["Torrent"], "indexers": ["Knaben"], "media": []},
+    )
+    magnetz = _row(
+        "torrent:" + shared_hash, "torrent", "torrent", "Torrent",
+        {"infohash": shared_hash, "magnet": "magnet:?xt=urn:btih:" + shared_hash,
+         "indexer_ids": ["magnetz"], "indexer_labels": ["Magnetz"], "source_urls": ["https://magnetz.invalid/detail"],
+         "seeders": 150, "leechers": 10, "verified": True},
+        filter_values={"sources": ["Torrents"], "types": ["Torrent"], "indexers": ["Magnetz"], "media": []},
+    )
+    remote_only = _row(
+        "torrent:" + remote_hash, "torrent", "torrent", "Torrent",
+        {"infohash": remote_hash, "magnet": "magnet:?xt=urn:btih:" + remote_hash,
+         "indexer_ids": ["knaben"], "indexer_labels": ["Knaben"], "source_urls": [],
+         "seeders": 3, "leechers": 0, "verified": False},
+        filter_values={"sources": ["Torrents"], "types": ["Torrent"], "indexers": ["Knaben"], "media": []},
+    )
+
+    accumulator = TorrentAccumulator()
+    assert accumulator.ingest(local)["result_id"] == "torrent:" + shared_hash
+    assert accumulator.ingest(knaben)["result_id"] == "torrent:" + shared_hash
+    merged = accumulator.ingest(magnetz)
+    accumulator.ingest(remote_only)
+    assert len(accumulator.values()) == 2
+    assert merged["source"] == "local_index"
+    assert merged["filter_values"]["sources"] == ["Local Index", "Torrents"]
+    assert merged["provider_data"]["indexer_labels"] == ["DMM", "Knaben", "Magnetz"]
+    assert merged["provider_data"]["source_urls"] == ["https://knaben.invalid/detail", "https://magnetz.invalid/detail"]
+    assert (merged["provider_data"]["seeders"], merged["provider_data"]["leechers"], merged["provider_data"]["verified"]) == (200, 10, True)
+
+    final = deduplicate_torrents([local, knaben, magnetz, remote_only])
+    assert len(final) == 2
+    assert final[0]["provider_data"] == merged["provider_data"]

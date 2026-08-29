@@ -3,7 +3,7 @@ from __future__ import annotations
 from typing import Any
 import argparse
 
-from flask import Flask
+from aiohttp import web
 
 from . import runtime_downloads as downloads
 from . import runtime_route_state as route_state
@@ -13,6 +13,8 @@ from .MCP import routes as mcp_routes
 from .config import CONFIG_KEYS
 from .runtime_downloads import *  # noqa: F401,F403
 from .runtime_state import *  # noqa: F401,F403
+from .passwords import password_hash_supported
+from .config import ensure_startup_security_config
 
 
 _RUNTIME_MODULES = (state, downloads, route_state, mcp_routes, routes)
@@ -33,10 +35,28 @@ def _sync_config_overrides() -> None:
                     setattr(module, key, value)
 
 
-def create_app() -> Flask:
+async def create_app() -> web.Application:
     _sync_config_overrides()
     _sync_shared_state()
-    return routes.create_app()
+    return await routes.create_app()
+
+
+def _print_startup_banner(_aiohttp_message: str) -> None:
+    version = str(state.VERSION_INFO.get("display_version") or state.VERSION or "dev")
+    local_url = f"http://127.0.0.1:{state.PORT}"
+    users = ensure_startup_security_config().get("USERS") or []
+    usable_users = [
+        user for user in users
+        if isinstance(user, dict) and password_hash_supported(str(user.get("password_hash") or ""))
+    ]
+    print()
+    print(f"DebriPod {version} is running.")
+    print(f"Local URL: {local_url}")
+    print("Phone access: use the HTTPS address configured by Tailscale Serve.")
+    if not usable_users:
+        print(f"Account setup/recovery: {local_url}/setup")
+    print("Press Ctrl+C to stop.")
+    print()
 
 
 def main() -> None:
@@ -50,13 +70,13 @@ def main() -> None:
     state.ensure_dirs()
     state.load_playback_state()
     try:
-        state.configure_aioslsk_logging()
+        state.configure_aioslsk_logging(bool(state.AIOSLSK_LOGGING_ENABLED))
     except Exception:
         pass
     state.SOULSEEK_SERVICE = None
 
     _sync_shared_state()
-    create_app().run(host="127.0.0.1", port=state.PORT, debug=False, threaded=True)
+    web.run_app(create_app(), host="127.0.0.1", port=state.PORT, print=_print_startup_banner)
 
 
 def __getattr__(name: str) -> Any:

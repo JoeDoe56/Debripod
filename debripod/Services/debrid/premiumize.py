@@ -4,12 +4,13 @@ import hashlib
 import mimetypes
 import os
 import threading
+import asyncio
+import json
 import time
 from typing import Any, Iterable, List
 
-import requests
-
 from ...media_types import AUDIO_EXTS, VIDEO_EXTS
+from ..http import HttpClient, HttpStatusError
 from .base import DebridAuthError, DebridProviderBase, DebridProviderError
 from .models import DebridFile, DebridPreview, DebridResolvedLink
 from .identifiers import first_identifier, normalize_identifier, normalize_identifier_list
@@ -27,37 +28,42 @@ class PremiumizeProvider(DebridProviderBase):
     id = "premiumize"
     label = "Premiumize"
 
-    def __init__(self, token: str, base_url: str, timeout_seconds: int = 25, cache_ttl_seconds: int = 3600):
+    def __init__(self, token: str, base_url: str, timeout_seconds: int, cache_ttl_seconds: int, http: HttpClient):
         self.token = str(token or "").strip()
         self.base_url = str(base_url or "").rstrip("/")
         self.timeout_seconds = max(1, int(timeout_seconds or 25))
         self.cache_ttl_seconds = max(1, min(int(cache_ttl_seconds or 3600), 3600))
+        self.http = http
 
-    def _request(self, method: str, path: str, **kwargs: Any) -> dict:
+    async def _request(self, method: str, path: str, **kwargs: Any) -> dict:
         if not self.token:
             raise DebridAuthError("Premiumize token is missing.")
         try:
-            response = requests.request(
+            body, _headers, status = await self.http.bytes(
                 method,
                 self.base_url + path,
                 headers={"Authorization": f"Bearer {self.token}", "User-Agent": "DebriPod/1.0"},
                 timeout=self.timeout_seconds,
                 **kwargs,
             )
-        except requests.RequestException as exc:
+            text = body.decode("utf-8", "replace")
+        except HttpStatusError as exc:
+            status = exc.status
+            text = exc.body
+        except Exception as exc:
             raise DebridProviderError(f"Debrid request failed: {exc}") from exc
-        if response.status_code in {401, 403}:
+        if status in {401, 403}:
             raise DebridAuthError("Premiumize rejected the configured token.")
         try:
-            payload = response.json()
-        except ValueError as exc:
+            payload = json.loads(text)
+        except json.JSONDecodeError as exc:
             raise DebridProviderError("Debrid provider returned an invalid response.") from exc
-        if response.status_code >= 400 or not isinstance(payload, dict) or str(payload.get("status") or "").lower() in {"error", "fail", "failed"}:
-            raise DebridProviderError(f"Debrid request failed: {str(payload.get('message') or response.text or response.status_code)[:300]}")
+        if status >= 400 or not isinstance(payload, dict) or str(payload.get("status") or "").lower() in {"error", "fail", "failed"}:
+            raise DebridProviderError(f"Debrid request failed: {str(payload.get('message') or text or status)[:300]}")
         return payload
 
-    def validate_token(self) -> dict:
-        return self._request("GET", "/api/account/info")
+    async def validate_token(self) -> dict:
+        return await self._request("GET", "/api/account/info")
 
     @staticmethod
     def _preview_from_payload(source: str, payload: dict) -> DebridPreview:
@@ -109,26 +115,26 @@ class PremiumizeProvider(DebridProviderBase):
                 return None, source
             return preview, source
 
-    def preview_magnet(self, magnet: str) -> DebridPreview:
-        payload = self._request("POST", "/api/transfer/directdl", data={"src": magnet})
+    async def preview_magnet(self, magnet: str) -> DebridPreview:
+        payload = await self._request("POST", "/api/transfer/directdl", data={"src": magnet})
         preview = self._preview_from_payload(magnet, payload)
         if not preview.files and preview.raw.get("queued_transfer_id"):
             # directdl may explicitly queue a transfer. Keep the cloud-transfer
             # fallback isolated to this response shape.
             try:
-                created = self._create_transfer(magnet)
+                created = await self._create_transfer(magnet)
                 preview.raw["queued_transfer_id"] = first_identifier(created, "id") or normalize_identifier(preview.raw.get("queued_transfer_id")) or ""
             except DebridProviderError:
                 pass
         return self._cache(magnet, preview)
 
-    def refresh_preview(self, provider_task_id: str) -> DebridPreview:
+    async def refresh_preview(self, provider_task_id: str) -> DebridPreview:
         preview, _source = self._cached(provider_task_id)
         if preview is None:
             raise DebridProviderError("Premiumize preview expired; preview the magnet again.")
         return preview
 
-    def prepare_selected_files(
+    async def prepare_selected_files(
         self, *, magnet: str, provider_task_id: str, selected_file_ids: Iterable[str],
         timeout_seconds: int, poll_interval_seconds: int,
     ) -> List[DebridFile]:
@@ -137,20 +143,20 @@ class PremiumizeProvider(DebridProviderBase):
             raise DebridProviderError("No files selected.")
         preview, source = self._cached(provider_task_id)
         source = magnet or source
-        deadline = time.time() + max(1, int(timeout_seconds or 0))
+        deadline = asyncio.get_running_loop().time() + max(1, int(timeout_seconds or 0))
         while preview is None or not preview.ready:
             if not source:
                 raise DebridProviderError("Premiumize preview expired; preview the magnet again.")
-            payload = self._request("POST", "/api/transfer/directdl", data={"src": source})
+            payload = await self._request("POST", "/api/transfer/directdl", data={"src": source})
             preview = self._cache(source, self._preview_from_payload(source, payload))
             if preview.ready:
                 break
-            if time.time() >= deadline:
+            if asyncio.get_running_loop().time() >= deadline:
                 raise DebridProviderError("Timed out waiting for debrid provider.")
-            time.sleep(max(1, int(poll_interval_seconds or 1)))
+            await asyncio.sleep(max(1, int(poll_interval_seconds or 1)))
         return [item for item in preview.files if item.file_id in wanted]
 
-    def resolve_file_url(self, file: DebridFile) -> DebridResolvedLink:
+    async def resolve_file_url(self, file: DebridFile) -> DebridResolvedLink:
         if not file.provider_link:
             raise DebridProviderError("No downloadable links available from debrid provider.")
         return DebridResolvedLink(
@@ -162,16 +168,16 @@ class PremiumizeProvider(DebridProviderBase):
             raw=file.raw,
         )
 
-    def _create_transfer(self, source: str) -> dict:
-        return self._request("POST", "/api/transfer/create", data={"src": source})
+    async def _create_transfer(self, source: str) -> dict:
+        return await self._request("POST", "/api/transfer/create", data={"src": source})
 
-    def _transfer_list(self) -> dict:
-        return self._request("GET", "/api/transfer/list")
+    async def _transfer_list(self) -> dict:
+        return await self._request("GET", "/api/transfer/list")
 
-    def _delete_transfer(self, transfer_id: str) -> dict:
-        return self._request("POST", "/api/transfer/delete", data={"id": transfer_id})
+    async def _delete_transfer(self, transfer_id: str) -> dict:
+        return await self._request("POST", "/api/transfer/delete", data={"id": transfer_id})
 
-    def delete_task_best_effort(self, provider_task_id: str | None) -> None:
+    async def delete_task_best_effort(self, provider_task_id: str | None) -> None:
         provider_task_id = normalize_identifier(provider_task_id)
         if provider_task_id is None:
             return
@@ -179,6 +185,6 @@ class PremiumizeProvider(DebridProviderBase):
         transfer_id = normalize_identifier((preview.raw if preview else {}).get("queued_transfer_id"))
         if transfer_id is not None:
             try:
-                self._delete_transfer(transfer_id)
+                await self._delete_transfer(transfer_id)
             except Exception:
                 pass

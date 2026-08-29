@@ -4,20 +4,28 @@ import hashlib
 import os
 import threading
 import time
+import asyncio
 from typing import Any, Dict, List, Optional
-
-import requests
 
 from .storage.tasks import save_task_metadata
 from .Services.debrid import DebridFile, DebridProviderError, get_provider
+from .Services.http import HttpClient
 from .Services.debrid.identifiers import first_identifier, normalize_identifier, normalize_identifier_list
 from .runtime_state import *
 from .runtime_video_post import enqueue_video_postprocess
 from .settings import ensure_app_settings
 
 
-DEBRID_API_SEMAPHORE = threading.BoundedSemaphore(4)
-DEBRID_DOWNLOAD_SEMAPHORE = threading.BoundedSemaphore(2)
+DEBRID_API_SEMAPHORE = asyncio.Semaphore(4)
+DEBRID_DOWNLOAD_SEMAPHORE = asyncio.Semaphore(2)
+_HTTP: HttpClient | None = None
+_APP_LOOP: asyncio.AbstractEventLoop | None = None
+
+
+def configure_debrid_downloads(http: HttpClient, loop: asyncio.AbstractEventLoop) -> None:
+    global _HTTP, _APP_LOOP
+    _HTTP = http
+    _APP_LOOP = loop
 
 
 class DownloadHTTPError(RuntimeError):
@@ -44,22 +52,26 @@ def _provider_for_task(task: Task):
     if not provider_id:
         raise DebridProviderError("No debrid provider is configured.")
     settings = _debrid_settings(task)
-    return get_provider(provider_id, settings, int(settings.get("REQUEST_TIMEOUT_SECONDS") or REQUEST_TIMEOUT_SECONDS or 25))
+    if _HTTP is None:
+        raise DebridProviderError("Debrid HTTP service is unavailable.")
+    return get_provider(provider_id, settings, int(settings.get("REQUEST_TIMEOUT_SECONDS") or REQUEST_TIMEOUT_SECONDS or 25), _HTTP)
 
 
-def download_stream(url: str, out_path: str, task: Task, file_id: Optional[str] = None) -> None:
-    with DEBRID_DOWNLOAD_SEMAPHORE:
-        _download_stream_inner(url, out_path, task, file_id=file_id)
+async def download_stream(url: str, out_path: str, task: Task, file_id: Optional[str] = None) -> None:
+    async with DEBRID_DOWNLOAD_SEMAPHORE:
+        await _download_stream_inner(url, out_path, task, file_id=file_id)
 
 
-def _download_stream_inner(url: str, out_path: str, task: Task, file_id: Optional[str] = None) -> None:
+async def _download_stream_inner(url: str, out_path: str, task: Task, file_id: Optional[str] = None) -> None:
+    if _HTTP is None:
+        raise RuntimeError("Download HTTP service is unavailable")
     try:
-        response = requests.get(url, stream=True, timeout=REQUEST_TIMEOUT_SECONDS)
-    except requests.RequestException as exc:
+        response = await _HTTP.session.get(url, timeout=_HTTP.timeouts.download)
+    except Exception as exc:
         raise RuntimeError(str(exc)) from exc
-    with response:
-        if response.status_code >= 400:
-            raise DownloadHTTPError(response.status_code, f"Download failed ({response.status_code})")
+    try:
+        if response.status >= 400:
+            raise DownloadHTTPError(response.status, f"Download failed ({response.status})")
         total_raw = response.headers.get("Content-Length")
         total = int(total_raw) if total_raw and str(total_raw).isdigit() else None
         if file_id:
@@ -70,13 +82,13 @@ def _download_stream_inner(url: str, out_path: str, task: Task, file_id: Optiona
         last_time = time.time()
         last_done = 0
         with open(out_path, "wb") as handle:
-            for chunk in response.iter_content(chunk_size=256 * 1024):
+            async for chunk in response.content.iter_chunked(256 * 1024):
                 check_canceled(task)
                 while task.pause_event.is_set():
                     check_canceled(task)
                     if file_id:
                         _update_task_file_entry(task.id, "debrid_files", file_id, state="paused")
-                    time.sleep(0.15)
+                    await asyncio.sleep(0.15)
                 if file_id:
                     while True:
                         check_canceled(task)
@@ -86,10 +98,10 @@ def _download_stream_inner(url: str, out_path: str, task: Task, file_id: Optiona
                         if not control.get("paused"):
                             break
                         _update_task_file_entry(task.id, "debrid_files", file_id, state="paused")
-                        time.sleep(0.15)
+                        await asyncio.sleep(0.15)
                 if not chunk:
                     continue
-                handle.write(chunk)
+                await asyncio.to_thread(handle.write, chunk)
                 done += len(chunk)
                 now = time.time()
                 elapsed = max(0.001, now - last_time)
@@ -98,6 +110,8 @@ def _download_stream_inner(url: str, out_path: str, task: Task, file_id: Optiona
                 set_task(task.id, current_done=done)
                 if file_id:
                     _update_task_file_entry(task.id, "debrid_files", file_id, done=done, speed=speed, state="downloading")
+    finally:
+        response.close()
 
 
 def _file_from_entry(entry: dict) -> DebridFile:
@@ -139,7 +153,7 @@ def _completed_paths(task_id: str) -> list[str]:
     return out
 
 
-def _download_from_queue(task_id: str) -> list[str]:
+async def _download_from_queue(task_id: str) -> list[str]:
     task = get_task(task_id)
     if not task:
         return []
@@ -151,7 +165,7 @@ def _download_from_queue(task_id: str) -> list[str]:
         check_canceled(task)
         while task.pause_event.is_set():
             check_canceled(task)
-            time.sleep(0.2)
+            await asyncio.sleep(0.2)
         with TASKS_LOCK:
             current = TASKS.get(task_id)
             entries = list(getattr(current, "debrid_files", []) or []) if current else []
@@ -165,7 +179,7 @@ def _download_from_queue(task_id: str) -> list[str]:
         _update_task_file_entry(task_id, "debrid_files", file_id, state="requesting", error="")
         file = _file_from_entry(entry)
         try:
-            resolved = provider.resolve_file_url(file)
+            resolved = await provider.resolve_file_url(file)
             filename = sanitize_filename(resolved.filename or file.name or f"file_{entry.get('seq') or 1}")
             out_path = str(entry.get("out_path") or "")
             if not out_path:
@@ -178,12 +192,12 @@ def _download_from_queue(task_id: str) -> list[str]:
                 _update_task_file_entry(task_id, "debrid_files", file_id, out_path=out_path, name=os.path.basename(out_path))
             set_task(task_id, current_file=os.path.basename(out_path), current_done=0, current_total=None)
             try:
-                download_stream(resolved.url, out_path, task, file_id=file_id)
+                await download_stream(resolved.url, out_path, task, file_id=file_id)
             except DownloadHTTPError as exc:
                 if not resolved.requires_refresh or exc.status_code not in {401, 403, 404}:
                     raise
-                refreshed = provider.resolve_file_url(file)
-                download_stream(refreshed.url, out_path, task, file_id=file_id)
+                refreshed = await provider.resolve_file_url(file)
+                await download_stream(refreshed.url, out_path, task, file_id=file_id)
             _update_task_file_entry(task_id, "debrid_files", file_id, state="complete", error="")
             enqueue_video_postprocess(task_id, out_path)
         except CancelledFile:
@@ -201,13 +215,13 @@ def _download_from_queue(task_id: str) -> list[str]:
     return _completed_paths(task_id)
 
 
-def debrid_download_remaining_worker(task_id: str) -> None:
+async def debrid_download_remaining_worker(task_id: str) -> None:
     task = get_task(task_id)
     if not task or str(task.source or "").lower() != "debrid":
         return
     try:
         set_task(task_id, state="downloading", message="Retrying queued files")
-        completed = _download_from_queue(task_id)
+        completed = await _download_from_queue(task_id)
         with TASKS_LOCK:
             current = TASKS.get(task_id)
             entries = list(getattr(current, "debrid_files", []) or []) if current else []
@@ -224,7 +238,18 @@ def debrid_download_remaining_worker(task_id: str) -> None:
         set_task(task_id, state="error", message=str(exc)[:300] or "Debrid download failed", current_file="", current_done=0, current_total=None)
 
 
-def worker(task_id: str) -> None:
+def schedule_debrid_download_remaining(task_id: str) -> None:
+    loop = _APP_LOOP
+    if loop is None or loop.is_closed():
+        return
+
+    def _start() -> None:
+        loop.create_task(debrid_download_remaining_worker(task_id), name=f"debrid-retry:{task_id}")
+
+    loop.call_soon_threadsafe(_start)
+
+
+async def worker(task_id: str) -> None:
     task = get_task(task_id)
     if not task or str(task.source or "").lower() != "debrid":
         return
@@ -238,18 +263,18 @@ def worker(task_id: str) -> None:
             if not task.magnet:
                 raise DebridProviderError("Missing magnet.")
             set_task(task_id, state="adding", message="Adding magnet to debrid provider")
-            with DEBRID_API_SEMAPHORE:
-                preview = provider.preview_magnet(task.magnet)
+            async with DEBRID_API_SEMAPHORE:
+                preview = await provider.preview_magnet(task.magnet)
             provider_task_id = preview.provider_task_id
             set_task(task_id, debrid_task_id=provider_task_id)
         selected_ids = normalize_identifier_list(task.debrid_selected_file_ids)
         if not selected_ids:
-            preview = preview or provider.refresh_preview(provider_task_id)
+            preview = preview or await provider.refresh_preview(provider_task_id)
             selected_ids = [item.file_id for item in preview.files]
         set_task(task_id, state="selecting", message="Selecting files")
         set_task(task_id, state="waiting", message="Waiting for debrid provider to cache the torrent")
-        with DEBRID_API_SEMAPHORE:
-            files = provider.prepare_selected_files(
+        async with DEBRID_API_SEMAPHORE:
+            files = await provider.prepare_selected_files(
                 magnet=task.magnet,
                 provider_task_id=provider_task_id,
                 selected_file_ids=selected_ids,
@@ -286,7 +311,7 @@ def worker(task_id: str) -> None:
             _set_file_control(task_id, file_id, paused=False, canceled=False)
         set_task(task_id, debrid_files=entries, overall_done=0, overall_total=None, state="downloading", message=f"Downloading {len(entries)} file(s)")
         save_task_metadata(task, original_result_title=task.title, remote_files=entries, selected_file_ids=selected_ids, version=str(VERSION))
-        completed = _download_from_queue(task_id)
+        completed = await _download_from_queue(task_id)
         with TASKS_LOCK:
             current = TASKS.get(task_id)
             entries = list(getattr(current, "debrid_files", []) or []) if current else []
@@ -302,7 +327,7 @@ def worker(task_id: str) -> None:
             set_task(task_id, state="done", message="Finished")
     except Cancelled:
         if provider:
-            provider.delete_task_best_effort(getattr(task, "debrid_task_id", None))
+            await provider.delete_task_best_effort(getattr(task, "debrid_task_id", None))
         set_task(task_id, state="canceled", message="Canceled", current_file="", current_done=0, current_total=None)
     except Exception:
         set_task(task_id, state="error", message="Debrid download failed", current_file="", current_done=0, current_total=None)

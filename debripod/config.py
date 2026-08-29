@@ -24,21 +24,18 @@ DEFAULT_CONFIG_PATHS = [
 DEFAULT_CONFIG: dict[str, Any] = {
     "PORT": 8083,
     "USERS": [],
-    "APP_SECRET_KEY": "",
     "ENABLE_MCP": False,
     "MCP_TOKEN": "",
     "SETUP_COMPLETE": False,
     **DEFAULT_APP_SETTINGS,
 }
 
-CONFIG_KEYS = {
-    "PORT", "USERS", "APP_SECRET_KEY", "ENABLE_MCP", "MCP_TOKEN", "SETUP_COMPLETE",
-} | APP_SETTING_KEYS
+CONFIG_KEYS = {"PORT", "USERS", "ENABLE_MCP", "MCP_TOKEN", "SETUP_COMPLETE"} | APP_SETTING_KEYS
 
 SECRET_KEYS = {
     "REAL_DEBRID_API_KEY", "ALLDEBRID_API_KEY", "PREMIUMIZE_API_KEY", "TORBOX_API_KEY",
     "SOULSEEK_USERNAME", "SOULSEEK_PASSWORD",
-    "LASTFM_API_KEY", "LASTFM_API_SECRET", "LASTFM_SESSION_KEY", "APP_SECRET_KEY", "MCP_TOKEN",
+    "LASTFM_API_KEY", "LASTFM_API_SECRET", "LASTFM_SESSION_KEY", "MCP_TOKEN",
 }
 
 
@@ -123,8 +120,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
     users = list_users()
     data["USERS"] = [{"username": u["username"], "password_hash": u["password_hash"], "id": u["user_id"]} for u in users]
     data["SETUP_COMPLETE"] = bool(users)
-    for key in ("APP_SECRET_KEY", "MCP_TOKEN"):
-        data[key] = get_secret("global", key)
+    data["MCP_TOKEN"] = get_secret("global", "MCP_TOKEN")
     return data
 
 
@@ -147,9 +143,8 @@ def save_config(data: dict[str, Any], path: str | os.PathLike[str] | None = None
             current[key] = data[key]
     settings_repository.save(current, "")
     replace_users(data.get("USERS") if isinstance(data.get("USERS"), list) else [])
-    for key in ("APP_SECRET_KEY", "MCP_TOKEN"):
-        if key in data:
-            set_secret("global", key, str(data.get(key) or ""))
+    if "MCP_TOKEN" in data:
+        set_secret("global", "MCP_TOKEN", str(data.get("MCP_TOKEN") or ""))
     legacy_path = str(data.get("_LEGACY_CONFIG_PATH") or "")
     if legacy_path:
         source = Path(legacy_path)
@@ -169,9 +164,6 @@ def ensure_startup_security_config(path: str | os.PathLike[str] | None = None) -
         if key_upper not in STARTUP_CONFIG_KEYS and not str(key).startswith("_"):
             data.pop(key, None)
             changed = True
-    if not str(data.get("APP_SECRET_KEY") or "").strip():
-        data["APP_SECRET_KEY"] = secrets.token_urlsafe(48)
-        changed = True
     if "USERS" not in data or not isinstance(data.get("USERS"), list):
         data["USERS"] = []
         changed = True
@@ -208,7 +200,7 @@ def apply_config_to_module(module_globals: MutableMapping[str, Any], path: str |
     config = dict(DEFAULT_CONFIG)
     config.update(default_overrides)
     config.update(app_settings)
-    for key in ("PORT", "USERS", "APP_SECRET_KEY", "ENABLE_MCP", "MCP_TOKEN", "SETUP_COMPLETE"):
+    for key in ("PORT", "USERS", "ENABLE_MCP", "MCP_TOKEN", "SETUP_COMPLETE"):
         if key in startup_config:
             config[key] = startup_config[key]
     config["PORT"] = 8083

@@ -87,6 +87,7 @@
           if(callMaybe("rangeEditorCenterPress")) return true;
           return callMaybe("selectItem", details && details.item);
         case "back":
+          if(callMaybe("rangeEditorCancelActive")) return true;
           if(nav && nav.isActive && nav.isActive()) return nav.back();
           return callMaybe("goBack");
         case "next":
@@ -130,6 +131,7 @@
           if(callMaybe("rangeEditorWheelActive")) return callMaybe("adjustRangeEditor", -1);
           return callMaybe("scrollSel", -1);
         case "open_context":
+          if(callMaybe("rangeEditorCenterHold")) return true;
           if(!mediaActions || !mediaActions.openContextMenuForCurrentTarget) return undefined;
           return mediaActions.openContextMenuForCurrentTarget(details && details.item);
         case "jump_to_item":

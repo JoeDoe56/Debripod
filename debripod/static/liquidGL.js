@@ -38,6 +38,89 @@
     };
   }
 
+  function clamp(value, min, max) {
+    return Math.max(min, Math.min(max, value));
+  }
+
+  function finiteNumber(value, fallback) {
+    const number = Number(value);
+    return Number.isFinite(number) ? number : fallback;
+  }
+
+  function normalizeLiquidGlassMaterial(value, fallback = 0) {
+    return clamp(finiteNumber(value, fallback), -1, 1);
+  }
+
+  function mixNumber(from, to, amount) {
+    return from + (to - from) * amount;
+  }
+
+  function resolveLiquidGlassMaterial(material, geometry, quality) {
+    const m = normalizeLiquidGlassMaterial(material, 0);
+    const density = Math.abs(m);
+    const side = m < 0 ? -1 : (m > 0 ? 1 : 0);
+    const beyondApple = clamp((density - 0.52) / 0.48, 0, 1);
+    const darkTone = mixNumber(35 / 255, 0, beyondApple);
+    const tone = side < 0
+      ? [darkTone, darkTone, darkTone]
+      : [1, 1, 1];
+    const qualityScale = clamp(finiteNumber(quality, 1), 0.45, 1);
+
+    return {
+      material: m,
+      density,
+      side,
+      tone,
+      materialAlpha: density,
+      frostSigmaPx: 24 * density,
+      frostSampleScale: qualityScale,
+      refraction: 0.045 + 0.025 * density,
+      refractionFill: 0,
+      bevelDepth: 0.075 + 0.045 * density,
+      bevelWidth: 0.095 + 0.020 * density,
+      magnify: 1.012 - 0.007 * density,
+      specularPrimary: mixNumber(0.1675, 0.145, m),
+      specularSecondary: mixNumber(0.080, 0.105, m),
+      shadowStrength: 0.08 + 0.10 * density,
+      specular: true,
+      geometry: geometry || null,
+    };
+  }
+
+  function sourceTexelsPerCssPixel(textureWidth, textureHeight, cssWidth, cssHeight) {
+    return [
+      Math.max(1, finiteNumber(textureWidth, 1)) / Math.max(1, finiteNumber(cssWidth, 1)),
+      Math.max(1, finiteNumber(textureHeight, 1)) / Math.max(1, finiteNumber(cssHeight, 1)),
+    ];
+  }
+
+  function lensMinorDimensionInSourceUV(lensWidth, lensHeight, boundsWidth, boundsHeight) {
+    const width = Math.max(1, finiteNumber(lensWidth, 1));
+    const height = Math.max(1, finiteNumber(lensHeight, 1));
+    const minor = Math.min(width, height);
+    return [
+      (minor / width) * finiteNumber(boundsWidth, 0),
+      (minor / height) * finiteNumber(boundsHeight, 0),
+    ];
+  }
+
+  const LIQUID_GL_EASINGS = Object.freeze({
+    linear: (t) => t,
+    easeIn: (t) => t * t,
+    easeOut: (t) => 1 - (1 - t) * (1 - t),
+    easeInOut: (t) => t < 0.5 ? 2 * t * t : 1 - Math.pow(-2 * t + 2, 2) / 2,
+  });
+
+  const LIQUID_GL_LIVE_NUMERIC_OPTIONS = Object.freeze({
+    material: [-1, 1],
+    refraction: [0, 1],
+    refractionFill: [0, 1],
+    bevelDepth: [0, 1],
+    bevelWidth: [0, 1],
+    frost: [0, 100],
+    magnify: [0.001, 3],
+  });
+
   /* --------------------------------------------------
    *  Helper : Effective z-index (highest stacking context)
    * ------------------------------------------------*/
@@ -433,6 +516,9 @@
         uniform sampler2D u_albumNextTex;
         uniform vec2  u_resolution;
         uniform vec2  u_textureResolution;
+        uniform vec2  u_sourceTexelsPerCssPixel;
+        uniform vec2  u_lensCssSize;
+        uniform float u_devicePixelRatio;
         uniform vec2  u_albumSourceSize;
         uniform vec2  u_albumCurrentSize;
         uniform vec2  u_albumNextSize;
@@ -453,9 +539,13 @@
         uniform float u_magnify;
         uniform float u_hollowInset;
         uniform bool  u_hollowMaskContent;
-        uniform int   u_glassMode;
-        uniform float u_glassDarkAmount;
-        uniform float u_glassLightAmount;
+        uniform float u_material;
+        uniform float u_materialDensity;
+        uniform float u_materialSign;
+        uniform vec3  u_materialTone;
+        uniform float u_materialAlpha;
+        uniform float u_specularPrimary;
+        uniform float u_specularSecondary;
         uniform bool  u_useAlbumTransitionSource;
         uniform bool  u_debugAlbumSourceFlat;
 
@@ -545,10 +635,16 @@
           float edgeCentreBlend = smoothstep(0.15, 0.45, centreDistance);
           float centreBlend = mix(edgeCentreBlend, 1.0, fill);
           vec2 refractDirection = centreDistance > 0.0001 ? p / centreDistance : vec2(0.0);
-          vec2 offset = refractDirection * offsetAmt * centreBlend;
+          float lensMinorCss = min(u_lensCssSize.x, u_lensCssSize.y);
+          vec2 lensMinorDimensionInSourceUV = vec2(
+            (lensMinorCss / max(1.0, u_lensCssSize.x)) * u_bounds.z,
+            (lensMinorCss / max(1.0, u_lensCssSize.y)) * u_bounds.w
+          );
+          vec2 offset = refractDirection * offsetAmt * centreBlend * lensMinorDimensionInSourceUV;
 
           float tiltRefractionScale = 0.05;
-          vec2 tiltOffset = vec2(tan(radians(u_tiltY)), -tan(radians(u_tiltX))) * tiltRefractionScale;
+          vec2 tiltOffset = vec2(tan(radians(u_tiltY)), -tan(radians(u_tiltX))) *
+            tiltRefractionScale * lensMinorDimensionInSourceUV;
 
           vec2 refracted = mapped + offset - tiltOffset;
 
@@ -570,15 +666,16 @@
           vec4 refrCol;
 
           if (u_frost > 0.0) {
-              float radius = u_frost * 4.0;
+              float radiusCss = u_frost * 2.0;
               vec4 sum = vec4(0.0);
               const int SAMPLES = 16;
 
               for (int i = 0; i < SAMPLES; i++) {
                   float angle = random(v_uv + float(i)) * 6.283185;
-                  float dist = sqrt(random(v_uv - float(i))) * radius;
-                  vec2 offset = vec2(cos(angle), sin(angle)) * texel * dist;
-                  sum += sampleLiquidSource(sampleUV + offset);
+                  float distCss = sqrt(random(v_uv - float(i))) * radiusCss;
+                  vec2 offsetUv = vec2(cos(angle), sin(angle)) *
+                    distCss * u_sourceTexelsPerCssPixel * texel;
+                  sum += sampleLiquidSource(sampleUV + offsetUv);
               }
               refrCol = sum / float(SAMPLES);
           } else {
@@ -613,19 +710,39 @@
           }
           if (inShape <= 0.001) discard;
 
-          if (u_specular) {
-            vec2 tilt = vec2(u_tiltY, -u_tiltX) * 0.010;
-            vec2 lp1 = vec2(0.27, 0.20) + tilt;
-            vec2 lp2 = vec2(0.72, 0.66) - tilt * 0.7;
-            float h = 0.0;
-            h += smoothstep(0.32,0.0,distance(v_uv, lp1))*0.18;
-            h += smoothstep(0.44,0.0,distance(v_uv, lp2))*0.11;
-            h += pow(edge, 2.2) * (0.11 + abs(u_tiltX + u_tiltY) * 0.012);
-            final.rgb += h * vec3(1.0, 0.97, 0.90);
-          }
+          float sourceLuma = dot(final.rgb, vec3(0.2126, 0.7152, 0.0722));
+          vec3 sourceChroma = final.rgb - vec3(sourceLuma);
+          float sourceTransmission = 1.0 - u_materialAlpha;
+          float chromaTransmission = max(0.0, 1.0 - u_materialDensity * 0.92);
+          final.rgb = vec3(sourceLuma) * sourceTransmission +
+            sourceChroma * chromaTransmission +
+            u_materialTone * u_materialAlpha;
 
-          final.rgb = mix(final.rgb, vec3(0.0), clamp(u_glassDarkAmount, 0.0, 0.80));
-          final.rgb = mix(final.rgb, vec3(1.0), clamp(u_glassLightAmount, 0.0, 0.80));
+          if (u_specular) {
+            float normalStep = max(0.75, u_devicePixelRatio);
+            float sdfXp = udRoundBox(p_px + vec2(normalStep, 0.0), b_px, u_radius);
+            float sdfXm = udRoundBox(p_px - vec2(normalStep, 0.0), b_px, u_radius);
+            float sdfYp = udRoundBox(p_px + vec2(0.0, normalStep), b_px, u_radius);
+            float sdfYm = udRoundBox(p_px - vec2(0.0, normalStep), b_px, u_radius);
+            vec2 n2 = normalize(vec2(sdfXp - sdfXm, sdfYp - sdfYm) + vec2(0.00001));
+            float insideCss = max(0.0, -dmask / max(0.5, u_devicePixelRatio));
+            float outerPeak = 1.0 - smoothstep(0.0, 1.15, insideCss);
+            float innerRim = 1.0 - smoothstep(0.5, 5.5, insideCss);
+            float rimSlope = mix(0.58, 1.35, outerPeak);
+            vec3 N = normalize(vec3(n2 * rimSlope, 0.62));
+            vec2 tiltNormal = vec2(sin(radians(u_tiltY)), -sin(radians(u_tiltX))) * 0.34;
+            N = normalize(vec3(N.xy + tiltNormal, N.z));
+            vec3 primaryLight = normalize(vec3(-0.48, 0.76, 0.52));
+            vec3 secondaryLight = normalize(vec3(0.42, -0.78, 0.46));
+            float primaryFacing = max(dot(N, primaryLight), 0.0);
+            float secondaryFacing = max(dot(N, secondaryLight), 0.0);
+            float sharp = outerPeak * pow(primaryFacing, 7.0) * u_specularPrimary;
+            float soft = innerRim * pow(primaryFacing, 2.2) * u_specularPrimary * 0.62;
+            float opposite = (outerPeak * 0.65 + innerRim * 0.42) *
+              pow(secondaryFacing, 2.8) * u_specularSecondary;
+            vec3 softRimColor = mix(vec3(1.0), refrCol.rgb, 0.08);
+            final.rgb += sharp * vec3(1.0) + (soft + opposite) * softRimColor;
+          }
 
           if (u_revealType == 1) {
               final.rgb *= u_revealProgress;
@@ -663,6 +780,9 @@
           this.program,
           "u_textureResolution"
         ),
+        sourceTexelsPerCssPixel: gl.getUniformLocation(this.program, "u_sourceTexelsPerCssPixel"),
+        lensCssSize: gl.getUniformLocation(this.program, "u_lensCssSize"),
+        devicePixelRatio: gl.getUniformLocation(this.program, "u_devicePixelRatio"),
         albumSourceSize: gl.getUniformLocation(this.program, "u_albumSourceSize"),
         albumCurrentSize: gl.getUniformLocation(this.program, "u_albumCurrentSize"),
         albumNextSize: gl.getUniformLocation(this.program, "u_albumNextSize"),
@@ -683,9 +803,13 @@
         magnify: gl.getUniformLocation(this.program, "u_magnify"),
         hollowInset: gl.getUniformLocation(this.program, "u_hollowInset"),
         hollowMaskContent: gl.getUniformLocation(this.program, "u_hollowMaskContent"),
-        glassMode: gl.getUniformLocation(this.program, "u_glassMode"),
-        glassDarkAmount: gl.getUniformLocation(this.program, "u_glassDarkAmount"),
-        glassLightAmount: gl.getUniformLocation(this.program, "u_glassLightAmount"),
+        material: gl.getUniformLocation(this.program, "u_material"),
+        materialDensity: gl.getUniformLocation(this.program, "u_materialDensity"),
+        materialSign: gl.getUniformLocation(this.program, "u_materialSign"),
+        materialTone: gl.getUniformLocation(this.program, "u_materialTone"),
+        materialAlpha: gl.getUniformLocation(this.program, "u_materialAlpha"),
+        specularPrimary: gl.getUniformLocation(this.program, "u_specularPrimary"),
+        specularSecondary: gl.getUniformLocation(this.program, "u_specularSecondary"),
         useAlbumTransitionSource: gl.getUniformLocation(this.program, "u_useAlbumTransitionSource"),
         debugAlbumSourceFlat: gl.getUniformLocation(this.program, "u_debugAlbumSourceFlat"),
       };
@@ -873,9 +997,7 @@
           const style = window.getComputedStyle(node);
           if (
             Number(style.opacity || 1) <= 0.01 ||
-            (node.classList &&
-              (node.classList.contains("infoPillHidden") ||
-                node.classList.contains("infoPillHidden")))
+            (node.classList && node.classList.contains("infoPillHidden"))
           ) {
             return true;
           }
@@ -1406,7 +1528,7 @@
       wanted.forEach((el) => {
         const existing = this.lenses.find((lens) => lens.el === el);
         if (existing && options) {
-          existing.options = Object.assign({}, existing.options || {}, options || {});
+          existing.setOptions(options);
         }
         if (!existing) {
           this.addLens(el, options);
@@ -1414,6 +1536,20 @@
       });
       this._metricsDirty = true;
       return this.lenses.filter((lens) => wanted.has(lens.el));
+    }
+
+    requestRender() {
+      if (document.hidden) return;
+      const scheduler = window.DebriPod && window.DebriPod.frameScheduler;
+      if (this.useExternalTicker && scheduler && scheduler.mark) {
+        scheduler.mark({ render: true });
+        return;
+      }
+      if (this._rafId || this._optionRafId) return;
+      this._optionRafId = requestAnimationFrame((timestamp) => {
+        this._optionRafId = 0;
+        this.render({ timestamp });
+      });
     }
 
     /* ----------------------------- */
@@ -1516,9 +1652,14 @@
         this._metricsDirty = false;
       }
 
+      let hasActiveVisibleTransition = false;
+      const transitionTime = Number.isFinite(fs.timestamp) ? fs.timestamp : performance.now();
       this.lenses.forEach((lens) => {
         if (this._lensVisible(lens)) {
           this._hiddenSkipSince = 0;
+          if (lens._advanceTransition && lens._advanceTransition(transitionTime)) {
+            hasActiveVisibleTransition = true;
+          }
           this._renderLens(lens);
         } else {
           this._debugLensHidden(lens);
@@ -1566,6 +1707,8 @@
           }
         }
       });
+
+      if (hasActiveVisibleTransition) this.requestRender();
     }
 
     _lensVisible(lens) {
@@ -1580,9 +1723,7 @@
             parentStyle.display === "none" ||
             parentStyle.visibility === "hidden" ||
             Number(parentStyle.opacity || 1) <= 0.01 ||
-            (node.classList &&
-              (node.classList.contains("infoPillHidden") ||
-                node.classList.contains("infoPillHidden")))
+            (node.classList && node.classList.contains("infoPillHidden"))
           ) {
             return false;
           }
@@ -1692,17 +1833,31 @@
         this.textureWidth,
         this.textureHeight
       );
+      const sourceCssRect = this._sourceCssRect || {
+        width: window.innerWidth || rect.width || 1,
+        height: window.innerHeight || rect.height || 1,
+      };
+      const texelsPerCss = sourceTexelsPerCssPixel(
+        this.textureWidth,
+        this.textureHeight,
+        sourceCssRect.width,
+        sourceCssRect.height
+      );
+      gl.uniform2f(this.u.sourceTexelsPerCssPixel, texelsPerCss[0], texelsPerCss[1]);
+      gl.uniform2f(this.u.lensCssSize, rect.width, rect.height);
+      gl.uniform1f(this.u.devicePixelRatio, dpr);
       if (this.u.albumSourceSize) {
         const albumSourceSize = this._albumSourceSizeForUniform();
         gl.uniform2f(this.u.albumSourceSize, albumSourceSize.width, albumSourceSize.height);
       }
-      gl.uniform1f(this.u.refraction, lens.options.refraction);
-      gl.uniform1f(this.u.refractionFill, Number.isFinite(Number(lens.options.refractionFill)) ? Number(lens.options.refractionFill) : 0);
-      gl.uniform1f(this.u.bevelDepth, lens.options.bevelDepth);
-      gl.uniform1f(this.u.bevelWidth, lens.options.bevelWidth);
-      gl.uniform1f(this.u.frost, Math.max(0, Number(lens.options.frost || 0) * (this._adaptiveQuality || 1)));
+      const resolved = lens.resolveOptics(this._adaptiveQuality || 1);
+      gl.uniform1f(this.u.refraction, resolved.refraction);
+      gl.uniform1f(this.u.refractionFill, resolved.refractionFill);
+      gl.uniform1f(this.u.bevelDepth, resolved.bevelDepth);
+      gl.uniform1f(this.u.bevelWidth, resolved.bevelWidth);
+      gl.uniform1f(this.u.frost, Math.max(0, resolved.frostSigmaPx));
       gl.uniform1f(this.u.radius, lens.radiusGl);
-      gl.uniform1i(this.u.specular, lens.options.specular ? 1 : 0);
+      gl.uniform1i(this.u.specular, resolved.specular ? 1 : 0);
       gl.uniform1f(this.u.revealProgress, lens._revealProgress || 1.0);
       gl.uniform1i(this.u.revealType, lens.revealTypeIndex || 0);
 
@@ -1710,7 +1865,7 @@
         0.001,
         Math.min(
           3.0,
-          lens.options.magnify !== undefined ? lens.options.magnify : 1.0
+          resolved.magnify !== undefined ? resolved.magnify : 1.0
         )
       );
       gl.uniform1f(this.u.magnify, mag);
@@ -1719,9 +1874,13 @@
       gl.uniform1f(this.u.tiltY, lens.tiltY || 0);
       gl.uniform1f(this.u.hollowInset, lens.hollowInsetGl || 0);
       gl.uniform1i(this.u.hollowMaskContent, lens.hollowMaskContent ? 1 : 0);
-      gl.uniform1i(this.u.glassMode, lens.glassModeIndex || 0);
-      gl.uniform1f(this.u.glassDarkAmount, Number.isFinite(Number(lens.options.glassDarkAmount)) ? Number(lens.options.glassDarkAmount) : 0.18);
-      gl.uniform1f(this.u.glassLightAmount, Number.isFinite(Number(lens.options.glassLightAmount)) ? Number(lens.options.glassLightAmount) : 0.18);
+      gl.uniform1f(this.u.material, resolved.material);
+      gl.uniform1f(this.u.materialDensity, resolved.density);
+      gl.uniform1f(this.u.materialSign, resolved.side);
+      gl.uniform3f(this.u.materialTone, resolved.tone[0], resolved.tone[1], resolved.tone[2]);
+      gl.uniform1f(this.u.materialAlpha, resolved.materialAlpha);
+      gl.uniform1f(this.u.specularPrimary, resolved.specularPrimary);
+      gl.uniform1f(this.u.specularSecondary, resolved.specularSecondary);
 
       if (forceCanary) {
         const canary = this._ensureDebugCanaryTexture();
@@ -2461,7 +2620,11 @@
     constructor(renderer, element, options) {
       this.renderer = renderer;
       this.el = element;
-      this.options = options;
+      this.options = Object.assign({}, options || {});
+      if (this.options.material !== null && this.options.material !== undefined) {
+        this.options.material = normalizeLiquidGlassMaterial(this.options.material, 0);
+      }
+      this._transition = null;
       this._initCalled = false;
       this.rectPx = null;
       this.radiusGl = 0;
@@ -2470,7 +2633,6 @@
       this.hollowMaskContent =
         !!this.options.hollowMaskContent ||
         this.el.hasAttribute("data-liquid-mask-content");
-      this.glassModeIndex = this._glassModeIndex(this.options.glassMode);
       this.revealTypeIndex = this.options.reveal === "fade" ? 1 : 0;
       this._revealProgress = this.revealTypeIndex === 0 ? 1 : 0;
       this.tiltX = 0;
@@ -2505,7 +2667,11 @@
       this.el.style.pointerEvents = "none";
 
       this.updateMetrics();
-      this.setShadow(this.options.shadow);
+      const initialOptics = this.resolveOptics(1);
+      this.setShadow(
+        this.options.material !== null && this.options.material !== undefined ? true : this.options.shadow,
+        initialOptics.shadowStrength
+      );
       if (this.options.tilt) this._bindTiltHandlers();
 
       if (typeof ResizeObserver !== "undefined" && !this._sizeObs) {
@@ -2518,11 +2684,132 @@
       }
     }
 
-    _glassModeIndex(mode) {
-      const value = String(mode || "clear").toLowerCase();
-      if (value === "dark") return 1;
-      if (value === "light") return 2;
-      return 0;
+    _normalizeOptionsPatch(patch) {
+      const normalized = {};
+      Object.keys(patch || {}).forEach((key) => {
+        const value = patch[key];
+        if (key === "material") {
+          normalized.material = value === null ? null : normalizeLiquidGlassMaterial(value, 0);
+          return;
+        }
+        const bounds = LIQUID_GL_LIVE_NUMERIC_OPTIONS[key];
+        if (bounds) {
+          const fallback = finiteNumber(this.options[key], key === "magnify" ? 1 : 0);
+          normalized[key] = clamp(finiteNumber(value, fallback), bounds[0], bounds[1]);
+          return;
+        }
+        normalized[key] = value;
+      });
+      return normalized;
+    }
+
+    _applyOptionsPatch(patch, requestFrame) {
+      const hadTilt = !!this.options.tilt;
+      const hadShadow = !!this.options.shadow;
+      Object.assign(this.options, patch || {});
+      this.revealTypeIndex = this.options.reveal === "fade" ? 1 : 0;
+      this.hollowMaskContent =
+        !!this.options.hollowMaskContent ||
+        this.el.hasAttribute("data-liquid-mask-content");
+
+      if (Object.prototype.hasOwnProperty.call(patch || {}, "tilt") && hadTilt !== !!this.options.tilt) {
+        this.setTilt(this.options.tilt);
+      }
+
+      const optics = this.resolveOptics(1);
+      if (this.options.material !== null && this.options.material !== undefined) {
+        this.setShadow(true, optics.shadowStrength);
+      } else if (
+        Object.prototype.hasOwnProperty.call(patch || {}, "shadow") ||
+        hadShadow !== !!this.options.shadow
+      ) {
+        this.setShadow(this.options.shadow, optics.shadowStrength);
+      }
+
+      this.renderer._metricsDirty = true;
+      if (requestFrame !== false && this.renderer.requestRender) this.renderer.requestRender();
+      return this;
+    }
+
+    setOptions(patch) {
+      this._transition = null;
+      return this._applyOptionsPatch(this._normalizeOptionsPatch(patch), true);
+    }
+
+    transitionOptions(patch, transition) {
+      const config = transition || {};
+      const duration = Math.max(0, finiteNumber(config.duration, 200));
+      if (duration === 0) return this.setOptions(patch);
+
+      const now = performance.now();
+      if (this._transition) this._advanceTransition(now);
+      const normalized = this._normalizeOptionsPatch(patch);
+      const from = {};
+      const to = {};
+      const immediate = {};
+      Object.keys(normalized).forEach((key) => {
+        if (LIQUID_GL_LIVE_NUMERIC_OPTIONS[key] && normalized[key] !== null) {
+          from[key] = finiteNumber(this.options[key], key === "magnify" ? 1 : 0);
+          to[key] = normalized[key];
+        } else {
+          immediate[key] = normalized[key];
+        }
+      });
+      if (Object.keys(immediate).length) this._applyOptionsPatch(immediate, false);
+      if (!Object.keys(to).length) {
+        if (this.renderer.requestRender) this.renderer.requestRender();
+        return this;
+      }
+
+      const easing = typeof config.easing === "function"
+        ? config.easing
+        : (LIQUID_GL_EASINGS[config.easing] || LIQUID_GL_EASINGS.easeOut);
+      this._transition = { startTime: now, duration, easing, from, to };
+      if (this.renderer.requestRender) this.renderer.requestRender();
+      return this;
+    }
+
+    _advanceTransition(now) {
+      const transition = this._transition;
+      if (!transition) return false;
+      const progress = clamp((now - transition.startTime) / transition.duration, 0, 1);
+      const eased = clamp(finiteNumber(transition.easing(progress), progress), 0, 1);
+      const next = {};
+      Object.keys(transition.to).forEach((key) => {
+        next[key] = mixNumber(transition.from[key], transition.to[key], eased);
+      });
+      this._applyOptionsPatch(next, false);
+      if (progress >= 1) {
+        this._transition = null;
+        return false;
+      }
+      return true;
+    }
+
+    resolveOptics(quality) {
+      if (this.options.material !== null && this.options.material !== undefined) {
+        return resolveLiquidGlassMaterial(this.options.material, {
+          width: this.rectPx ? this.rectPx.width : 0,
+          height: this.rectPx ? this.rectPx.height : 0,
+        }, quality);
+      }
+      return {
+        material: 0,
+        density: 0,
+        side: 0,
+        tone: [1, 1, 1],
+        materialAlpha: 0,
+        frostSigmaPx: Math.max(0, finiteNumber(this.options.frost, 0)),
+        refraction: Math.max(0, finiteNumber(this.options.refraction, 0.01)),
+        refractionFill: clamp(finiteNumber(this.options.refractionFill, 0), 0, 1),
+        bevelDepth: Math.max(0, finiteNumber(this.options.bevelDepth, 0.08)),
+        bevelWidth: Math.max(0, finiteNumber(this.options.bevelWidth, 0.15)),
+        magnify: clamp(finiteNumber(this.options.magnify, 1), 0.001, 3),
+        specularPrimary: 0.1675,
+        specularSecondary: 0.08,
+        shadowStrength: 0.1,
+        specular: this.options.specular !== false,
+      };
     }
 
     _resolveCssLength(raw, fallback = 0) {
@@ -2563,9 +2850,7 @@
           style.display === "none" ||
           style.visibility === "hidden" ||
           (node !== this.el && parseFloat(style.opacity || "1") <= 0.01) ||
-            (node.classList &&
-            (node.classList.contains("infoPillHidden") ||
-              node.classList.contains("infoPillHidden")))
+          (node.classList && node.classList.contains("infoPillHidden"))
         ) {
           return true;
         }
@@ -2737,11 +3022,12 @@
     }
 
     /* ----------------------------- */
-    setShadow(enabled) {
+    setShadow(enabled, strength) {
       this.options.shadow = !!enabled;
-
-      const SHADOW_VAL =
-        "0 10px 30px rgba(0,0,0,0.1), 0 0 0 0.5px rgba(0,0,0,0.05)";
+      const shadowStrength = clamp(finiteNumber(strength, 0.1), 0, 0.4);
+      const shadowValue =
+        `0 10px 30px rgba(0,0,0,${shadowStrength.toFixed(4)}), ` +
+        `0 0 0 0.5px rgba(0,0,0,${(shadowStrength * 0.5).toFixed(4)})`;
 
       const syncShadow = () => {
         if (!this._shadowEl) return;
@@ -2757,7 +3043,7 @@
       };
 
       if (enabled) {
-        this.el.style.boxShadow = SHADOW_VAL;
+        this.el.style.boxShadow = shadowValue;
 
         if (!this._shadowEl) {
           this._shadowEl = document.createElement("div");
@@ -2765,7 +3051,7 @@
             position: "fixed",
             pointerEvents: "none",
             zIndex: effectiveZ(this.el) - 2,
-            boxShadow: SHADOW_VAL,
+            boxShadow: shadowValue,
             willChange: "transform, width, height",
             opacity: this.revealTypeIndex === 1 ? 0 : 1,
           });
@@ -2776,6 +3062,7 @@
             passive: true,
           });
         }
+        this._shadowEl.style.boxShadow = shadowValue;
         syncShadow();
       } else {
         if (this._shadowEl) {
@@ -3017,19 +3304,19 @@
         this._smoothReset();
       };
 
-      this.el.addEventListener("mouseenter", this._onMouseEnter.bind(this), {
+      this.el.addEventListener("mouseenter", this._onMouseEnter, {
         passive: true,
       });
-      this.el.addEventListener("mousemove", this._onMouseMove.bind(this), {
+      this.el.addEventListener("mousemove", this._onMouseMove, {
         passive: true,
       });
-      this.el.addEventListener("touchstart", this._onTouchStart.bind(this), {
+      this.el.addEventListener("touchstart", this._onTouchStart, {
         passive: true,
       });
-      this.el.addEventListener("touchmove", this._onTouchMove.bind(this), {
+      this.el.addEventListener("touchmove", this._onTouchMove, {
         passive: true,
       });
-      this.el.addEventListener("touchend", this._onTouchEnd.bind(this), {
+      this.el.addEventListener("touchend", this._onTouchEnd, {
         passive: true,
       });
 
@@ -3067,12 +3354,12 @@
 
     _unbindTiltHandlers() {
       if (!this._tiltHandlersBound) return;
-      this.el.removeEventListener("mouseenter", this._onMouseEnter.bind(this));
-      this.el.removeEventListener("mousemove", this._onMouseMove.bind(this));
+      this.el.removeEventListener("mouseenter", this._onMouseEnter);
+      this.el.removeEventListener("mousemove", this._onMouseMove);
       document.removeEventListener("mousemove", this._boundCheckLeave);
-      this.el.removeEventListener("touchstart", this._onTouchStart.bind(this));
-      this.el.removeEventListener("touchmove", this._onTouchMove.bind(this));
-      this.el.removeEventListener("touchend", this._onTouchEnd.bind(this));
+      this.el.removeEventListener("touchstart", this._onTouchStart);
+      this.el.removeEventListener("touchmove", this._onTouchMove);
+      this.el.removeEventListener("touchend", this._onTouchEnd);
 
       if (this._docPointerMove) {
         document.removeEventListener("pointermove", this._docPointerMove);
@@ -3131,6 +3418,7 @@
     }
 
     destroy() {
+      this._transition = null;
       try {
         if (this._sizeObs) this._sizeObs.disconnect();
       } catch (e) {}
@@ -3168,7 +3456,7 @@
       tilt: false,
       tiltFactor: 5,
       magnify: 1,
-      glassMode: "clear",
+      material: null,
       engine: "snapdom",
       sourceType: "visualizerWebgl",
       sourceElement: "#visualizerBg",
@@ -3262,6 +3550,16 @@
 
     return instances.length === 1 ? instances[0] : instances;
   };
+
+  window.liquidGL.resolveMaterial = resolveLiquidGlassMaterial;
+  window.liquidGL.normalizeMaterial = normalizeLiquidGlassMaterial;
+  window.liquidGL.easings = LIQUID_GL_EASINGS;
+  window.liquidGL.testing = Object.freeze({
+    Lens: liquidGLLens,
+    Renderer: liquidGLRenderer,
+    sourceTexelsPerCssPixel,
+    lensMinorDimensionInSourceUV,
+  });
 
   /* --------------------------------------------------
    *  Public helper: register elements that need live updates

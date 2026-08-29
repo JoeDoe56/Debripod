@@ -1,7 +1,10 @@
+import asyncio
 import json
 from types import SimpleNamespace
 
-import debripod.auth as auth
+from aiohttp import web
+from aiohttp.test_utils import TestClient, TestServer
+
 import debripod.runtime_routes as routes
 
 
@@ -10,39 +13,70 @@ def _result():
 
 
 class Pipeline:
-    def search_stream(self, query, context):
+    async def search_stream(self, query, context):
         yield {"event":"start","search_id":context.search_id,"query":query}
-        yield {"event":"source","search_id":context.search_id,"provider_group":"library","source_status":{"status":"ok"},"error":"","duration_ms":1,"cached":False,"result_count":1,"results":[_result()]}
-        yield {"event":"source","search_id":context.search_id,"provider_group":"torrents","source_status":{"status":"error"},"error":"offline","duration_ms":1,"cached":False,"result_count":0,"results":[]}
+        yield {"event":"source","search_id":context.search_id,"provider_group":"library","source_status":{"status":"ok"},"status":"ok","error":"","duration_ms":1,"cached":False,"result_count":1,"results":[_result()]}
+        yield {"event":"source","search_id":context.search_id,"provider_group":"torrents","source_status":{"status":"error"},"status":"error","error":"offline","duration_ms":1,"cached":False,"result_count":0,"results":[]}
         yield {"event":"done","search_id":context.search_id,"query":query,"results":[_result()],"provider_status":[{"provider_group":"library","error":""},{"provider_group":"torrents","error":"offline"}]}
 
-    def search_once(self, query, context):
-        return list(self.search_stream(query, context))[-1]
+    async def search_once(self, query, context):
+        final = {}
+        async for event in self.search_stream(query, context):
+            if event["event"] == "done":
+                final = event
+        return final
 
 
-def _client(monkeypatch):
-    monkeypatch.setattr(auth, "_find_user", lambda username: {"username": username, "password_hash": "test"})
-    monkeypatch.setattr(routes, "_apply_runtime_settings_for_user", lambda _username: {})
-    monkeypatch.setattr(routes, "_active_search_runtime", lambda: SimpleNamespace(pipeline=Pipeline()))
-    monkeypatch.setattr(routes, "_disk_cache_get", lambda _key: None)
+async def _request(monkeypatch, path: str, generation: str = "7"):
+    cache_keys = []
+    runtime = SimpleNamespace(
+        pipeline=Pipeline(),
+        local_index=SimpleNamespace(diagnostics=lambda: {"meta": {"local_index_generation": generation}}),
+    )
+    monkeypatch.setattr(routes, "_current_settings_username", lambda _request: "tester")
+    monkeypatch.setattr(routes, "ensure_app_settings", lambda **_kwargs: {
+        "LOCAL_INDEX_ENABLED": True,
+        "TORRENT_SEARCH_ENABLED_SOURCES": ["knaben"],
+        "SOULSEEK_USERNAME": "",
+        "SOULSEEK_PASSWORD": "",
+        "SOULSEEK_SEARCH_MAX_RESULTS": 5000,
+        "YOUTUBE_SEARCH_LIMIT": 24,
+    })
+    monkeypatch.setattr(routes, "_active_search_runtime", lambda _request=None: runtime)
+    monkeypatch.setattr(routes, "_disk_cache_get", lambda key: cache_keys.append(key) or None)
     monkeypatch.setattr(routes, "library_root_versions", lambda: {})
     monkeypatch.setattr(routes, "record_search_history", lambda *_args, **_kwargs: None)
-    app = routes.create_app(); app.config.update(TESTING=True, SECRET_KEY="route-test")
-    client = app.test_client()
-    with client.session_transaction() as session: session["username"] = "tester"
-    return client
+    app = web.Application()
+    app.router.add_get("/api/libsearch/combined", routes.api_libsearch_combined)
+    client = TestClient(TestServer(app))
+    await client.start_server()
+    try:
+        response = await client.get(path)
+        return response.status, await response.text(), cache_keys[0]
+    finally:
+        await client.close()
 
 
 def test_combined_stream_orders_events_and_preserves_partial_failure(monkeypatch):
-    response = _client(monkeypatch).get("/api/libsearch/combined?q=Alice&stream=1")
-    assert response.status_code == 200
-    events = [json.loads(line) for line in response.get_data(as_text=True).splitlines()]
+    status, body, _cache_key = asyncio.run(_request(monkeypatch, "/api/libsearch/combined?q=Alice&stream=1"))
+    assert status == 200
+    events = [json.loads(line) for line in body.splitlines()]
     assert [event["event"] for event in events] == ["start", "source", "source", "done"]
     assert events[-1]["provider_status"][-1]["error"] == "offline"
 
 
 def test_combined_nonstream_is_canonical_without_provider_arrays(monkeypatch):
-    payload = _client(monkeypatch).get("/api/libsearch/combined?q=Alice").get_json()
+    status, body, _cache_key = asyncio.run(_request(monkeypatch, "/api/libsearch/combined?q=Alice"))
+    assert status == 200
+    payload = json.loads(body)
     assert payload["ok"] and len(payload["results"]) == 1
     assert set(payload["results"][0]) == set(_result())
     assert not ({"knaben_results", "slsk_users", "youtube_results"} & set(payload))
+
+
+def test_combined_cache_key_normalizes_query_and_changes_with_local_index_generation(monkeypatch):
+    _status, _body, first = asyncio.run(_request(monkeypatch, "/api/libsearch/combined?q=Alice", "7"))
+    _status, _body, normalized = asyncio.run(_request(monkeypatch, "/api/libsearch/combined?q=ALICE", "7"))
+    _status, _body, updated = asyncio.run(_request(monkeypatch, "/api/libsearch/combined?q=Alice", "8"))
+    assert first == normalized
+    assert updated != first

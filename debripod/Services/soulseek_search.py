@@ -15,12 +15,12 @@ class SoulseekSearchProvider:
     def __init__(self, service_provider: Callable[[], Any]):
         self.service_provider = service_provider
 
-    def search(self, query: str, context: Any = None) -> ProviderSearchResponse:
+    async def search(self, query: str, context: Any = None) -> ProviderSearchResponse:
         started = time.monotonic()
         service = self.service_provider()
         if service is None or not service.is_ready():
             return ProviderSearchResponse("soulseek", {"status": "unavailable"}, [], error="Soulseek service is not ready", duration_ms=int((time.monotonic() - started) * 1000))
-        items = service.search(query)
+        items = await service.search_async(query)
         by_user: dict[str, list[dict[str, Any]]] = {}
         for item in items:
             by_user.setdefault(str(item.get("user") or ""), []).append(item)
@@ -51,3 +51,6 @@ class SoulseekSearchProvider:
                 "provider_data": {"user": user, "directory": path, "speed": int(directory.get("speed") or 0)},
             })
         return ProviderSearchResponse("soulseek", {"status": "ok", "file_count": len(items)}, results, duration_ms=int((time.monotonic() - started) * 1000))
+
+    async def search_stream(self, query: str, context: Any = None):
+        yield await self.search(query, context)

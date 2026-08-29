@@ -1,19 +1,24 @@
 from __future__ import annotations
 
-from ..factory import DeferredApp
+import asyncio
+
+from aiohttp import web
+
+from ..factory import SERVICES_KEY, json_response
 from ..runtime_state import *
 from ..runtime_downloads import *
 from ..runtime_route_state import *
 from ..storage.tasks import save_task_metadata
 from ..Services.debrid import get_active_provider
 from ..Services.search.runtime import get_search_runtime
+from ..Services.search.pipeline import SearchPipeline
+from ..Services.search.providers import SearchContext
+from ..Library.search_ranker import infer_query_intent, normalize_search_text
 
-app = DeferredApp()
-
-def _mcp_allowed_origins() -> List[str]:
+def _mcp_allowed_origins(request: web.Request) -> List[str]:
     allowed = {f"http://127.0.0.1:{PORT}", f"http://localhost:{PORT}"}
     try:
-        allowed.add((request.host_url or '').rstrip('/'))
+        allowed.add(f"{request.scheme}://{request.host}")
     except Exception:
         pass
     return sorted(x for x in allowed if x)
@@ -26,7 +31,7 @@ def _mcp_is_loopback_host(host: str) -> bool:
     return h in {'localhost', '127.0.0.1', '::1'}
 
 
-def _mcp_validate_origin() -> Optional[Response]:
+def _mcp_validate_origin(request: web.Request) -> Optional[web.Response]:
     origin = (request.headers.get('Origin') or '').strip()
     if not origin:
         return None
@@ -39,7 +44,7 @@ def _mcp_validate_origin() -> Optional[Response]:
     except Exception:
         norm = origin
         host = ''
-    if norm in _mcp_allowed_origins():
+    if norm in _mcp_allowed_origins(request):
         return None
     if _mcp_is_loopback_host(host):
         return None
@@ -49,7 +54,7 @@ def _mcp_validate_origin() -> Optional[Response]:
         req_host = ''
     if req_host and host and host == req_host:
         return None
-    return Response('Forbidden', status=403, mimetype='text/plain')
+    return web.Response(text='Forbidden', status=403, content_type='text/plain')
 
 
 def _mcp_prune_sessions() -> None:
@@ -118,59 +123,58 @@ def _mcp_set_initialized(session_id: str, initialized: bool = True) -> None:
             sess['updated'] = time.time()
 
 
-def _mcp_json_response(payload: Any, status: int = 200, session_id: str = '') -> Response:
-    resp = jsonify(payload)
-    resp.status_code = status
+def _mcp_json_response(payload: Any, status: int = 200, session_id: str = '') -> web.Response:
+    resp = web.json_response(payload, status=status)
     if session_id:
         resp.headers['Mcp-Session-Id'] = session_id
     resp.headers['Cache-Control'] = 'no-cache'
     return resp
 
 
-def _mcp_result(msg_id: Any, result: dict, session_id: str = '') -> Response:
+def _mcp_result(msg_id: Any, result: dict, session_id: str = '') -> web.Response:
     return _mcp_json_response({'jsonrpc': '2.0', 'id': msg_id, 'result': result}, 200, session_id=session_id)
 
 
-def _mcp_error(msg_id: Any, code: int, message: str, *, data: Any = None, status: int = 400, session_id: str = '') -> Response:
+def _mcp_error(msg_id: Any, code: int, message: str, *, data: Any = None, status: int = 400, session_id: str = '') -> web.Response:
     err = {'code': int(code), 'message': str(message)}
     if data is not None:
         err['data'] = data
     return _mcp_json_response({'jsonrpc': '2.0', 'id': msg_id, 'error': err}, status, session_id=session_id)
 
 
-def _mcp_sse_response(session_id: str) -> Response:
+async def _mcp_sse_response(request: web.Request, session_id: str) -> web.StreamResponse:
     sid = _mcp_ensure_session(session_id)
-
-    def gen():
-        first = {
-            'jsonrpc': '2.0',
-            'method': 'notifications/message',
-            'params': {
-                'level': 'info',
-                'data': {
-                    'server': 'debripod',
-                    'version': str(VERSION),
-                    'endpoint': '/mcp',
-                    'sessionId': sid,
-                },
+    first = {
+        'jsonrpc': '2.0',
+        'method': 'notifications/message',
+        'params': {
+            'level': 'info',
+            'data': {
+                'server': 'debripod',
+                'version': str(VERSION),
+                'endpoint': '/mcp',
+                'sessionId': sid,
             },
-        }
-        yield ': connected\n\n'
-        yield 'event: endpoint\n'
-        yield 'data: ' + json.dumps({'path': '/mcp', 'sessionId': sid}, ensure_ascii=False) + '\n\n'
-        yield 'event: message\n'
-        yield 'data: ' + json.dumps(first, ensure_ascii=False) + '\n\n'
+        },
+    }
+    response = web.StreamResponse(status=200, headers={
+        'Content-Type': 'text/event-stream',
+        'Cache-Control': 'no-cache',
+        'Connection': 'keep-alive',
+        'X-Accel-Buffering': 'no',
+        'Mcp-Session-Id': sid,
+    })
+    await response.prepare(request)
+    await response.write(b': connected\n\n')
+    await response.write(('event: endpoint\ndata: ' + json.dumps({'path': '/mcp', 'sessionId': sid}, ensure_ascii=False) + '\n\n').encode())
+    await response.write(('event: message\ndata: ' + json.dumps(first, ensure_ascii=False) + '\n\n').encode())
+    try:
         while True:
-            time.sleep(MCP_SSE_KEEPALIVE_SECONDS)
+            await asyncio.sleep(MCP_SSE_KEEPALIVE_SECONDS)
             _mcp_touch_session(sid)
-            yield ': keepalive\n\n'
-
-    resp = Response(gen(), status=200, mimetype='text/event-stream')
-    resp.headers['Cache-Control'] = 'no-cache'
-    resp.headers['Connection'] = 'keep-alive'
-    resp.headers['X-Accel-Buffering'] = 'no'
-    resp.headers['Mcp-Session-Id'] = sid
-    return resp
+            await response.write(b': keepalive\n\n')
+    except (ConnectionResetError, asyncio.CancelledError):
+        return response
 
 
 def _mcp_tool_result(structured: dict, text: str, *, is_error: bool = False) -> dict:
@@ -273,9 +277,19 @@ def _mcp_group_soulseek_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any
     return out
 
 
-def _mcp_search_torrents(query: str, limit: int) -> dict:
-    response = get_search_runtime().indexer_service.search(query)
-    trimmed = list(response.results or [])[:limit]
+async def _mcp_search_torrents(query: str, limit: int) -> dict:
+    runtime = get_search_runtime()
+    pipeline = SearchPipeline([runtime.local_index_provider, runtime.torrent_provider])
+    context = SearchContext(
+        username="",
+        query=query,
+        normalized_query=normalize_search_text(query),
+        intent=infer_query_intent(query),
+        settings={},
+        search_id="mcp:" + uuid.uuid4().hex,
+    )
+    response = await pipeline.search_once(query, context)
+    trimmed = list(response.get('results') or [])[:limit]
     items = []
     for it in trimmed:
         provider = it.get('provider_data') or {}
@@ -300,17 +314,17 @@ def _mcp_search_torrents(query: str, limit: int) -> dict:
         'engine': 'torrents',
         'query': query,
         'limit': limit,
-        'error': str(response.error or ''),
+        'error': '',
         'results': items,
         'result_count': len(items),
     }
 
 
-def _mcp_search_soulseek(query: str, limit: int) -> dict:
+async def _mcp_search_soulseek(query: str, limit: int) -> dict:
     svc = SOULSEEK_SERVICE
     if not svc or not svc.is_ready():
         return {'engine': 'soulseek', 'query': query, 'limit': limit, 'results': [], 'result_count': 0, 'error': 'Soulseek service is not ready'}
-    items = svc.search(query)
+    items = await svc.search_async(query)
     grouped = _mcp_group_soulseek_items(items)
     out = []
     for u in grouped:
@@ -339,7 +353,7 @@ def _mcp_search_soulseek(query: str, limit: int) -> dict:
     return {'engine': 'soulseek', 'query': query, 'limit': limit, 'results': out, 'result_count': len(out), 'error': ''}
 
 
-def _mcp_start_debrid_download(title: str, magnet: str) -> dict:
+async def _mcp_start_debrid_download(title: str, magnet: str, http) -> dict:
     if not magnet.startswith('magnet:?'):
         raise RuntimeError('Invalid magnet')
     if not str(DOWNLOAD_DIR or '').strip():
@@ -348,8 +362,8 @@ def _mcp_start_debrid_download(title: str, magnet: str) -> dict:
         'DEBRID_PROVIDER', 'REAL_DEBRID_API_KEY', 'RD_BASE', 'ALLDEBRID_API_KEY', 'ALLDEBRID_BASE',
         'PREMIUMIZE_API_KEY', 'PREMIUMIZE_BASE', 'TORBOX_API_KEY', 'TORBOX_BASE', 'SEARCH_STREAM_SESSION_TTL_SECONDS',
     )
-    provider = get_active_provider({key: globals().get(key) for key in keys}, int(REQUEST_TIMEOUT_SECONDS or 25))
-    preview = provider.preview_magnet(magnet)
+    provider = get_active_provider({key: globals().get(key) for key in keys}, int(REQUEST_TIMEOUT_SECONDS or 25), http)
+    preview = await provider.preview_magnet(magnet)
     file_ids = [item.file_id for item in preview.files]
     if not file_ids:
         raise RuntimeError('No files found in torrent')
@@ -371,11 +385,11 @@ def _mcp_start_debrid_download(title: str, magnet: str) -> dict:
     with TASKS_LOCK:
         TASKS[task_id] = t
     save_task_metadata(t, original_result_title=title, remote_files=preview.files, selected_file_ids=file_ids, version=str(VERSION))
-    threading.Thread(target=worker, args=(task_id,), daemon=True).start()
+    asyncio.create_task(worker(task_id), name=f"debrid-download:{task_id}")
     return {'task_id': task_id, 'task_dir': task_dir, 'provider': provider.id, 'debrid_task_id': preview.provider_task_id, 'selected_file_count': len(file_ids)}
 
 
-def _mcp_start_slsk_download(user: str, directory: str, files_in: List[Dict[str, Any]], title: str = '') -> dict:
+async def _mcp_start_slsk_download(user: str, directory: str, files_in: List[Dict[str, Any]], title: str = '') -> dict:
     svc = SOULSEEK_SERVICE
     if not svc or not svc.is_ready():
         raise RuntimeError('Soulseek is not configured or failed to start')
@@ -437,7 +451,7 @@ def _mcp_start_slsk_download(user: str, directory: str, files_in: List[Dict[str,
     with TASKS_LOCK:
         TASKS[task_id] = t
     save_task_metadata(t, original_result_title=title, remote_files=files, selected_file_ids=[item.get('file_id') for item in files], version=str(VERSION))
-    svc.enqueue_downloads(task_id, user, remote_paths)
+    await svc.enqueue_downloads_async(task_id, user, remote_paths)
     return {'task_id': task_id, 'task_dir': task_download_dir, 'file_count': len(remote_paths), 'user': user, 'directory': directory}
 
 
@@ -463,7 +477,7 @@ def _mcp_build_library_tree() -> dict:
     return {'roots': roots_out}
 
 
-def _mcp_handle_tool_call(name: str, args: dict) -> dict:
+async def _mcp_handle_tool_call(name: str, args: dict, http) -> dict:
     name = str(name or '').strip()
     args = args if isinstance(args, dict) else {}
     if name == 'debripod_torrent_search':
@@ -471,7 +485,7 @@ def _mcp_handle_tool_call(name: str, args: dict) -> dict:
         if not query:
             return _mcp_tool_result({'ok': False, 'error': 'Missing query'}, 'Error: Missing query', is_error=True)
         limit = _mcp_get_limit(args)
-        data = _mcp_search_torrents(query, limit)
+        data = await _mcp_search_torrents(query, limit)
         ok = not data.get('error')
         text = json.dumps(data, ensure_ascii=False, indent=2)
         data['ok'] = ok
@@ -482,7 +496,7 @@ def _mcp_handle_tool_call(name: str, args: dict) -> dict:
         if not query:
             return _mcp_tool_result({'ok': False, 'error': 'Missing query'}, 'Error: Missing query', is_error=True)
         limit = _mcp_get_limit(args)
-        data = _mcp_search_soulseek(query, limit)
+        data = await _mcp_search_soulseek(query, limit)
         ok = not data.get('error')
         text = json.dumps(data, ensure_ascii=False, indent=2)
         data['ok'] = ok
@@ -499,7 +513,7 @@ def _mcp_handle_tool_call(name: str, args: dict) -> dict:
         kind = str(payload.get('kind') or '').strip().lower()
         try:
             if kind == 'slsk_dir':
-                out = _mcp_start_slsk_download(
+                out = await _mcp_start_slsk_download(
                     str(payload.get('user') or '').strip(),
                     _slsk_norm_remote_path(str(payload.get('directory') or '').strip()),
                     payload.get('files') if isinstance(payload.get('files'), list) else [],
@@ -509,7 +523,7 @@ def _mcp_handle_tool_call(name: str, args: dict) -> dict:
                 text = f"Soulseek download started. Files are downloading to {out.get('task_dir')}."
                 return _mcp_tool_result(data, text)
             if kind == 'torrent_item':
-                out = _mcp_start_debrid_download(str(payload.get('title') or 'Torrent').strip() or 'Torrent', str(payload.get('magnet') or '').strip())
+                out = await _mcp_start_debrid_download(str(payload.get('title') or 'Torrent').strip() or 'Torrent', str(payload.get('magnet') or '').strip(), http)
                 data = {'ok': True, 'source': 'torrent', 'status': 'started', **out}
                 text = f"Torrent download started. Files are downloading to {out.get('task_dir')}."
                 return _mcp_tool_result(data, text)
@@ -550,7 +564,7 @@ def _mcp_tools_list() -> List[dict]:
         {
             'name': 'debripod_torrent_search',
             'title': 'DebriPod Torrent Search',
-            'description': 'Search enabled Cardigann torrent indexers. Returns DebriPod download identifiers.',
+            'description': 'Search DebriPod Local Index and enabled structured torrent APIs. Returns DebriPod download identifiers.',
             'inputSchema': {
                 'type': 'object',
                 'properties': {
@@ -607,7 +621,7 @@ def _mcp_tools_list() -> List[dict]:
     ]
 
 
-def _mcp_handle_message(msg: dict, session_id: str = '') -> Tuple[Optional[dict], str, int]:
+async def _mcp_handle_message(msg: dict, session_id: str = '', http=None) -> Tuple[Optional[dict], str, int]:
     if not isinstance(msg, dict):
         return {'jsonrpc': '2.0', 'id': None, 'error': {'code': -32600, 'message': 'Invalid Request'}}, session_id, 400
     method = str(msg.get('method') or '').strip()
@@ -638,7 +652,7 @@ def _mcp_handle_message(msg: dict, session_id: str = '') -> Tuple[Optional[dict]
         session_id = _mcp_ensure_session(session_id)
         tool_name = str(params.get('name') or '').strip()
         tool_args = params.get('arguments') if isinstance(params.get('arguments'), dict) else {}
-        return {'jsonrpc': '2.0', 'id': msg_id, 'result': _mcp_handle_tool_call(tool_name, tool_args)}, session_id, 200
+        return {'jsonrpc': '2.0', 'id': msg_id, 'result': await _mcp_handle_tool_call(tool_name, tool_args, http)}, session_id, 200
     if msg_id is None:
         session_id = _mcp_ensure_session(session_id) if method else session_id
         return None, session_id, 202
@@ -646,34 +660,31 @@ def _mcp_handle_message(msg: dict, session_id: str = '') -> Tuple[Optional[dict]
     return {'jsonrpc': '2.0', 'id': msg_id, 'error': {'code': -32601, 'message': 'Method not found'}}, session_id, 404
 
 
-@app.route('/mcp', methods=['GET'])
-def mcp_get():
-    bad = _mcp_validate_origin()
+async def mcp_get(request: web.Request):
+    bad = _mcp_validate_origin(request)
     if bad is not None:
         return bad
     session_id = (request.headers.get('Mcp-Session-Id') or '').strip()
-    return _mcp_sse_response(session_id)
+    return await _mcp_sse_response(request, session_id)
 
 
-@app.route('/mcp', methods=['DELETE'])
-def mcp_delete():
-    bad = _mcp_validate_origin()
+async def mcp_delete(request: web.Request):
+    bad = _mcp_validate_origin(request)
     if bad is not None:
         return bad
     session_id = (request.headers.get('Mcp-Session-Id') or '').strip()
     if session_id:
         with MCP_SESSIONS_LOCK:
             MCP_SESSIONS.pop(session_id, None)
-    return Response(status=204)
+    return web.Response(status=204)
 
 
-@app.route('/mcp', methods=['POST'])
-def mcp_post():
-    bad = _mcp_validate_origin()
+async def mcp_post(request: web.Request):
+    bad = _mcp_validate_origin(request)
     if bad is not None:
         return bad
     try:
-        body = request.get_json(force=True, silent=False)
+        body = await request.json()
     except Exception:
         return _mcp_error(None, -32700, 'Parse error', status=400)
     header_session_id = (request.headers.get('Mcp-Session-Id') or '').strip()
@@ -682,19 +693,25 @@ def mcp_post():
     status = 200
     session_id = header_session_id
     for msg in msgs:
-        reply, session_id, this_status = _mcp_handle_message(msg, session_id=session_id)
+        reply, session_id, this_status = await _mcp_handle_message(msg, session_id=session_id, http=request.app[SERVICES_KEY].http)
         status = max(status, this_status)
         if reply is not None:
             replies.append(reply)
     if not replies:
         session_id = _mcp_ensure_session(session_id or header_session_id) if msgs else session_id
-        resp = Response(status=202)
+        resp = web.Response(status=202)
         if session_id:
             resp.headers['Mcp-Session-Id'] = session_id
         resp.headers['Cache-Control'] = 'no-cache'
         return resp
     payload = replies if isinstance(body, list) else replies[0]
     return _mcp_json_response(payload, status=200 if status < 400 else status, session_id=session_id)
+
+
+def register_mcp_routes(app: web.Application) -> None:
+    app.router.add_get('/mcp', mcp_get)
+    app.router.add_delete('/mcp', mcp_delete)
+    app.router.add_post('/mcp', mcp_post)
 
 
 __all__ = [name for name in globals() if not name.startswith("__")]

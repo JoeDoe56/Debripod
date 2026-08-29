@@ -8,36 +8,41 @@ import zlib
 import secrets
 import socket
 import time
+import asyncio
 import concurrent.futures
+import contextlib
+import logging
+import math
 import threading
 from pathlib import Path
 from urllib.parse import unquote, urlparse
 
-from flask import g, session, stream_with_context
+from aiohttp import web
 
 from . import runtime_downloads as downloads_module
 from . import runtime_route_state as route_state_module
 from . import runtime_state as state_module
 from .Services import lastfm as lastfm_module
 from .Services import soulseek as soulseek_module
+from .Services import youtube as youtube_module
 from .Services.youtube import ytdlp_comments, ytdlp_inspect
-from .Services.ytdlp_runner import run_flat_entries
+from .Services.ytdlp_runner import run_flat_entries_async
 from .Services.ytdlp_search import YtdlpSearchProvider
-from .Services.soundcloud_directory import SoundCloudDirectoryService
 from .Services.library_search import LibrarySearchProvider
+from .Services.local_index_search import LocalIndexSearchProvider
+from .Services.local_torrent_index import LocalIndexUpdater, LocalTorrentIndex
 from .Services.soulseek_search import SoulseekSearchProvider
-from .Services.indexers.definition_store import DefinitionStore
-from .Services.indexers.status import IndexerStatusStore
-from .Services.indexers.http_client import IndexerHttpClient
-from .Services.indexers.service import IndexerService
-from .Services.indexers.browsers.solver import BrowserChallengeSolver
+from .Services.torrent_search import TorrentSearchProvider
+from .Services.torrent_sources import TorrentHit
+from .Services.http import HttpClient, create_client_session
 from .Services.search.pipeline import SearchPipeline
 from .Services.search.providers import SearchContext
 from .Services.search.runtime import configure_search_runtime, get_search_runtime, reset_search_runtime
 from .Services.link_intake import classify_link_input
+from .Library import tvmaze as tvmaze_module
 from .Library.tvmaze import normalized_episode_information
-from .factory import DeferredApp
-from .auth import register_auth
+from .factory import AppServices, SERVICES_KEY, json_response, session_for, session_middleware
+from .auth import _csrf_token, auth_middleware, register_auth_routes
 from .Routes.notifications import register_notification_routes
 from .config import _coerce_config_value, ensure_startup_security_config, load_default_app_config_overrides, save_config, save_default_app_config_overrides
 from .Library.library_db import load_folder_entries, load_palette, load_palette_for_media, load_visualizer_analysis_for_media, save_folder_entries, save_palette
@@ -58,9 +63,8 @@ from .runtime_downloads import *
 from .settings import APP_SETTING_KEYS, DEFAULT_APP_SETTINGS, DEFAULT_UI_SETTINGS, SECRET_SETTING_KEYS, default_app_settings, executable_status, ensure_app_settings, masked_settings, pick_system_path, save_app_settings, settings_fingerprint
 
 # =========================
-# Flask app and templates
+# aiohttp runtime state
 # =========================
-app = DeferredApp()
 _ACTIVE_SETTINGS_USERNAME = ""
 _ACTIVE_SETTINGS_SIGNATURE: tuple[int, int] = (0, 0)
 _ACTIVE_SETTINGS_DATA: dict[str, Any] = {}
@@ -77,53 +81,40 @@ _FULL_REINDEX_STATUS: dict[str, Any] = {
     "finished_at": 0.0,
     "error": "",
 }
+routes = web.RouteTableDef()
 
 
 from .runtime_route_state import *
 from .MCP import routes as mcp_routes
 
 
-app.config["SECRET_KEY"] = os.urandom(24)
-register_icon_routes(app)
-register_lastfm_routes(
-    app,
-    api_key_provider=lambda: LASTFM_API_KEY,
-    api_secret_provider=lambda: LASTFM_API_SECRET,
-)
-register_task_routes(app)
-register_notification_routes(app)
-
-
-def _current_settings_username() -> str:
-    try:
-        return str(session.get("username") or "").strip()
-    except Exception:
-        return ""
+def _current_settings_username(request: web.Request) -> str:
+    return str(session_for(request).get("username") or "").strip()
 
 
 def _default_app_overrides() -> dict[str, Any]:
     return load_default_app_config_overrides()
 
 
-def _shutdown_soulseek_service() -> None:
+async def _shutdown_soulseek_service() -> None:
     service = getattr(state_module, "SOULSEEK_SERVICE", None)
-    if service:
-        try:
-            service.shutdown()
-        except Exception:
-            pass
     state_module.SOULSEEK_SERVICE = None
     globals()["SOULSEEK_SERVICE"] = None
     for module in (downloads_module, route_state_module, mcp_routes):
         if hasattr(module, "SOULSEEK_SERVICE"):
             setattr(module, "SOULSEEK_SERVICE", None)
+    if service:
+        try:
+            await service.stop()
+        except Exception:
+            pass
 
 
-def _start_soulseek_service_for_active_settings() -> None:
+async def _start_soulseek_service_for_active_settings() -> None:
     username = str(SOULSEEK_USERNAME or "").strip()
     password = str(SOULSEEK_PASSWORD or "").strip()
     if not username or not password:
-        _shutdown_soulseek_service()
+        await _shutdown_soulseek_service()
         return
     current = getattr(state_module, "SOULSEEK_SERVICE", None)
     if (
@@ -137,7 +128,7 @@ def _start_soulseek_service_for_active_settings() -> None:
         and int(getattr(current, "search_max_results", 0) or 0) == int(SOULSEEK_SEARCH_MAX_RESULTS or 0)
     ):
         return
-    _shutdown_soulseek_service()
+    await _shutdown_soulseek_service()
     try:
         service = SoulseekService(
             username=username,
@@ -150,6 +141,11 @@ def _start_soulseek_service_for_active_settings() -> None:
         )
     except Exception:
         service = None
+    if service is not None:
+        try:
+            await service.start()
+        except Exception:
+            service = None
     state_module.SOULSEEK_SERVICE = service
     globals()["SOULSEEK_SERVICE"] = service
     for module in (downloads_module, route_state_module, mcp_routes):
@@ -157,7 +153,7 @@ def _start_soulseek_service_for_active_settings() -> None:
             setattr(module, "SOULSEEK_SERVICE", service)
 
 
-def _clear_active_user_runtime_settings() -> None:
+async def _clear_active_user_runtime_settings() -> None:
     global _ACTIVE_SETTINGS_DATA, _ACTIVE_SETTINGS_SIGNATURE, _ACTIVE_SETTINGS_USERNAME
     if not _ACTIVE_SETTINGS_USERNAME:
         return
@@ -172,7 +168,8 @@ def _clear_active_user_runtime_settings() -> None:
         for module in modules:
             if hasattr(module, key_upper):
                 setattr(module, key_upper, value)
-    _shutdown_soulseek_service()
+    soulseek_module.configure_aioslsk_logging(bool(settings.get("AIOSLSK_LOGGING_ENABLED")))
+    await _shutdown_soulseek_service()
     try:
         lastfm_module.reset_lastfm_runtime_state()
     except Exception:
@@ -193,7 +190,14 @@ def _clear_active_user_runtime_settings() -> None:
     reset_search_runtime()
 
 
-def _apply_runtime_settings_for_user(username: str, force: bool = False) -> dict[str, Any]:
+async def _apply_runtime_settings_for_user(
+    username: str,
+    force: bool = False,
+    *,
+    http_client: HttpClient | None = None,
+    local_index: LocalTorrentIndex | None = None,
+    local_index_updater: LocalIndexUpdater | None = None,
+) -> dict[str, Any]:
     global _ACTIVE_SETTINGS_DATA, _ACTIVE_SETTINGS_SIGNATURE, _ACTIVE_SETTINGS_USERNAME
     if not username:
         return {}
@@ -222,6 +226,7 @@ def _apply_runtime_settings_for_user(username: str, force: bool = False) -> dict
     except Exception:
         pass
     try:
+        soulseek_module.configure_aioslsk_logging(bool(settings.get("AIOSLSK_LOGGING_ENABLED")))
         soulseek_module.configure_soulseek_module(
             download_dir=SOULSEEK_DOWNLOAD_DIR,
             search_idle_stop_sec=SOULSEEK_SEARCH_IDLE_STOP_SEC,
@@ -235,7 +240,7 @@ def _apply_runtime_settings_for_user(username: str, force: bool = False) -> dict
         )
     except Exception:
         pass
-    _start_soulseek_service_for_active_settings()
+    await _start_soulseek_service_for_active_settings()
     if _ACTIVE_SETTINGS_USERNAME != username:
         load_playback_state()
         try:
@@ -251,7 +256,12 @@ def _apply_runtime_settings_for_user(username: str, force: bool = False) -> dict
         _ACTIVE_SETTINGS_USERNAME = username
     _ACTIVE_SETTINGS_SIGNATURE = signature
     _ACTIVE_SETTINGS_DATA = dict(settings)
-    _configure_unified_search_runtime(settings)
+    _configure_unified_search_runtime(
+        settings,
+        http_client=http_client,
+        local_index=local_index,
+        local_index_updater=local_index_updater,
+    )
     return settings
 
 
@@ -262,119 +272,142 @@ class _UnifiedSearchDiskCache:
             _disk_cache_set(cache_key, "combined", str(payload.get("query") or ""), {"schema": SEARCH_CACHE_SCHEMA}, stored)
 
 
-def _configure_unified_search_runtime(settings: dict[str, Any] | None = None):
-    current = dict(settings or ensure_app_settings(username=_current_settings_username(), defaults_overrides=_default_app_overrides()))
-    definition_store = DefinitionStore(
-        package_url=str(current.get("INDEXER_DEFINITION_PACKAGE_URL") or ""),
-        schema_version=int(current.get("INDEXER_DEFINITION_SCHEMA_VERSION") or 11),
+def _configure_unified_search_runtime(
+    settings: dict[str, Any] | None = None,
+    *,
+    http_client: HttpClient | None = None,
+    local_index: LocalTorrentIndex | None = None,
+    local_index_updater: LocalIndexUpdater | None = None,
+):
+    current = dict(settings or ensure_app_settings(defaults_overrides=_default_app_overrides()))
+    local_index = local_index or LocalTorrentIndex()
+    local_index.initialize()
+    local_index_provider = LocalIndexSearchProvider(local_index)
+    local_index_updater = local_index_updater or (
+        LocalIndexUpdater(local_index, http=http_client) if http_client is not None else None
     )
-    status_store = IndexerStatusStore()
-    solver = BrowserChallengeSolver(
-        status_store=status_store,
-        timeout=float(current.get("INDEXER_CHALLENGE_TIMEOUT_SECONDS") or 45),
-    ) if current.get("INDEXER_CHALLENGE_SOLVER_ENABLED", True) else None
-    client_factory = lambda indexer_id: IndexerHttpClient(
-        indexer_id,
-        status_store=status_store,
-        timeout=float(current.get("REQUEST_TIMEOUT_SECONDS") or 25),
-        retries=int(current.get("INDEXER_REQUEST_RETRIES") or 2),
-        solver=solver,
-    )
-    torrent = IndexerService(
-        definition_store,
-        enabled_ids=list(current.get("INDEXER_ENABLED_IDS") or []),
-        status_store=status_store,
-        client_factory=client_factory,
-        max_concurrent=int(current.get("INDEXER_MAX_CONCURRENT") or 6),
+    enabled_sources = list(current.get("TORRENT_SEARCH_ENABLED_SOURCES") or [])
+    torrent = (
+        TorrentSearchProvider.from_http(
+            http_client,
+            enabled_sources=enabled_sources,
+            max_concurrent=int(current.get("TORRENT_SEARCH_MAX_CONCURRENT") or 7),
+        )
+        if http_client is not None
+        else TorrentSearchProvider(
+            [],
+            enabled_sources=enabled_sources,
+            max_concurrent=int(current.get("TORRENT_SEARCH_MAX_CONCURRENT") or 7),
+        )
     )
     library = LibrarySearchProvider(root_objects, get_index, library_root_versions)
     soulseek = SoulseekSearchProvider(lambda: getattr(state_module, "SOULSEEK_SERVICE", None))
     ytdlp = YtdlpSearchProvider(max_concurrent=int(current.get("YTDLP_SEARCH_MAX_CONCURRENT") or 4))
-    pipeline = SearchPipeline([library, soulseek, torrent, ytdlp], cache=_UnifiedSearchDiskCache(), max_workers=4)
+    providers = [library]
+    if current.get("LOCAL_INDEX_ENABLED", True):
+        providers.append(local_index_provider)
+    providers.extend([soulseek, torrent, ytdlp])
+    pipeline = SearchPipeline(providers, cache=_UnifiedSearchDiskCache())
     return configure_search_runtime(
-        pipeline=pipeline, library_provider=library, soulseek_provider=soulseek, torrent_provider=torrent,
-        ytdlp_provider=ytdlp, definition_store=definition_store, indexer_service=torrent, challenge_solver=solver,
+        pipeline=pipeline,
+        library_provider=library,
+        local_index_provider=local_index_provider,
+        soulseek_provider=soulseek,
+        torrent_provider=torrent,
+        ytdlp_provider=ytdlp,
+        local_index=local_index,
+        local_index_updater=local_index_updater,
+        torrent_adapters={str(adapter.source_id): adapter for adapter in torrent.adapters},
     )
 
 
-def _active_search_runtime():
+def _active_search_runtime(request: web.Request | None = None):
     try:
         return get_search_runtime()
     except RuntimeError:
-        return _configure_unified_search_runtime()
+        services = request.app[SERVICES_KEY] if request is not None else None
+        return _configure_unified_search_runtime(
+            http_client=services.http if services else None,
+        )
 
 
-@app.before_request
-def apply_user_settings_before_request():
-    try:
-        g.dp_request_started_at = time.perf_counter()
-    except Exception:
-        pass
-    username = _current_settings_username()
+async def _apply_request_runtime_settings(request: web.Request, username: str, *, force: bool = False) -> dict[str, Any]:
+    services = request.app[SERVICES_KEY]
+    settings = await _apply_runtime_settings_for_user(
+        username,
+        force=force,
+        http_client=services.http,
+        local_index=getattr(services.search_runtime, "local_index", None),
+        local_index_updater=getattr(services.search_runtime, "local_index_updater", None),
+    )
+    services.search_runtime = get_search_runtime()
+    services.soulseek_service = getattr(state_module, "SOULSEEK_SERVICE", None)
+    return settings
+
+
+@web.middleware
+async def runtime_middleware(request: web.Request, handler):
+    started_at = time.perf_counter()
+    username = _current_settings_username(request)
     if username:
-        _apply_runtime_settings_for_user(username)
+        await _apply_request_runtime_settings(request, username)
     else:
-        _clear_active_user_runtime_settings()
-
-
-def add_request_timing_headers(resp):
+        await _clear_active_user_runtime_settings()
     try:
-        elapsed_ms = (time.perf_counter() - float(getattr(g, "dp_request_started_at", time.perf_counter()))) * 1000.0
+        response = await handler(request)
+        elapsed_ms = (time.perf_counter() - started_at) * 1000.0
         path = request.path or ""
-        if path.startswith("/static/") and request.args.get("v"):
-            resp.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        if path.startswith("/static/") and request.query.get("v"):
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         if path.startswith("/api/") or path.startswith("/hls/") or path.startswith("/stream/"):
-            resp.headers["X-DebriPod-Request-Ms"] = f"{elapsed_ms:.1f}"
+            response.headers["X-DebriPod-Request-Ms"] = f"{elapsed_ms:.1f}"
         if path.startswith("/api/"):
             _RECENT_API_TIMINGS.append({
                 "method": request.method,
                 "path": path,
-                "status": int(getattr(resp, "status_code", 0) or 0),
+                "status": int(response.status),
                 "ms": round(elapsed_ms, 1),
                 "ts": time.time(),
             })
             del _RECENT_API_TIMINGS[:-60]
         if elapsed_ms >= 750 and path.startswith("/api/"):
-            app.logger.info("slow endpoint %s %.1fms", path, elapsed_ms)
-    except Exception:
-        pass
-    return resp
+            logging.info("slow endpoint %s %.1fms", path, elapsed_ms)
+        return response
+    except asyncio.CancelledError:
+        raise
 
 
-@app.context_processor
-def inject_helpers():
-    return {"human_bytes": human_bytes, "human_rate": human_rate}
+async def render_shell(request: web.Request, autorefresh: int = 0, **ctx) -> web.Response:
+    path = Path(__file__).resolve().parent / "static" / "shell.html"
+    text = path.read_text(encoding="utf-8").replace("__DEBRIPOD_ASSET_VERSION__", str(ASSET_VERSION))
+    response = web.Response(text=text, content_type="text/html")
+    response.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
+    return response
 
 
-def render_shell(autorefresh: int = 0, **ctx) -> str:
-    try:
-        hostport = request.host
-    except Exception:
-        hostport = f"localhost:{PORT}"
+@routes.get("/api/bootstrap")
+async def api_bootstrap(request: web.Request) -> web.Response:
     version_info = dict(VERSION_INFO)
     version_info.update({"version": VERSION, "host": HOST, "port": PORT})
-    info_json = json.dumps(version_info)
-    return render_template(
-        "shell.html",
-        hostport=hostport,
-        port=PORT,
-        ddir=DOWNLOAD_DIR,
-        autorefresh=autorefresh,
-        tasks_poll_ms=TASKS_POLL_MS,
-        icon_v=ICON_VERSION,
-        asset_v=ASSET_VERSION,
-        info_json=info_json,
+    return json_response(
+        ok=True,
+        app_info=version_info,
         ui_defaults=DEFAULT_UI_SETTINGS,
-        **ctx,
+        tasks_poll_ms=TASKS_POLL_MS,
+        icon_version=ICON_VERSION,
+        asset_version=ASSET_VERSION,
+        csrf_token=_csrf_token(request),
     )
-register_shell_routes(app, render_shell)
 
 
 def _pwa_shell_assets() -> list[str]:
     base = [
         "/",
         f"/site.webmanifest?v={ICON_VERSION}",
-        f"/icons/debripod-app-icon.svg?v={ICON_VERSION}",
+        f"/favicon.ico?v={ICON_VERSION}",
+        f"/apple-touch-icon.png?v={ICON_VERSION}",
+        f"/icon-192.png?v={ICON_VERSION}",
+        f"/icon-512.png?v={ICON_VERSION}",
         f"/static/debripod.css?v={ASSET_VERSION}",
         f"/static/debripod.js?v={ASSET_VERSION}",
         f"/static/liquidGL.js?v={ASSET_VERSION}",
@@ -391,14 +424,14 @@ def _pwa_shell_assets() -> list[str]:
     return base
 
 
-@app.route("/debripod-sw.js", methods=["GET"])
-def debripod_service_worker():
+@routes.get("/debripod-sw.js")
+async def debripod_service_worker(request: web.Request):
     path = Path(__file__).resolve().parent / "static" / "debripod-sw.js"
     text = path.read_text(encoding="utf-8")
     text = text.replace("__DEBRIPOD_ASSET_VERSION__", str(ASSET_VERSION))
     text = text.replace("__DEBRIPOD_ICON_VERSION__", str(ICON_VERSION))
     text = text.replace("__DEBRIPOD_SHELL_ASSETS__", json.dumps(_pwa_shell_assets(), ensure_ascii=False))
-    resp = Response(text, mimetype="application/javascript")
+    resp = web.Response(text=text, content_type="application/javascript")
     resp.headers["Cache-Control"] = "no-cache, no-store, must-revalidate"
     resp.headers["Service-Worker-Allowed"] = "/"
     return resp
@@ -415,39 +448,76 @@ def debripod_service_worker():
 
 
 
-@app.route("/api/libsearch/combined", methods=["GET"])
-def api_libsearch_combined():
-    q = (request.args.get("q") or "").strip()
+@routes.get("/api/libsearch/combined")
+async def api_libsearch_combined(request: web.Request):
+    q = (request.query.get("q") or "").strip()
     if not q:
-        return jsonify(ok=False, error="Missing query", results=[], result_count=0, cache_key=""), 400
-    username = _current_settings_username()
-    settings = _apply_runtime_settings_for_user(username) if username else ensure_app_settings(defaults_overrides=_default_app_overrides())
-    runtime = _active_search_runtime()
-    combined_cache_key = _make_search_cache_key("combined", q, {"schema": SEARCH_CACHE_SCHEMA, "roots": library_root_versions()})
-    debug = str(request.args.get("debug") or "").strip().lower() in {"1", "true", "yes"}
-    with _SEARCH_DISK_LOCK:
-        cached_entry = _disk_cache_get(combined_cache_key)
+        return json_response(ok=False, error="Missing query", results=[], result_count=0, cache_key="", status=400)
+    username = _current_settings_username(request)
+    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
+    runtime = _active_search_runtime(request)
+    debug = str(request.query.get("debug") or "").strip().lower() in {"1", "true", "yes"}
+    local_diagnostics = await asyncio.to_thread(runtime.local_index.diagnostics)
+    local_meta = local_diagnostics.get("meta") if isinstance(local_diagnostics, dict) else {}
+    cache_inputs = {
+        "schema": SEARCH_CACHE_SCHEMA,
+        "username": username,
+        "roots": library_root_versions(),
+        "local_index_enabled": bool(settings.get("LOCAL_INDEX_ENABLED", True)),
+        "local_index_generation": str((local_meta or {}).get("local_index_generation") or "0"),
+        "torrent_sources": sorted(str(value).strip().lower() for value in (settings.get("TORRENT_SEARCH_ENABLED_SOURCES") or []) if str(value).strip()),
+        "soulseek_enabled": bool(settings.get("SOULSEEK_USERNAME") and settings.get("SOULSEEK_PASSWORD")),
+        "soulseek_max_results": int(settings.get("SOULSEEK_SEARCH_MAX_RESULTS") or 0),
+        "youtube_search_limit": int(settings.get("YOUTUBE_SEARCH_LIMIT") or 0),
+    }
+    combined_cache_key = _make_search_cache_key("combined", normalize_search_text(q), cache_inputs)
+    cached_entry = None
+    if not debug:
+        with _SEARCH_DISK_LOCK:
+            cached_entry = _disk_cache_get(combined_cache_key)
     cached_payload = dict((cached_entry or {}).get("payload") or {}) if cached_entry else {}
     if cached_payload.get("schema_version") != SEARCH_CACHE_SCHEMA or not isinstance(cached_payload.get("results"), list):
         cached_payload = {}
     intent = infer_query_intent(q)
-    context = SearchContext(username, q, normalize_search_text(q), intent, settings, combined_cache_key, threading.Event(), debug)
-    if str(request.args.get("stream") or "").strip().lower() in {"1", "true", "yes"}:
-        def gen():
+    context = SearchContext(
+        username=username,
+        query=q,
+        normalized_query=normalize_search_text(q),
+        intent=intent,
+        settings=settings,
+        search_id=combined_cache_key,
+        debug=debug,
+    )
+    if str(request.query.get("stream") or "").strip().lower() in {"1", "true", "yes"}:
+        response = web.StreamResponse(
+            status=200,
+            headers={"Content-Type": "application/x-ndjson; charset=utf-8", "Cache-Control": "no-store"},
+        )
+        await response.prepare(request)
+        try:
             if cached_payload:
-                yield json.dumps({"event": "start", "search_id": combined_cache_key, "query": q, "cached": True}, ensure_ascii=False) + "\n"
-                yield json.dumps({"event": "done", "search_id": combined_cache_key, "query": q, "cached": True, "results": cached_payload.get("results", []), "provider_status": cached_payload.get("provider_status", [])}, ensure_ascii=False) + "\n"
-                return
-            for event in runtime.pipeline.search_stream(q, context):
-                yield json.dumps(event, ensure_ascii=False) + "\n"
+                events = [
+                    {"event": "start", "search_id": combined_cache_key, "query": q, "cached": True},
+                    {"event": "done", "ok": True, "search_id": combined_cache_key, "cache_key": combined_cache_key, "query": q, "cached": True, "results": cached_payload.get("results", []), "result_count": len(cached_payload.get("results", [])), "provider_status": cached_payload.get("provider_status", [])},
+                ]
+                for event in events:
+                    await response.write((json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8"))
+            else:
+                async for event in runtime.pipeline.search_stream(q, context):
+                    await response.write((json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8"))
             record_search_history(q, "combined", combined_cache_key)
-        return Response(stream_with_context(gen()), mimetype="application/x-ndjson")
+            await response.write_eof()
+        except ConnectionResetError:
+            pass
+        except asyncio.CancelledError:
+            raise
+        return response
     if cached_payload:
         record_search_history(q, "combined", combined_cache_key)
-        return jsonify(ok=True, q=q, cache_key=combined_cache_key, cached=True, results=cached_payload.get("results", []), result_count=len(cached_payload.get("results", [])), provider_status=cached_payload.get("provider_status", []), schema_version=SEARCH_CACHE_SCHEMA)
-    final = runtime.pipeline.search_once(q, context)
+        return json_response(ok=True, q=q, cache_key=combined_cache_key, cached=True, results=cached_payload.get("results", []), result_count=len(cached_payload.get("results", [])), provider_status=cached_payload.get("provider_status", []), schema_version=SEARCH_CACHE_SCHEMA)
+    final = await runtime.pipeline.search_once(q, context)
     record_search_history(q, "combined", combined_cache_key)
-    return jsonify(ok=True, q=q, cache_key=combined_cache_key, cached=False, results=final.get("results", []), result_count=len(final.get("results", [])), provider_status=final.get("provider_status", []), schema_version=SEARCH_CACHE_SCHEMA)
+    return json_response(ok=True, q=q, cache_key=combined_cache_key, cached=False, results=final.get("results", []), result_count=len(final.get("results", [])), provider_status=final.get("provider_status", []), schema_version=SEARCH_CACHE_SCHEMA)
 
 
 
@@ -459,10 +529,10 @@ def api_libsearch_combined():
 
 
 
-def api_libsearch_soulseek_start():
-    q = (request.args.get("q") or "").strip()
+async def api_libsearch_soulseek_start(request: web.Request):
+    q = (request.query.get("q") or "").strip()
     if not q:
-        return jsonify(ok=False, error="Missing query", sid="", done=True, slsk_users=[], file_count=0, dir_count=0, cache_key="")
+        return json_response(ok=False, error="Missing query", sid="", done=True, slsk_users=[], file_count=0, dir_count=0, cache_key="")
 
     extra: Dict[str, Any] = {}
     cache_key = _make_search_cache_key("soulseek", q, extra)
@@ -488,11 +558,11 @@ def api_libsearch_soulseek_start():
                 file_count = sum(int(u.get("total_files") or 0) for u in (slsk_users or []))
             except Exception:
                 file_count = 0
-        return jsonify(ok=True, q=q, cache_key=cache_key, sid="", rev=1, done=True, slsk_users=slsk_users, file_count=file_count, dir_count=dir_count, error="", changed=True)
+        return json_response(ok=True, q=q, cache_key=cache_key, sid="", rev=1, done=True, slsk_users=slsk_users, file_count=file_count, dir_count=dir_count, error="", changed=True)
 
     svc = SOULSEEK_SERVICE
     if not svc or not svc.is_ready():
-        return jsonify(ok=False, error="Soulseek service is not ready", sid="", done=True, slsk_users=[], file_count=0, dir_count=0, cache_key=cache_key)
+        return json_response(ok=False, error="Soulseek service is not ready", sid="", done=True, slsk_users=[], file_count=0, dir_count=0, cache_key=cache_key)
 
     sid = _slsk_session_create(cache_key, q)
 
@@ -505,23 +575,23 @@ def api_libsearch_soulseek_start():
         svc.start_search_session(sid, q)
     except Exception:
         _slsk_session_mark_done(sid, error="Soulseek search failed")
-        return jsonify(ok=False, error="Soulseek search failed", sid=sid, done=True, slsk_users=[], file_count=0, dir_count=0, cache_key=cache_key)
+        return json_response(ok=False, error="Soulseek search failed", sid=sid, done=True, slsk_users=[], file_count=0, dir_count=0, cache_key=cache_key)
 
-    return jsonify(ok=True, q=q, cache_key=cache_key, sid=sid, rev=0, done=False, slsk_users=[], file_count=0, dir_count=0, error="", changed=True)
+    return json_response(ok=True, q=q, cache_key=cache_key, sid=sid, rev=0, done=False, slsk_users=[], file_count=0, dir_count=0, error="", changed=True)
 
-def api_libsearch_soulseek_poll():
-    sid = (request.args.get("sid") or "").strip()
+async def api_libsearch_soulseek_poll(request: web.Request):
+    sid = (request.query.get("sid") or "").strip()
     if not sid:
-        return jsonify(ok=False, error="Missing sid", done=True)
+        return json_response(ok=False, error="Missing sid", done=True)
 
     try:
-        want_rev = int(request.args.get("rev") or 0)
+        want_rev = int(request.query.get("rev") or 0)
     except Exception:
         want_rev = 0
 
     snap = _slsk_session_snapshot(sid)
     if not snap:
-        return jsonify(ok=False, error="Unknown sid", done=True)
+        return json_response(ok=False, error="Unknown sid", done=True)
 
     _slsk_session_touch(sid)
 
@@ -553,7 +623,7 @@ def api_libsearch_soulseek_poll():
         except Exception:
             pass
 
-    return jsonify(
+    return json_response(
         ok=True,
         sid=sid,
         cache_key=str(snap.get("cache_key") or ""),
@@ -566,10 +636,10 @@ def api_libsearch_soulseek_poll():
         dir_count=dir_count,
     )
 
-def api_libsearch_soulseek():
-    q = (request.args.get("q") or "").strip()
+async def api_libsearch_soulseek(request: web.Request):
+    q = (request.query.get("q") or "").strip()
     if not q:
-        return jsonify(ok=False, error="Missing query", slsk_users=[], result_count=0, cache_key="")
+        return json_response(ok=False, error="Missing query", slsk_users=[], result_count=0, cache_key="")
 
     extra: Dict[str, Any] = {}
     cache_key = _make_search_cache_key("soulseek", q, extra)
@@ -592,12 +662,12 @@ def api_libsearch_soulseek():
     else:
         svc = SOULSEEK_SERVICE
         if not svc or not svc.is_ready():
-            return jsonify(ok=False, error="Soulseek service is not ready", slsk_users=[], result_count=0, cache_key=cache_key)
+            return json_response(ok=False, error="Soulseek service is not ready", slsk_users=[], result_count=0, cache_key=cache_key)
 
         try:
-            items = svc.search(q)
+            items = await svc.search_async(q)
         except Exception:
-            return jsonify(ok=False, error="Soulseek search failed", slsk_users=[], result_count=0, cache_key=cache_key)
+            return json_response(ok=False, error="Soulseek search failed", slsk_users=[], result_count=0, cache_key=cache_key)
 
         users: Dict[str, Dict[str, Any]] = {}
         for it in items:
@@ -666,218 +736,117 @@ def api_libsearch_soulseek():
     except Exception:
         pass
 
-    return jsonify(ok=True, q=q, cache_key=cache_key, slsk_users=slsk_users, result_count=slsk_total_results)
+    return json_response(ok=True, q=q, cache_key=cache_key, slsk_users=slsk_users, result_count=slsk_total_results)
 
-@app.route("/api/soulseek/browse_user", methods=["GET"])
-def api_soulseek_browse_user():
-    user = (request.args.get("user") or "").strip()
-    selected_dir = _slsk_norm_remote_path(request.args.get("selected_dir") or "")
+@routes.get("/api/soulseek/browse_user")
+async def api_soulseek_browse_user(request: web.Request):
+    user = (request.query.get("user") or "").strip()
+    selected_dir = _slsk_norm_remote_path(request.query.get("selected_dir") or "")
     if not user:
-        return jsonify(ok=False, error="Missing user", user="", dirs=[], selected_dir=""), 400
-
+        return json_response(ok=False, error="Missing user", user="", dirs=[], selected_dir="", status=400)
     svc = SOULSEEK_SERVICE
     if not svc or not svc.is_ready():
-        return jsonify(ok=False, error="Soulseek service is not ready", user=user, dirs=[], selected_dir=selected_dir)
+        return json_response(ok=False, error="Soulseek service is not ready", user=user, dirs=[], selected_dir=selected_dir)
 
     try:
-        items = svc.browse_user(user)
+        items = await svc.browse_user_async(user)
     except Exception:
-        return jsonify(ok=False, error="Soulseek browse failed", user=user, dirs=[], selected_dir=selected_dir)
+        return json_response(ok=False, error="Soulseek browse failed", user=user, dirs=[], selected_dir=selected_dir)
 
     dirs = _slsk_group_items_to_dirs(user, items)
     dir_paths = {str(d.get("directory") or "") for d in dirs}
     if selected_dir and selected_dir not in dir_paths:
         selected_dir = ""
 
-    return jsonify(ok=True, user=user, dirs=dirs, selected_dir=selected_dir, file_count=sum(int(d.get("total_files") or 0) for d in dirs), dir_count=len(dirs))
+    return json_response(ok=True, user=user, dirs=dirs, selected_dir=selected_dir, file_count=sum(int(d.get("total_files") or 0) for d in dirs), dir_count=len(dirs))
 
 
 
 
-@app.route("/api/ytdlp/files", methods=["GET"])
-@app.route("/api/youtube/files", methods=["GET"])
-def api_ytdlp_files():
-    url = (request.args.get('url') or '').strip()
+@routes.get("/api/ytdlp/files")
+@routes.get("/api/youtube/files")
+async def api_ytdlp_files(request: web.Request):
+    url = (request.query.get('url') or '').strip()
     if not url:
-        return jsonify(ok=False, error='Missing URL', files=[], file_count=0, size=0), 400
+        return json_response(ok=False, error='Missing URL', files=[], file_count=0, size=0, status=400)
     try:
-        files = ytdlp_list_formats(url)
+        files = await asyncio.to_thread(ytdlp_list_formats, url)
         total_size = sum(int(f.get('size') or 0) for f in files)
-        return jsonify(ok=True, files=files, file_count=len(files), size=total_size)
+        return json_response(ok=True, files=files, file_count=len(files), size=total_size)
     except Exception:
-        return jsonify(ok=False, error="Failed to list formats", files=[], file_count=0, size=0), 500
-
-
-@app.route("/api/ytdlp/directory", methods=["GET"])
-def api_ytdlp_directory():
-    url = (request.args.get("url") or "").strip()
+        return json_response(ok=False, error="Failed to list formats", files=[], file_count=0, size=0, status=500)
+@routes.get("/api/ytdlp/directory")
+async def api_ytdlp_directory(request: web.Request):
+    url = (request.query.get("url") or "").strip()
     if not url:
-        return jsonify(ok=False, error="Missing URL", entries=[], result_count=0), 400
+        return json_response(ok=False, error="Missing URL", entries=[], result_count=0, status=400)
     try:
-        entries = run_flat_entries(url)
-        return jsonify(ok=True, entries=entries, result_count=len(entries))
+        entries = await run_flat_entries_async(url)
+        return json_response(ok=True, entries=entries, result_count=len(entries))
     except Exception as exc:
-        return jsonify(ok=False, error=str(exc) or "Failed to load directory", entries=[], result_count=0), 400
+        return json_response(ok=False, error=str(exc) or "Failed to load directory", entries=[], result_count=0, status=400)
 
 
-@app.route("/api/soundcloud/artist-section", methods=["GET"])
-def api_soundcloud_artist_section():
-    url = (request.args.get("url") or "").strip()
-    section = (request.args.get("section") or "").strip().lower()
-    if not url or section not in {"tracks", "albums", "playlists"}:
-        return jsonify(ok=False, error="URL and a valid section are required", results=[], result_count=0), 400
+@routes.get("/api/local-index/status")
+async def api_local_index_status(request: web.Request):
+    runtime = _active_search_runtime(request)
+    diagnostics = await asyncio.to_thread(runtime.local_index.diagnostics)
+    updater_state = dict(request.app[SERVICES_KEY].local_index_state or {})
+    return json_response(ok=True, **diagnostics, updater=updater_state)
+
+
+@routes.post("/api/torrent-search/resolve")
+async def api_torrent_search_resolve(request: web.Request):
+    data = await request.json()
+    source_id = str(data.get("source_id") or "").strip().lower()
+    runtime = _active_search_runtime(request)
+    adapter = runtime.torrent_adapters.get(source_id)
+    if adapter is None:
+        return json_response(ok=False, error="Unknown torrent source", status=404)
+    resolver = getattr(adapter, "resolve", None)
+    if not callable(resolver):
+        return json_response(ok=False, error="This source does not require detail resolution", status=400)
+    extra = data.get("extra") if isinstance(data.get("extra"), dict) else {}
+    if source_id == "torapi" and str(extra.get("torapi_provider") or "").casefold() not in {"rutracker", "kinozal", "rutor", "nonameclub"}:
+        return json_response(ok=False, error="Unknown TorAPI provider", status=400)
+    hit = TorrentHit(
+        source_id=source_id,
+        source_label=str(getattr(adapter, "source_label", source_id)),
+        title=str(data.get("title") or "Torrent"),
+        infohash=str(data.get("infohash") or ""),
+        magnet=str(data.get("magnet") or ""),
+        torrent_url=str(data.get("torrent_url") or ""),
+        source_record_id=str(data.get("source_record_id") or ""),
+        extra=dict(extra),
+    )
     try:
-        results = SoundCloudDirectoryService().load_section(url, section)
-        return jsonify(ok=True, source="soundcloud", section=section, results=results, result_count=len(results))
+        resolved = await resolver(hit)
     except Exception as exc:
-        return jsonify(ok=False, error=str(exc) or "Failed to load SoundCloud section", results=[], result_count=0), 400
-
-
-@app.route("/api/indexers", methods=["GET"])
-def api_indexers():
-    runtime = _active_search_runtime()
-    current = ensure_app_settings(username=_current_settings_username(), defaults_overrides=_default_app_overrides())
-    enabled = set(current.get("INDEXER_ENABLED_IDS") or [])
-    rows = []
-    for definition in runtime.definition_store.list_active_definitions():
-        status = runtime.indexer_service.status_store.get(definition.id) if not definition.parse_error else None
-        metadata = definition.metadata()
-        metadata.update({
-            "enabled": definition.id in enabled,
-            "blocked_until": status.disabled_until if status else None,
-            "last_error": status.last_error_category if status else definition.parse_error,
-        })
-        rows.append(metadata)
-    return jsonify(ok=True, indexers=rows)
-
-
-@app.route("/api/indexers/toggle", methods=["POST"])
-def api_indexers_toggle():
-    data = request.get_json(silent=True) or {}
-    definition_id = str(data.get("id") or "").strip()
-    definition = _active_search_runtime().definition_store.load_definition(definition_id)
-    if definition is None:
-        return jsonify(ok=False, error="Unknown indexer"), 404
-    enabled_value = bool(data.get("enabled"))
-    if enabled_value and definition.requires_setup:
-        return jsonify(ok=False, error="Support for this indexer requires setup"), 400
-    username = _current_settings_username()
-    current = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
-    enabled = list(current.get("INDEXER_ENABLED_IDS") or [])
-    if enabled_value and definition_id not in enabled:
-        enabled.append(definition_id)
-    if not enabled_value:
-        enabled = [item for item in enabled if item != definition_id]
-    saved = save_app_settings({"INDEXER_ENABLED_IDS": enabled}, username=username, defaults_overrides=_default_app_overrides())
-    _configure_unified_search_runtime(saved)
-    return jsonify(ok=True, id=definition_id, enabled=enabled_value, enabled_ids=enabled)
-
-
-@app.route("/api/indexers/test", methods=["POST"])
-def api_indexers_test():
-    data = request.get_json(silent=True) or {}
-    definition_id = str(data.get("id") or "").strip()
-    runtime = _active_search_runtime()
-    definition = runtime.definition_store.load_definition(definition_id)
-    if definition is None:
-        return jsonify(ok=False, error="Unknown indexer"), 404
-    if definition.requires_setup:
-        return jsonify(ok=False, error="Support for this indexer requires setup"), 400
+        return json_response(ok=False, error=str(exc) or "Failed to resolve torrent source", status=400)
+    return json_response(
+        ok=True,
+        magnet=str(resolved.magnet or ""),
+        infohash=str(resolved.infohash or ""),
+        torrent_url=str(resolved.torrent_url or ""),
+    )
+@routes.post("/api/link/inspect")
+async def api_link_inspect(request: web.Request):
     try:
-        rows, status = runtime.indexer_service._search_one(definition, "ubuntu")
-        if status.get("status") == "ok":
-            runtime.indexer_service.status_store.record_success(definition_id, manual_test=True)
-        return jsonify(ok=status.get("status") == "ok", status=status, result_count=len(rows))
-    except Exception as exc:
-        return jsonify(ok=False, error=str(exc), status={"indexer_id": definition_id, "status": "error"}), 400
-
-
-@app.route("/api/indexers/resolve", methods=["POST"])
-def api_indexers_resolve():
-    data = request.get_json(silent=True) or {}
-    try:
-        resolved = _active_search_runtime().indexer_service.resolve_release(str(data.get("id") or ""), data)
-        return jsonify(ok=True, magnet=str(resolved.get("magnet") or ""), infohash=str(resolved.get("infohash") or ""))
-    except Exception as exc:
-        return jsonify(ok=False, error=str(exc) or "Failed to resolve torrent source"), 400
-
-
-def _definition_status_payload(store):
-    staging_meta = {}
-    staging_path = store.staging_dir / "staging.json"
-    if staging_path.is_file():
-        try:
-            staging_meta = json.loads(staging_path.read_text(encoding="utf-8"))
-        except Exception:
-            staging_meta = {}
-    return {"manifest": store.load_manifest(), "staged": staging_meta, "backups": [item["name"] for item in store.list_backups()]}
-
-
-@app.route("/api/indexer-definitions/status", methods=["GET"])
-def api_definition_status():
-    return jsonify(ok=True, **_definition_status_payload(_active_search_runtime().definition_store))
-
-
-@app.route("/api/indexer-definitions/stage", methods=["POST"])
-def api_definition_stage():
-    try:
-        store = _active_search_runtime().definition_store
-        result = store.stage_upstream_package()
-        return jsonify(ok=True, staged=result)
-    except Exception as exc:
-        return jsonify(ok=False, error=str(exc)), 400
-
-
-@app.route("/api/indexer-definitions/validate", methods=["POST"])
-def api_definition_validate():
-    result = _active_search_runtime().definition_store.validate_staging()
-    return jsonify(ok=bool(result.get("valid")), validation=result), (200 if result.get("valid") else 400)
-
-
-@app.route("/api/indexer-definitions/activate", methods=["POST"])
-def api_definition_activate():
-    try:
-        result = _active_search_runtime().definition_store.activate_staging()
-        _configure_unified_search_runtime()
-        return jsonify(ok=True, result=result)
-    except Exception as exc:
-        return jsonify(ok=False, error=str(exc)), 400
-
-
-@app.route("/api/indexer-definitions/rollback", methods=["POST"])
-def api_definition_rollback():
-    try:
-        result = _active_search_runtime().definition_store.rollback_last_activation()
-        _configure_unified_search_runtime()
-        return jsonify(ok=True, result=result)
-    except Exception as exc:
-        return jsonify(ok=False, error=str(exc)), 400
-
-
-@app.route("/api/indexer-definitions/discard", methods=["POST"])
-def api_definition_discard():
-    _active_search_runtime().definition_store.discard_staging()
-    return jsonify(ok=True)
-
-
-@app.route("/api/link/inspect", methods=["POST"])
-def api_link_inspect():
-    try:
-        data = request.get_json(force=True) or {}
+        data = await request.json() or {}
     except Exception:
         data = {}
     value = str(data.get("value") or "").strip()
     kind = classify_link_input(value)
     if kind == "query":
-        return jsonify(ok=False, error="Enter a valid magnet or HTTP(S) link."), 400
+        return json_response(ok=False, error="Enter a valid magnet or HTTP(S) link.", status=400)
     try:
         if kind == "magnet":
-            current = ensure_app_settings(username=_current_settings_username(), defaults_overrides=_default_app_overrides())
+            current = ensure_app_settings(username=_current_settings_username(request), defaults_overrides=_default_app_overrides())
             status = debrid_provider_status(current)
             if not status.get("configured"):
-                return jsonify(ok=False, error="No debrid provider is configured."), 400
-            provider = get_active_provider(current, int(current.get("REQUEST_TIMEOUT_SECONDS") or 25))
-            preview = provider.preview_magnet(value)
+                return json_response(ok=False, error="No debrid provider is configured.", status=400)
+            provider = get_active_provider(current, int(current.get("REQUEST_TIMEOUT_SECONDS") or 25), request.app[SERVICES_KEY].http)
+            preview = await provider.preview_magnet(value)
             files = []
             for item in preview.files:
                 name = str(item.path or "")
@@ -899,50 +868,42 @@ def api_link_inspect():
                 "size": sum(int(row.get("size") or 0) for row in files),
                 "provider_data": {"infohash": "", "magnet": value, "indexer_ids": [], "indexer_labels": [], "source_urls": [], "seeders": 0, "leechers": 0, "verified": False, "category": "", "provider": provider.id, "debrid_task_id": preview.provider_task_id},
             }
-            return jsonify(ok=True, detail_kind="debrid_files", result=result)
-        result = ytdlp_inspect(value)
-        return jsonify(ok=True, detail_kind="ytdlp_formats", result=result)
+            return json_response(ok=True, detail_kind="debrid_files", result=result)
+        result = await asyncio.to_thread(ytdlp_inspect, value)
+        return json_response(ok=True, detail_kind="ytdlp_formats", result=result)
     except DebridProviderError as exc:
-        return jsonify(ok=False, error=str(exc) or "Failed to inspect link"), 400
+        return json_response(ok=False, error=str(exc) or "Failed to inspect link", status=400)
     except Exception as exc:
         app.logger.warning("Link inspection failed: %s", exc)
-        return jsonify(ok=False, error="This link could not be inspected by yt-dlp."), 400
-
-
-
-
-@app.route("/api/youtube/comments", methods=["GET"])
-def api_youtube_comments():
-    url = (request.args.get("url") or "").strip()
+        return json_response(ok=False, error="This link could not be inspected by yt-dlp.", status=400)
+@routes.get("/api/youtube/comments")
+async def api_youtube_comments(request: web.Request):
+    url = (request.query.get("url") or "").strip()
     if not url:
-        return jsonify(ok=False, error="Missing URL", comments=[]), 400
+        return json_response(ok=False, error="Missing URL", comments=[], status=400)
     try:
         parsed = urlparse(url)
         if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            return jsonify(ok=False, error="Invalid URL", comments=[]), 400
-        comments = ytdlp_comments(url, limit=100)
-        return jsonify(ok=True, comments=comments)
+            return json_response(ok=False, error="Invalid URL", comments=[], status=400)
+        comments = await asyncio.to_thread(ytdlp_comments, url, limit=100)
+        return json_response(ok=True, comments=comments)
     except Exception:
-        return jsonify(ok=False, error="Failed to load comments", comments=[]), 500
-
-
-@app.route("/api/youtube/enqueue", methods=["POST"])
-def api_youtube_enqueue():
+        return json_response(ok=False, error="Failed to load comments", comments=[], status=500)
+@routes.post("/api/youtube/enqueue")
+async def api_youtube_enqueue(request: web.Request):
     try:
-        data = request.get_json(force=True) or {}
+        data = await request.json() or {}
     except Exception:
         data = {}
     source_label = str(data.get('source_label') or 'YouTube').strip() or 'YouTube'
-    task_source = str(data.get('source') or 'youtube').strip().lower()
-    if task_source not in {'youtube', 'soundcloud'}:
-        task_source = 'youtube'
+    task_source = 'youtube'
     title = str(data.get('title') or '').strip() or source_label
     url = str(data.get('url') or '').strip()
     selected = data.get('selected') or []
     if not url:
-        return jsonify(ok=False, error='Missing URL'), 400
+        return json_response(ok=False, error='Missing URL', status=400)
     if not str(YOUTUBE_DOWNLOAD_DIR or "").strip():
-        return jsonify(ok=False, error='Pick the YouTube folder in Downloads settings before downloading.'), 400
+        return json_response(ok=False, error='Pick the YouTube folder in Downloads settings before downloading.', status=400)
     entries: List[Dict[str, Any]] = []
     for i, it in enumerate(selected):
         if not isinstance(it, dict):
@@ -970,7 +931,7 @@ def api_youtube_enqueue():
             'out_path': '',
         })
     if not entries:
-        return jsonify(ok=False, error='No files selected'), 400
+        return json_response(ok=False, error='No files selected', status=400)
     task_id = uuid.uuid4().hex
     youtube_root = _youtube_download_root()
     stamp = time.strftime("%Y%m%d_%H%M%S")
@@ -978,60 +939,58 @@ def api_youtube_enqueue():
     folder = sanitize_folder_name(f"{stamp}_{base}_{task_id[:6]}")
     task_dir = os.path.join(youtube_root, folder)
     os.makedirs(task_dir, exist_ok=True)
-    t = Task(id=task_id, title=title, magnet=url, task_dir=task_dir, owner=_current_settings_username(), source=task_source, source_url=url, origin_client_id=str(request.headers.get("X-DebriPod-Client-Id") or ""), state='queued', message='Queued', youtube_files=entries)
+    t = Task(id=task_id, title=title, magnet=url, task_dir=task_dir, owner=_current_settings_username(request), source=task_source, source_url=url, origin_client_id=str(request.headers.get("X-DebriPod-Client-Id") or ""), state='queued', message='Queued', youtube_files=entries)
     with TASKS_LOCK:
         TASKS[task_id] = t
     save_task_metadata(t, original_result_title=title, remote_files=entries, selected_file_ids=[item.get('file_id') for item in entries], version=str(VERSION))
     th = threading.Thread(target=youtube_worker, args=(task_id,), daemon=True)
     th.start()
-    return jsonify(ok=True, task_id=task_id)
+    return json_response(ok=True, task_id=task_id)
 
 
-@app.route("/api/search_history", methods=["GET"])
-def api_search_history():
+@routes.get("/api/search_history")
+async def api_search_history(request: web.Request):
     try:
         with _SEARCH_DISK_LOCK:
             items = _load_search_history()
-        return jsonify({"ok": True, "items": items})
+        return json_response({"ok": True, "items": items})
     except Exception:
-        return jsonify({"ok": False, "error": "Failed to browse channel", "items": []})
+        return json_response({"ok": False, "error": "Failed to browse channel", "items": []})
 
 
-@app.route("/api/search_history/clear", methods=["POST"])
-def api_search_history_clear():
+@routes.post("/api/search_history/clear")
+async def api_search_history_clear(request: web.Request):
     try:
         clear_search_history_and_cache()
-        return jsonify({"ok": True})
+        return json_response({"ok": True})
     except Exception:
-        return jsonify({"ok": False, "error": "Failed to clear search history"})
+        return json_response({"ok": False, "error": "Failed to clear search history"})
 
 
-@app.route("/api/libsearch/stream_selected", methods=["POST"])
-def api_libsearch_stream_selected():
+@routes.post("/api/libsearch/stream_selected")
+async def api_libsearch_stream_selected(request: web.Request):
     try:
-        data = request.get_json(force=True) or {}
+        data = await request.json() or {}
     except Exception:
         data = {}
     try:
-        out = _engine_prepare_stream_session(data)
-        return jsonify({"ok": True, **out})
+        out = await _engine_prepare_stream_session(data, request.app[SERVICES_KEY].http)
+        return json_response({"ok": True, **out})
     except Exception:
-        return jsonify({"ok": False, "error": "Failed to prepare stream"}), 400
+        return json_response({"ok": False, "error": "Failed to prepare stream"}, status=400)
+@routes.get("/api/debrid/providers")
+async def api_debrid_providers(request: web.Request):
+    settings = ensure_app_settings(username=_current_settings_username(request), defaults_overrides=_default_app_overrides())
+    return json_response({"ok": True, **debrid_provider_status(settings)})
 
 
-@app.route("/api/debrid/providers", methods=["GET"])
-def api_debrid_providers():
-    settings = ensure_app_settings(username=_current_settings_username(), defaults_overrides=_default_app_overrides())
-    return jsonify({"ok": True, **debrid_provider_status(settings)})
-
-
-@app.route("/api/debrid/connect_token", methods=["POST"])
-def api_debrid_connect_token():
-    data = request.get_json(silent=True) or {}
+@routes.post("/api/debrid/connect_token")
+async def api_debrid_connect_token(request: web.Request):
+    data = await request.json() or {}
     token = str(data.get("token") or "").strip()
     if not token:
-        return jsonify({"ok": False, "error": "Paste a debrid token first."}), 400
-    settings = ensure_app_settings(username=_current_settings_username(), defaults_overrides=_default_app_overrides())
+        return json_response({"ok": False, "error": "Paste a debrid token first."}, status=400)
+    settings = ensure_app_settings(username=_current_settings_username(request), defaults_overrides=_default_app_overrides())
     timeout_seconds = int(settings.get("REQUEST_TIMEOUT_SECONDS") or 25)
     matched_id = ""
     matched_label = ""
@@ -1040,7 +999,7 @@ def api_debrid_connect_token():
         candidate = dict(settings)
         candidate[spec.token_setting_key] = token
         try:
-            get_provider(provider_id, candidate, timeout_seconds).validate_token()
+            await get_provider(provider_id, candidate, timeout_seconds, request.app[SERVICES_KEY].http).validate_token()
             matched_id, matched_label = provider_id, spec.label
             break
         except (DebridAuthError, DebridProviderError) as exc:
@@ -1052,35 +1011,35 @@ def api_debrid_connect_token():
     if not matched_id:
         details = [str(value).strip() for value in failures.values() if str(value).strip() and "rejected" not in str(value).lower()]
         suffix = (" " + details[-1]) if details else ""
-        return jsonify({"ok": False, "error": "That token could not be verified with Real Debrid, AllDebrid, Premiumize, or TorBox." + suffix}), 400
+        return json_response({"ok": False, "error": "That token could not be verified with Real Debrid, AllDebrid, Premiumize, or TorBox." + suffix}, status=400)
     updates = {spec.token_setting_key: "" for spec in provider_specs().values()}
     updates[provider_specs()[matched_id].token_setting_key] = token
     updates["DEBRID_PROVIDER"] = matched_id
-    saved = save_app_settings(updates, username=_current_settings_username(), defaults_overrides=_default_app_overrides())
-    if _current_settings_username():
-        saved = _apply_runtime_settings_for_user(_current_settings_username(), force=True)
-    return jsonify({"ok": True, "provider": matched_id, "label": matched_label, **debrid_provider_status(saved)})
+    saved = save_app_settings(updates, username=_current_settings_username(request), defaults_overrides=_default_app_overrides())
+    if _current_settings_username(request):
+        saved = await _apply_request_runtime_settings(request, _current_settings_username(request), force=True)
+    return json_response({"ok": True, "provider": matched_id, "label": matched_label, **debrid_provider_status(saved)})
 
 
-@app.route("/api/debrid/preview_files", methods=["POST"])
-@app.route("/api/debrid/load_files", methods=["POST"])
-def api_debrid_preview_files():
+@routes.post("/api/debrid/preview_files")
+@routes.post("/api/debrid/load_files")
+async def api_debrid_preview_files(request: web.Request):
     try:
-        data = request.get_json(force=True) or {}
+        data = await request.json() or {}
     except Exception:
         data = {}
     magnet = str(data.get("magnet") or "").strip()
     if not magnet.startswith("magnet:?"):
-        return jsonify({"ok": False, "error": "Invalid magnet"}), 400
+        return json_response({"ok": False, "error": "Invalid magnet"}, status=400)
     try:
-        settings = ensure_app_settings(username=_current_settings_username(), defaults_overrides=_default_app_overrides())
+        settings = ensure_app_settings(username=_current_settings_username(request), defaults_overrides=_default_app_overrides())
         status = debrid_provider_status(settings)
         if not status.get("configured"):
-            return jsonify({"ok": False, "error": "No debrid provider is configured."}), 400
-        provider = get_active_provider(settings, int(settings.get("REQUEST_TIMEOUT_SECONDS") or 25))
-        preview = provider.preview_magnet(magnet)
+            return json_response({"ok": False, "error": "No debrid provider is configured."}, status=400)
+        provider = get_active_provider(settings, int(settings.get("REQUEST_TIMEOUT_SECONDS") or 25), request.app[SERVICES_KEY].http)
+        preview = await provider.preview_magnet(magnet)
         files = [{"id": item.file_id, "file_id": item.file_id, "path": item.path, "bytes": item.bytes} for item in preview.files]
-        return jsonify({
+        return json_response({
             "ok": True,
             "provider": provider.id,
             "provider_label": provider.label,
@@ -1088,15 +1047,13 @@ def api_debrid_preview_files():
             "files": files,
         })
     except DebridProviderError as exc:
-        return jsonify({"ok": False, "error": str(exc) or "Failed to preview files"}), 400
+        return json_response({"ok": False, "error": str(exc) or "Failed to preview files"}, status=400)
     except Exception:
-        return jsonify({"ok": False, "error": "Failed to preview files"}), 500
-
-
-@app.route("/api/debrid/enqueue_selected", methods=["POST"])
-def api_debrid_enqueue_selected():
+        return json_response({"ok": False, "error": "Failed to preview files"}, status=500)
+@routes.post("/api/debrid/enqueue_selected")
+async def api_debrid_enqueue_selected(request: web.Request):
     try:
-        data = request.get_json(force=True) or {}
+        data = await request.json() or {}
     except Exception:
         data = {}
     title = str(data.get("title") or "").strip() or "Torrent"
@@ -1105,10 +1062,9 @@ def api_debrid_enqueue_selected():
     file_ids = data.get("file_ids") or []
 
     if not provider_task_id:
-        return jsonify({"ok": False, "error": "Missing debrid task id"}), 400
+        return json_response({"ok": False, "error": "Missing debrid task id"}, status=400)
     if not str(DOWNLOAD_DIR or "").strip():
-        return jsonify({"ok": False, "error": "Pick the Debrid folder in Downloads settings before downloading."}), 400
-
+        return json_response({"ok": False, "error": "Pick the Debrid folder in Downloads settings before downloading."}, status=400)
     clean_ids: List[str] = []
     if isinstance(file_ids, list):
         for x in file_ids:
@@ -1118,17 +1074,15 @@ def api_debrid_enqueue_selected():
                 continue
 
     if not clean_ids:
-        return jsonify({"ok": False, "error": "No files selected"}), 400
-
-    settings = ensure_app_settings(username=_current_settings_username(), defaults_overrides=_default_app_overrides())
+        return json_response({"ok": False, "error": "No files selected"}, status=400)
+    settings = ensure_app_settings(username=_current_settings_username(request), defaults_overrides=_default_app_overrides())
     status = debrid_provider_status(settings)
     provider_id = str(status.get("active_provider") or "")
     if not provider_id:
-        return jsonify({"ok": False, "error": "No debrid provider is configured."}), 400
+        return json_response({"ok": False, "error": "No debrid provider is configured."}, status=400)
     requested_provider = str(data.get("provider") or "").strip().lower()
     if requested_provider and requested_provider != provider_id:
-        return jsonify({"ok": False, "error": "The preview provider is no longer active. Preview the result again."}), 409
-
+        return json_response({"ok": False, "error": "The preview provider is no longer active. Preview the result again."}, status=409)
     task_id = uuid.uuid4().hex
     task_dir = build_task_dir(task_id, title)
     os.makedirs(task_dir, exist_ok=True)
@@ -1138,7 +1092,7 @@ def api_debrid_enqueue_selected():
         title=title,
         magnet=magnet,
         task_dir=task_dir,
-        owner=_current_settings_username(),
+        owner=_current_settings_username(request),
         origin_client_id=str(request.headers.get("X-DebriPod-Client-Id") or ""),
         source="debrid",
         state="queued",
@@ -1150,22 +1104,20 @@ def api_debrid_enqueue_selected():
     with TASKS_LOCK:
         TASKS[task_id] = t
     save_task_metadata(t, original_result_title=title, selected_file_ids=clean_ids, version=str(VERSION))
-    th = threading.Thread(target=worker, args=(task_id,), daemon=True)
-    th.start()
+    asyncio.create_task(worker(task_id), name=f"debrid-download:{task_id}")
 
-    return jsonify({"ok": True, "task_id": task_id})
+    return json_response({"ok": True, "task_id": task_id})
 
 
-@app.route("/api/soulseek/enqueue", methods=["POST"])
-def api_soulseek_enqueue():
+@routes.post("/api/soulseek/enqueue")
+async def api_soulseek_enqueue(request: web.Request):
     if not str(SOULSEEK_DOWNLOAD_DIR or "").strip():
-        return jsonify({"ok": False, "error": "Pick the Soulseek folder in Downloads settings before downloading."}), 400
+        return json_response({"ok": False, "error": "Pick the Soulseek folder in Downloads settings before downloading."}, status=400)
     svc = SOULSEEK_SERVICE
     if not svc or not svc.is_ready():
-        return jsonify({"ok": False, "error": "Soulseek is configured but not connected. Check username, password, and listening port in Services."}), 400
-
+        return json_response({"ok": False, "error": "Soulseek is configured but not connected. Check username, password, and listening port in Services."}, status=400)
     try:
-        data = request.get_json(force=True, silent=False) or {}
+        data = await request.json() or {}
     except Exception:
         data = {}
 
@@ -1222,8 +1174,7 @@ def api_soulseek_enqueue():
         )
 
     if not user or not remote_paths:
-        return jsonify({"ok": False, "error": "Missing user or selected files"}), 400
-
+        return json_response({"ok": False, "error": "Missing user or selected files"}, status=400)
     if not title:
         base = directory.split("\\")[-1] if directory else ""
         title = f"Soulseek: {user} {base}".strip()
@@ -1234,7 +1185,7 @@ def api_soulseek_enqueue():
         title=title,
         magnet="",
         task_dir=task_download_dir,
-        owner=_current_settings_username(),
+        owner=_current_settings_username(request),
         origin_client_id=str(request.headers.get("X-DebriPod-Client-Id") or ""),
         source="soulseek",
         state="queued",
@@ -1248,25 +1199,25 @@ def api_soulseek_enqueue():
     save_task_metadata(t, original_result_title=title, remote_files=files, selected_file_ids=[item.get("file_id") for item in files], version=str(VERSION))
 
     try:
-        svc.enqueue_downloads(task_id, user, remote_paths)
+        await svc.enqueue_downloads_async(task_id, user, remote_paths)
     except Exception:
         set_task(task_id, state="error", message="Failed to queue Soulseek download")
-        return jsonify({"ok": False, "error": "Failed to queue Soulseek download"}), 500
-
-    return jsonify({"ok": True, "task_id": task_id})
-
+        return json_response({"ok": False, "error": "Failed to queue Soulseek download"}, status=500)
+    return json_response({"ok": True, "task_id": task_id})
 
 
 
-@app.route("/cancel", methods=["POST"])
-def cancel():
-    task_id = (request.form.get("task_id") or "").strip()
+
+@routes.post("/cancel")
+async def cancel(request: web.Request):
+    form = await request.post()
+    task_id = str(form.get("task_id") or "").strip()
     if not task_id:
-        abort(400)
-    if not task_belongs_to_owner(task_id, _current_settings_username()):
-        abort(404)
+        raise web.HTTPBadRequest()
+    if not task_belongs_to_owner(task_id, _current_settings_username(request)):
+        raise web.HTTPNotFound()
     cancel_task(task_id)
-    return redirect(url_for("tasks"))
+    raise web.HTTPSeeOther(location="/")
 
 
 
@@ -1275,8 +1226,8 @@ def cancel():
 # Library API
 # =========================
 
-@app.route("/api/library/config", methods=["GET"])
-def api_library_config():
+@routes.get("/api/library/config")
+async def api_library_config(request: web.Request):
     rts = []
     versions = library_root_versions()
     source_by_id = {str(item.get("id") or ""): str(item.get("source") or "library") for item in root_objects()}
@@ -1291,7 +1242,7 @@ def api_library_config():
         except Exception:
             pass
         rts.append({"id": rid, "name": name, "mode": mode, "source": source_by_id.get(rid, "library"), "version": int(versions.get(rid) or 0)})
-    return jsonify(
+    return json_response(
         {
             "roots": rts,
             "aggregate_root": {"id": LIBRARY_ALL_ROOT_ID, "name": "Library", "mode": "metadata"},
@@ -1305,15 +1256,15 @@ def api_library_config():
     )
 
 
-@app.route("/api/library/reindex", methods=["POST"])
-def api_library_reindex():
+@routes.post("/api/library/reindex")
+async def api_library_reindex(request: web.Request):
     def snapshot() -> dict[str, Any]:
         with _FULL_REINDEX_LOCK:
             return dict(_FULL_REINDEX_STATUS)
 
     with _FULL_REINDEX_LOCK:
         if _FULL_REINDEX_STATUS.get("running"):
-            return jsonify({"ok": True, "status": dict(_FULL_REINDEX_STATUS)})
+            return json_response({"ok": True, "status": dict(_FULL_REINDEX_STATUS)})
         _FULL_REINDEX_STATUS.update(
             {
                 "running": True,
@@ -1365,20 +1316,20 @@ def api_library_reindex():
             set_status(running=False, phase="error", error=str(exc), finished_at=time.time())
 
     threading.Thread(target=run_full_reindex, daemon=True).start()
-    return jsonify({"ok": True, "status": snapshot()})
+    return json_response({"ok": True, "status": snapshot()})
 
 
-@app.route("/api/library/reindex/status", methods=["GET"])
-def api_library_reindex_status():
+@routes.get("/api/library/reindex/status")
+async def api_library_reindex_status(request: web.Request):
     with _FULL_REINDEX_LOCK:
-        return jsonify({"ok": True, "status": dict(_FULL_REINDEX_STATUS)})
+        return json_response({"ok": True, "status": dict(_FULL_REINDEX_STATUS)})
 
 
-@app.route("/api/settings", methods=["GET"])
-def api_settings_get():
+@routes.get("/api/settings")
+async def api_settings_get(request: web.Request):
     cfg = ensure_startup_security_config()
-    username = _current_settings_username()
-    settings = _apply_runtime_settings_for_user(username) if username else ensure_app_settings(defaults_overrides=_default_app_overrides())
+    username = _current_settings_username(request)
+    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
     soulseek_service = getattr(state_module, "SOULSEEK_SERVICE", None)
     soulseek_status = soulseek_service.startup_status() if soulseek_service and hasattr(soulseek_service, "startup_status") else {}
     connections = {
@@ -1402,7 +1353,7 @@ def api_settings_get():
         "LASTFM_API_SECRET": {"set": bool(str(settings.get("LASTFM_API_SECRET") or "").strip())},
         "LASTFM_SESSION": {"set": bool(lastfm_session_key()), "username": lastfm_username()},
     }
-    return jsonify({
+    return json_response({
         "ok": True,
         "startup": {
             "PORT": int(PORT),
@@ -1425,7 +1376,7 @@ def _setup_skipped_services(settings: dict[str, Any]) -> dict[str, str]:
     if isinstance(raw, dict):
         for key, value in raw.items():
             k = str(key or "").strip().lower()
-            if k in {"library", "debrid", "soulseek", "lastfm", "youtube", "ffmpeg", "ffprobe", "ytdlp", "downloads", "indexers"}:
+            if k in {"library", "debrid", "soulseek", "lastfm", "youtube", "ffmpeg", "ffprobe", "ytdlp", "downloads"}:
                 out[k] = "skipped" if str(value or "").strip().lower() == "skipped" else str(value or "").strip().lower()
     return out
 
@@ -1476,9 +1427,10 @@ def _service_status_payload(settings: dict[str, Any]) -> dict[str, Any]:
             "session_user": lastfm_username(),
             "status": skipped.get("lastfm") or ("logged_in" if lastfm_username() else ("configured" if str(settings.get("LASTFM_API_KEY") or "").strip() and str(settings.get("LASTFM_API_SECRET") or "").strip() else "not_configured")),
         },
-        "indexers": {
-            "enabled_ids": list(settings.get("INDEXER_ENABLED_IDS") or []),
-            "status": skipped.get("indexers") or ("configured" if settings.get("INDEXER_ENABLED_IDS") else "not_configured"),
+        "torrent_search": {
+            "enabled_sources": list(settings.get("TORRENT_SEARCH_ENABLED_SOURCES") or []),
+            "local_index_enabled": bool(settings.get("LOCAL_INDEX_ENABLED", True)),
+            "status": "configured" if settings.get("TORRENT_SEARCH_ENABLED_SOURCES") or settings.get("LOCAL_INDEX_ENABLED", True) else "disabled",
         },
         "youtube": {
             "tool": tools["yt_dlp"],
@@ -1567,54 +1519,54 @@ def _setup_status_for_user(username: str, settings: dict[str, Any]) -> dict[str,
     }
 
 
-@app.route("/api/setup/status", methods=["GET"])
-def api_setup_status():
-    username = _current_settings_username()
-    settings = _apply_runtime_settings_for_user(username) if username else ensure_app_settings(defaults_overrides=_default_app_overrides())
-    return jsonify(_setup_status_for_user(username, settings))
+@routes.get("/api/setup/status")
+async def api_setup_status(request: web.Request):
+    username = _current_settings_username(request)
+    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
+    return json_response(_setup_status_for_user(username, settings))
 
 
-@app.route("/api/setup/skip", methods=["POST"])
-def api_setup_skip():
-    data = request.get_json(silent=True) or {}
+@routes.post("/api/setup/skip")
+async def api_setup_skip(request: web.Request):
+    data = await request.json() or {}
     service = str(data.get("service") or "").strip().lower()
-    allowed = {"library", "debrid", "soulseek", "lastfm", "youtube", "ffmpeg", "ffprobe", "ytdlp", "downloads", "indexers"}
+    allowed = {"library", "debrid", "soulseek", "lastfm", "youtube", "ffmpeg", "ffprobe", "ytdlp", "downloads"}
     if service not in allowed:
-        return jsonify({"ok": False, "error": "Unknown setup step"}), 400
-    username = _current_settings_username()
+        return json_response({"ok": False, "error": "Unknown setup step"}, status=400)
+    username = _current_settings_username(request)
     settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
     skipped = _setup_skipped_services(settings)
     skipped[service] = "skipped"
     saved = save_app_settings({"SETUP_SKIPPED_SERVICES": skipped}, username=username, defaults_overrides=_default_app_overrides())
     if username:
-        saved = _apply_runtime_settings_for_user(username, force=True)
-    return jsonify(_setup_status_for_user(username, saved))
+        saved = await _apply_request_runtime_settings(request, username, force=True)
+    return json_response(_setup_status_for_user(username, saved))
 
 
-@app.route("/api/setup/finish", methods=["POST"])
-def api_setup_finish():
-    username = _current_settings_username()
+@routes.post("/api/setup/finish")
+async def api_setup_finish(request: web.Request):
+    username = _current_settings_username(request)
     settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
     status = _setup_status_for_user(username, settings)
     if not status.get("required_complete"):
-        return jsonify({"ok": False, "error": "Add a library folder before finishing setup."}), 400
+        return json_response({"ok": False, "error": "Add a library folder before finishing setup."}, status=400)
     saved = save_app_settings({"SETUP_WIZARD_COMPLETE": True}, username=username, defaults_overrides=_default_app_overrides())
     if username:
-        saved = _apply_runtime_settings_for_user(username, force=True)
+        saved = await _apply_request_runtime_settings(request, username, force=True)
     _kick_library_indexes_from_settings(saved)
-    return jsonify(_setup_status_for_user(username, saved))
+    return json_response(_setup_status_for_user(username, saved))
 
 
-@app.route("/api/services/status", methods=["GET"])
-def api_services_status():
-    username = _current_settings_username()
-    settings = _apply_runtime_settings_for_user(username) if username else ensure_app_settings(defaults_overrides=_default_app_overrides())
-    return jsonify({"ok": True, "services": _service_status_payload(settings)})
+@routes.get("/api/services/status")
+async def api_services_status(request: web.Request):
+    username = _current_settings_username(request)
+    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
+    return json_response({"ok": True, "services": _service_status_payload(settings)})
 
 
-@app.route("/api/settings/export", methods=["GET"])
-def api_settings_export():
-    username = _current_settings_username()
+@routes.get("/api/settings/export")
+async def api_settings_export(request: web.Request):
+    username = _current_settings_username(request)
     settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
     payload = {}
     for key in sorted(APP_SETTING_KEYS):
@@ -1624,15 +1576,15 @@ def api_settings_export():
         if key in SECRET_SETTING_KEYS:
             continue
         payload[key] = settings.get(key)
-    return jsonify({"ok": True, "version": 1, "username": username, "include_secrets": False, "settings": payload})
+    return json_response({"ok": True, "version": 1, "username": username, "include_secrets": False, "settings": payload})
 
 
-@app.route("/api/settings/import", methods=["POST"])
-def api_settings_import():
-    data = request.get_json(silent=True) or {}
+@routes.post("/api/settings/import")
+async def api_settings_import(request: web.Request):
+    data = await request.json() or {}
     raw_settings = data.get("settings")
     if not isinstance(raw_settings, dict):
-        return jsonify({"ok": False, "error": "Import file must contain a settings object."}), 400
+        return json_response({"ok": False, "error": "Import file must contain a settings object."}, status=400)
     include_secrets = bool(data.get("include_secrets"))
     clean = {}
     for key, value in raw_settings.items():
@@ -1642,18 +1594,18 @@ def api_settings_import():
         if key_upper in SECRET_SETTING_KEYS and not include_secrets:
             continue
         clean[key_upper] = value
-    username = _current_settings_username()
+    username = _current_settings_username(request)
     saved = save_app_settings(clean, username=username, defaults_overrides=_default_app_overrides())
     if username:
-        _apply_runtime_settings_for_user(username, force=True)
+        await _apply_request_runtime_settings(request, username, force=True)
     if "LIBRARY_FOLDERS" in clean:
         _kick_library_indexes_from_settings(saved)
-    return jsonify({"ok": True, "settings": masked_settings(saved), "imported_keys": sorted(clean.keys())})
+    return json_response({"ok": True, "settings": masked_settings(saved), "imported_keys": sorted(clean.keys())})
 
 
-@app.route("/api/settings/save", methods=["POST"])
-def api_settings_save():
-    data = request.get_json(silent=True) or {}
+@routes.post("/api/settings/save")
+async def api_settings_save(request: web.Request):
+    data = await request.json() or {}
     settings_updates = data.get("settings") if isinstance(data.get("settings"), dict) else {}
     startup_updates = data.get("startup") if isinstance(data.get("startup"), dict) else {}
 
@@ -1663,7 +1615,7 @@ def api_settings_save():
         if value == "***":
             continue
         clean_settings[key_upper] = value
-    username = _current_settings_username()
+    username = _current_settings_username(request)
     saved = save_app_settings(clean_settings, username=username, defaults_overrides=_default_app_overrides())
 
     cfg = ensure_startup_security_config()
@@ -1682,35 +1634,35 @@ def api_settings_save():
         if key in CONFIG_KEYS:
             globals()[key] = _coerce_config_value(key, value)
     if username:
-        saved = _apply_runtime_settings_for_user(username, force=True)
+        saved = await _apply_request_runtime_settings(request, username, force=True)
     library_setting_keys = {"LIBRARY_FOLDERS", "DOWNLOAD_DIR", "SOULSEEK_DOWNLOAD_DIR", "YOUTUBE_DOWNLOAD_DIR"}
     if library_setting_keys.intersection(clean_settings):
         clear_index_cache()
         _kick_library_indexes_from_settings(saved)
     restart_required = bool(set(startup_updates).intersection({"PORT", "ENABLE_MCP"}))
-    return jsonify({"ok": True, "settings": masked_settings(saved), "restart_required": restart_required, "library_versions": library_root_versions()})
+    return json_response({"ok": True, "settings": masked_settings(saved), "restart_required": restart_required, "library_versions": library_root_versions()})
 
 
-@app.route("/api/settings/mcp_reset_token", methods=["POST"])
-def api_settings_mcp_reset_token():
+@routes.post("/api/settings/mcp_reset_token")
+async def api_settings_mcp_reset_token(request: web.Request):
     cfg = ensure_startup_security_config()
     cfg["MCP_TOKEN"] = secrets.token_urlsafe(48)
     cfg["ENABLE_MCP"] = True
     save_config(cfg)
-    return jsonify({"ok": True, "saved": True})
+    return json_response({"ok": True, "saved": True})
 
 
-@app.route("/api/settings/pick_path", methods=["POST"])
-def api_settings_pick_path():
-    data = request.get_json(silent=True) or {}
+@routes.post("/api/settings/pick_path")
+async def api_settings_pick_path(request: web.Request):
+    data = await request.json() or {}
     kind = str(data.get("kind") or "directory")
     try:
         path = pick_system_path(kind)
     except Exception:
-        return jsonify({"ok": False, "error": "System picker is unavailable", "manual": True}), 400
+        return json_response({"ok": False, "error": "System picker is unavailable", "manual": True}, status=400)
     if not path:
-        return jsonify({"ok": False, "error": "No path selected", "canceled": True})
-    return jsonify({"ok": True, "path": path})
+        return json_response({"ok": False, "error": "No path selected", "canceled": True})
+    return json_response({"ok": True, "path": path})
 
 
 def _coerce_glass_defaults(raw: Any) -> dict[str, Any]:
@@ -1723,16 +1675,6 @@ def _coerce_glass_defaults(raw: Any) -> dict[str, Any]:
         "listPills": "List pills",
         "selectedRow": "Selected row",
     }
-    numeric_limits = {
-        "glassTint": (0.0, 2.0),
-        "resolution": (0.25, 3.0),
-        "refraction": (0.0, 0.25),
-        "bevelDepth": (0.0, 0.35),
-        "bevelWidth": (0.0, 0.5),
-        "frost": (0.0, 5.0),
-        "refractionFill": (0.0, 1.0),
-        "magnify": (0.001, 3.0),
-    }
     source = raw if isinstance(raw, dict) else {}
     out: dict[str, Any] = {}
     if "infoPill" not in source and isinstance(source.get("pathPill"), dict):
@@ -1743,19 +1685,28 @@ def _coerce_glass_defaults(raw: Any) -> dict[str, Any]:
         source["infoPill"] = source["nowPlayingPill"]
     for key in keys:
         item = source.get(key) if isinstance(source.get(key), dict) else {}
-        mode = str(item.get("mode") or "clear").strip().lower()
-        if mode not in {"clear", "light", "dark"}:
-            mode = "clear"
-        clean: dict[str, Any] = {"label": labels[key], "mode": mode}
-        for field, (min_value, max_value) in numeric_limits.items():
+        try:
+            material = float(item["material"])
+            if not math.isfinite(material):
+                raise ValueError("non-finite material")
+        except (KeyError, TypeError, ValueError):
             try:
-                value = float(item.get(field, 1.0 if field in {"glassTint", "magnify"} else 0.0))
-            except Exception:
-                value = 1.0 if field in {"glassTint", "magnify"} else 0.0
-            clean[field] = round(max(min_value, min(max_value, value)), 4)
-        clean["specular"] = bool(item.get("specular"))
-        clean["shadow"] = bool(item.get("shadow"))
-        out[key] = clean
+                tint = max(0.0, min(2.0, float(item.get("glassTint", 1.0))))
+            except (TypeError, ValueError):
+                tint = 1.0
+            material = -(1.0 - tint) * 0.52 if tint < 1.0 else (tint - 1.0) * 0.52
+            mode = str(item.get("mode") or "").strip().lower()
+            if material == 0 and mode in {"dark", "light"}:
+                material = -0.52 if mode == "dark" else 0.52
+            try:
+                transparency = max(0.0, min(1.0, float(item["transparency"])))
+            except (KeyError, TypeError, ValueError):
+                transparency = 0.0
+            material *= 1.0 - transparency
+        out[key] = {
+            "label": labels[key],
+            "material": round(max(-1.0, min(1.0, material)), 4),
+        }
     return out
 
 
@@ -1783,7 +1734,7 @@ def _coerce_advanced_ui_defaults(raw: Any, glass: dict[str, Any]) -> dict[str, A
     for key, fallback in text_defaults.items():
         inherited = text_modes_raw.get("pathPill") if key == "infoPill" and "infoPill" not in text_modes_raw else fallback
         value = str(text_modes_raw.get(key, inherited)).strip().lower()
-        text_modes[key] = value if value in {"black", "white", "engraved", "contrast", "transparent"} else fallback
+        text_modes[key] = "contrast" if value in {"black", "white", "engraved"} else (value if value in {"contrast", "transparent"} else fallback)
 
     fps_defaults = {
         "selectedRow": 60,
@@ -1791,9 +1742,7 @@ def _coerce_advanced_ui_defaults(raw: Any, glass: dict[str, Any]) -> dict[str, A
         "libraryList": 60,
         "infoPill": 60,
         "albumArtTransition": 60,
-        "pageTransition": 60,
         "pathPill": 60,
-        "rowExpansion": 60,
         "rowInsertion": 60,
     }
     fps_raw = source.get("animationFps") if isinstance(source.get("animationFps"), dict) else {}
@@ -1867,9 +1816,9 @@ def _coerce_app_default_overrides(raw: Any) -> dict[str, Any]:
     return out
 
 
-@app.route("/api/defaults/diff", methods=["GET"])
-def api_defaults_diff():
-    username = _current_settings_username()
+@routes.get("/api/defaults/diff")
+async def api_defaults_diff(request: web.Request):
+    username = _current_settings_username(request)
     current = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
     private = {"DOWNLOAD_DIR", "SOULSEEK_DOWNLOAD_DIR", "YOUTUBE_DOWNLOAD_DIR", "LIBRARY_FOLDERS", "FFMPEG_PATH", "FFPROBE_PATH"}
     changed = {}
@@ -1879,17 +1828,17 @@ def api_defaults_diff():
         current_value = current.get(key)
         if current_value != source_value:
             changed[key] = {"source": source_value, "current": current_value}
-    return jsonify({"ok": True, "changes": changed, "excluded_private": sorted(private), "excluded_secrets": sorted(SECRET_SETTING_KEYS)})
+    return json_response({"ok": True, "changes": changed, "excluded_private": sorted(private), "excluded_secrets": sorted(SECRET_SETTING_KEYS)})
 
 
-@app.route("/api/library/building", methods=["GET"])
-def api_library_building():
+@routes.get("/api/library/building")
+async def api_library_building(request: web.Request):
     any_building, roots_status = index_building_status()
-    return jsonify({"ok": True, "any_building": any_building, "roots": roots_status, "versions": library_root_versions()})
+    return json_response({"ok": True, "any_building": any_building, "roots": roots_status, "versions": library_root_versions()})
 
 
-@app.route("/api/client-state", methods=["GET"])
-def api_client_state():
+@routes.get("/api/client-state")
+async def api_client_state(request: web.Request):
     for rid, _, root_abs, mode in roots():
         try:
             ensure_index_async(rid, root_abs, mode=mode)
@@ -1897,14 +1846,14 @@ def api_client_state():
         except Exception:
             pass
     any_building, roots_status = index_building_status()
-    username = _current_settings_username()
+    username = _current_settings_username(request)
     settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
     search_history_items = _load_search_history()
     with PLAYBACK_STATE_LOCK:
         playback_recent = PLAYBACK_STATE.get("recent") or []
         playback_version = int(PLAYBACK_STATE.get("version") or len(playback_recent) or 0)
     services = _service_status_payload(settings)
-    return jsonify({
+    return json_response({
         "ok": True,
         "user": username,
         "app_version": str(VERSION_INFO.get("display_version") or VERSION),
@@ -1922,9 +1871,9 @@ def api_client_state():
     })
 
 
-@app.route("/api/performance", methods=["GET"])
-def api_performance():
-    username = _current_settings_username()
+@routes.get("/api/performance")
+async def api_performance(request: web.Request):
+    username = _current_settings_username(request)
     settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
     any_building, roots_status = index_building_status()
     services = _service_status_payload(settings)
@@ -1937,7 +1886,7 @@ def api_performance():
                 "connected": bool(value.get("connected")),
                 "error": str(value.get("error") or value.get("warning") or ""),
             }
-    return jsonify({
+    return json_response({
         "ok": True,
         "library_versions": library_root_versions(),
         "indexing": {"any_building": bool(any_building), "roots": roots_status, "enrichment": enrichment_status()},
@@ -1955,12 +1904,12 @@ def api_performance():
     })
 
 
-@app.route("/api/sync", methods=["GET"])
-def api_sync():
-    username = _current_settings_username()
+@routes.get("/api/sync")
+async def api_sync(request: web.Request):
+    username = _current_settings_username(request)
     settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
     try:
-        since = json.loads(request.args.get("since") or "{}")
+        since = json.loads(request.query.get("since") or "{}")
     except Exception:
         since = {}
     if not isinstance(since, dict):
@@ -2007,19 +1956,19 @@ def api_sync():
         "services": _service_status_payload(settings),
         "setup_complete": bool(settings.get("SETUP_WIZARD_COMPLETE")),
     }
-    return jsonify(state_payload)
+    return json_response(state_payload)
 
 
-@app.route("/api/library/manifest", methods=["GET"])
-def api_library_manifest():
-    root_id = (request.args.get("root_id") or "").strip()
+@routes.get("/api/library/manifest")
+async def api_library_manifest(request: web.Request):
+    root_id = (request.query.get("root_id") or "").strip()
     try:
-        since_version = int(request.args.get("since_version") or 0)
+        since_version = int(request.query.get("since_version") or 0)
     except Exception:
         since_version = 0
     r = root_by_id(root_id)
     if not r:
-        abort(404)
+        raise web.HTTPNotFound()
     _, _, root_abs, mode = r
     try:
         ensure_index_async(root_id, root_abs, mode=mode)
@@ -2027,26 +1976,26 @@ def api_library_manifest():
         pass
     manifest = library_manifest(root_id, since_version=max(0, since_version))
     if manifest is None:
-        return jsonify({"ok": True, "root_id": root_id, "version": 0, "items": [], "building": True, "stale": True})
-    return jsonify({"ok": True, **manifest, "building": bool(index_building_status()[1].get(root_id)), "stale": False})
+        return json_response({"ok": True, "root_id": root_id, "version": 0, "items": [], "building": True, "stale": True})
+    return json_response({"ok": True, **manifest, "building": bool(index_building_status()[1].get(root_id)), "stale": False})
 
 
-@app.route("/api/library/palette", methods=["GET", "POST"])
-def api_library_palette():
+@routes.route("*", "/api/library/palette")
+async def api_library_palette(request: web.Request):
     if request.method == "GET":
-        cache_key = (request.args.get("key") or "").strip()
+        cache_key = (request.query.get("key") or "").strip()
         if not cache_key:
-            return jsonify({"ok": False, "error": "Missing palette key"}), 400
+            return json_response({"ok": False, "error": "Missing palette key"}, status=400)
         palette = load_palette(cache_key)
         if palette is None:
             palette = _palette_from_art_cache_key(cache_key)
-        return jsonify({"ok": True, "palette": palette})
+        return json_response({"ok": True, "palette": palette})
 
-    data = request.get_json(silent=True) or {}
+    data = await request.json() or {}
     cache_key = str(data.get("key") or "").strip()
     palette = data.get("palette")
     if not cache_key or not isinstance(palette, dict):
-        return jsonify({"ok": False, "error": "Missing palette key or palette"}), 400
+        return json_response({"ok": False, "error": "Missing palette key or palette"}, status=400)
     save_palette(
         cache_key,
         palette,
@@ -2055,7 +2004,7 @@ def api_library_palette():
         root_id=str(data.get("root_id") or ""),
         rel=str(data.get("rel") or ""),
     )
-    return jsonify({"ok": True})
+    return json_response({"ok": True})
 
 
 def _palette_from_art_cache_key(cache_key: str) -> dict | None:
@@ -2077,15 +2026,15 @@ def _palette_from_art_cache_key(cache_key: str) -> dict | None:
         return None
 
 
-@app.route("/api/library/analysis", methods=["GET"])
-def api_library_analysis():
-    root_id = (request.args.get("root_id") or "").strip()
-    rel = (request.args.get("rel") or "").strip()
+@routes.get("/api/library/analysis")
+async def api_library_analysis(request: web.Request):
+    root_id = (request.query.get("root_id") or "").strip()
+    rel = (request.query.get("rel") or "").strip()
     if not root_id or not rel:
-        return jsonify({"ok": False, "error": "Missing root_id or rel"}), 400
+        return json_response({"ok": False, "error": "Missing root_id or rel"}, status=400)
     r = root_by_id(root_id)
     if not r:
-        abort(404)
+        raise web.HTTPNotFound()
     analysis = load_visualizer_analysis_for_media(root_id, rel)
     def start_video_analysis_warm() -> bool:
         try:
@@ -2106,19 +2055,19 @@ def api_library_analysis():
     try:
         meta = analysis.get("metadata") if isinstance(analysis, dict) else {}
         if isinstance(meta, dict) and meta.get("video_palette_pending"):
-            start_video_analysis_warm()
+            await asyncio.to_thread(start_video_analysis_warm)
     except Exception:
         pass
     if not analysis:
-        warming = start_video_analysis_warm()
-        return jsonify({"ok": True, "analysis": None, "stale": True, "warming": bool(warming)})
+        warming = await asyncio.to_thread(start_video_analysis_warm)
+        return json_response({"ok": True, "analysis": None, "stale": True, "warming": bool(warming)})
     blob = analysis.pop("feature_blob", b"")
     timeline = load_video_timeline(str(analysis.get("analysis_key") or ""))
     if timeline:
         analysis["video_palette_timeline"] = timeline
     analysis["feature_blob_b64"] = base64.b64encode(blob).decode("ascii")
     analysis["feature_blob_encoding"] = "base64-raw"
-    return jsonify({"ok": True, "analysis": analysis, "stale": False})
+    return json_response({"ok": True, "analysis": analysis, "stale": False})
 
 
 
@@ -2127,12 +2076,12 @@ def api_library_analysis():
 # =========================
 # Playback state API (server-side)
 # =========================
-@app.route("/api/playback/snapshot", methods=["GET"])
-def api_playback_snapshot():
-    return jsonify(playback_snapshot_public())
+@routes.get("/api/playback/snapshot")
+async def api_playback_snapshot(request: web.Request):
+    return json_response(playback_snapshot_public())
 
-@app.route("/api/playback/recent", methods=["GET"])
-def api_playback_recent():
+@routes.get("/api/playback/recent")
+async def api_playback_recent(request: web.Request):
     with PLAYBACK_STATE_LOCK:
         recent = PLAYBACK_STATE.get("recent") or []
         out = []
@@ -2144,31 +2093,31 @@ def api_playback_recent():
             d.pop("_sess", None)
             d.pop("_stream_item", None)
             out.append(d)
-    return jsonify({"recent": out})
+    return json_response({"recent": out})
 
-@app.route("/api/playback/update", methods=["POST"])
-def api_playback_update():
-    js = request.get_json(silent=True) or {}
+@routes.post("/api/playback/update")
+async def api_playback_update(request: web.Request):
+    js = await request.json() or {}
     out = playback_update_from_client(js)
     if not out.get("ok"):
-        return jsonify(out), 400
-    return jsonify(out)
+        return json_response(out, status=400)
+    return json_response(out)
 
 
-@app.route("/api/library/browse", methods=["GET"])
-def api_library_browse():
-    root_id = (request.args.get("root_id") or "").strip()
-    rel = (request.args.get("rel") or "").strip()
+@routes.get("/api/library/browse")
+async def api_library_browse(request: web.Request):
+    root_id = (request.query.get("root_id") or "").strip()
+    rel = (request.query.get("rel") or "").strip()
     r = root_by_id(root_id)
     if not r:
-        abort(404)
+        raise web.HTTPNotFound()
     _, _, root_abs, mode = r
     try:
         abs_path = safe_path_join(root_abs, rel)
     except ValueError:
-        abort(400)
+        raise web.HTTPBadRequest()
     if not os.path.isdir(abs_path):
-        abort(404)
+        raise web.HTTPNotFound()
 
     try:
         ensure_index_async(root_id, root_abs, mode=mode)
@@ -2177,7 +2126,7 @@ def api_library_browse():
 
     cached = load_folder_entries(root_id, rel, abs_path)
     if cached is not None:
-        return jsonify(cached)
+        return json_response(cached)
 
     entries = []
     try:
@@ -2212,19 +2161,19 @@ def api_library_browse():
         entries.append({"type": "file", "name": f, "rel": relp, "media": media})
     version = save_folder_entries(root_id, rel, abs_path, entries)
     building = bool(index_building_status()[1].get(root_id))
-    return jsonify({"entries": entries, "version": version, "building": building, "stale": False})
+    return json_response({"entries": entries, "version": version, "building": building, "stale": False})
 
 
-@app.route("/api/library/metadata", methods=["GET"])
-def api_library_metadata():
-    root_id = (request.args.get("root_id") or "").strip()
-    level = (request.args.get("level") or "").strip().lower()
-    value = (request.args.get("value") or "").strip()
+@routes.get("/api/library/metadata")
+async def api_library_metadata(request: web.Request):
+    root_id = (request.query.get("root_id") or "").strip()
+    level = (request.query.get("level") or "").strip().lower()
+    value = (request.query.get("value") or "").strip()
 
     aggregate = root_id == LIBRARY_ALL_ROOT_ID
     r = None if aggregate else root_by_id(root_id)
     if not aggregate and not r:
-        abort(404)
+        raise web.HTTPNotFound()
     root_abs = "" if aggregate else r[2]
     mode = "metadata" if aggregate else r[3]
 
@@ -2243,7 +2192,7 @@ def api_library_metadata():
             items = scan_root_playlists(root_abs)
         if not items:
             items = [{"kind": "info", "label": "No playlists found"}]
-        return jsonify({"items": items, "version": (sum(library_root_versions().values()) if aggregate else library_root_version(root_id)), "stale": False})
+        return json_response({"items": items, "version": (sum(library_root_versions().values()) if aggregate else library_root_version(root_id)), "stale": False})
 
     if level == "playlist_tracks":
         playlist_root_id = root_id
@@ -2252,11 +2201,11 @@ def api_library_metadata():
                 selector = json.loads(value) if value else {}
             except Exception:
                 selector = {}
-            playlist_root_id = str(selector.get("root_id") or request.args.get("item_root_id") or "")
+            playlist_root_id = str(selector.get("root_id") or request.query.get("item_root_id") or "")
             value = str(selector.get("rel") or selector.get("value") or value)
             selected_root = root_by_id(playlist_root_id)
             if not selected_root:
-                abort(404)
+                raise web.HTTPNotFound()
             root_abs = selected_root[2]
         if is_smart_playlist_rel(value):
             items = smart_playlist_tracks_for_root(root_abs, value, playlist_root_id)
@@ -2267,7 +2216,7 @@ def api_library_metadata():
                 item.setdefault("root_id", playlist_root_id)
         if not items:
             items = [{"kind": "info", "label": "No playable tracks found in playlist"}]
-        return jsonify({"items": items, "version": library_root_version(playlist_root_id), "stale": False})
+        return json_response({"items": items, "version": library_root_version(playlist_root_id), "stale": False})
 
     if aggregate:
         data = {"tracks": [], "videos": [], "movies": [], "shows": []}
@@ -2341,8 +2290,8 @@ def api_library_metadata():
                 {"key": "videos", "label": "Videos"},
                 {"key": "folders", "label": "Folders"},
             ]
-            return jsonify({"categories": cats, "building": True, "version": 0, "stale": True})
-        return jsonify({"items": [{"kind": "info", "label": "Indexing media files..."}], "building": True, "version": 0, "stale": True})
+            return json_response({"categories": cats, "building": True, "version": 0, "stale": True})
+        return json_response({"items": [{"kind": "info", "label": "Indexing media files..."}], "building": True, "version": 0, "stale": True})
 
     tracks = data.get("tracks") or []
     vids = data.get("videos") or []
@@ -2430,26 +2379,26 @@ def api_library_metadata():
             {"key": "videos", "label": "Videos"},
             {"key": "folders", "label": "Folders"},
         ]
-        return jsonify({"categories": cats, **response_meta})
+        return json_response({"categories": cats, **response_meta})
 
     if level == "artists":
         items = facet_items("artists", "No artist tags found")
         if items:
-            return jsonify({"items": items, **response_meta})
+            return json_response({"items": items, **response_meta})
         s = sorted({(t.get("artist") or "").strip() for t in tracks if (t.get("artist") or "").strip()}, key=lambda x: x.lower())
         items = [{"kind": "artist", "label": a, "value": a} for a in s] or [{"kind": "info", "label": "No artist tags found"}]
-        return jsonify({"items": items, **response_meta})
+        return json_response({"items": items, **response_meta})
 
     if level == "albums":
         artist_filter = value
         if artist_filter and isinstance(facets.get("albums_by_artist"), dict):
             payload = facets.get("albums_by_artist", {}).get(artist_filter)
             if isinstance(payload, list):
-                return jsonify({"items": payload or [{"kind": "info", "label": "No albums found"}], **response_meta})
+                return json_response({"items": payload or [{"kind": "info", "label": "No albums found"}], **response_meta})
         if not artist_filter:
             payload = facet_items("albums", "No albums found")
             if payload:
-                return jsonify({"items": payload, **response_meta})
+                return json_response({"items": payload, **response_meta})
         albums = []
         seen = set()
         for t in tracks:
@@ -2474,7 +2423,7 @@ def api_library_metadata():
 
         if not albums:
             albums = [{"kind": "info", "label": "No albums found"}]
-        return jsonify({"items": albums, **response_meta})
+        return json_response({"items": albums, **response_meta})
 
     if level == "tracks":
         try:
@@ -2486,11 +2435,11 @@ def api_library_metadata():
         genre = (sel.get("genre") or "").strip()
         liked_only = bool(sel.get("liked") or sel.get("loved") or sel.get("liked_only"))
         if liked_only and not lastfm_enabled():
-            return jsonify({"items": [{"kind": "info", "label": "Last.fm is not configured. Add API credentials or skip Last.fm features."}], **response_meta})
+            return json_response({"items": [{"kind": "info", "label": "Last.fm is not configured. Add API credentials or skip Last.fm features."}], **response_meta})
         if not liked_only and isinstance(facets.get("tracks_by_key"), dict):
             payload = facets.get("tracks_by_key", {}).get(track_facet_key(artist=artist, album=album, genre=genre))
             if isinstance(payload, list):
-                return jsonify({"items": payload or [{"kind": "info", "label": "No tracks found"}], **response_meta})
+                return json_response({"items": payload or [{"kind": "info", "label": "No tracks found"}], **response_meta})
         tr = []
         for t in tracks:
             if artist and (t.get("artist") or "").strip() != artist:
@@ -2510,7 +2459,7 @@ def api_library_metadata():
         tr.sort(key=lambda x: track_sort_key(x.get("badge") or "") + (x.get("label") or "",))
         if not tr:
             tr = [{"kind": "info", "label": "No tracks found"}]
-        return jsonify({"items": tr, **response_meta})
+        return json_response({"items": tr, **response_meta})
 
 
     if level in {"liked_music", "liked_movies", "liked_episodes", "liked_videos"}:
@@ -2523,7 +2472,7 @@ def api_library_metadata():
         liked_rows: list[dict[str, Any]] = []
         like_root_id = "" if aggregate else root_id
         for requested_type in requested_types:
-            liked_rows.extend(list_media_likes(_current_settings_username(), media_type=requested_type, root_id=like_root_id))
+            liked_rows.extend(list_media_likes(_current_settings_username(request), media_type=requested_type, root_id=like_root_id))
         items = []
         for liked in sorted(liked_rows, key=lambda row: float(row.get("updated_at") or 0), reverse=True):
             media_type = str(liked.get("media_type") or "")
@@ -2566,33 +2515,33 @@ def api_library_metadata():
                 "liked_videos": "No liked videos found",
             }[level]
             items = [{"kind": "info", "label": empty_label}]
-        return jsonify({"items": items[:3000], **response_meta})
+        return json_response({"items": items[:3000], **response_meta})
 
     if level == "songs":
         items = facet_items("songs", "No songs found")
         if items:
-            return jsonify({"items": items, **response_meta})
+            return json_response({"items": items, **response_meta})
         s = sorted(tracks, key=lambda x: (x.get("title") or x.get("name") or "").lower())
         items = [{"kind": "track", "label": (t.get("title") or t.get("name") or "Track"), "rel": t.get("rel"), "root_id": t.get("root_id") or root_id, "root": {"id": t.get("root_id") or root_id}} for t in s[:3000]]
         if not items:
             items = [{"kind": "info", "label": "No songs found"}]
-        return jsonify({"items": items, **response_meta})
+        return json_response({"items": items, **response_meta})
 
     if level == "genres":
         items = facet_items("genres", "No genre tags found")
         if items:
-            return jsonify({"items": items, **response_meta})
+            return json_response({"items": items, **response_meta})
         s = sorted({(t.get("genre") or "").strip() for t in tracks if (t.get("genre") or "").strip()}, key=lambda x: x.lower())
         items = [{"kind": "genre", "label": g, "value": g} for g in s] or [{"kind": "info", "label": "No genre tags found"}]
 
-        return jsonify({"items": items, **response_meta})
+        return json_response({"items": items, **response_meta})
 
     if level == "genre_albums":
         genre = value
         if isinstance(facets.get("genre_albums"), dict):
             payload = facets.get("genre_albums", {}).get(genre)
             if isinstance(payload, list):
-                return jsonify({"items": payload or [{"kind": "info", "label": "No tracks found"}], **response_meta})
+                return json_response({"items": payload or [{"kind": "info", "label": "No tracks found"}], **response_meta})
         albums = []
         seen = set()
         any_match = False
@@ -2622,14 +2571,14 @@ def api_library_metadata():
 
         if not albums:
             albums = [{"kind": "info", "label": "No tracks found"}]
-        return jsonify({"items": albums, **response_meta})
+        return json_response({"items": albums, **response_meta})
 
     if level == "genre_tracks":
         genre = value
         if isinstance(facets.get("tracks_by_key"), dict):
             payload = facets.get("tracks_by_key", {}).get(track_facet_key(genre=genre))
             if isinstance(payload, list):
-                return jsonify({"items": payload or [{"kind": "info", "label": "No tracks found"}], **response_meta})
+                return json_response({"items": payload or [{"kind": "info", "label": "No tracks found"}], **response_meta})
         items = []
         for t in tracks:
             if (t.get("genre") or "").strip() != genre:
@@ -2639,13 +2588,13 @@ def api_library_metadata():
         items.sort(key=lambda x: (x.get("label") or "").lower())
         if not items:
             items = [{"kind": "info", "label": "No tracks found"}]
-        return jsonify({"items": items, **response_meta})
+        return json_response({"items": items, **response_meta})
 
     if level == "movies":
         items = [playable_video_row(item, "movie") for item in (data.get("movies") or []) if isinstance(item, dict)]
         if not items:
             items = [{"kind": "info", "label": "No movies found"}]
-        return jsonify({"items": items[:3000], **response_meta})
+        return json_response({"items": items[:3000], **response_meta})
 
     if level == "shows":
         items = []
@@ -2662,12 +2611,12 @@ def api_library_metadata():
             })
         if not items:
             items = [{"kind": "info", "label": "No shows found"}]
-        return jsonify({"items": items, **response_meta})
+        return json_response({"items": items, **response_meta})
 
     if level == "show_seasons":
         show = next((item for item in (data.get("shows") or []) if isinstance(item, dict) and str(item.get("show_key") or "") == value), None)
         if not show:
-            return jsonify({"items": [{"kind": "info", "label": "Show not found"}], **response_meta})
+            return json_response({"items": [{"kind": "info", "label": "Show not found"}], **response_meta})
         seasons: dict[int, list[dict]] = {}
         for episode in show.get("episodes") or []:
             if isinstance(episode, dict):
@@ -2679,7 +2628,7 @@ def api_library_metadata():
             count = len(episodes)
             label = "Specials" if season == 0 else f"Season {season}"
             items.append({"kind": "show_season", "label": label, "show_key": value, "season": season, "episode_count": count, "completion_percent": percent, "pills": [f"{count} episode" + ("" if count == 1 else "s"), f"{percent}%"]})
-        return jsonify({"items": items or [{"kind": "info", "label": "No seasons found"}], **response_meta})
+        return json_response({"items": items or [{"kind": "info", "label": "No seasons found"}], **response_meta})
 
     if level == "show_episodes":
         try:
@@ -2695,55 +2644,55 @@ def api_library_metadata():
             row = playable_video_row(episode, "show_episode")
             row["show_key"] = show_key
             items.append(row)
-        return jsonify({"items": items or [{"kind": "info", "label": "No episodes found"}], **response_meta})
+        return json_response({"items": items or [{"kind": "info", "label": "No episodes found"}], **response_meta})
 
     if level == "videos":
         items = [playable_video_row(item, "video") for item in sorted(vids, key=lambda x: (x.get("title") or x.get("name") or "").lower())[:3000] if isinstance(item, dict)]
         if not items:
             items = [{"kind": "info", "label": "No videos found"}]
-        return jsonify({"items": items, **response_meta})
+        return json_response({"items": items, **response_meta})
 
-    return jsonify({"items": [{"kind": "info", "label": "Unsupported view"}], **response_meta})
+    return json_response({"items": [{"kind": "info", "label": "Unsupported view"}], **response_meta})
 
 
-@app.route("/api/library/playlist_create", methods=["POST"])
-def api_library_playlist_create():
-    js = request.get_json(silent=True) or {}
+@routes.post("/api/library/playlist_create")
+async def api_library_playlist_create(request: web.Request):
+    js = await request.json() or {}
     root_id = str(js.get("root_id") or "").strip()
     name = str(js.get("name") or "").strip()
 
     r = root_by_id(root_id)
     if not r:
-        abort(404)
+        raise web.HTTPNotFound()
     _, _, root_abs, _ = r
 
     ok, err, info = create_root_playlist(root_abs, name)
     if not ok:
-        return jsonify({"ok": False, "error": err, "rel": str((info or {}).get("rel") or ""), "label": str((info or {}).get("label") or "")})
-    return jsonify({"ok": True, "rel": str((info or {}).get("rel") or ""), "label": str((info or {}).get("label") or "")})
+        return json_response({"ok": False, "error": err, "rel": str((info or {}).get("rel") or ""), "label": str((info or {}).get("label") or "")})
+    return json_response({"ok": True, "rel": str((info or {}).get("rel") or ""), "label": str((info or {}).get("label") or "")})
 
 
-@app.route("/api/library/playlist_rename", methods=["POST"])
-def api_library_playlist_rename():
-    js = request.get_json(silent=True) or {}
+@routes.post("/api/library/playlist_rename")
+async def api_library_playlist_rename(request: web.Request):
+    js = await request.json() or {}
     root_id = str(js.get("root_id") or "").strip()
     playlist_rel = str(js.get("rel") or "").strip()
     name = str(js.get("name") or "").strip()
 
     r = root_by_id(root_id)
     if not r:
-        abort(404)
+        raise web.HTTPNotFound()
     _, _, root_abs, _ = r
 
     ok, err, info = rename_root_playlist(root_abs, playlist_rel, name)
     if not ok:
-        return jsonify({"ok": False, "error": err, "rel": str((info or {}).get("rel") or ""), "label": str((info or {}).get("label") or "")})
-    return jsonify({"ok": True, "rel": str((info or {}).get("rel") or ""), "label": str((info or {}).get("label") or "")})
+        return json_response({"ok": False, "error": err, "rel": str((info or {}).get("rel") or ""), "label": str((info or {}).get("label") or "")})
+    return json_response({"ok": True, "rel": str((info or {}).get("rel") or ""), "label": str((info or {}).get("label") or "")})
 
 
-@app.route("/api/library/playlist_add", methods=["POST"])
-def api_library_playlist_add():
-    js = request.get_json(silent=True) or {}
+@routes.post("/api/library/playlist_add")
+async def api_library_playlist_add(request: web.Request):
+    js = await request.json() or {}
     root_id = str(js.get("root_id") or "").strip()
     playlist_rel = str(js.get("rel") or "").strip()
     tracks = js.get("tracks") if isinstance(js.get("tracks"), list) else []
@@ -2751,18 +2700,18 @@ def api_library_playlist_add():
 
     r = root_by_id(root_id)
     if not r:
-        abort(404)
+        raise web.HTTPNotFound()
     _, _, root_abs, _ = r
 
     ok, err, info = add_tracks_to_playlist(root_abs, playlist_rel, clean_tracks)
     if not ok:
-        return jsonify({"ok": False, "error": err, "added": int((info or {}).get("added") or 0)})
-    return jsonify({"ok": True, "added": int((info or {}).get("added") or 0)})
+        return json_response({"ok": False, "error": err, "added": int((info or {}).get("added") or 0)})
+    return json_response({"ok": True, "added": int((info or {}).get("added") or 0)})
 
 
-@app.route("/api/library/playlist_remove", methods=["POST"])
-def api_library_playlist_remove():
-    js = request.get_json(silent=True) or {}
+@routes.post("/api/library/playlist_remove")
+async def api_library_playlist_remove(request: web.Request):
+    js = await request.json() or {}
     root_id = str(js.get("root_id") or "").strip()
     playlist_rel = str(js.get("rel") or "").strip()
     tracks = js.get("tracks") if isinstance(js.get("tracks"), list) else []
@@ -2770,88 +2719,88 @@ def api_library_playlist_remove():
 
     r = root_by_id(root_id)
     if not r:
-        abort(404)
+        raise web.HTTPNotFound()
     _, _, root_abs, _ = r
 
     ok, err, info = remove_tracks_from_playlist(root_abs, playlist_rel, clean_tracks)
     if not ok:
-        return jsonify({"ok": False, "error": err, "removed": int((info or {}).get("removed") or 0)})
-    return jsonify({"ok": True, "removed": int((info or {}).get("removed") or 0)})
+        return json_response({"ok": False, "error": err, "removed": int((info or {}).get("removed") or 0)})
+    return json_response({"ok": True, "removed": int((info or {}).get("removed") or 0)})
 
 
 
 
-@app.route("/api/library/playlist_delete", methods=["POST"])
-def api_library_playlist_delete():
-    js = request.get_json(silent=True) or {}
+@routes.post("/api/library/playlist_delete")
+async def api_library_playlist_delete(request: web.Request):
+    js = await request.json() or {}
     root_id = str(js.get("root_id") or "").strip()
     playlist_rel = str(js.get("rel") or "").strip()
 
     r = root_by_id(root_id)
     if not r:
-        abort(404)
+        raise web.HTTPNotFound()
     _, _, root_abs, _ = r
 
     ok, err, info = delete_root_playlist(root_abs, playlist_rel)
     if not ok:
-        return jsonify({"ok": False, "error": err}), 400
-    return jsonify({"ok": True, "smart": bool((info or {}).get("smart"))})
+        return json_response({"ok": False, "error": err}, status=400)
+    return json_response({"ok": True, "smart": bool((info or {}).get("smart"))})
 
 
-@app.route("/api/library/smart_playlist_create", methods=["POST"])
-def api_library_smart_playlist_create():
-    js = request.get_json(silent=True) or {}
+@routes.post("/api/library/smart_playlist_create")
+async def api_library_smart_playlist_create(request: web.Request):
+    js = await request.json() or {}
     root_id = str(js.get("root_id") or "").strip()
     name = str(js.get("name") or "").strip()
 
     r = root_by_id(root_id)
     if not r:
-        abort(404)
+        raise web.HTTPNotFound()
     _, _, root_abs, _ = r
 
     ok, err, info = create_root_smart_playlist(root_abs, name)
     if not ok:
-        return jsonify({"ok": False, "error": err, "rel": str((info or {}).get("rel") or ""), "label": str((info or {}).get("label") or "")})
-    return jsonify({"ok": True, "rel": str((info or {}).get("rel") or ""), "label": str((info or {}).get("label") or "")})
+        return json_response({"ok": False, "error": err, "rel": str((info or {}).get("rel") or ""), "label": str((info or {}).get("label") or "")})
+    return json_response({"ok": True, "rel": str((info or {}).get("rel") or ""), "label": str((info or {}).get("label") or "")})
 
 
-@app.route("/api/library/smart_playlist_rules", methods=["GET", "POST"])
-def api_library_smart_playlist_rules():
+@routes.route("*", "/api/library/smart_playlist_rules")
+async def api_library_smart_playlist_rules(request: web.Request):
     if request.method == "GET":
-        root_id = (request.args.get("root_id") or "").strip()
-        playlist_rel = (request.args.get("rel") or "").strip()
+        root_id = (request.query.get("root_id") or "").strip()
+        playlist_rel = (request.query.get("rel") or "").strip()
         r = root_by_id(root_id)
         if not r:
-            abort(404)
+            raise web.HTTPNotFound()
         _, _, root_abs, _ = r
         ok, err, info = load_smart_playlist_rules(root_abs, playlist_rel)
         if not ok:
-            return jsonify({"ok": False, "error": err}), 400
-        return jsonify({"ok": True, "text": str((info or {}).get("text") or ""), "label": str((info or {}).get("label") or "")})
+            return json_response({"ok": False, "error": err}, status=400)
+        return json_response({"ok": True, "text": str((info or {}).get("text") or ""), "label": str((info or {}).get("label") or "")})
 
-    js = request.get_json(silent=True) or {}
+    js = await request.json() or {}
     root_id = str(js.get("root_id") or "").strip()
     playlist_rel = str(js.get("rel") or "").strip()
     text = str(js.get("text") or "")
     r = root_by_id(root_id)
     if not r:
-        abort(404)
+        raise web.HTTPNotFound()
     _, _, root_abs, _ = r
     ok, err, info = save_smart_playlist_rules(root_abs, playlist_rel, text)
     if not ok:
-        return jsonify({"ok": False, "error": err}), 400
-    return jsonify({"ok": True, "label": str((info or {}).get("label") or "")})
+        return json_response({"ok": False, "error": err}, status=400)
+    return json_response({"ok": True, "label": str((info or {}).get("label") or "")})
 
 
-@app.route("/api/library/filemeta", methods=["GET"])
-def api_library_filemeta():
-    root_id = (request.args.get("root_id") or "").strip()
-    rel = (request.args.get("rel") or "").strip()
+@routes.get("/api/library/filemeta")
+async def api_library_filemeta(request: web.Request):
+    root_id = (request.query.get("root_id") or "").strip()
+    rel = (request.query.get("rel") or "").strip()
     if root_id == SEARCH_STREAM_ROOT_ID:
         it = _search_stream_get_or_restore(rel)
         if not it:
-            abort(404)
-        return jsonify({
+            raise web.HTTPNotFound()
+        return json_response({
             "title": str(it.get("title") or it.get("name") or ""),
             "artist": str(it.get("artist") or ""),
             "album": str(it.get("album") or ""),
@@ -2862,16 +2811,16 @@ def api_library_filemeta():
         })
     r = root_by_id(root_id)
     if not r:
-        abort(404)
+        raise web.HTTPNotFound()
     _, _, root_abs, _ = r
     try:
         abs_path = safe_path_join(root_abs, rel)
     except ValueError:
-        abort(400)
+        raise web.HTTPBadRequest()
     if not os.path.exists(abs_path) or not os.path.isfile(abs_path):
-        abort(404)
+        raise web.HTTPNotFound()
 
-    meta = file_meta_cached(abs_path)
+    meta = await asyncio.to_thread(file_meta_cached, abs_path)
 
     art = ""
     ver = ""
@@ -2879,13 +2828,13 @@ def api_library_filemeta():
         ver = str(int(os.path.getmtime(os.path.dirname(abs_path))))
     except OSError:
         ver = ""
-    ap = art_for_media_path(abs_path) if is_audio(abs_path) else None
+    ap = await asyncio.to_thread(art_for_media_path, abs_path) if is_audio(abs_path) else None
     if ap:
-        art = url_for("art", root_id=root_id, relpath=rel)
+        art = "/art/" + quote(root_id, safe="") + "/" + quote(rel, safe="/")
         if ver:
             art = art + "?v=" + ver
 
-    return jsonify(
+    return json_response(
         {
             "title": meta.get("title") or os.path.splitext(os.path.basename(abs_path))[0],
             "artist": meta.get("artist") or "",
@@ -2898,47 +2847,47 @@ def api_library_filemeta():
     )
 
 
-@app.route("/api/library/media_information", methods=["GET"])
-def api_library_media_information():
-    show_title = (request.args.get("show_title") or "").strip()
+@routes.get("/api/library/media_information")
+async def api_library_media_information(request: web.Request):
+    show_title = (request.query.get("show_title") or "").strip()
     try:
-        season = int(request.args.get("season") or 0)
-        episode = int(request.args.get("episode") or 0)
+        season = int(request.query.get("season") or 0)
+        episode = int(request.query.get("episode") or 0)
     except (TypeError, ValueError):
-        return jsonify(ok=False, error="Invalid episode", information={}), 400
+        return json_response(ok=False, error="Invalid episode", information={}, status=400)
     if not show_title or season < 0 or episode <= 0:
-        return jsonify(ok=False, error="Missing episode", information={}), 400
-    information = normalized_episode_information(show_title, season, episode)
-    return jsonify(ok=True, information=information)
+        return json_response(ok=False, error="Missing episode", information={}, status=400)
+    information = await normalized_episode_information(show_title, season, episode)
+    return json_response(ok=True, information=information)
 
 
-@app.route("/api/library/like", methods=["GET", "POST"])
-def api_library_like():
-    username = _current_settings_username()
+@routes.route("*", "/api/library/like")
+async def api_library_like(request: web.Request):
+    username = _current_settings_username(request)
     if request.method == "GET":
-        media_key = (request.args.get("media_key") or "").strip()
+        media_key = (request.query.get("media_key") or "").strip()
         if not media_key:
-            return jsonify(ok=False, error="Missing media key"), 400
+            return json_response(ok=False, error="Missing media key", status=400)
         row = get_media_like(username, media_key)
         if row is None:
-            artist = (request.args.get("artist") or "").strip()
-            title = (request.args.get("title") or "").strip()
-            album = (request.args.get("album") or "").strip()
+            artist = (request.query.get("artist") or "").strip()
+            title = (request.query.get("title") or "").strip()
+            album = (request.query.get("album") or "").strip()
             if artist and title and lastfm_module.lastfm_is_loved(artist, title, album):
                 target = {
                     "media_type": "music", "source": "lastfm", "artist": artist,
                     "title": title, "album": album,
                 }
                 row = set_media_like(username, target, True)
-        return jsonify(ok=True, like=row)
+        return json_response(ok=True, like=row)
 
-    payload = request.get_json(silent=True) or {}
+    payload = await request.json() or {}
     if not isinstance(payload.get("liked"), bool):
-        return jsonify(ok=False, error="liked must be a boolean"), 400
+        return json_response(ok=False, error="liked must be a boolean", status=400)
     try:
         row = set_media_like(username, payload, bool(payload["liked"]))
     except ValueError as exc:
-        return jsonify(ok=False, error=str(exc)), 400
+        return json_response(ok=False, error=str(exc), status=400)
     warning = ""
     if row.get("media_type") == "music":
         artist = str(row.get("artist") or "")
@@ -2949,39 +2898,41 @@ def api_library_like():
                 lastfm_module.lastfm_set_loved_local(artist, title, album, bool(row["liked"]))
                 if lastfm_module.lastfm_enabled():
                     if row["liked"]:
-                        lastfm_module.lastfm_love_track(artist, title)
+                        await lastfm_module.lastfm_love_track(artist, title)
                     else:
-                        lastfm_module.lastfm_unlove_track(artist, title)
+                        await lastfm_module.lastfm_unlove_track(artist, title)
             except Exception:
                 warning = "Local like saved; Last.fm sync failed"
-    return jsonify(ok=True, like=row, sync_warning=warning)
+    return json_response(ok=True, like=row, sync_warning=warning)
 
 
-@app.route("/api/library/liked", methods=["GET"])
-def api_library_liked():
-    media_type = (request.args.get("media_type") or "").strip().lower()
-    root_id = (request.args.get("root_id") or "").strip()
+@routes.get("/api/library/liked")
+async def api_library_liked(request: web.Request):
+    media_type = (request.query.get("media_type") or "").strip().lower()
+    root_id = (request.query.get("root_id") or "").strip()
     if media_type and media_type not in {"music", "movie", "episode", "video", "youtube"}:
-        return jsonify(ok=False, error="Unsupported media type", items=[]), 400
-    rows = list_media_likes(_current_settings_username(), media_type=media_type, root_id=root_id)
-    return jsonify(ok=True, items=rows)
+        return json_response(ok=False, error="Unsupported media type", items=[], status=400)
+    rows = list_media_likes(_current_settings_username(request), media_type=media_type, root_id=root_id)
+    return json_response(ok=True, items=rows)
 
 
-@app.route("/art/<root_id>/<path:relpath>", methods=["GET", "HEAD"])
-def art(root_id: str, relpath: str):
+@routes.get("/art/{root_id}/{relpath:.*}")
+async def art(request: web.Request):
+    root_id = request.match_info["root_id"]
+    relpath = request.match_info["relpath"]
     r = root_by_id(root_id)
     if not r:
-        abort(404)
+        raise web.HTTPNotFound()
     _, _, root_abs, _ = r
     rel = unquote(relpath)
     try:
         abs_path = safe_path_join(root_abs, rel)
     except ValueError:
-        abort(400)
-    ap = art_for_media_path(abs_path)
+        raise web.HTTPBadRequest()
+    ap = await asyncio.to_thread(art_for_media_path, abs_path)
     if not ap:
-        abort(404)
-    return range_response(ap)
+        raise web.HTTPNotFound()
+    return await range_response(request, ap)
 
 
 
@@ -3036,7 +2987,7 @@ def _hls_cache_entry_for_path(src_path: str) -> Tuple[str, str]:
         try:
             src_m = os.path.getmtime(src_path)
         except OSError:
-            abort(404)
+            raise web.HTTPNotFound()
         ok = False
         if os.path.exists(manifest_path):
             try:
@@ -3061,24 +3012,24 @@ def _resolve_stream_source_for_hls(root_id: str, relpath: str) -> str:
     if root_id == SEARCH_STREAM_ROOT_ID:
         it = _search_stream_get_or_restore(unquote(relpath))
         if not it:
-            abort(404)
+            raise web.HTTPNotFound()
         if str(it.get("source") or "").strip().lower() == 'youtube':
             try:
                 return _prepare_youtube_stream_file(str(it.get('youtube_url') or it.get('url') or ''), it)
             except Exception:
                 raise RuntimeError("Unable to fetch stream")
-        abort(400)
+        raise web.HTTPBadRequest()
     r = root_by_id(root_id)
     if not r:
-        abort(404)
+        raise web.HTTPNotFound()
     _, _, root_abs, _ = r
     rel = unquote(relpath)
     try:
         abs_path = safe_path_join(root_abs, rel)
     except ValueError:
-        abort(400)
+        raise web.HTTPBadRequest()
     if not os.path.exists(abs_path) or not os.path.isfile(abs_path):
-        abort(404)
+        raise web.HTTPNotFound()
     try:
         return transcode_if_needed(abs_path)
     except Exception as e:
@@ -3111,38 +3062,39 @@ def _rewrite_hls_manifest_text(text: str, key: str) -> str:
     return "\n".join(out) + "\n"
 
 
-@app.route("/hls/manifest", methods=["GET"])
-def hls_manifest():
-    root_id = str(request.args.get("root_id") or "")
-    rel = str(request.args.get("rel") or "")
+@routes.get("/hls/manifest")
+async def hls_manifest(request: web.Request):
+    root_id = str(request.query.get("root_id") or "")
+    rel = str(request.query.get("rel") or "")
     if not root_id or not rel:
-        abort(400)
+        raise web.HTTPBadRequest()
     try:
-        playable = _resolve_stream_source_for_hls(root_id, rel)
-        key, manifest_path = _hls_cache_entry_for_path(playable)
-        with open(manifest_path, "r", encoding="utf-8", errors="replace") as f:
-            raw = f.read()
-        return Response(_rewrite_hls_manifest_text(raw, key), mimetype="application/vnd.apple.mpegurl")
+        playable = await asyncio.to_thread(_resolve_stream_source_for_hls, root_id, rel)
+        key, manifest_path = await asyncio.to_thread(_hls_cache_entry_for_path, playable)
+        raw = await asyncio.to_thread(Path(manifest_path).read_text, encoding="utf-8", errors="replace")
+        return web.Response(text=_rewrite_hls_manifest_text(raw, key), content_type="application/vnd.apple.mpegurl")
     except RuntimeError:
-        return Response("Unable to prepare stream", status=500, mimetype="text/plain")
+        return web.Response(text="Unable to prepare stream", status=500, content_type="text/plain")
 
 
-@app.route("/hls/file/<key>/<path:name>", methods=["GET", "HEAD"])
-def hls_file(key: str, name: str):
+@routes.get("/hls/file/{key}/{name:.*}")
+async def hls_file(request: web.Request):
+    key = request.match_info["key"]
+    name = request.match_info["name"]
     key2 = re.sub(r"[^a-fA-F0-9]", "", str(key or ""))[:64]
     if not key2:
-        abort(404)
+        raise web.HTTPNotFound()
     base = os.path.join(hls_cache_dir(), key2)
     try:
         path = safe_path_join(base, unquote(name))
     except ValueError:
-        abort(400)
+        raise web.HTTPBadRequest()
     if not os.path.exists(path) or not os.path.isfile(path):
-        abort(404)
+        raise web.HTTPNotFound()
     mime = pick_mime(path)
     if request.method.upper() == "HEAD":
-        return Response(status=200, headers={"Content-Length": str(os.path.getsize(path))}, mimetype=mime)
-    return range_response(path)
+        return web.Response(status=200, headers={"Content-Length": str(os.path.getsize(path))}, content_type=mime)
+    return await range_response(request, path)
 
 
 def _proxy_url_allowed(raw_url: str, *, trusted_provider_stream: bool = False) -> bool:
@@ -3185,63 +3137,74 @@ def _safe_proxy_headers(upstream_headers: Any) -> List[Tuple[str, str]]:
     return out_headers
 
 
-@app.route("/stream/<root_id>/<path:relpath>", methods=["GET", "HEAD"])
-def stream(root_id: str, relpath: str):
+@routes.get("/stream/{root_id}/{relpath:.*}")
+async def stream(request: web.Request):
+    root_id = request.match_info["root_id"]
+    relpath = request.match_info["relpath"]
     if root_id == SEARCH_STREAM_ROOT_ID:
         it = _search_stream_get_or_restore(unquote(relpath))
         if not it:
-            abort(404)
+            raise web.HTTPNotFound()
         if str(it.get("source") or "").strip().lower() == 'youtube':
             try:
-                local_path = _prepare_youtube_stream_file(str(it.get('youtube_url') or it.get('url') or ''), it)
+                local_path = await asyncio.to_thread(_prepare_youtube_stream_file, str(it.get('youtube_url') or it.get('url') or ''), it)
             except Exception:
-                return Response("Unable to fetch stream", status=502, mimetype="text/plain")
-            return range_response(local_path)
+                return web.Response(text="Unable to fetch stream", status=502, content_type="text/plain")
+            return await range_response(request, local_path)
         upstream_url = str(it.get("url") or "")
         trusted_provider_stream = bool(it.get("trusted_provider_stream"))
         if not _proxy_url_allowed(upstream_url, trusted_provider_stream=trusted_provider_stream):
-            abort(400)
+            raise web.HTTPBadRequest()
         headers = {}
         rng = request.headers.get("Range")
         if rng:
             headers["Range"] = rng
         method = "HEAD" if request.method == "HEAD" else "GET"
+        session = request.app[SERVICES_KEY].http.session
         try:
-            upstream = requests.request(method, upstream_url, headers=headers, stream=True, timeout=REQUEST_TIMEOUT_SECONDS, allow_redirects=True)
+            upstream = await session.request(
+                method,
+                upstream_url,
+                headers=headers,
+                timeout=REQUEST_TIMEOUT_SECONDS,
+                allow_redirects=True,
+            )
             if not _proxy_url_allowed(str(upstream.url or ""), trusted_provider_stream=trusted_provider_stream):
                 upstream.close()
-                abort(400)
+                raise web.HTTPBadRequest()
+        except web.HTTPException:
+            raise
         except Exception:
-            return Response("Unable to fetch stream", status=502, mimetype="text/plain")
+            return web.Response(text="Unable to fetch stream", status=502, content_type="text/plain")
         out_headers = _safe_proxy_headers(upstream.headers)
         if request.method == "HEAD":
-            return Response(status=upstream.status_code, headers=out_headers)
-        def gen():
-            try:
-                for chunk in upstream.iter_content(chunk_size=64 * 1024):
-                    if chunk:
-                        yield chunk
-            finally:
-                try:
-                    upstream.close()
-                except Exception:
-                    pass
-        return Response(gen(), status=upstream.status_code, headers=out_headers)
+            status = upstream.status
+            upstream.close()
+            return web.Response(status=status, headers=out_headers)
+        response = web.StreamResponse(status=upstream.status, headers=out_headers)
+        await response.prepare(request)
+        try:
+            async for chunk in upstream.content.iter_chunked(64 * 1024):
+                await response.write(chunk)
+            await response.write_eof()
+        finally:
+            upstream.close()
+        return response
     r = root_by_id(root_id)
     if not r:
-        abort(404)
+        raise web.HTTPNotFound()
     _, _, root_abs, _ = r
     rel = unquote(relpath)
     try:
         abs_path = safe_path_join(root_abs, rel)
     except ValueError:
-        abort(400)
+        raise web.HTTPBadRequest()
 
     if not os.path.exists(abs_path) or not os.path.isfile(abs_path):
-        abort(404)
+        raise web.HTTPNotFound()
 
     try:
-        playable = transcode_if_needed(abs_path)
+        playable = await asyncio.to_thread(transcode_if_needed, abs_path)
     except Exception as e:
         info = last_ffmpeg_error()
         msg = str(e)
@@ -3254,9 +3217,9 @@ def stream(root_id: str, relpath: str):
             print("STREAM ERROR:", msg)
         except Exception:
             pass
-        return Response("Unable to prepare stream", status=500, mimetype="text/plain")
+        return web.Response(text="Unable to prepare stream", status=500, content_type="text/plain")
 
-    return range_response(playable)
+    return await range_response(request, playable)
 
 
 configure_playback_state(
@@ -3265,10 +3228,93 @@ configure_playback_state(
 )
 
 
-def create_app() -> Flask:
-    real_app = Flask(__name__)
-    mcp_routes.app.apply_to(real_app)
-    app.apply_to(real_app)
-    register_auth(real_app)
-    real_app.after_request(add_request_timing_headers)
-    return real_app
+async def _local_index_update_loop(services: AppServices) -> None:
+    await asyncio.sleep(2.0)
+    while True:
+        runtime = services.search_runtime
+        updater = getattr(runtime, "local_index_updater", None)
+        if updater is None:
+            return
+        services.local_index_state = {"building": True, **dict(getattr(updater, "state", {}) or {})}
+        try:
+            services.local_index_state = await updater.update()
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:
+            services.local_index_state = {"building": False, "error": str(exc)}
+        active = _ACTIVE_SETTINGS_DATA or DEFAULT_APP_SETTINGS
+        interval = max(300, int(active.get("LOCAL_INDEX_UPDATE_INTERVAL_SECONDS") or 21600))
+        await asyncio.sleep(interval)
+
+
+async def _library_reconciliation_loop() -> None:
+    while True:
+        for root_id, _name, root_abs, mode in state_module.roots():
+            if not os.path.isdir(root_abs):
+                continue
+            state_module.ensure_index_async(root_id, root_abs, mode=mode, force=True)
+            state_module.library_watch_root(root_id, root_abs, mode=mode)
+        await asyncio.sleep(6 * 60 * 60)
+
+
+async def _application_services(app: web.Application):
+    services = app[SERVICES_KEY]
+    session = create_client_session(str(VERSION))
+    services.http = HttpClient(session)
+    lastfm_module.configure_lastfm_http(services.http)
+    youtube_module.configure_youtube_http(services.http)
+    tvmaze_module.configure_tvmaze_http(services.http)
+    downloads_module.configure_debrid_downloads(services.http, asyncio.get_running_loop())
+    runtime = _configure_unified_search_runtime(http_client=services.http)
+    services.search_runtime = runtime
+    services.soulseek_service = getattr(state_module, "SOULSEEK_SERVICE", None)
+    services.local_index_state = runtime.local_index.diagnostics()
+    services.local_index_task = asyncio.create_task(_local_index_update_loop(services), name="local-index-updater")
+    services.library_reconciliation_task = asyncio.create_task(
+        _library_reconciliation_loop(), name="library-native-watcher-reconciliation"
+    )
+    try:
+        last_upd = int(lastfm_module.lastfm_loved_updated() or 0)
+        if lastfm_module.lastfm_enabled() and (time.time() - float(last_upd or 0)) > 6 * 3600:
+            lastfm_module._lastfm_async(lastfm_module.lastfm_sync_loved_from_remote, lastfm_module.lastfm_username())
+    except Exception:
+        pass
+    try:
+        yield
+    finally:
+        if services.local_index_task is not None:
+            services.local_index_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await services.local_index_task
+        if services.library_reconciliation_task is not None:
+            services.library_reconciliation_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await services.library_reconciliation_task
+        soulseek = getattr(state_module, "SOULSEEK_SERVICE", None)
+        if soulseek is not None:
+            await soulseek.stop()
+        await asyncio.to_thread(state_module.library_stop_watchers)
+        reset_search_runtime()
+        await session.close()
+
+
+async def create_app() -> web.Application:
+    ensure_startup_security_config()
+    app = web.Application(middlewares=[session_middleware, auth_middleware, runtime_middleware])
+    app[SERVICES_KEY] = AppServices()
+    app.cleanup_ctx.append(_application_services)
+    app.add_routes(routes)
+    register_shell_routes(app, render_shell)
+    register_icon_routes(app)
+    register_lastfm_routes(
+        app,
+        api_key_provider=lambda: LASTFM_API_KEY,
+        api_secret_provider=lambda: LASTFM_API_SECRET,
+    )
+    register_task_routes(app)
+    register_notification_routes(app)
+    register_auth_routes(app)
+    mcp_routes.register_mcp_routes(app)
+    static_dir = Path(__file__).resolve().parent / "static"
+    app.router.add_static("/static/", static_dir, name="static", follow_symlinks=False)
+    return app

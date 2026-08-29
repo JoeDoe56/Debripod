@@ -70,11 +70,6 @@ def youtube_result_id(kind: Any, *, video_id: Any = "", playlist_id: Any = "", c
     return "youtube:channel:" + value
 
 
-def soundcloud_result_id(kind: Any, numeric_id: Any = "", permalink_url: Any = "") -> str:
-    ident = str(numeric_id or "").strip()
-    return f"soundcloud:{kind}:{ident}" if ident.isdigit() else "soundcloud-url:" + sha1_text(str(permalink_url or ""))
-
-
 def stable_result_id(result: Mapping[str, Any] | Any) -> str:
     raw = _data(result)
     source = str(raw.get("source") or "").lower()
@@ -83,12 +78,10 @@ def stable_result_id(result: Mapping[str, Any] | Any) -> str:
         return library_result_id(raw.get("root_id"), kind, raw.get("entity_key"), raw.get("rel"))
     if source == "soulseek":
         return soulseek_result_id(raw.get("user"), raw.get("directory"))
-    if source == "torrent":
+    if source in {"torrent", "local_index"}:
         return torrent_result_id(raw.get("infohash"), raw.get("canonical_url"))
     if source == "youtube":
         return youtube_result_id(kind, video_id=raw.get("video_id"), playlist_id=raw.get("playlist_id"), channel_id=raw.get("channel_id"), browse_id=raw.get("browse_id"), canonical_url=raw.get("canonical_url"))
-    if source == "soundcloud":
-        return soundcloud_result_id(kind, raw.get("soundcloud_id"), raw.get("permalink_url") or raw.get("canonical_url"))
     raise ValueError(f"Unsupported search result source: {source}")
 
 
@@ -112,4 +105,3 @@ library_identity = library_result_id
 soulseek_identity = soulseek_result_id
 torrent_identity = torrent_result_id
 youtube_identity = youtube_result_id
-soundcloud_identity = soundcloud_result_id

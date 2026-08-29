@@ -13,7 +13,7 @@ from ..storage.tasks import metadata_for_path
 from .library_db import clear_library_cache, load_index_snapshot, load_library_facets, load_show_aliases, root_manifest, root_version, root_versions, save_folder_entries, save_index_snapshot, save_show_aliases, update_media_art_identity
 from .roots import source_origin_for_path
 from .video_parse import classify_video_records, completion_percent, duration_text, is_canonical_video, parse_video_filename
-from .tvmaze import enrich_missing_episode_metadata
+from .tvmaze import enrich_cached_episode_metadata, schedule_episode_metadata_enrichment
 from .roots import root_by_id
 from ..media_types import AUDIO_EXTS, VIDEO_EXTS
 from ..utils import sha1_text
@@ -189,7 +189,22 @@ def queue_video_analysis_warm(abs_path: str, *, root_id: str, rel: str, media_id
     return True
 
 
-def build_index_for_root(root_abs: str, *, full_video_sync: bool = False, progress=None) -> dict:
+class _IndexBuildCancelled(Exception):
+    pass
+
+
+def _raise_if_index_build_cancelled(cancel_event: Optional[threading.Event]) -> None:
+    if cancel_event is not None and cancel_event.is_set():
+        raise _IndexBuildCancelled()
+
+
+def build_index_for_root(
+    root_abs: str,
+    *,
+    full_video_sync: bool = False,
+    progress=None,
+    cancel_event: Optional[threading.Event] = None,
+) -> dict:
     tracks = []
     video_records = []
     folder_entries = []
@@ -203,6 +218,7 @@ def build_index_for_root(root_abs: str, *, full_video_sync: bool = False, progre
             pass
 
     for base, dirs, files in os.walk(root_abs_norm):
+        _raise_if_index_build_cancelled(cancel_event)
         dirs[:] = [d for d in dirs if not d.startswith(".") and d != _cache_dir_name()]
         rel_dir = os.path.relpath(base, root_abs_norm).replace("\\", "/")
         rel_dir = "" if rel_dir == "." else rel_dir.strip("/")
@@ -216,6 +232,7 @@ def build_index_for_root(root_abs: str, *, full_video_sync: bool = False, progre
             if ext in AUDIO_EXTS or ext in VIDEO_EXTS:
                 playable_files.append(fn)
         for fn in sorted(playable_files, key=lambda x: x.lower()):
+            _raise_if_index_build_cancelled(cancel_event)
             ext = os.path.splitext(fn)[1].lower()
             relp = f"{rel_dir}/{fn}" if rel_dir else fn
             media = "video" if ext in VIDEO_EXTS else "audio"
@@ -246,6 +263,7 @@ def build_index_for_root(root_abs: str, *, full_video_sync: bool = False, progre
     music_audio_jobs: list[dict] = []
     processed_playable = 0
     for record in sorted(media_records, key=lambda r: str(r.get("rel") or "").lower()):
+        _raise_if_index_build_cancelled(cancel_event)
         abs_p = str(record.get("abs_path") or "")
         rel = str(record.get("rel") or "")
         fn = str(record.get("name") or os.path.basename(abs_p))
@@ -334,7 +352,8 @@ def build_index_for_root(root_abs: str, *, full_video_sync: bool = False, progre
 
     # Metadata probing above only inspects stream headers.  It never invokes
     # video transcoding/analysis; that work remains playback-triggered.
-    enrich_missing_episode_metadata(video_records)
+    _raise_if_index_build_cancelled(cancel_event)
+    enrich_cached_episode_metadata(video_records)
     aliases = load_show_aliases(root_id_for_items)
     movies, shows, videos, next_aliases = classify_video_records(video_records, aliases=aliases)
     save_show_aliases(root_id_for_items, next_aliases)
@@ -352,12 +371,41 @@ def build_index_for_root(root_abs: str, *, full_video_sync: bool = False, progre
     }
 
 
-def _save_index_to_sqlite(root_id: str, root_abs: str, data: dict, *, mode: str = "") -> int:
+def _save_index_to_sqlite(
+    root_id: str,
+    root_abs: str,
+    data: dict,
+    *,
+    mode: str = "",
+    schedule_tvmaze: bool = True,
+) -> int:
     version = 0
     try:
         version = save_index_snapshot(root_id, root_abs, data, mode=mode)
     except Exception:
         pass
+    records = list(data.get("video_records") or [])
+    if schedule_tvmaze and records:
+        def persist_enriched() -> None:
+            aliases = load_show_aliases(root_id)
+            movies, shows, videos, next_aliases = classify_video_records(records, aliases=aliases)
+            data["movies"] = movies
+            data["shows"] = shows
+            data["videos"] = videos
+            save_show_aliases(root_id, next_aliases)
+            refreshed_version = _save_index_to_sqlite(
+                root_id,
+                root_abs,
+                data,
+                mode=mode,
+                schedule_tvmaze=False,
+            )
+            if refreshed_version:
+                data["version"] = refreshed_version
+            with INDEX_LOCK:
+                INDEX_CACHE[root_id] = (time.time(), data)
+
+        schedule_episode_metadata_enrichment(records, persist_enriched)
     return version
 
 
@@ -391,10 +439,34 @@ INDEX_LOCK = threading.Lock()
 WATCHERS: Dict[str, object] = {}
 WATCHER_TIMERS: Dict[str, threading.Timer] = {}
 WATCHER_CHANGED_PATHS: Dict[str, set[str]] = {}
+INDEX_BUILD_THREADS: Dict[str, tuple[threading.Thread, threading.Event]] = {}
 
 
 def ensure_index_async(root_id: str, root_abs: str, *, mode: str = "", force: bool = False) -> None:
     now = time.time()
+    cancel_event = threading.Event()
+
+    def build():
+        try:
+            data = build_index_for_root(root_abs, cancel_event=cancel_event)
+            _raise_if_index_build_cancelled(cancel_event)
+            version = _save_index_to_sqlite(root_id, root_abs, data, mode=mode)
+            _raise_if_index_build_cancelled(cancel_event)
+            if version:
+                data["version"] = version
+            with INDEX_LOCK:
+                INDEX_CACHE[root_id] = (time.time(), data)
+            _queue_index_enrichment(data)
+        except _IndexBuildCancelled:
+            return
+        finally:
+            current = threading.current_thread()
+            with INDEX_LOCK:
+                active = INDEX_BUILD_THREADS.get(root_id)
+                if active is not None and active[0] is current:
+                    INDEX_BUILD_THREADS.pop(root_id, None)
+                    INDEX_BUILDING[root_id] = False
+
     with INDEX_LOCK:
         hit = INDEX_CACHE.get(root_id)
         if hit and not force:
@@ -408,29 +480,14 @@ def ensure_index_async(root_id: str, root_abs: str, *, mode: str = "", force: bo
         if INDEX_BUILDING.get(root_id):
             return
         INDEX_BUILDING[root_id] = True
-
-    def build():
-        try:
-            data = build_index_for_root(root_abs)
-            version = _save_index_to_sqlite(root_id, root_abs, data, mode=mode)
-            if version:
-                data["version"] = version
-            with INDEX_LOCK:
-                INDEX_CACHE[root_id] = (time.time(), data)
-            _queue_index_enrichment(data)
-        finally:
-            with INDEX_LOCK:
-                INDEX_BUILDING[root_id] = False
-
-    threading.Thread(target=build, daemon=True).start()
+        thread = threading.Thread(target=build, daemon=True, name=f"debripod-index-{root_id[:12]}")
+        INDEX_BUILD_THREADS[root_id] = (thread, cancel_event)
+        thread.start()
 
 
 def watch_index_root(root_id: str, root_abs: str, *, mode: str = "") -> bool:
-    try:
-        from watchdog.events import FileSystemEventHandler
-        from watchdog.observers import Observer
-    except Exception:
-        return False
+    from .fswatch import FilesystemChange, create_watcher
+
     root_id = str(root_id or "")
     root_abs = os.path.abspath(root_abs)
     if not root_id or not os.path.isdir(root_abs):
@@ -439,34 +496,61 @@ def watch_index_root(root_id: str, root_abs: str, *, mode: str = "") -> bool:
         if root_id in WATCHERS:
             return True
 
-    class LibraryIndexEventHandler(FileSystemEventHandler):
-        def on_any_event(self, event):
-            try:
-                src = str(getattr(event, "src_path", "") or "")
-                dest = str(getattr(event, "dest_path", "") or "")
-                paths = [p for p in (src, dest) if p]
-                if not paths:
+    def on_change(change: FilesystemChange) -> None:
+        try:
+            paths = [path for path in (change.old_path, change.path) if path]
+            if change.kind == "overflow":
+                _debounce_watch_reindex(root_id, root_abs, mode, [root_abs])
+                return
+            if not paths or any(_cache_dir_name() in os.path.normpath(path).split(os.sep) for path in paths):
+                return
+            if not change.is_directory:
+                extensions = {os.path.splitext(path)[1].lower() for path in paths}
+                if not any(ext in AUDIO_EXTS or ext in VIDEO_EXTS for ext in extensions):
                     return
-                if any(_cache_dir_name() in os.path.normpath(p).split(os.sep) for p in paths):
-                    return
-                if not bool(getattr(event, "is_directory", False)):
-                    exts = {os.path.splitext(p)[1].lower() for p in paths}
-                    if not any(ext in AUDIO_EXTS or ext in VIDEO_EXTS for ext in exts):
-                        return
-                _debounce_watch_reindex(root_id, root_abs, mode, paths)
-            except Exception:
-                pass
+            _debounce_watch_reindex(root_id, root_abs, mode, paths)
+        except Exception:
+            pass
 
     try:
-        observer = Observer()
-        observer.schedule(LibraryIndexEventHandler(), root_abs, recursive=True)
-        observer.daemon = True
+        observer = create_watcher(root_abs, on_change)
         observer.start()
         with INDEX_LOCK:
             WATCHERS[root_id] = observer
         return True
     except Exception:
         return False
+
+
+def stop_all_index_watchers() -> None:
+    with INDEX_LOCK:
+        watchers = list(WATCHERS.values())
+        WATCHERS.clear()
+        timers = list(WATCHER_TIMERS.values())
+        WATCHER_TIMERS.clear()
+        WATCHER_CHANGED_PATHS.clear()
+        builds = list(INDEX_BUILD_THREADS.values())
+        for _thread, cancel_event in builds:
+            cancel_event.set()
+    for timer in timers:
+        try:
+            timer.cancel()
+        except Exception:
+            pass
+    for watcher in watchers:
+        try:
+            watcher.stop()
+        except Exception:
+            pass
+    deadline = time.monotonic() + 10.0
+    for thread, _cancel_event in builds:
+        remaining = deadline - time.monotonic()
+        if remaining <= 0:
+            break
+        try:
+            thread.join(remaining)
+        except Exception:
+            pass
 
 
 def _folder_entries_for_dir(root_abs: str, dir_abs: str) -> tuple[str, list[dict]]:
@@ -626,3 +710,7 @@ def library_metadata_facets(root_id: str) -> Optional[dict]:
 
 def library_watch_root(root_id: str, root_abs: str, *, mode: str = "") -> bool:
     return watch_index_root(root_id, root_abs, mode=mode)
+
+
+def library_stop_watchers() -> None:
+    stop_all_index_watchers()

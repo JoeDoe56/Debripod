@@ -2,7 +2,7 @@
 
 DebriPod binds to `127.0.0.1` by default. That is the right default for a local media app. For remote access, use Tailscale instead of binding DebriPod directly to your LAN or the public internet.
 
-This guide uses Tailscale Services so DebriPod gets a stable HTTPS name inside your tailnet, while the Flask app can keep listening only on `127.0.0.1`.
+This guide uses Tailscale Services so DebriPod gets a stable HTTPS name inside your tailnet, while the aiohttp app can keep listening only on `127.0.0.1`.
 
 ## What you need
 

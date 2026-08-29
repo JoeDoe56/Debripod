@@ -109,7 +109,7 @@
         if(f.bitDepth && (!bd || bd !== f.bitDepth)) continue;
         if(f.sampleRate && (!sr || sr !== f.sampleRate)) continue;
         visibleFileCount += 1;
-        const key = src === "torrent" ? ("file:" + firstIdentifierText(ff.file_id, name)) : ((src === "youtube" || src === "soundcloud") ? ("format:" + firstIdentifierText(ff.itag, ff.file_id, name)) : (src === "library" ? ("library:" + String(ff.root_id || rr.root_id || "") + ":" + String(ff.rel || "")) : (String(ff.remote_path || name))));
+        const key = src === "torrent" ? ("file:" + firstIdentifierText(ff.file_id, name)) : (src === "youtube" ? ("format:" + firstIdentifierText(ff.itag, ff.file_id, name)) : (src === "library" ? ("library:" + String(ff.root_id || rr.root_id || "") + ":" + String(ff.rel || "")) : (String(ff.remote_path || name))));
         const dlState = normalizeSlskDownloadState(String(ff.download_state || ""));
         const pills = [];
         // yt-dlp keeps "youtube" as its internal source for format handling,
@@ -227,8 +227,7 @@
       if(nav.view === "show") return await viewMetaList(root,"show_seasons",String(nav.show || providerData.entity_key || ""),canonical.title || "Show",push !== false);
       if(nav.view === "season") return await viewMetaList(root,"show_episodes",JSON.stringify({show_key:String(nav.show || ""),season:Number(nav.season || 0)}),canonical.title || "Season",push !== false);
     }
-    if(source === "soundcloud" && kind === "artist") return await viewSoundCloudArtistSections(canonical,push !== false);
-    if((source === "youtube" && ["album","music_playlist","podcast","playlist","artist","channel"].includes(kind)) || (source === "soundcloud" && ["album","music_playlist"].includes(kind))){
+    if(source === "youtube" && ["album","music_playlist","podcast","playlist","artist","channel"].includes(kind)){
       return await viewYtdlpResultDirectory(canonical,push !== false);
     }
     showNowPlaying(false);
@@ -260,8 +259,15 @@
               const indexerIds = Array.isArray(providerData.indexer_ids) ? providerData.indexer_ids : [];
               let resolveError = "Torrent source did not provide a magnet";
               for(let index=0; index<indexerIds.length && !raw.magnet; index++){
-                const sourceUrl = raw.source_urls[index] || raw.source_urls[0] || raw.url || "";
-                const resolved = await apiPost("/api/indexers/resolve", {id:indexerIds[index],canonical_url:sourceUrl,title:raw.title||"",infohash:String(providerData.infohash||"")});
+                const resolved = await apiPost("/api/torrent-search/resolve", {
+                  source_id:indexerIds[index],
+                  source_record_id:String(providerData.source_record_id||""),
+                  title:raw.title||"",
+                  infohash:String(providerData.infohash||""),
+                  magnet:String(providerData.magnet||""),
+                  torrent_url:String(providerData.torrent_url||""),
+                  extra:Object.assign({},providerData.extra||{})
+                });
                 const resolvedJson = (resolved && resolved.json) ? resolved.json : {};
                 if(resolved && resolved.ok && resolvedJson.ok && resolvedJson.magnet) raw.magnet=String(resolvedJson.magnet);
                 else if(resolvedJson.error) resolveError=String(resolvedJson.error);
@@ -280,7 +286,7 @@
             raw.files = libStandardizePreviewFilesForTorrent(js);
             raw.file_count = raw.files.length;
             raw.files_loaded = true;
-          }else if((source === "youtube" || source === "soundcloud") && !raw.files_loaded){
+          }else if(source === "youtube" && !raw.files_loaded){
             const js = await apiGet("/api/ytdlp/files?url=" + encodeURIComponent(raw.url || ""));
             if(!js || !js.ok){
               throw new Error((js && js.error) ? js.error : "Failed to load media formats");
@@ -301,9 +307,9 @@
   }
 
   function canonicalDirectoryEntry(entry, parent){
-    const source=String(parent.source||"youtube"), id=String(entry.id||entry.url||entry.webpage_url||"");
+    const source="youtube", id=String(entry.id||entry.url||entry.webpage_url||"");
     const url=String(entry.webpage_url||entry.url||"");
-    return {result_id:source+":"+id,provider_group:"ytdlp",source:source,source_label:source==="soundcloud"?"SoundCloud":"YouTube",kind:source==="soundcloud"?"song":"video",kind_label:source==="soundcloud"?"Songs":"Videos",title:String(entry.title||entry.name||"Item"),subtitle:String(entry.uploader||entry.channel||""),artist:String(entry.uploader||entry.channel||""),album:"",year:"",duration:Number(entry.duration||0),thumbnail:String(entry.thumbnail||""),canonical_url:url,stable_source_id:id,search_blob:String(entry.title||""),filter_values:{sources:[source],types:[source==="soundcloud"?"song":"video"],indexers:[],media:[source==="soundcloud"?"audio":"video"]},match_confidence:1,rank_score:0,browse_available:false,stream_available:true,download_available:true,files_loaded:false,file_count:0,size:0,files:[],provider_data:source==="soundcloud"?{soundcloud_id:id,permalink_url:url,set_type:"",track_count:0}:{video_id:id,playlist_id:"",channel_id:"",browse_id:"",youtube_music:false,search_category:"videos"}};
+    return {result_id:source+":"+id,provider_group:"ytdlp",source:source,source_label:String(parent.source_label||"YouTube"),kind:"video",kind_label:"Videos",title:String(entry.title||entry.name||"Item"),subtitle:String(entry.uploader||entry.channel||""),artist:String(entry.uploader||entry.channel||""),album:"",year:"",duration:Number(entry.duration||0),thumbnail:String(entry.thumbnail||""),canonical_url:url,stable_source_id:id,search_blob:String(entry.title||""),filter_values:{sources:[source],types:["video"],indexers:[],media:["video"]},match_confidence:1,rank_score:0,browse_available:false,stream_available:true,download_available:true,files_loaded:false,file_count:0,size:0,files:[],provider_data:{video_id:id,playlist_id:"",channel_id:"",browse_id:"",youtube_music:false,search_category:"videos"}};
   }
 
   async function viewYtdlpResultDirectory(result,push){
@@ -316,27 +322,6 @@
         const rows=(js.entries||[]).map(function(entry){ return libUnifiedSearchModel().toRow(canonicalDirectoryEntry(entry,result)); });
         resetList(rows.length?rows:[{kind:"info",label:"No items found"}]);
       }catch(error){ resetList([{kind:"info",label:"Failed to load items"}]); alert(String(error&&error.message?error.message:error)); }
-    }},push);
-  }
-
-  async function viewSoundCloudArtistSections(result,push){
-    showNowPlaying(false);
-    await setView({kind:"soundcloud_artist",label:result.title||"SoundCloud",source:"soundcloud",load:async function(){
-      resetList(["tracks","albums","playlists"].map(function(section){ return {kind:"soundcloud_artist_section",label:section.charAt(0).toUpperCase()+section.slice(1),section:section,result:result}; }));
-    }},push);
-  }
-
-  async function viewSoundCloudArtistSection(result,section,push){
-    showNowPlaying(false);
-    await setView({kind:"libsearch_result_list",label:section.charAt(0).toUpperCase()+section.slice(1),source:"soundcloud",load:async function(){
-      resetList([{kind:"loading",label:"Loading "+section,loading:true}]);
-      try{
-        const url=result.canonical_url||((result.provider_data||{}).permalink_url)||"";
-        const js=await apiGet("/api/soundcloud/artist-section?url="+encodeURIComponent(url)+"&section="+encodeURIComponent(section));
-        if(!js||!js.ok) throw new Error((js&&js.error)||"Failed to load section");
-        const rows=(js.results||[]).map(function(raw){ return libUnifiedSearchModel().toRow(raw); });
-        resetList(rows.length?rows:[{kind:"info",label:"No items found"}]);
-      }catch(error){ resetList([{kind:"info",label:"Failed to load section"}]); alert(String(error&&error.message?error.message:error)); }
     }},push);
   }
 

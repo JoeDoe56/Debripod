@@ -15,21 +15,22 @@ from .storage.legacy_import import read_json as read_legacy_json, retire as reti
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 SETTINGS_PATH = PACKAGE_ROOT / "data" / "settings.json"
 
-STARTUP_CONFIG_KEYS = {"PORT", "USERS", "APP_SECRET_KEY", "ENABLE_MCP", "MCP_TOKEN", "SETUP_COMPLETE"}
+STARTUP_CONFIG_KEYS = {"PORT", "USERS", "ENABLE_MCP", "MCP_TOKEN", "SETUP_COMPLETE"}
+REMOTE_TORRENT_SOURCE_IDS = ("knaben", "bitsearch", "magnetz", "torlock", "bt4g", "torrentclaw", "torapi")
 
 DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "visualizer": True, "visualizerMaxBrightnessPct": 60, "visualizerPreset": "album", "visualizerFpsLock": 30,
     "textModes": {"wheelLabels": "transparent", "pathPill": "transparent", "infoPill": "transparent", "rows": "transparent", "rowPills": "transparent", "selectedRow": "contrast", "selectedRowPills": "contrast"},
     "textTransparency": 0.68,
-    "animationFps": {"selectedRow": 60, "wheelTilt": 60, "libraryList": 60, "infoPill": 60, "albumArtTransition": 60, "pageTransition": 60, "pathPill": 60, "rowExpansion": 60, "rowInsertion": 60},
+    "animationFps": {"selectedRow": 60, "wheelTilt": 60, "libraryList": 60, "infoPill": 60, "albumArtTransition": 60, "pathPill": 60, "rowInsertion": 60},
     "performanceOverlayButton": True, "performanceOverlayText": False,
     "liquidGlassElements": {
-        "libraryList": {"mode": "clear", "glassTint": 1.0, "resolution": 0.25, "refraction": 0.045, "bevelDepth": 0.02, "bevelWidth": 0.1, "frost": 3.0, "refractionFill": 0.0, "magnify": 1.0, "specular": False, "shadow": True},
-        "wheel": {"mode": "clear", "glassTint": 1.0, "resolution": 0.25, "refraction": 0.047, "bevelDepth": 0.136, "bevelWidth": 0.076, "frost": 2.0, "refractionFill": 0.0, "magnify": 1.0, "specular": False, "shadow": False},
-        "pathPill": {"mode": "clear", "glassTint": 1.0, "resolution": 0.25, "refraction": 0.047, "bevelDepth": 0.136, "bevelWidth": 0.076, "frost": 2.0, "refractionFill": 0.0, "magnify": 1.0, "specular": False, "shadow": True},
-        "infoPill": {"mode": "clear", "glassTint": 1.0, "resolution": 0.25, "refraction": 0.047, "bevelDepth": 0.136, "bevelWidth": 0.076, "frost": 2.0, "refractionFill": 0.0, "magnify": 1.0, "specular": False, "shadow": True},
-        "listPills": {"mode": "clear", "glassTint": 1.0, "resolution": 0.25, "refraction": 0.047, "bevelDepth": 0.136, "bevelWidth": 0.076, "frost": 2.0, "refractionFill": 0.0, "magnify": 1.0, "specular": False, "shadow": True},
-        "selectedRow": {"mode": "clear", "glassTint": 1.0, "resolution": 0.25, "refraction": 0.25, "bevelDepth": 0.01, "bevelWidth": 0.07, "frost": 4.0, "refractionFill": 0.3, "magnify": 1.0, "specular": False, "shadow": True},
+        "libraryList": {"material": 0.0},
+        "wheel": {"material": 0.0},
+        "pathPill": {"material": 0.0},
+        "infoPill": {"material": 0.0},
+        "listPills": {"material": 0.0},
+        "selectedRow": {"material": 0.0},
     },
     "centerBounceAmount": 0.075, "centerBounceDuration": 240.0, "centerBounceOvershoot": 0.9,
     "wheelClickTiltAmount": 0.5, "wheelTiltRampDuration": 90.0, "wheelTiltReleaseDuration": 360.0,
@@ -39,7 +40,7 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
 DEFAULT_UI_APP_SETTINGS: dict[str, Any] = {
     "UI_VISUALIZER": True, "UI_VISUALIZER_MAX_BRIGHTNESS_PCT": 60, "UI_VISUALIZER_PRESET": "album", "UI_VISUALIZER_FPS_LOCK": 30,
     "UI_TEXT_WHEEL_LABELS": "transparent", "UI_TEXT_PATH_PILL": "transparent", "UI_TEXT_INFO_PILL": "transparent", "UI_TEXT_ROWS": "transparent", "UI_TEXT_ROW_PILLS": "transparent", "UI_TEXT_SELECTED_ROW": "contrast", "UI_TEXT_SELECTED_ROW_PILLS": "contrast", "UI_TEXT_TRANSPARENCY": 0.68,
-    "UI_ANIMATION_SELECTED_ROW_FPS": 60, "UI_ANIMATION_WHEEL_TILT_FPS": 60, "UI_ANIMATION_LIBRARY_LIST_FPS": 60, "UI_ANIMATION_INFO_PILL_FPS": 60, "UI_ANIMATION_ALBUM_ART_TRANSITION_FPS": 60, "UI_ANIMATION_PAGE_TRANSITION_FPS": 60, "UI_ANIMATION_PATH_PILL_FPS": 60, "UI_ANIMATION_ROW_EXPANSION_FPS": 60, "UI_ANIMATION_ROW_INSERTION_FPS": 60,
+    "UI_ANIMATION_SELECTED_ROW_FPS": 60, "UI_ANIMATION_WHEEL_TILT_FPS": 60, "UI_ANIMATION_LIBRARY_LIST_FPS": 60, "UI_ANIMATION_INFO_PILL_FPS": 60, "UI_ANIMATION_ALBUM_ART_TRANSITION_FPS": 60, "UI_ANIMATION_PATH_PILL_FPS": 60, "UI_ANIMATION_ROW_INSERTION_FPS": 60,
     "UI_PERFORMANCE_OVERLAY_BUTTON": True, "UI_PERFORMANCE_OVERLAY_TEXT": False,
     "UI_GLASS_LIBRARY_LIST": DEFAULT_UI_SETTINGS["liquidGlassElements"]["libraryList"], "UI_GLASS_WHEEL": DEFAULT_UI_SETTINGS["liquidGlassElements"]["wheel"], "UI_GLASS_PATH_PILL": DEFAULT_UI_SETTINGS["liquidGlassElements"]["pathPill"], "UI_GLASS_INFO_PILL": DEFAULT_UI_SETTINGS["liquidGlassElements"]["infoPill"], "UI_GLASS_LIST_PILLS": DEFAULT_UI_SETTINGS["liquidGlassElements"]["listPills"], "UI_GLASS_SELECTED_ROW": DEFAULT_UI_SETTINGS["liquidGlassElements"]["selectedRow"],
     "UI_CENTER_BOUNCE_AMOUNT": 0.075, "UI_CENTER_BOUNCE_DURATION": 240.0, "UI_CENTER_BOUNCE_OVERSHOOT": 0.9, "UI_WHEEL_CLICK_TILT_AMOUNT": 0.5, "UI_WHEEL_TILT_RAMP_DURATION": 90.0, "UI_WHEEL_TILT_RELEASE_DURATION": 360.0, "UI_INFO_PILL_DARK_MULTIPLIER": 1.0, "UI_INFO_PILL_LIGHT_MULTIPLIER": 1.0,
@@ -67,27 +68,17 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {'APP_NAME': 'DebriPod',
  'MCP_SEARCH_RESULT_LIMIT': 20,
  'MCP_SSE_KEEPALIVE_SECONDS': 15,
  'MCP_SESSION_TTL_SECONDS': 43200,
- 'INDEXER_ENABLED_IDS': ['1337x',
-                         'thepiratebay',
-                         'yts',
-                         'internetarchive',
-                         'torrentproject2',
-                         'showrss-yml',
-                         'torrentsome',
-                         'magnetdownload',
-                         'torrent9',
-                         'world-torrent',
-                         'elitetorrent-wf',
-                         'nyaasi',
-                         'nekobt'],
- 'INDEXER_MAX_CONCURRENT': 6,
- 'INDEXER_REQUEST_RETRIES': 2,
- 'INDEXER_DEFINITION_SCHEMA_VERSION': 11,
- 'INDEXER_DEFINITION_PACKAGE_URL': 'https://indexers.prowlarr.com/master/11/package.zip',
- 'INDEXER_CHALLENGE_SOLVER_ENABLED': True,
- 'INDEXER_CHALLENGE_TIMEOUT_SECONDS': 45,
- 'INDEXER_BROWSER_IDLE_SECONDS': 300,
- 'INDEXER_BROWSER_MAX_WARM': 2,
+ 'LOCAL_INDEX_ENABLED': True,
+ 'LOCAL_INDEX_UPDATE_INTERVAL_SECONDS': 21600,
+ 'TORRENT_SEARCH_ENABLED_SOURCES': ['knaben',
+                                    'bitsearch',
+                                    'magnetz',
+                                    'torlock',
+                                    'bt4g',
+                                    'torrentclaw',
+                                    'torapi'],
+ 'TORRENT_SEARCH_MAX_CONCURRENT': 7,
+ 'TORRENT_SEARCH_REQUEST_TIMEOUT_SECONDS': 20,
  'YTDLP_SEARCH_MAX_CONCURRENT': 4,
  'YTDLP_CMD': 'yt-dlp',
  'YOUTUBE_DOWNLOAD_DIR': '',
@@ -125,6 +116,7 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {'APP_NAME': 'DebriPod',
  'SOULSEEK_SEARCH_MAX_RESULTS': 5000,
  'SOULSEEK_SEARCH_IDLE_STOP_SEC': 2.5,
  'SOULSEEK_SEARCH_HARD_MAX_SEC': 60,
+ 'AIOSLSK_LOGGING_ENABLED': False,
  'LASTFM_API_KEY': '',
  'LASTFM_API_SECRET': '',
  'LASTFM_SESSION_KEY': '',
@@ -172,7 +164,7 @@ def ui_setting_updates(value: Any) -> dict[str, Any]:
     text = src.get("textModes") if isinstance(src.get("textModes"), dict) else {}
     animation = src.get("animationFps") if isinstance(src.get("animationFps"), dict) else {}
     glass = src.get("liquidGlassElements") if isinstance(src.get("liquidGlassElements"), dict) else {}
-    out = {"UI_VISUALIZER": src.get("visualizer"), "UI_VISUALIZER_MAX_BRIGHTNESS_PCT": src.get("visualizerMaxBrightnessPct"), "UI_VISUALIZER_PRESET": src.get("visualizerPreset"), "UI_VISUALIZER_FPS_LOCK": src.get("visualizerFpsLock"), "UI_TEXT_TRANSPARENCY": src.get("textTransparency"), "UI_PERFORMANCE_OVERLAY_BUTTON": src.get("performanceOverlayButton"), "UI_PERFORMANCE_OVERLAY_TEXT": src.get("performanceOverlayText"), "UI_CENTER_BOUNCE_AMOUNT": src.get("centerBounceAmount"), "UI_CENTER_BOUNCE_DURATION": src.get("centerBounceDuration"), "UI_CENTER_BOUNCE_OVERSHOOT": src.get("centerBounceOvershoot"), "UI_WHEEL_CLICK_TILT_AMOUNT": src.get("wheelClickTiltAmount"), "UI_WHEEL_TILT_RAMP_DURATION": src.get("wheelTiltRampDuration"), "UI_WHEEL_TILT_RELEASE_DURATION": src.get("wheelTiltReleaseDuration"), "UI_INFO_PILL_DARK_MULTIPLIER": src.get("infoPillDarkMultiplier"), "UI_INFO_PILL_LIGHT_MULTIPLIER": src.get("infoPillLightMultiplier"), "UI_TEXT_WHEEL_LABELS": text.get("wheelLabels"), "UI_TEXT_PATH_PILL": text.get("pathPill"), "UI_TEXT_INFO_PILL": text.get("infoPill"), "UI_TEXT_ROWS": text.get("rows"), "UI_TEXT_ROW_PILLS": text.get("rowPills"), "UI_TEXT_SELECTED_ROW": text.get("selectedRow"), "UI_TEXT_SELECTED_ROW_PILLS": text.get("selectedRowPills"), "UI_ANIMATION_SELECTED_ROW_FPS": animation.get("selectedRow"), "UI_ANIMATION_WHEEL_TILT_FPS": animation.get("wheelTilt"), "UI_ANIMATION_LIBRARY_LIST_FPS": animation.get("libraryList"), "UI_ANIMATION_INFO_PILL_FPS": animation.get("infoPill"), "UI_ANIMATION_ALBUM_ART_TRANSITION_FPS": animation.get("albumArtTransition"), "UI_ANIMATION_PAGE_TRANSITION_FPS": animation.get("pageTransition"), "UI_ANIMATION_PATH_PILL_FPS": animation.get("pathPill"), "UI_ANIMATION_ROW_EXPANSION_FPS": animation.get("rowExpansion"), "UI_ANIMATION_ROW_INSERTION_FPS": animation.get("rowInsertion"), "UI_GLASS_LIBRARY_LIST": glass.get("libraryList"), "UI_GLASS_WHEEL": glass.get("wheel"), "UI_GLASS_PATH_PILL": glass.get("pathPill"), "UI_GLASS_INFO_PILL": glass.get("infoPill"), "UI_GLASS_LIST_PILLS": glass.get("listPills"), "UI_GLASS_SELECTED_ROW": glass.get("selectedRow")}
+    out = {"UI_VISUALIZER": src.get("visualizer"), "UI_VISUALIZER_MAX_BRIGHTNESS_PCT": src.get("visualizerMaxBrightnessPct"), "UI_VISUALIZER_PRESET": src.get("visualizerPreset"), "UI_VISUALIZER_FPS_LOCK": src.get("visualizerFpsLock"), "UI_TEXT_TRANSPARENCY": src.get("textTransparency"), "UI_PERFORMANCE_OVERLAY_BUTTON": src.get("performanceOverlayButton"), "UI_PERFORMANCE_OVERLAY_TEXT": src.get("performanceOverlayText"), "UI_CENTER_BOUNCE_AMOUNT": src.get("centerBounceAmount"), "UI_CENTER_BOUNCE_DURATION": src.get("centerBounceDuration"), "UI_CENTER_BOUNCE_OVERSHOOT": src.get("centerBounceOvershoot"), "UI_WHEEL_CLICK_TILT_AMOUNT": src.get("wheelClickTiltAmount"), "UI_WHEEL_TILT_RAMP_DURATION": src.get("wheelTiltRampDuration"), "UI_WHEEL_TILT_RELEASE_DURATION": src.get("wheelTiltReleaseDuration"), "UI_INFO_PILL_DARK_MULTIPLIER": src.get("infoPillDarkMultiplier"), "UI_INFO_PILL_LIGHT_MULTIPLIER": src.get("infoPillLightMultiplier"), "UI_TEXT_WHEEL_LABELS": text.get("wheelLabels"), "UI_TEXT_PATH_PILL": text.get("pathPill"), "UI_TEXT_INFO_PILL": text.get("infoPill"), "UI_TEXT_ROWS": text.get("rows"), "UI_TEXT_ROW_PILLS": text.get("rowPills"), "UI_TEXT_SELECTED_ROW": text.get("selectedRow"), "UI_TEXT_SELECTED_ROW_PILLS": text.get("selectedRowPills"), "UI_ANIMATION_SELECTED_ROW_FPS": animation.get("selectedRow"), "UI_ANIMATION_WHEEL_TILT_FPS": animation.get("wheelTilt"), "UI_ANIMATION_LIBRARY_LIST_FPS": animation.get("libraryList"), "UI_ANIMATION_INFO_PILL_FPS": animation.get("infoPill"), "UI_ANIMATION_ALBUM_ART_TRANSITION_FPS": animation.get("albumArtTransition"), "UI_ANIMATION_PATH_PILL_FPS": animation.get("pathPill"), "UI_ANIMATION_ROW_INSERTION_FPS": animation.get("rowInsertion"), "UI_GLASS_LIBRARY_LIST": glass.get("libraryList"), "UI_GLASS_WHEEL": glass.get("wheel"), "UI_GLASS_PATH_PILL": glass.get("pathPill"), "UI_GLASS_INFO_PILL": glass.get("infoPill"), "UI_GLASS_LIST_PILLS": glass.get("listPills"), "UI_GLASS_SELECTED_ROW": glass.get("selectedRow")}
     return {key: item for key, item in out.items() if item is not None}
 
 
@@ -189,6 +181,11 @@ def settings_fingerprint(username: str | None = None) -> tuple[int, int]:
 
 def _coerce_setting(key: str, value: Any) -> Any:
     default = DEFAULT_APP_SETTINGS.get(key)
+    if key.startswith("UI_TEXT_") and key != "UI_TEXT_TRANSPARENCY":
+        clean = str(value or "").strip().lower()
+        if clean in {"black", "white", "engraved"}:
+            return "contrast"
+        return clean if clean in {"contrast", "transparent"} else str(default or "transparent")
     if key == "DEBRID_PROVIDER":
         clean = str(value or "").strip().lower()
         return clean if clean in {"", "real_debrid", "alldebrid", "premiumize", "torbox"} else ""
@@ -221,9 +218,10 @@ def _coerce_setting(key: str, value: Any) -> Any:
                     if path:
                         out.append({"path": path, "mode": "meta"})
         return out
-    if key == "INDEXER_ENABLED_IDS":
+    if key == "TORRENT_SEARCH_ENABLED_SOURCES":
         values = value if isinstance(value, list) else (str(value or "").split(",") if isinstance(value, str) else [])
-        return list(dict.fromkeys(str(item).strip() for item in values if str(item).strip()))
+        normalized = (str(item).strip().casefold() for item in values)
+        return list(dict.fromkeys(item for item in normalized if item in REMOTE_TORRENT_SOURCE_IDS))
     if isinstance(default, bool):
         return bool(value)
     if isinstance(default, int) and not isinstance(default, bool):

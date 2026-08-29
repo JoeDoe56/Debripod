@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import threading
@@ -7,12 +8,11 @@ import xml.etree.ElementTree as ET
 from typing import Any, Callable, Dict, List, Optional, Tuple
 from urllib.parse import quote
 
-import requests
-
 from ..Library.search_cache import _SEARCH_DISK_LOCK, _disk_cache_get, _disk_cache_set, _make_search_cache_key
 from ..paths import cache_dir
 from ..playback.probe import run_cmd
 from ..utils import human_bytes, sha1_text
+from .http import HttpClient
 
 _ytdlp_cmd_provider: Callable[[], str] = lambda: ""
 _youtube_download_dir_provider: Callable[[], str] = lambda: ""
@@ -24,6 +24,7 @@ _channel_browse_limit_provider: Callable[[], int] = lambda: 0
 _request_headers_provider: Callable[[], dict] = lambda: {}
 _timeout_provider: Callable[[], int] = lambda: 0
 _ffmpeg_path_provider: Callable[[], str] = lambda: ""
+_YOUTUBE_HTTP: HttpClient | None = None
 
 
 def configure_youtube(
@@ -53,6 +54,17 @@ def configure_youtube(
     _request_headers_provider = request_headers_provider
     _timeout_provider = timeout_provider
     _ffmpeg_path_provider = ffmpeg_path_provider
+
+
+def configure_youtube_http(http: HttpClient) -> None:
+    global _YOUTUBE_HTTP
+    _YOUTUBE_HTTP = http
+
+
+def _youtube_http() -> HttpClient:
+    if _YOUTUBE_HTTP is None:
+        raise RuntimeError("YouTube HTTP transport is not initialized")
+    return _YOUTUBE_HTTP
 
 
 def _youtube_web_base() -> str:
@@ -185,13 +197,17 @@ def _youtube_channel_entries_from_ytdlp(channel_id: str, limit: Optional[int] = 
     return out_items
 
 
-def _youtube_channel_entries_from_feed(channel_id: str, limit: Optional[int] = None) -> List[dict]:
+async def _youtube_channel_entries_from_feed(channel_id: str, limit: Optional[int] = None) -> List[dict]:
     cid = str(channel_id or "").strip()
     if not cid:
         return []
-    resp = requests.get(_youtube_channel_feed_url(cid), headers=_request_headers_provider(), timeout=_timeout_provider())
-    resp.raise_for_status()
-    root = ET.fromstring(resp.text)
+    body = await _youtube_http().text(
+        "GET",
+        _youtube_channel_feed_url(cid),
+        headers=_request_headers_provider(),
+        timeout=_timeout_provider(),
+    )
+    root = ET.fromstring(body)
     ns = {
         "atom": "http://www.w3.org/2005/Atom",
         "yt": "http://www.youtube.com/xml/schemas/2015",
@@ -234,14 +250,14 @@ def _youtube_channel_entries_from_feed(channel_id: str, limit: Optional[int] = N
     return out
 
 
-def youtube_channel_videos(channel_id: str, limit: Optional[int] = None) -> List[dict]:
+async def youtube_channel_videos(channel_id: str, limit: Optional[int] = None) -> List[dict]:
     try:
-        items = _youtube_channel_entries_from_ytdlp(channel_id, limit)
+        items = await asyncio.to_thread(_youtube_channel_entries_from_ytdlp, channel_id, limit)
         if items:
             return items
     except Exception:
         pass
-    return _youtube_channel_entries_from_feed(channel_id, limit)
+    return await _youtube_channel_entries_from_feed(channel_id, limit)
 
 
 def _ytdlp_ffmpeg_location() -> str:

@@ -1,8 +1,7 @@
 from __future__ import annotations
 
-import threading
-from dataclasses import dataclass, field
-from typing import Any, Protocol
+from dataclasses import dataclass
+from typing import Any, AsyncIterator, Protocol
 
 from .models import ProviderSearchResponse
 
@@ -15,11 +14,14 @@ class SearchContext:
     intent: dict[str, float]
     settings: dict[str, Any]
     search_id: str
-    cancellation_event: threading.Event = field(default_factory=threading.Event)
     debug: bool = False
 
 
 class SearchProvider(Protocol):
     provider_group: str
 
-    def search(self, query: str, context: SearchContext) -> ProviderSearchResponse: ...
+    def search_stream(
+        self,
+        query: str,
+        context: SearchContext,
+    ) -> AsyncIterator[ProviderSearchResponse]: ...

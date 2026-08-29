@@ -1,8 +1,8 @@
 # DebriPod
 
-DebriPod is a local Flask media app for browsing, streaming, downloading, organizing, and playing media from your own computer. It opens in your browser at a local address, usually `http://127.0.0.1:8083`.
+DebriPod is a local async media app for browsing, streaming, downloading, organizing, and playing media from your own computer. It opens in your browser at a local address, usually `http://127.0.0.1:8083`.
 
-DebriPod supports local audio and video libraries, unified metadata and folder browsing, playlists, YouTube and YouTube Music, SoundCloud, Soulseek, public Cardigann torrent indexers, multiple debrid providers, Last.fm, local accounts, passkeys, a first run setup wizard, task tracking, per user settings, SQLite backed library caches, cached client state, a PWA service worker, LiquidGL glass UI, a WebGL visualizer, and optional MCP access.
+DebriPod supports local audio and video libraries, unified metadata and folder browsing, playlists, YouTube and YouTube Music, Soulseek, torrent discovery, multiple debrid providers, Last.fm, local accounts, passkeys, a first run setup wizard, task tracking, per user settings, SQLite backed library caches, cached client state, a PWA service worker, LiquidGL glass UI, a WebGL visualizer, and optional MCP access.
 
 ## Quick install
 
@@ -58,7 +58,7 @@ On first run, DebriPod asks you to create the first local admin account. After l
 
 The optional tools page checks ffmpeg, ffprobe, and yt-dlp and lets you set the YouTube download folder. The Soulseek and Last.fm page covers Soulseek username, password, download folder, Last.fm API key, Last.fm API secret, and Last.fm authorization. The Debrid page supports Real Debrid, AllDebrid, Premiumize, and TorBox, with one active provider per user and one neutral Debrid download folder.
 
-DebriPod binds to `127.0.0.1` by default. For access from phones, tablets, laptops, or devices outside the host computer, use a private tunnel or service layer instead of exposing Flask directly. Tailscale setup is documented in [remote_access.md](install/remote_access.md).
+DebriPod binds to `127.0.0.1` by default. For access from phones, tablets, laptops, or devices outside the host computer, use a private tunnel or service layer instead of exposing the local server directly. Tailscale setup is documented in [remote_access.md](install/remote_access.md).
 
 ## Features and setup
 
@@ -72,27 +72,25 @@ Supported audio formats include MP3, M4A, AAC, WAV, FLAC, OGG, OPUS, WMA, AIFF, 
 
 ### Playback and browser compatibility
 
-DebriPod streams media through Flask with range request support, so the browser can seek through audio and video. It saves playback state, current item, resume position, recent playback history, and queue context.
+DebriPod streams media through aiohttp with range request support, so the browser can seek through audio and video. It saves playback state, current item, resume position, recent playback history, and queue context.
 
 ffmpeg and ffprobe are used for metadata, artwork extraction, muxing, transcoding, HLS output, and browser compatible video output. If the installer configured them correctly, DebriPod should find them automatically. If not, set `FFMPEG_PATH` and `FFPROBE_PATH` in Playback settings. Keep automatic browser compatibility enabled if you want downloaded videos converted or remuxed when needed for browser playback.
 
 ### Search, downloads, and tasks
 
-DebriPod searches the indexed Library, Soulseek, enabled torrent indexers, and yt-dlp concurrently, then presents one globally ranked feed. Rows retain visible source and type pills: Library, Soulseek, Torrent plus every contributing indexer, YouTube, or SoundCloud. The existing text filter row accepts ordinary terms plus `source:`, `type:`, `indexer:`, and `media:` filters; quote values containing spaces. Clicking a result pill toggles the corresponding text-backed filter.
+DebriPod searches the indexed Library, Local Index, remote torrent sources, Soulseek, and YouTube concurrently, then presents one globally ranked feed. Rows retain visible source and type pills. The text filter row accepts ordinary terms plus `source:`, `type:`, `indexer:`, and `media:` filters; quote values containing spaces. Clicking a result pill toggles the corresponding text-backed filter.
 
-YouTube Music searches Songs, Music Videos, Albums, Artists, Music Playlists, Podcasts, and Episodes. Ordinary YouTube adds Videos, Playlists, and Channels. YouTube Music wins duplicate YouTube identities. SoundCloud searches Songs, Artists, Albums, and Music Playlists independently and does not require OAuth.
+YouTube Music searches Songs, Music Videos, Albums, Artists, Music Playlists, Podcasts, and Episodes. Ordinary YouTube adds Videos, Playlists, and Channels. YouTube Music wins duplicate YouTube identities.
 
-Torrent search uses tracked Prowlarr Cardigann definitions. Thirteen public definitions are enabled on a new profile: twelve live-checked sources centered on movies, television, and general media, plus 1337x as a browser-challenge-capable source. Only Nyaa and NekoBT are anime-focused. Enable, disable, and test indexers under **Settings > Services > Torrent Indexers**; those per-user choices survive definition pulls and activation. Duplicate info hashes merge into one Torrent row while retaining every contributing indexer pill. Opening a torrent resolves definition-driven detail links lazily, then previews it through the active debrid provider.
+Local Index searches `data/torrent_index.sqlite`, a persistent WAL/FTS5 database merging Debrid Media Manager hashlists and top-level Torrents CSV rows by validated 20-byte infohash. Its automatic updater uses exact source commits and transactional add/modify/delete reconciliation. Expect approximately 0.5–1.0 GB for a low-single-digit-million corpus; Settings reports the actual database size, counts, source SHAs, and update status. Searches always use the last successful database state and never wait for an update.
+
+Remote Torrent search uses exactly seven structured-data APIs: Knaben, BitSearch, Magnetz, TorLock, BT4G, TorrentClaw, and TorAPI. Their requests begin concurrently with Local Index, but remote rows merge only after Local Index seeds the shared infohash accumulator. A duplicate updates the existing row with current swarm, verification, magnet, URL, category, and provenance data instead of creating another result. Torrents CSV is an ingestion source only and is never queried interactively.
 
 Long running work appears in the task panel. Debrid, Soulseek, YouTube, and video processing jobs can show queued, active, paused, failed, canceled, and completed states. Search history and completed combined search payloads are cached locally.
 
-YouTube and SoundCloud support use the `yt-dlp` CLI and DebriPod's local extractor plugin. Set `YOUTUBE_DOWNLOAD_DIR` for generic yt-dlp downloads. Soulseek uses `aioslsk`; set `SOULSEEK_USERNAME`, `SOULSEEK_PASSWORD`, and `SOULSEEK_DOWNLOAD_DIR`, then restart DebriPod after changing credentials. Configure one supported debrid provider token, select it with `DEBRID_PROVIDER`, and set `DOWNLOAD_DIR` for torrent previews and downloads.
+YouTube discovery and generic pasted-URL inspection use the `yt-dlp` CLI. Any HTTP(S) URL supported by yt-dlp, including a pasted `soundcloud.com` URL, can still be inspected directly. Set `YOUTUBE_DOWNLOAD_DIR` for generic yt-dlp downloads. Soulseek uses `aioslsk`; set `SOULSEEK_USERNAME`, `SOULSEEK_PASSWORD`, and `SOULSEEK_DOWNLOAD_DIR`. Saving changed credentials restarts the long-lived Soulseek client on the application event loop. Configure one supported debrid provider token, select it with `DEBRID_PROVIDER`, and set `DOWNLOAD_DIR` for torrent previews and downloads.
 
-Official definitions live in `indexer-definitions/official`; user definitions live in `indexer-definitions/custom`, and a custom definition with the same ID overrides official. **Settings > Advanced > Indexer Definitions** can stage the current Prowlarr package, validate it, activate it, roll it back, or discard staging. Activation replaces only official definitions; custom definitions remain untouched. Runtime staging and backups live under `data/indexer-definitions/`.
-
-When—and only when—an indexer response is positively identified as an anti-bot browser challenge, DebriPod can use the installed default browser, then other supported installed browsers, to obtain clearance. It uses an isolated profile under `data/browser-profiles/` and installs no extension or bundled browser.
-
-The normal tests are offline. To opt into live yt-dlp and public-indexer smoke tests, run with `DEBRIPOD_RUN_NETWORK_TESTS=1`.
+The normal tests are offline. To opt into live yt-dlp smoke tests, run with `DEBRIPOD_RUN_NETWORK_TESTS=1`.
 
 ### Playlists and smart playlists
 
@@ -168,7 +166,7 @@ Search accepts ordinary text, BitTorrent magnet links, and any HTTP(S) URL suppo
 ```text
 debripod/
   __main__.py             package runner for python -m debripod
-  app.py                  Flask app entry point
+  app.py                  compatibility entry point
   config.py               startup state migration and runtime configuration helpers
   media_types.py          media extension and playlist constants
   paths.py                cache, art, and transcode path helpers
@@ -177,12 +175,11 @@ debripod/
   Library/                library index, metadata, and search helpers
   storage/                primary SQLite database, migrations, codecs, and repositories
   MCP/                    optional MCP HTTP and SSE route helpers
-  Routes/                 modular Flask route groups
-  Services/               Unified search, Cardigann indexers, Debrid, Soulseek, yt-dlp, and Last.fm helpers
+  Routes/                 modular aiohttp route groups
+  Services/               unified search, Local Index, torrent API, Debrid, Soulseek, yt-dlp, and Last.fm helpers
   Tasks/                  task model and task manager helpers
   playback/               streaming, range responses, ffprobe, and command helpers
-  static/                 browser UI, JS modules, LiquidGL, visualizer, service worker, fonts
-  templates/              Flask HTML templates
+  static/                 static shell/auth pages, JS modules, LiquidGL, visualizer, service worker, fonts
 install/
   debripod.sh             macOS and Linux installer, updater, and launcher
   debripod.ps1            Windows installer, updater, and launcher
@@ -202,13 +199,15 @@ DebriPod binds to `127.0.0.1`. Choose a port with `--port`, then `DEBRIPOD_PORT`
 python -m debripod --port 8083
 ```
 
-Port selection does not create a JSON configuration file. Accounts, setup state, MCP saved status, and application settings are stored in the primary database. The Flask secret and MCP token are stored in the operating-system keyring. Older startup JSON is read once during migration, renamed with `.migrated.local`, and never recreated.
+Port selection does not create a JSON configuration file. Accounts, opaque server-side sessions, setup state, MCP saved status, and application settings are stored in the primary database. The MCP token is stored in the operating-system keyring. Older startup JSON is read once during migration, renamed with `.migrated.local`, and never recreated.
 
 ## Runtime data
 
 DebriPod uses one primary database at `data/debripod.sqlite3` for nonsecret structured state: accounts and passkeys, settings and setup, playback, tasks, Last.fm loved tracks, Library indexes and metadata, search history/cache, packed palettes, and visualizer analysis. Normal operation uses SQLite WAL mode. Real secrets stay in the OS keyring.
 
-Static palettes store exactly three packed RGB bytes per color. Video palette timelines are sampled at 2 Hz, omit adjacent repeats, and store no contrast/UI roles. The browser shares one memoized palette utility for music and video contrast, roles, engraving, wheel text, and selected-pill colors, and interpolates neighboring video samples.
+Local torrent discovery uses a separate WAL database at `data/torrent_index.sqlite` plus temporary update state under `data/torrent_index_update/`. DMM archives and full CSV streams are temporary; the SQLite index is the permanent searchable representation. See [the search architecture](docs/search-architecture.md) for bootstrap, incremental update, recovery, transaction, and disk-budget details.
+
+Static palettes store exactly three packed RGB bytes per color. Video palette timelines are sampled at 2 Hz, omit adjacent repeats, and store no contrast/UI roles. The browser shares one memoized palette utility for music and video contrast, roles, wheel text, and selected-pill colors, and interpolates neighboring video samples.
 
 Large eligible BLOBs use a self-describing versioned `raw` or `zlib` envelope. Compression begins above 1 KiB and is retained only when it saves at least four percent. This is application-level value compression, not automatic SQLite table/page compression.
 
@@ -243,7 +242,7 @@ ffprobe -version
 
 If they do not work, rerun the installer, install ffmpeg manually, or set full executable paths in Playback settings. Some Linux distributions require an extra multimedia repository before ffmpeg can be installed through the default package manager.
 
-### Python cannot import Flask or another dependency
+### Python cannot import aiohttp or another dependency
 
 Activate the DebriPod virtual environment and reinstall requirements.
 
@@ -298,13 +297,12 @@ Use a strong admin password. Keep API tokens private. Rotate tokens if they are 
 Pinned Python dependencies are listed in `requirements.txt`.
 
 ```text
-Flask==3.1.3
-requests==2.34.2
-Pillow==12.2.0
+aiohttp==3.14.1
 aioslsk==1.6.3
 yt-dlp==2026.6.9
 webauthn==2.8.0
-watchdog==6.0.0
+keyring==25.7.0
+pywebpush==2.3.0
 ```
 
 DebriPod also expects `ffmpeg` and `ffprobe` for the complete media experience.
@@ -319,13 +317,12 @@ Attributions for direct runtime dependencies:
 
 | Component | Purpose in DebriPod | License |
 | --- | --- | --- |
-| Flask | Local web app framework | BSD 3 Clause |
-| requests | HTTP requests for service APIs | Apache 2.0 |
-| Pillow | Image and artwork handling | MIT CMU |
+| aiohttp | Async local web server and shared HTTP client | Apache 2.0 |
 | aioslsk | Soulseek client integration | GPL 3.0 or later |
 | yt-dlp | YouTube searching, streaming support, and downloads | Unlicense |
 | webauthn | Passkey and WebAuthn support | BSD 3 Clause |
-| watchdog | File watching support | Apache 2.0 |
+| keyring | Operating-system secret storage | MIT |
+| pywebpush | Device-scoped Web Push notifications | MIT |
 | ffmpeg and ffprobe | Metadata, muxing, transcoding, and compatibility checks | License depends on the installed build |
 
-DebriPod interacts with external services including YouTube, SoundCloud, Soulseek, configured public torrent indexers, Real Debrid, AllDebrid, Premiumize, TorBox, and Last.fm. Users are responsible for following the terms of the services they enable and for only downloading or streaming media they are allowed to access.
+DebriPod interacts with external services including YouTube, user-pasted yt-dlp sites, Soulseek, configured public torrent sources, Real Debrid, AllDebrid, Premiumize, TorBox, and Last.fm. Users are responsible for following the terms of the services they enable and for only downloading or streaming media they are allowed to access.

@@ -3,7 +3,7 @@ import {createRequire} from "node:module";
 import test from "node:test";
 
 const require = createRequire(import.meta.url);
-const {resolveControlCommand} = require("../../debripod/static/js/control-dispatcher.js");
+const {createBrowserControlDispatcher, resolveControlCommand} = require("../../debripod/static/js/control-dispatcher.js");
 const {contextMenuRows, normalizeMediaTarget} = require("../../debripod/static/js/media-actions.js");
 
 test("Q and E map through the same command table in all contexts", () => {
@@ -37,4 +37,23 @@ test("context menus are target-driven and reject nonplayable rows", () => {
   assert.deepEqual(contextMenuRows(movie).map((row) => row.label), ["View information", "Like"]);
   const youtube = normalizeMediaTarget({kind:"file", media:"video", root:{id:"r"}, rel:"video.mp4", source:"youtube"});
   assert.deepEqual(contextMenuRows(youtube).map((row) => row.label), ["View comments", "Like"]);
+});
+
+test("range editor consumes center tap, center hold, and Menu before ordinary controls", async () => {
+  const calls = [];
+  const win = {
+    DebriPod: {
+      navigationController: {isActive:()=>true, back:()=>calls.push("nav-back")},
+      mediaActions: {openContextMenuForCurrentTarget:()=>calls.push("context")},
+    },
+    nowPlaying: {style:{display:"none"}},
+    rangeEditorCenterPress: ()=>{ calls.push("commit"); return true; },
+    rangeEditorCenterHold: ()=>{ calls.push("keyboard"); return true; },
+    rangeEditorCancelActive: ()=>{ calls.push("cancel"); return true; },
+  };
+  const dispatcher = createBrowserControlDispatcher(win);
+  await dispatcher.dispatch("tap", "center");
+  await dispatcher.dispatch("hold", "center");
+  await dispatcher.dispatch("tap", "top");
+  assert.deepEqual(calls, ["commit", "keyboard", "cancel"]);
 });
