@@ -4,6 +4,8 @@ import sqlite3
 import time
 from collections.abc import Callable
 
+from .backups import create_backup
+
 
 def _v1(conn: sqlite3.Connection) -> None:
     conn.executescript("""
@@ -189,6 +191,19 @@ def _v9(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _v10(conn: sqlite3.Connection) -> None:
+    conn.executescript("""
+    CREATE TABLE IF NOT EXISTS database_backup_events(
+      backup_path TEXT PRIMARY KEY,
+      automatic INTEGER NOT NULL,
+      reason TEXT NOT NULL,
+      schema_version INTEGER NOT NULL,
+      bytes INTEGER NOT NULL,
+      created_at REAL NOT NULL
+    );
+    """)
+
+
 MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (1, "structured_state", _v1),
     (2, "compact_palettes", _v2),
@@ -199,14 +214,17 @@ MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = 
     (7, "retired_torrent_source_state", _v7),
     (8, "drop_legacy_torrent_source_state", _v8),
     (9, "server_side_auth_sessions", _v9),
+    (10, "migration_backup_foundation", _v10),
 )
 
 
 def migrate(conn: sqlite3.Connection) -> int:
     current = int(conn.execute("PRAGMA user_version").fetchone()[0])
-    for version, name, migration in MIGRATIONS:
-        if version <= current:
-            continue
+    pending = [(version, name, migration) for version, name, migration in MIGRATIONS if version > current]
+    backup: dict[str, object] | None = None
+    if current > 0 and pending:
+        backup = create_backup(conn, reason=f"before migration {current} to {pending[-1][0]}", automatic=True)
+    for version, name, migration in pending:
         with conn:
             migration(conn)
             conn.execute(
@@ -215,4 +233,14 @@ def migrate(conn: sqlite3.Connection) -> int:
             )
             conn.execute(f"PRAGMA user_version={version}")
         current = version
+    if backup is not None:
+        try:
+            conn.execute(
+                "INSERT OR REPLACE INTO database_backup_events(backup_path,automatic,reason,schema_version,bytes,created_at) VALUES(?,?,?,?,?,?)",
+                (str(backup["path"]), 1, str(backup["reason"]), int(backup["schema_version"]), int(backup["bytes"]), float(backup["created_at"])),
+            )
+            conn.commit()
+        except sqlite3.Error:
+            # The backup itself remains verified even if an old database cannot yet record it.
+            pass
     return current

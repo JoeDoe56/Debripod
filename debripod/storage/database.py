@@ -7,6 +7,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Iterator
 
+from .backups import create_backup, restore_backup, storage_report, validate_backup
 from .migrations import migrate
 
 PACKAGE_ROOT = Path(__file__).resolve().parents[2]
@@ -106,3 +107,37 @@ def optimize_and_vacuum() -> dict[str, int | tuple[int, int, int]]:
             conn.close()
     after = os.path.getsize(path) if os.path.exists(path) else 0
     return {"before_bytes": before, "after_bytes": after, "reclaimed_bytes": max(0, before - after), "checkpoint": check}
+
+
+def create_database_backup(*, reason: str = "manual backup") -> dict[str, object]:
+    with maintenance():
+        conn = connect()
+        try:
+            return create_backup(conn, reason=reason, automatic=False)
+        finally:
+            conn.close()
+
+
+def database_storage_report() -> dict[str, object]:
+    with connect() as conn:
+        return storage_report(conn)
+
+
+def restore_database_backup(source: str) -> dict[str, object]:
+    validate_backup(source)
+    path = database_path()
+    with maintenance():
+        current = connect()
+        try:
+            create_backup(current, reason="before restore", automatic=True)
+        finally:
+            current.close()
+        result = restore_backup(source, path)
+        # A restored database is re-opened and checked before callers resume writes.
+        restored = connect(initialize=False)
+        try:
+            if str(restored.execute("PRAGMA integrity_check").fetchone()[0]).lower() != "ok":
+                raise ValueError("Restored database integrity check failed")
+        finally:
+            restored.close()
+    return result
