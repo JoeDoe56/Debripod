@@ -172,6 +172,10 @@ test("shader uses screen-space frost, lens-relative displacement, and SDF edge l
   assert.match(source, /lensMinorDimensionInSourceUV/);
   assert.match(source, /outerPeak/);
   assert.match(source, /innerRim/);
+  assert.match(source, /OES_standard_derivatives/);
+  assert.match(source, /fwidth\(dmask\)/);
+  assert.match(source, /smoothstep\(-edgeAA, edgeAA, dmask\)/);
+  assert.match(source, /inShape <= 0\.0001/);
   assert.doesNotMatch(source, /\blp1\b|\blp2\b/);
   assert.doesNotMatch(source, /u_glassDarkAmount|u_glassLightAmount/);
   assert.doesNotMatch(source, /_on(?:MouseEnter|MouseMove|TouchStart|TouchMove|TouchEnd)\.bind\(this\)/);

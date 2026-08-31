@@ -360,6 +360,9 @@
       this._debugCanaryTexture = null;
       this._hiddenSkipSince = 0;
       this.renderCount = 0;
+      this.sourceRefreshCount = 0;
+      this._renderSubmissionSamples = [];
+      this._renderSubmissionTotalMs = 0;
       this.visible = true;
       this._adaptiveQuality = 1;
 
@@ -500,6 +503,9 @@
 
     /* ----------------------------- */
     _initGL() {
+      const isWebGL2 = typeof WebGL2RenderingContext !== "undefined" && this.gl instanceof WebGL2RenderingContext;
+      const hasDerivatives = !!(this.gl && (isWebGL2 || this.gl.getExtension("OES_standard_derivatives")));
+      this._hasStandardDerivatives = hasDerivatives;
       const vsSource = `
         attribute vec2 a_position;
         varying vec2 v_uv;
@@ -508,7 +514,7 @@
           gl_Position = vec4(a_position, 0.0, 1.0);
         }`;
 
-      const fsSource = `
+      const fsSource = `${hasDerivatives ? `${isWebGL2 ? "" : "#extension GL_OES_standard_derivatives : enable\n"}#define DP_HAS_DERIVATIVES 1\n` : ""}
         precision mediump float;
         varying vec2 v_uv;
         uniform sampler2D u_tex;
@@ -573,7 +579,13 @@
           vec2 innerB = max(vec2(0.0), b_px - vec2(u_hollowInset));
           float innerRadius = max(0.0, u_radius - u_hollowInset);
           float innerD = udRoundBox(p_px, innerB, innerRadius);
-          return 1.0 - smoothstep(-1.25, 1.25, innerD);
+          float fallbackAA = max(0.75, 1.0 / max(1.0, u_devicePixelRatio));
+          #ifdef DP_HAS_DERIVATIVES
+            float aa = max(fwidth(innerD), fallbackAA);
+          #else
+            float aa = fallbackAA;
+          #endif
+          return 1.0 - smoothstep(-aa, aa, innerD);
         }
 
         vec2 albumCoverUVFromSourceUV(vec2 sourceUV, vec2 sourceSize, vec2 imageSize) {
@@ -700,15 +712,26 @@
           vec2 p_px = (v_uv - 0.5) * u_resolution;
           vec2 b_px = 0.5 * u_resolution;
           float dmask = udRoundBox(p_px, b_px, u_radius);
-          float inShape = 1.0 - smoothstep(-1.25, 1.25, dmask);
+          float fallbackAA = max(0.75, 1.0 / max(1.0, u_devicePixelRatio));
+          #ifdef DP_HAS_DERIVATIVES
+            float edgeAA = max(fwidth(dmask), fallbackAA);
+          #else
+            float edgeAA = fallbackAA;
+          #endif
+          float inShape = 1.0 - smoothstep(-edgeAA, edgeAA, dmask);
           if (u_hollowInset > 0.0) {
             vec2 innerB = max(vec2(0.0), b_px - vec2(u_hollowInset));
             float innerRadius = max(0.0, u_radius - u_hollowInset);
             float innerD = udRoundBox(p_px, innerB, innerRadius);
-            float innerShape = 1.0 - smoothstep(-1.25, 1.25, innerD);
+            #ifdef DP_HAS_DERIVATIVES
+              float innerAA = max(fwidth(innerD), fallbackAA);
+            #else
+              float innerAA = fallbackAA;
+            #endif
+            float innerShape = 1.0 - smoothstep(-innerAA, innerAA, innerD);
             inShape *= (1.0 - innerShape);
           }
-          if (inShape <= 0.001) discard;
+          if (inShape <= 0.0001) discard;
 
           float sourceLuma = dot(final.rgb, vec3(0.2126, 0.7152, 0.0722));
           vec3 sourceChroma = final.rgb - vec3(sourceLuma);
@@ -965,7 +988,14 @@
         sourceCssRect: this._sourceCssRect || null,
         albumSourceRect: this._albumSourceRect || null,
         pendingRevealCount: this._pendingReveal ? this._pendingReveal.length || 0 : 0,
-        renderCount: this.renderCount || 0
+        renderCount: this.renderCount || 0,
+        visibleLensCount: (this.lenses || []).filter((lens) => this._lensVisible(lens)).length,
+        sourceRefreshCount: this.sourceRefreshCount || 0,
+        frostSamples: 16,
+        renderScale: this._snapshotResolution || 1,
+        averageRenderSubmissionMs: this._renderSubmissionSamples && this._renderSubmissionSamples.length
+          ? this._renderSubmissionTotalMs / this._renderSubmissionSamples.length
+          : 0
       };
     }
 
@@ -1104,6 +1134,7 @@
     }
 
     refreshSourceTexture(reason = "") {
+      this.sourceRefreshCount++;
       const source = this._resolveSourceElement();
       if (this.sourceType === "albumArtTransition") {
         return this._refreshAlbumArtTransitionSource(reason || "album art transition");
@@ -1596,6 +1627,7 @@
 
     /* ----------------------------- */
     render(frameState) {
+      const renderStartedAt = typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
       const gl = this.gl;
       if (!this.visible || document.hidden) {
         if (!this.visible) this._debugRenderSkip("render skipped: renderer not visible");
@@ -1709,6 +1741,13 @@
       });
 
       if (hasActiveVisibleTransition) this.requestRender();
+      const renderFinishedAt = typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
+      const submissionMs = Math.max(0, renderFinishedAt - renderStartedAt);
+      this._renderSubmissionSamples.push(submissionMs);
+      this._renderSubmissionTotalMs += submissionMs;
+      if (this._renderSubmissionSamples.length > 120) {
+        this._renderSubmissionTotalMs -= this._renderSubmissionSamples.shift();
+      }
     }
 
     _lensVisible(lens) {

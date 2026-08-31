@@ -85,7 +85,7 @@
       overlay.textContent = [
         "fps " + Math.round(Number(stats.fps || 0)) + " long " + Number(stats.longFrames || 0),
         "rows " + Number(rows.visible || 0) + "/" + Number(rows.total || 0) + (rows.virtualized ? " virtual" : ""),
-        "liquid " + renderers.map(r=>String(r.key || "?") + ":" + (r.visible ? "on" : "off")).join(" "),
+        "liquid " + renderers.map(r=>String(r.key || "?") + ":" + (r.visible ? "on" : "off") + " " + Number(r.visibleLensCount || 0) + " lens " + Math.round(Number(r.averageRenderSubmissionMs || 0) * 10) / 10 + "ms " + Number(r.sourceRefreshCount || 0) + " src " + Number(r.frostSamples || 0) + " frost " + Number(r.renderScale || 1) + "x").join(" | "),
         sync ? ("sync " + compactJson(sync)) : "",
         timings.map(t=>String(t.method || "GET") + " " + String(t.status || "") + " " + Math.round(Number(t.ms || 0)) + "ms").join(" | "),
         "version " + String(version.display || version.display_version || "vdev") + " " + String(version.short_commit || "")
