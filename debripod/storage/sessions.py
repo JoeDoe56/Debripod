@@ -32,7 +32,7 @@ def load(raw_token: str, *, now: int | None = None) -> dict[str, Any] | None:
     if not isinstance(values, dict):
         values = {}
     if row["user_id"]:
-        values["username"] = str(row["user_id"])
+        values["user_id"] = str(row["user_id"])
     if row["csrf_token"]:
         values["csrf_token"] = str(row["csrf_token"])
     return {
@@ -55,7 +55,7 @@ def save(
     created = int(created_unix or timestamp)
     expires = timestamp + int(max_age)
     clean = dict(values or {})
-    username = str(clean.pop("username", "") or "")
+    user_id = str(clean.get("user_id", "") or "")
     csrf_token = str(clean.pop("csrf_token", "") or "")
     payload = json.dumps(clean, ensure_ascii=False, separators=(",", ":"))
     with database() as conn:
@@ -69,7 +69,7 @@ def save(
                  data_json=excluded.data_json,
                  last_seen_unix=excluded.last_seen_unix,
                  expires_unix=excluded.expires_unix""",
-            (token_digest(raw_token), username, csrf_token, payload, created, timestamp, expires),
+            (token_digest(raw_token), user_id, csrf_token, payload, created, timestamp, expires),
         )
 
 

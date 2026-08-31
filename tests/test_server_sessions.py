@@ -236,8 +236,6 @@ def test_malformed_only_account_enters_safe_setup_recovery(monkeypatch, tmp_path
     monkeypatch.setenv("DEBRIPOD_DATABASE", str(tmp_path / "account-recovery.sqlite3"))
     configured = [{"username": "tester", "password_hash": "x"}]
     monkeypatch.setattr(auth, "_security_config", lambda: {"SETUP_COMPLETE": True, "USERS": configured})
-    saved: list[list[dict[str, str]]] = []
-    monkeypatch.setattr(auth, "_save_users", lambda users: saved.append(users))
     monkeypatch.setattr(auth, "_initialize_new_user_settings", lambda _username: None)
 
     assert auth._valid_users() == []
@@ -262,9 +260,10 @@ def test_malformed_only_account_enters_safe_setup_recovery(monkeypatch, tmp_path
             )
             assert response.status == 302
             assert response.headers["Location"] == "/"
-            assert saved and saved[0][0]["username"] == "tester"
-            assert saved[0][0]["password_hash"] != "replacement-password"
-            assert len(saved[0][0]["password_hash"]) > 100
+            created = auth._find_user("tester")
+            assert created and created["role"] == "owner"
+            assert created["password_hash"] != "replacement-password"
+            assert len(created["password_hash"]) > 100
         finally:
             await client.close()
 

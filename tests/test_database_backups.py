@@ -13,10 +13,11 @@ def test_migration_creates_verified_backup_before_advancing(tmp_path, monkeypatc
     monkeypatch.setenv("DEBRIPOD_BACKUP_DIRECTORY", str(backup_dir))
     conn = sqlite3.connect(db_path)
     try:
-        migrations.migrate(conn)
-        conn.execute("PRAGMA user_version=9")
-        conn.commit()
-        assert migrations.migrate(conn) == 10
+        all_migrations = migrations.MIGRATIONS
+        monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations[:9])
+        assert migrations.migrate(conn) == 9
+        monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations)
+        assert migrations.migrate(conn) == 11
     finally:
         conn.close()
 

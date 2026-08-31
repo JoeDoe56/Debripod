@@ -204,6 +204,28 @@ def _v10(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _v11(conn: sqlite3.Connection) -> None:
+    user_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(users)")}
+    passkey_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(user_passkeys)")}
+    challenge_columns = {str(row[1]) for row in conn.execute("PRAGMA table_info(passkey_challenges)")}
+    if "role" not in user_columns:
+        conn.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user' CHECK(role IN ('owner','user'))")
+    if "user_id" not in passkey_columns:
+        conn.execute("ALTER TABLE user_passkeys ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
+    if "user_id" not in challenge_columns:
+        conn.execute("ALTER TABLE passkey_challenges ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
+    conn.executescript("""
+    CREATE INDEX IF NOT EXISTS idx_user_passkeys_user_id ON user_passkeys(user_id,revoked_at);
+    CREATE INDEX IF NOT EXISTS idx_passkey_challenges_user_id ON passkey_challenges(user_id,expires_at);
+    """)
+    first = conn.execute("SELECT user_id FROM users ORDER BY created_at, user_id LIMIT 1").fetchone()
+    if first:
+        conn.execute("UPDATE users SET role='user' WHERE role NOT IN ('owner','user') OR role IS NULL")
+        conn.execute("UPDATE users SET role='owner' WHERE user_id=?", (str(first[0]),))
+    conn.execute("UPDATE user_passkeys SET user_id=COALESCE((SELECT user_id FROM users WHERE users.username=user_passkeys.username), user_id, '') WHERE user_id='' ")
+    conn.execute("UPDATE passkey_challenges SET user_id=COALESCE((SELECT user_id FROM users WHERE users.username=passkey_challenges.username), user_id, '') WHERE user_id='' ")
+
+
 MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (1, "structured_state", _v1),
     (2, "compact_palettes", _v2),
@@ -215,6 +237,7 @@ MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = 
     (8, "drop_legacy_torrent_source_state", _v8),
     (9, "server_side_auth_sessions", _v9),
     (10, "migration_backup_foundation", _v10),
+    (11, "immutable_user_roles", _v11),
 )
 
 

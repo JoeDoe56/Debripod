@@ -5,6 +5,7 @@ import time
 import json
 import logging
 import traceback
+from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote, urlparse
 
@@ -14,6 +15,8 @@ from .config import ensure_startup_security_config, save_config
 from .factory import json_response, session_for
 from .passwords import generate_password_hash, password_hash_supported, verify_password_hash
 from .settings import ensure_app_settings
+from .storage import sessions as session_repository
+from .storage import users as user_repository
 from .Library.library_db import (
     passkey_by_credential_id,
     passkeys_for_user,
@@ -61,6 +64,13 @@ FAILED_LOGINS: dict[str, dict[str, Any]] = {}
 FAILED_LOGINS_LOCKOUT_AFTER = 5
 FAILED_LOGINS_LOCKOUT_SECONDS = 120
 PASSKEY_RECENT_PASSWORD_SECONDS = 300
+
+
+@dataclass(frozen=True, slots=True)
+class UserContext:
+    user_id: str
+    username: str
+    role: str
 
 
 def _now() -> float:
@@ -123,6 +133,9 @@ def _users() -> list[dict[str, Any]]:
 
 
 def _valid_users() -> list[dict[str, Any]]:
+    stored = user_repository.list_users()
+    if stored:
+        return [user for user in stored if password_hash_supported(str(user.get("password_hash") or ""))]
     out: list[dict[str, Any]] = []
     for user in _users():
         if not isinstance(user, dict):
@@ -131,7 +144,7 @@ def _valid_users() -> list[dict[str, Any]]:
         password_hash = str(user.get("password_hash") or "").strip()
         if username and password_hash_supported(password_hash):
             out.append(user)
-    return out
+    return user_repository.bootstrap_legacy_users(out) if out else []
 
 
 def _setup_needed() -> bool:
@@ -150,17 +163,52 @@ def _find_user(username: str) -> dict[str, Any] | None:
 
 
 def _is_logged_in(request: web.Request) -> bool:
-    return bool(session_for(request).get("username"))
+    return current_user(request) is not None
 
 
 def _public_user(user: dict[str, Any]) -> dict[str, Any]:
-    return {"username": str(user.get("username") or "").strip()}
+    return {"user_id": str(user.get("user_id") or user.get("id") or ""), "username": str(user.get("username") or "").strip(), "role": str(user.get("role") or "user")}
+
+
+def current_user(request: web.Request) -> UserContext | None:
+    session = session_for(request)
+    user_id = str(session.get("user_id") or "").strip()
+    user = user_repository.get_user_by_id(user_id) if user_id else None
+    if not user:
+        # Upgrade only a pre-1.0 server session; normal authorization always uses user_id.
+        legacy_username = str(session.get("username") or "").strip()
+        user = _find_user(legacy_username) if legacy_username else None
+        if user and user.get("user_id"):
+            session["user_id"] = str(user["user_id"])
+    if not user:
+        return None
+    return UserContext(str(user.get("user_id") or user.get("id") or ""), str(user.get("username") or ""), str(user.get("role") or "user"))
+
+
+def is_owner(user: UserContext | None) -> bool:
+    return bool(user and user.role == "owner")
+
+
+def require_owner(request: web.Request) -> UserContext:
+    user = current_user(request)
+    if not is_owner(user):
+        raise web.HTTPForbidden(text="Forbidden")
+    return user
+
+
+def _set_session_user(request: web.Request, user: dict[str, Any] | UserContext) -> None:
+    session = session_for(request)
+    session.clear()
+    if isinstance(user, UserContext):
+        session["user_id"] = user.user_id
+        session["username"] = user.username
+    else:
+        session["user_id"] = str(user.get("user_id") or user.get("id") or "")
+        session["username"] = str(user.get("username") or "")
 
 
 def _current_user_password_valid(request: web.Request, password: str) -> bool:
-    session = session_for(request)
-    username = str(session.get("username") or "")
-    user = _find_user(username)
+    user = user_repository.get_user_by_id(current_user(request).user_id) if current_user(request) else None
     password_hash = str((user or {}).get("password_hash") or "")
     return bool(user and password_hash and _verify_user_password(user, password or ""))
 
@@ -171,14 +219,18 @@ def _verify_user_password(user: dict[str, Any] | None, password: str) -> bool:
     encoded = str(user.get("password_hash") or "")
     valid, needs_upgrade = verify_password_hash(encoded, password)
     if valid and needs_upgrade:
-        username = str(user.get("username") or "").strip().lower()
-        upgraded = []
-        for item in _valid_users():
-            replacement = dict(item)
-            if str(item.get("username") or "").strip().lower() == username:
-                replacement["password_hash"] = generate_password_hash(password)
-            upgraded.append(replacement)
-        _save_users(upgraded)
+        user_id = str(user.get("user_id") or user.get("id") or "")
+        if user_id:
+            user_repository.update_password_hash(user_id, generate_password_hash(password))
+        else:
+            username = str(user.get("username") or "").strip().lower()
+            upgraded = []
+            for item in _valid_users():
+                replacement = dict(item)
+                if str(item.get("username") or "").strip().lower() == username:
+                    replacement["password_hash"] = generate_password_hash(password)
+                upgraded.append(replacement)
+            _save_users(upgraded)
     return valid
 
 
@@ -197,9 +249,10 @@ def _has_recent_password_auth(request: web.Request) -> bool:
 
 
 def _save_users(users: list[dict[str, Any]]) -> None:
+    user_repository.replace_users(users)
     cfg = _security_config()
-    cfg["USERS"] = users
-    cfg["SETUP_COMPLETE"] = bool(users)
+    cfg["USERS"] = [_public_user(user) | {"password_hash": str(user.get("password_hash") or ""), "id": str(user.get("user_id") or "")} for user in user_repository.list_users()]
+    cfg["SETUP_COMPLETE"] = bool(user_repository.list_users())
     save_config(cfg)
 
 
@@ -211,8 +264,7 @@ def _create_user(username: str, password: str) -> tuple[bool, str]:
     users = _valid_users()
     if any(str(u.get("username") or "").strip().lower() == username.lower() for u in users):
         return False, "User already exists"
-    users.append({"username": username, "password_hash": generate_password_hash(password)})
-    _save_users(users)
+    user_repository.create_user(username, generate_password_hash(password), role="owner" if not users else "user")
     _initialize_new_user_settings(username)
     return True, ""
 
@@ -226,24 +278,26 @@ def _initialize_new_user_settings(username: str) -> None:
 
 
 def _delete_current_user(request: web.Request, password: str) -> tuple[bool, str, bool]:
-    session = session_for(request)
-    username = str(session.get("username") or "").strip()
-    if not username:
+    active = current_user(request)
+    if not active:
         return False, "Authentication required", _setup_needed()
-    user = _find_user(username)
+    user = user_repository.get_user_by_id(active.user_id)
     password_hash = str((user or {}).get("password_hash") or "")
     if not user or not password_hash or not _verify_user_password(user, password or ""):
         return False, "Password did not match.", _setup_needed()
-    remaining = [u for u in _valid_users() if str(u.get("username") or "").strip().lower() != username.lower()]
+    remaining = [u for u in _valid_users() if str(u.get("user_id") or u.get("id") or "") != active.user_id]
+    if active.role == "owner" and remaining:
+        return False, "Transfer ownership before deleting an owner account.", False
     try:
-      for item in passkeys_for_user(username):
+      for item in passkeys_for_user(active.user_id):
           credential_id = str(item.get("credential_id") or "")
           if credential_id:
-              revoke_passkey(username, credential_id)
+              revoke_passkey(active.user_id, credential_id)
     except Exception:
         pass
-    _save_users(remaining)
-    session.clear()
+    session_repository.revoke_user(active.user_id)
+    user_repository.delete_user(active.user_id)
+    session_for(request).clear()
     return True, "", not bool(remaining)
 
 
@@ -316,7 +370,7 @@ def _webauthn_available() -> bool:
 def _passkey_login_available() -> bool:
     if not _webauthn_available():
         return False
-    return any(passkeys_for_user(str(user.get("username") or "")) for user in _valid_users())
+    return any(passkeys_for_user(str(user.get("user_id") or user.get("id") or "")) for user in _valid_users())
 
 
 def _webauthn_rp_id(request: web.Request) -> str:
@@ -469,10 +523,9 @@ def register_auth_routes(app: web.Application) -> None:
             if len(username) < 2 or len(password) < 8 or password != confirm:
                 raise web.HTTPFound(location="/setup?error=1")
             else:
-                _save_users([{"username": username, "password_hash": generate_password_hash(password)}])
+                first_user = user_repository.create_user(username, generate_password_hash(password), role="owner")
                 _initialize_new_user_settings(username)
-                session.clear()
-                session["username"] = username
+                _set_session_user(request, first_user)
                 _mark_recent_password_auth(request)
                 _csrf_token(request)
                 raise web.HTTPFound(location="/")
@@ -490,8 +543,7 @@ def register_auth_routes(app: web.Application) -> None:
             password_hash = str((user or {}).get("password_hash") or "")
             if user and password_hash and _verify_user_password(user, password):
                 _login_succeeded(request, username)
-                session.clear()
-                session["username"] = str(user.get("username") or username)
+                _set_session_user(request, user)
                 _mark_recent_password_auth(request)
                 _csrf_token(request)
                 raise web.HTTPFound(location=_safe_next_url(request, "/"))
@@ -510,6 +562,7 @@ def register_auth_routes(app: web.Application) -> None:
     async def account_create(request: web.Request) -> web.Response:
         if _setup_needed():
             raise web.HTTPFound(location="/setup")
+        require_owner(request)
         session = session_for(request)
         if request.method == "POST":
             form = await request.post()
@@ -521,19 +574,15 @@ def register_auth_routes(app: web.Application) -> None:
             else:
                 ok, _err = _create_user(username, password)
                 if ok:
-                    session.clear()
-                    session["username"] = username
-                    _mark_recent_password_auth(request)
-                    _csrf_token(request)
-                    raise web.HTTPFound(location="/?setup=1")
+                    raise web.HTTPFound(location="/?account=created")
                 raise web.HTTPFound(location="/account/create?error=1")
         return _auth_page()
 
     async def api_auth_passkeys(request: web.Request) -> web.Response:
         if not _is_logged_in(request):
             return json_response(ok=False, error="Authentication required", status=401)
-        username = str(session_for(request).get("username") or "")
-        return json_response(ok=True, passkeys=[_public_passkey(p) for p in passkeys_for_user(username)])
+        user = current_user(request)
+        return json_response(ok=True, passkeys=[_public_passkey(p) for p in passkeys_for_user(user.user_id)])
 
     async def api_auth_passkey_revoke(request: web.Request) -> web.Response:
         if not _is_logged_in(request):
@@ -542,7 +591,8 @@ def register_auth_routes(app: web.Application) -> None:
         credential_id = str(data.get("credential_id") or "").strip()
         if not credential_id:
             return json_response(ok=False, error="Missing credential id", status=400)
-        revoke_passkey(str(session_for(request).get("username") or ""), credential_id)
+        user = current_user(request)
+        revoke_passkey(user.user_id, credential_id)
         return json_response(ok=True)
 
     async def api_auth_passkey_rename(request: web.Request) -> web.Response:
@@ -555,7 +605,8 @@ def register_auth_routes(app: web.Application) -> None:
             return json_response(ok=False, error="Missing credential id", status=400)
         if not device_label:
             return json_response(ok=False, error="Missing passkey label", status=400)
-        rename_passkey(str(session_for(request).get("username") or ""), credential_id, device_label)
+        user = current_user(request)
+        rename_passkey(user.user_id, credential_id, device_label)
         return json_response(ok=True)
 
     async def api_auth_passkey_register_options(request: web.Request) -> web.Response:
@@ -566,9 +617,10 @@ def register_auth_routes(app: web.Application) -> None:
         data = await request.json()
         if not _has_recent_password_auth(request) and not _current_user_password_valid(request, str(data.get("password") or "")):
             return json_response(ok=False, error="Enter your DebriPod password before adding a passkey.", status=403)
-        username = str(session_for(request).get("username") or "")
+        user = current_user(request)
+        username = user.username
         existing = []
-        for item in passkeys_for_user(username):
+        for item in passkeys_for_user(user.user_id):
             try:
                 existing.append(PublicKeyCredentialDescriptor(id=base64url_to_bytes(str(item.get("credential_id") or ""))))  # type: ignore[misc]
             except Exception:
@@ -586,7 +638,7 @@ def register_auth_routes(app: web.Application) -> None:
         )
         public_key = json.loads(options_to_json(options))  # type: ignore[misc]
         challenge_id = secrets.token_urlsafe(24)
-        save_passkey_challenge(challenge_id, username=username, action="register", challenge=public_key)
+        save_passkey_challenge(challenge_id, user_id=user.user_id, action="register", challenge=public_key)
         return json_response(ok=True, available=True, challenge_id=challenge_id, publicKey=public_key)
 
     async def api_auth_passkey_register_verify(request: web.Request) -> web.Response:
@@ -598,8 +650,8 @@ def register_auth_routes(app: web.Application) -> None:
         pending = pop_passkey_challenge(str(data.get("challenge_id") or ""), action="register")
         if not pending:
             return json_response(ok=False, error="Passkey setup expired. Try again.", status=400)
-        username = str(session_for(request).get("username") or "")
-        if str(pending.get("username") or "") != username:
+        user = current_user(request)
+        if str(pending.get("user_id") or "") != user.user_id:
             return json_response(ok=False, error="Passkey setup user changed. Try again.", status=400)
         public_key = pending.get("challenge") if isinstance(pending.get("challenge"), dict) else {}
         credential = data.get("credential")
@@ -615,7 +667,7 @@ def register_auth_routes(app: web.Application) -> None:
             public_key_b64 = bytes_to_base64url(verified.credential_public_key)  # type: ignore[misc]
             transports = list((credential or {}).get("response", {}).get("transports") or [])
             save_user_passkey(
-                username=username,
+                user_id=user.user_id,
                 credential_id=credential_id,
                 public_key=public_key_b64,
                 sign_count=int(getattr(verified, "sign_count", 0) or 0),
@@ -623,8 +675,8 @@ def register_auth_routes(app: web.Application) -> None:
                 aaguid=str(getattr(verified, "aaguid", "") or ""),
                 device_label=str(data.get("device_label") or "This device"),
             )
-            saved = passkeys_for_user(username)
-            logging.info("Passkey registered for user %s; active passkeys: %s", username, len(saved))
+            saved = passkeys_for_user(user.user_id)
+            logging.info("Passkey registered for user %s; active passkeys: %s", user.user_id, len(saved))
             return json_response(ok=True, message="Passkey enabled for this device.", passkey_count=len(saved))
         except Exception as exc:
             logging.warning("Passkey registration verification failed: %s\n%s", exc, traceback.format_exc())
@@ -637,8 +689,8 @@ def register_auth_routes(app: web.Application) -> None:
             return _passkey_error()
         allow = []
         for user in _valid_users():
-            username = str(user.get("username") or "")
-            user_passkeys = passkeys_for_user(username)
+            user_id = str(user.get("user_id") or user.get("id") or "")
+            user_passkeys = passkeys_for_user(user_id)
             for item in user_passkeys:
                 try:
                     allow.append(PublicKeyCredentialDescriptor(id=base64url_to_bytes(str(item.get("credential_id") or ""))))  # type: ignore[misc]
@@ -653,7 +705,7 @@ def register_auth_routes(app: web.Application) -> None:
         )
         public_key = json.loads(options_to_json(options))  # type: ignore[misc]
         challenge_id = secrets.token_urlsafe(24)
-        save_passkey_challenge(challenge_id, username="", action="login", challenge=public_key)
+        save_passkey_challenge(challenge_id, user_id="", action="login", challenge=public_key)
         return json_response(ok=True, available=True, challenge_id=challenge_id, publicKey=public_key)
 
     async def api_auth_passkey_login_verify(request: web.Request) -> web.Response:
@@ -680,11 +732,12 @@ def register_auth_routes(app: web.Application) -> None:
                 require_user_verification=False,
             )
             update_passkey_sign_count(credential_id, int(getattr(verified, "new_sign_count", 0) or 0))
-            session = session_for(request)
-            session.clear()
-            session["username"] = str(item.get("username") or "")
+            user = user_repository.get_user_by_id(str(item.get("user_id") or "")) or _find_user(str(item.get("username") or ""))
+            if not user:
+                return json_response(ok=False, error="Passkey is not registered for this DebriPod server.", status=400)
+            _set_session_user(request, user)
             _csrf_token(request)
-            return json_response(ok=True, username=str(item.get("username") or ""))
+            return json_response(ok=True, username=str(user.get("username") or ""))
         except Exception as exc:
             logging.warning("Passkey login verification failed: %s\n%s", exc, traceback.format_exc())
             return json_response(ok=False, error="Passkey sign in failed. Use your password.", status=400)
@@ -694,11 +747,14 @@ def register_auth_routes(app: web.Application) -> None:
             ok=True,
             setup_required=_setup_needed(),
             logged_in=_is_logged_in(request),
-            username=str(session_for(request).get("username") or ""),
+            username=(current_user(request).username if current_user(request) else ""),
+            user_id=(current_user(request).user_id if current_user(request) else ""),
+            role=(current_user(request).role if current_user(request) else ""),
             users=[_public_user(user) for user in _valid_users()],
         )
 
     async def api_auth_create_user(request: web.Request) -> web.Response:
+        require_owner(request)
         data = await request.json()
         username = str(data.get("username") or "").strip()
         password = str(data.get("password") or "")
@@ -708,7 +764,17 @@ def register_auth_routes(app: web.Application) -> None:
         ok, _err = _create_user(username, password)
         if not ok:
             return json_response(ok=False, error="Could not create user", status=400)
-        return json_response(ok=True, users=[_public_user(user) for user in _valid_users()], setup_required=True)
+        return json_response(ok=True, users=[_public_user(user) for user in _valid_users()], setup_required=False)
+
+    async def api_auth_transfer_ownership(request: web.Request) -> web.Response:
+        owner = require_owner(request)
+        data = await request.json()
+        recipient_user_id = str(data.get("user_id") or "").strip()
+        try:
+            user_repository.transfer_ownership(owner.user_id, recipient_user_id)
+        except ValueError:
+            return json_response(ok=False, error="Could not transfer ownership", status=400)
+        return json_response(ok=True)
 
     async def api_auth_delete_current_user(request: web.Request) -> web.Response:
         if not _is_logged_in(request):
@@ -733,7 +799,8 @@ def register_auth_routes(app: web.Application) -> None:
     app.router.add_post("/api/auth/passkey/login/verify", api_auth_passkey_login_verify)
     app.router.add_get("/api/auth/status", api_auth_status)
     app.router.add_post("/api/auth/users", api_auth_create_user)
+    app.router.add_post("/api/auth/ownership/transfer", api_auth_transfer_ownership)
     app.router.add_post("/api/auth/users/delete_current", api_auth_delete_current_user)
 
 
-__all__ = ["auth_middleware", "register_auth_routes"]
+__all__ = ["UserContext", "auth_middleware", "current_user", "is_owner", "register_auth_routes", "require_owner"]

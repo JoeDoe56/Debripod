@@ -11,7 +11,7 @@ from .settings import APP_SETTING_KEYS, DEFAULT_APP_SETTINGS, SECRET_SETTING_KEY
 from .secrets import get_secret, set_secret
 from .storage.database import database_path
 from .storage import settings as settings_repository
-from .storage.users import list_users, replace_users
+from .storage.users import bootstrap_legacy_users, list_users
 
 PACKAGE_ROOT = Path(__file__).resolve().parent.parent
 DEFAULTS_CONFIG_PATH = PACKAGE_ROOT / "config" / "debripod.defaults.json"
@@ -118,7 +118,7 @@ def load_config(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
     stored = settings_repository.load("")
     data = {key: stored[key] for key in STARTUP_CONFIG_KEYS if key in stored}
     users = list_users()
-    data["USERS"] = [{"username": u["username"], "password_hash": u["password_hash"], "id": u["user_id"]} for u in users]
+    data["USERS"] = [{"username": u["username"], "password_hash": u["password_hash"], "id": u["user_id"], "role": u.get("role", "user")} for u in users]
     data["SETUP_COMPLETE"] = bool(users)
     data["MCP_TOKEN"] = get_secret("global", "MCP_TOKEN")
     return data
@@ -142,7 +142,6 @@ def save_config(data: dict[str, Any], path: str | os.PathLike[str] | None = None
         if key in data:
             current[key] = data[key]
     settings_repository.save(current, "")
-    replace_users(data.get("USERS") if isinstance(data.get("USERS"), list) else [])
     if "MCP_TOKEN" in data:
         set_secret("global", "MCP_TOKEN", str(data.get("MCP_TOKEN") or ""))
     legacy_path = str(data.get("_LEGACY_CONFIG_PATH") or "")
@@ -157,6 +156,10 @@ def save_config(data: dict[str, Any], path: str | os.PathLike[str] | None = None
 
 def ensure_startup_security_config(path: str | os.PathLike[str] | None = None) -> dict[str, Any]:
     data = load_config(path)
+    legacy_users = data.get("USERS") if isinstance(data.get("USERS"), list) else []
+    bootstrap_legacy_users(legacy_users)
+    canonical_users = list_users()
+    data["USERS"] = [{"username": user["username"], "password_hash": user["password_hash"], "id": user["user_id"], "role": user.get("role", "user")} for user in canonical_users]
     ensure_app_settings(data, defaults_overrides=load_default_app_config_overrides())
     changed = False
     for key in list(data.keys()):
@@ -176,7 +179,7 @@ def ensure_startup_security_config(path: str | os.PathLike[str] | None = None) -
     elif "MCP_TOKEN" not in data:
         data["MCP_TOKEN"] = ""
         changed = True
-    setup_complete = bool(data.get("SETUP_COMPLETE")) and bool(data.get("USERS"))
+    setup_complete = bool(canonical_users)
     if data.get("SETUP_COMPLETE") != setup_complete:
         data["SETUP_COMPLETE"] = setup_complete
         changed = True

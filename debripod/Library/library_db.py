@@ -1206,16 +1206,17 @@ def save_visualizer_analysis(
         )
 
 
-def save_passkey_challenge(challenge_id: str, *, username: str, action: str, challenge: dict[str, Any], ttl_seconds: int = 300) -> None:
+def save_passkey_challenge(challenge_id: str, *, user_id: str, action: str, challenge: dict[str, Any], ttl_seconds: int = 300) -> None:
     now = time.time()
     with auth_db() as conn:
         conn.execute("DELETE FROM passkey_challenges WHERE expires_at < ?", (now,))
         conn.execute(
             """
-            INSERT INTO passkey_challenges(id, username, action, challenge_json, created_at, expires_at)
-            VALUES(?, ?, ?, ?, ?, ?)
+            INSERT INTO passkey_challenges(id, username, user_id, action, challenge_json, created_at, expires_at)
+            VALUES(?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(id) DO UPDATE SET
               username=excluded.username,
+              user_id=excluded.user_id,
               action=excluded.action,
               challenge_json=excluded.challenge_json,
               created_at=excluded.created_at,
@@ -1223,7 +1224,8 @@ def save_passkey_challenge(challenge_id: str, *, username: str, action: str, cha
             """,
             (
                 str(challenge_id or ""),
-                str(username or ""),
+                "",
+                str(user_id or ""),
                 str(action or ""),
                 json.dumps(challenge if isinstance(challenge, dict) else {}, ensure_ascii=False, sort_keys=True),
                 now,
@@ -1236,7 +1238,7 @@ def pop_passkey_challenge(challenge_id: str, *, action: str = "") -> Optional[di
     now = time.time()
     with auth_db() as conn:
         row = conn.execute(
-            "SELECT username, action, challenge_json, expires_at FROM passkey_challenges WHERE id = ?",
+            "SELECT user_id, action, challenge_json, expires_at FROM passkey_challenges WHERE id = ?",
             (str(challenge_id or ""),),
         ).fetchone()
         conn.execute("DELETE FROM passkey_challenges WHERE id = ?", (str(challenge_id or ""),))
@@ -1251,12 +1253,12 @@ def pop_passkey_challenge(challenge_id: str, *, action: str = "") -> Optional[di
         challenge = json.loads(str(row["challenge_json"] or "{}"))
     except Exception:
         challenge = {}
-    return {"username": str(row["username"] or ""), "action": str(row["action"] or ""), "challenge": challenge}
+    return {"user_id": str(row["user_id"] or ""), "action": str(row["action"] or ""), "challenge": challenge}
 
 
-def passkeys_for_user(username: str, *, include_revoked: bool = False) -> list[dict[str, Any]]:
-    sql = "SELECT * FROM user_passkeys WHERE username = ?"
-    params: list[Any] = [str(username or "")]
+def passkeys_for_user(user_id: str, *, include_revoked: bool = False) -> list[dict[str, Any]]:
+    sql = "SELECT * FROM user_passkeys WHERE user_id = ?"
+    params: list[Any] = [str(user_id or "")]
     if not include_revoked:
         sql += " AND revoked_at IS NULL"
     sql += " ORDER BY created_at DESC"
@@ -1281,7 +1283,7 @@ def passkey_by_credential_id(credential_id: str) -> Optional[dict[str, Any]]:
 
 def save_user_passkey(
     *,
-    username: str,
+    user_id: str,
     credential_id: str,
     public_key: str,
     sign_count: int,
@@ -1294,11 +1296,11 @@ def save_user_passkey(
         conn.execute(
             """
             INSERT INTO user_passkeys(
-              username, credential_id, public_key, sign_count, transports, aaguid,
+              username, user_id, credential_id, public_key, sign_count, transports, aaguid,
               device_label, created_at, user_verified_required
-            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?)
+            ) VALUES(?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             ON CONFLICT(credential_id) DO UPDATE SET
-              username=excluded.username,
+              user_id=excluded.user_id,
               public_key=excluded.public_key,
               sign_count=excluded.sign_count,
               transports=excluded.transports,
@@ -1308,7 +1310,8 @@ def save_user_passkey(
               user_verified_required=excluded.user_verified_required
             """,
             (
-                str(username or ""),
+                "",
+                str(user_id or ""),
                 str(credential_id or ""),
                 str(public_key or ""),
                 int(sign_count or 0),
@@ -1329,18 +1332,18 @@ def update_passkey_sign_count(credential_id: str, sign_count: int) -> None:
         )
 
 
-def revoke_passkey(username: str, credential_id: str) -> None:
+def revoke_passkey(user_id: str, credential_id: str) -> None:
     with auth_db() as conn:
         conn.execute(
-            "UPDATE user_passkeys SET revoked_at = ? WHERE username = ? AND credential_id = ?",
-            (time.time(), str(username or ""), str(credential_id or "")),
+            "UPDATE user_passkeys SET revoked_at = ? WHERE user_id = ? AND credential_id = ?",
+            (time.time(), str(user_id or ""), str(credential_id or "")),
         )
 
 
-def rename_passkey(username: str, credential_id: str, device_label: str) -> None:
+def rename_passkey(user_id: str, credential_id: str, device_label: str) -> None:
     label = str(device_label or "").strip()[:80] or "This device"
     with auth_db() as conn:
         conn.execute(
-            "UPDATE user_passkeys SET device_label = ? WHERE username = ? AND credential_id = ? AND revoked_at IS NULL",
-            (label, str(username or ""), str(credential_id or "")),
+            "UPDATE user_passkeys SET device_label = ? WHERE user_id = ? AND credential_id = ? AND revoked_at IS NULL",
+            (label, str(user_id or ""), str(credential_id or "")),
         )
