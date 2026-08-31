@@ -100,6 +100,9 @@ def _youtube_run_download(task_id: str, entry: Dict[str, Any], seq: int, total_c
     ext = str(entry.get('ext') or '').strip().lower() or 'mp4'
     format_id = str(entry.get('format_id') or entry.get('itag') or entry.get('file_id') or '').strip()
     media = str(entry.get('media') or '').strip().lower()
+    source_url = str(entry.get('source_url') or entry.get('url') or task.source_url or task.magnet or '').strip()
+    if not source_url:
+        raise RuntimeError('No URL found for the selected format')
     out_tpl = os.path.join(task.task_dir, title + '.%(ext)s')
     preferred_out = os.path.join(task.task_dir, title + '.' + ext)
 
@@ -114,7 +117,7 @@ def _youtube_run_download(task_id: str, entry: Dict[str, Any], seq: int, total_c
         '--progress-template', 'download:dp:%(progress.downloaded_bytes)s:%(progress.total_bytes)s:%(progress.speed)s',
         '--print', 'after_move:dp:filepath:%(filepath)s',
         '-o', out_tpl,
-        str(entry.get('url') or task.magnet or ''),
+        source_url,
     ]
 
     initial_total = int(entry.get('total') or 0)

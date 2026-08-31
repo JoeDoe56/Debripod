@@ -138,10 +138,21 @@ def _active_debrid_provider(http):
     return get_active_provider({key: globals().get(key) for key in keys}, int(REQUEST_TIMEOUT_SECONDS or 25), http)
 
 
+def _ytdlp_source_url(value: dict) -> str:
+    """Return a durable inspected-page URL, never a transient format URL."""
+    if not isinstance(value, dict):
+        return ""
+    for key in ("source_url", "original_url", "canonical_url", "youtube_url", "url"):
+        candidate = str(value.get(key) or "").strip()
+        if candidate:
+            return candidate
+    return ""
+
+
 async def _engine_prepare_stream_session(payload: dict, http) -> dict:
     src = str(payload.get("source") or "").strip().lower()
     if src == "youtube":
-        url = str(payload.get('url') or '').strip()
+        url = _ytdlp_source_url(payload)
         selected = payload.get('selected') or []
         title = str(payload.get('title') or payload.get('directory_title') or 'YouTube').strip() or 'YouTube'
         selected_fallback_url = ''
@@ -154,7 +165,7 @@ async def _engine_prepare_stream_session(payload: dict, http) -> dict:
                 continue
             name = str(it.get('name') or it.get('title') or ('Format ' + format_id)).strip() or 'Format'
             media = str(it.get('media') or '').strip().lower() or ('audio' if str(it.get('ext') or '').lower() in ('mp3','m4a','aac','ogg','opus','wav','flac') else 'video')
-            item_url = str(it.get('url') or '').strip()
+            item_url = _ytdlp_source_url(it)
             if not selected_fallback_url and item_url:
                 selected_fallback_url = item_url
             stream_source_url = url or item_url

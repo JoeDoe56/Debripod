@@ -137,6 +137,7 @@
           ext: ext,
           quality: String(ff.quality || ""),
           bitrate: String(ff.bitrate || ""),
+          source_url: String(ff.source_url || rr.source_url || rr.original_url || rr.canonical_url || rr.url || ""),
           direct_url: String(ff.direct_url || ""),
           itag: firstIdentifierText(ff.itag, ff.format_id, ff.file_id),
           format_id: firstIdentifierText(ff.format_id, ff.itag, ff.file_id),
@@ -144,7 +145,7 @@
           onToggle: ()=>{
             if(dlState) return;
             if(target.selected.has(key)) target.selected.delete(key);
-            else target.selected.set(key, {key:key, remote_path:String(ff.remote_path || ""), file_id:identifierText(ff.file_id), itag:firstIdentifierText(ff.itag, ff.format_id, ff.file_id), format_id:firstIdentifierText(ff.format_id, ff.itag, ff.file_id), size:Number(ff.size || 0), name:name, label:name, source:String(ff.source || src || ""), ext:String(ff.ext || ""), quality:String(ff.quality || ""), bitrate:String(ff.bitrate || ""), media:String(ff.media || rr.media || ""), root_id:String(ff.root_id || rr.root_id || ""), rel:String(ff.rel || ""), direct_url:String(ff.direct_url || ""), url:String((target.result && target.result.url) || "")});
+            else target.selected.set(key, {key:key, remote_path:String(ff.remote_path || ""), file_id:identifierText(ff.file_id), itag:firstIdentifierText(ff.itag, ff.format_id, ff.file_id), format_id:firstIdentifierText(ff.format_id, ff.itag, ff.file_id), size:Number(ff.size || 0), name:name, label:name, source:String(ff.source || src || ""), ext:String(ff.ext || ""), quality:String(ff.quality || ""), bitrate:String(ff.bitrate || ""), media:String(ff.media || rr.media || ""), root_id:String(ff.root_id || rr.root_id || ""), rel:String(ff.rel || ""), source_url:String(ff.source_url || rr.source_url || rr.original_url || rr.canonical_url || rr.url || ""), direct_url:String(ff.direct_url || ""), url:String((target.result && (target.result.url || target.result.original_url || target.result.canonical_url)) || "")});
           }
         });
       }
@@ -238,7 +239,7 @@
       load: async function(){
         const raw = Object.assign({}, canonical);
         raw.source = source;
-        raw.url = String(raw.canonical_url || providerData.permalink_url || "");
+        raw.url = String(raw.url || raw.source_url || raw.original_url || raw.canonical_url || providerData.permalink_url || "");
         raw.user = String(providerData.user || raw.artist || "");
         raw.directory = String(providerData.directory || raw.subtitle || "");
         raw.root_id = String(providerData.root_id || "");

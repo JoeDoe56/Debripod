@@ -499,7 +499,11 @@ def _yt_direct_url_for_format(url: str, format_id: str) -> str:
 
 
 def ytdlp_list_formats(url: str) -> List[dict]:
-    info = _yt_dlp_extract_info(url)
+    # Keep the inspected page URL with each format. ``fmt['url']`` is a
+    # transient CDN URL and must never be the only value retained by the UI:
+    # yt-dlp needs the original page URL to re-resolve a format later.
+    source_url = str(url or "").strip()
+    info = _yt_dlp_extract_info(source_url)
     items: List[dict] = []
     seen = set()
     for fmt in list(info.get("formats") or []):
@@ -547,6 +551,7 @@ def ytdlp_list_formats(url: str) -> List[dict]:
             "source": "youtube",
             "selectable": True,
             "media": media,
+            "source_url": source_url,
             "direct_url": direct_url,
             "fps": int(fmt.get("fps") or 0) if str(fmt.get("fps") or "").strip() else 0,
             "height": int(fmt.get("height") or 0) if str(fmt.get("height") or "").strip() else 0,

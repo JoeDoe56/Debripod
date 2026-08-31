@@ -889,6 +889,19 @@ async def api_youtube_comments(request: web.Request):
         return json_response(ok=True, comments=comments)
     except Exception:
         return json_response(ok=False, error="Failed to load comments", comments=[], status=500)
+
+
+def _ytdlp_enqueue_source_url(value: Any) -> str:
+    """Pick the inspected page URL from either new or legacy UI payloads."""
+    if not isinstance(value, dict):
+        return ""
+    for key in ("source_url", "original_url", "canonical_url", "youtube_url", "url"):
+        candidate = str(value.get(key) or "").strip()
+        if candidate:
+            return candidate
+    return ""
+
+
 @routes.post("/api/youtube/enqueue")
 async def api_youtube_enqueue(request: web.Request):
     try:
@@ -898,10 +911,17 @@ async def api_youtube_enqueue(request: web.Request):
     source_label = str(data.get('source_label') or 'YouTube').strip() or 'YouTube'
     task_source = 'youtube'
     title = str(data.get('title') or '').strip() or source_label
-    url = str(data.get('url') or '').strip()
     selected = data.get('selected') or []
+    if not isinstance(selected, list):
+        selected = []
+    url = _ytdlp_enqueue_source_url(data)
     if not url:
-        return json_response(ok=False, error='Missing URL', status=400)
+        for item in selected:
+            url = _ytdlp_enqueue_source_url(item)
+            if url:
+                break
+    if not url:
+        return json_response(ok=False, error='No URL found for the selected format', status=400)
     if not str(YOUTUBE_DOWNLOAD_DIR or "").strip():
         return json_response(ok=False, error='Pick the YouTube folder in Downloads settings before downloading.', status=400)
     entries: List[Dict[str, Any]] = []
@@ -920,7 +940,8 @@ async def api_youtube_enqueue(request: web.Request):
             'ext': ext,
             'media': str(it.get('media') or '').strip().lower(),
             'direct_url': str(it.get('direct_url') or '').strip(),
-            'url': url,
+            'source_url': _ytdlp_enqueue_source_url(it) or url,
+            'url': _ytdlp_enqueue_source_url(it) or url,
             'total': int(it.get('size') or 0) if str(it.get('size') or '').strip() else 0,
             'done': 0,
             'speed': 0.0,

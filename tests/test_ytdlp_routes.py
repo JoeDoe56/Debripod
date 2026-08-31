@@ -4,6 +4,8 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 import debripod.runtime_routes as routes
+import debripod.runtime_route_state as route_state
+from debripod.Services import youtube
 
 
 async def _client(monkeypatch):
@@ -63,3 +65,41 @@ def test_pasted_soundcloud_url_still_uses_generic_ytdlp_inspection(monkeypatch):
             await client.close()
 
     asyncio.run(scenario())
+
+
+def test_format_rows_retain_the_durable_inspected_url(monkeypatch):
+    source_url = "https://media.example.test/watch/42"
+    monkeypatch.setattr(youtube, "_yt_dlp_extract_info", lambda _url: {
+        "formats": [{
+            "format_id": "251", "ext": "webm", "acodec": "opus",
+            "vcodec": "none", "url": "https://cdn.example.test/signed-media-url",
+        }],
+    })
+    files = youtube.ytdlp_list_formats(source_url)
+    assert files[0]["source_url"] == source_url
+    assert files[0]["direct_url"] == "https://cdn.example.test/signed-media-url"
+
+
+def test_selected_ytdlp_format_uses_source_url_for_stream_preparation():
+    source_url = "https://media.example.test/watch/42"
+
+    async def scenario():
+        prepared = await route_state._engine_prepare_stream_session({
+            "source": "youtube",
+            "selected": [{
+                "format_id": "251", "name": "Audio", "media": "audio",
+                "source_url": source_url,
+                "direct_url": "https://cdn.example.test/signed-media-url",
+            }],
+        }, None)
+        stream_item = route_state._search_stream_get(prepared["items"][0]["rel"])
+        assert stream_item and stream_item["youtube_url"] == source_url
+
+    asyncio.run(scenario())
+
+
+def test_enqueue_url_resolver_accepts_new_and_legacy_payload_shapes():
+    source_url = "https://media.example.test/watch/42"
+    assert routes._ytdlp_enqueue_source_url({"source_url": source_url}) == source_url
+    assert routes._ytdlp_enqueue_source_url({"original_url": source_url}) == source_url
+    assert routes._ytdlp_enqueue_source_url({"canonical_url": source_url}) == source_url
