@@ -3,9 +3,11 @@ from __future__ import annotations
 from .runtime_state import *
 from .runtime_downloads import *
 from .Services.debrid import get_active_provider
+from .user_runtime import SearchStreamStore, UserRuntime
 
-SEARCH_STREAMS: Dict[str, Dict[str, Any]] = {}
-SEARCH_STREAMS_LOCK = threading.Lock()
+_LEGACY_STREAM_STORE = SearchStreamStore()
+SEARCH_STREAMS = _LEGACY_STREAM_STORE.sessions
+SEARCH_STREAMS_LOCK = _LEGACY_STREAM_STORE.lock
 
 MCP_SESSIONS: Dict[str, Dict[str, Any]] = {}
 MCP_SESSIONS_LOCK = threading.Lock()
@@ -30,11 +32,17 @@ def _search_stream_rel(session_id: str, item_id: str) -> str:
     return f"{session_id}/{item_id}"
 
 
-def _search_stream_cleanup_locked(now_ts: Optional[float] = None) -> None:
+def _stream_parts(runtime: UserRuntime | None = None) -> tuple[Dict[str, Dict[str, Any]], threading.RLock]:
+    store = runtime.streams if runtime is not None else _LEGACY_STREAM_STORE
+    return store.sessions, store.lock
+
+
+def _search_stream_cleanup_locked(now_ts: Optional[float] = None, runtime: UserRuntime | None = None) -> None:
+    streams, _ = _stream_parts(runtime)
     if now_ts is None:
         now_ts = time.time()
     stale = []
-    for sid, sess in SEARCH_STREAMS.items():
+    for sid, sess in streams.items():
         try:
             ts = float(sess.get("ts") or 0.0)
         except Exception:
@@ -42,19 +50,20 @@ def _search_stream_cleanup_locked(now_ts: Optional[float] = None) -> None:
         if (now_ts - ts) > SEARCH_STREAM_SESSION_TTL_SECONDS:
             stale.append(sid)
     for sid in stale:
-        SEARCH_STREAMS.pop(sid, None)
+        streams.pop(sid, None)
 
 
-def _search_stream_get(rel: str) -> Optional[Dict[str, Any]]:
+def _search_stream_get(rel: str, runtime: UserRuntime | None = None) -> Optional[Dict[str, Any]]:
     raw = str(rel or "").strip().strip("/")
     if not raw or "/" not in raw:
         return None
     session_id, item_id = raw.split("/", 1)
     if not session_id or not item_id:
         return None
-    with SEARCH_STREAMS_LOCK:
-        _search_stream_cleanup_locked()
-        sess = SEARCH_STREAMS.get(session_id)
+    streams, lock = _stream_parts(runtime)
+    with lock:
+        _search_stream_cleanup_locked(runtime=runtime)
+        sess = streams.get(session_id)
         if not isinstance(sess, dict):
             return None
         sess["ts"] = time.time()
@@ -69,16 +78,19 @@ def _search_stream_get(rel: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _playback_stream_item_for_rel(rel: str) -> Optional[Dict[str, Any]]:
+def _playback_stream_item_for_rel(rel: str, runtime: UserRuntime | None = None) -> Optional[Dict[str, Any]]:
     raw = str(rel or "").strip().strip("/")
     if not raw:
         return None
-    with PLAYBACK_STATE_LOCK:
+    playback = runtime.playback if runtime is not None else None
+    state = playback.state if playback is not None else PLAYBACK_STATE
+    lock = playback.lock if playback is not None else PLAYBACK_STATE_LOCK
+    with lock:
         candidates = []
-        now = PLAYBACK_STATE.get("now")
+        now = state.get("now")
         if isinstance(now, dict):
             candidates.append(now)
-        recent = PLAYBACK_STATE.get("recent") or []
+        recent = state.get("recent") or []
         if isinstance(recent, list):
             candidates.extend([it for it in recent if isinstance(it, dict)])
     for entry in candidates:
@@ -101,11 +113,11 @@ def _playback_stream_item_for_rel(rel: str) -> Optional[Dict[str, Any]]:
     return None
 
 
-def _search_stream_get_or_restore(rel: str) -> Optional[Dict[str, Any]]:
-    it = _search_stream_get(rel)
+def _search_stream_get_or_restore(rel: str, runtime: UserRuntime | None = None) -> Optional[Dict[str, Any]]:
+    it = _search_stream_get(rel, runtime)
     if it:
         return it
-    restored = _playback_stream_item_for_rel(rel)
+    restored = _playback_stream_item_for_rel(rel, runtime)
     if not restored:
         return None
     try:
@@ -113,12 +125,13 @@ def _search_stream_get_or_restore(rel: str) -> Optional[Dict[str, Any]]:
         session_id, item_id = raw.split("/", 1)
     except Exception:
         return restored
-    with SEARCH_STREAMS_LOCK:
-        _search_stream_cleanup_locked()
-        sess = SEARCH_STREAMS.get(session_id)
+    streams, lock = _stream_parts(runtime)
+    with lock:
+        _search_stream_cleanup_locked(runtime=runtime)
+        sess = streams.get(session_id)
         if not isinstance(sess, dict):
             sess = {"ts": time.time(), "title": str(restored.get("session_title") or restored.get("title") or restored.get("album") or "Search stream"), "source": str(restored.get("source") or ""), "items": []}
-            SEARCH_STREAMS[session_id] = sess
+            streams[session_id] = sess
         sess["ts"] = time.time()
         items = list(sess.get("items") or [])
         if not any(isinstance(x, dict) and str(x.get("item_id") or "") == item_id for x in items):
@@ -126,10 +139,13 @@ def _search_stream_get_or_restore(rel: str) -> Optional[Dict[str, Any]]:
             add["item_id"] = item_id
             items.append(add)
             sess["items"] = items
-    return _search_stream_get(rel) or restored
+    return _search_stream_get(rel, runtime) or restored
 
 
-def _active_debrid_provider(http):
+def _active_debrid_provider(http, runtime: UserRuntime | None = None):
+    if runtime is not None:
+        settings = dict(runtime.settings)
+        return get_active_provider(settings, int(settings.get("REQUEST_TIMEOUT_SECONDS") or 25), http)
     keys = (
         "DEBRID_PROVIDER", "REAL_DEBRID_API_KEY", "RD_BASE",
         "ALLDEBRID_API_KEY", "ALLDEBRID_BASE", "PREMIUMIZE_API_KEY", "PREMIUMIZE_BASE",
@@ -149,7 +165,7 @@ def _ytdlp_source_url(value: dict) -> str:
     return ""
 
 
-async def _engine_prepare_stream_session(payload: dict, http) -> dict:
+async def _engine_prepare_stream_session(payload: dict, http, runtime: UserRuntime | None = None) -> dict:
     src = str(payload.get("source") or "").strip().lower()
     if src == "youtube":
         url = _ytdlp_source_url(payload)
@@ -198,9 +214,10 @@ async def _engine_prepare_stream_session(payload: dict, http) -> dict:
         if not items:
             raise RuntimeError('No selected YouTube formats were streamable')
         session_id = uuid.uuid4().hex
-        with SEARCH_STREAMS_LOCK:
-            _search_stream_cleanup_locked()
-            SEARCH_STREAMS[session_id] = {'ts': time.time(), 'title': title, 'source': src, 'items': items}
+        streams, lock = _stream_parts(runtime)
+        with lock:
+            _search_stream_cleanup_locked(runtime=runtime)
+            streams[session_id] = {'ts': time.time(), 'title': title, 'source': src, 'items': items}
         out_items = []
         for it in items:
             rel = _search_stream_rel(session_id, str(it.get('item_id') or ''))
@@ -225,7 +242,7 @@ async def _engine_prepare_stream_session(payload: dict, http) -> dict:
         selected_by_id[fid] = it
     if not clean_ids:
         raise RuntimeError("No files selected")
-    provider = _active_debrid_provider(http)
+    provider = _active_debrid_provider(http, runtime)
     requested_provider = str(payload.get("provider") or "").strip().lower()
     if requested_provider and requested_provider != provider.id:
         raise RuntimeError("The preview provider is no longer active. Preview the result again.")
@@ -272,9 +289,10 @@ async def _engine_prepare_stream_session(payload: dict, http) -> dict:
     if not items:
         raise RuntimeError("No selected files were streamable")
     session_id = uuid.uuid4().hex
-    with SEARCH_STREAMS_LOCK:
-        _search_stream_cleanup_locked()
-        SEARCH_STREAMS[session_id] = {"ts": time.time(), "title": title, "source": src, "items": items}
+    streams, lock = _stream_parts(runtime)
+    with lock:
+        _search_stream_cleanup_locked(runtime=runtime)
+        streams[session_id] = {"ts": time.time(), "title": title, "source": src, "items": items}
     out_items = []
     for it in items:
         rel = _search_stream_rel(session_id, str(it.get("item_id") or ""))

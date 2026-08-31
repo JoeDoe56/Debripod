@@ -37,12 +37,12 @@ from .Services.torrent_sources import TorrentHit
 from .Services.http import HttpClient, create_client_session
 from .Services.search.pipeline import SearchPipeline
 from .Services.search.providers import SearchContext
-from .Services.search.runtime import configure_search_runtime, get_search_runtime, reset_search_runtime
+from .Services.search.runtime import build_search_runtime
 from .Services.link_intake import classify_link_input
 from .Library import tvmaze as tvmaze_module
 from .Library.tvmaze import normalized_episode_information
 from .factory import AppServices, SERVICES_KEY, json_response, session_for, session_middleware
-from .auth import _csrf_token, auth_middleware, register_auth_routes
+from .auth import _csrf_token, auth_middleware, current_user, register_auth_routes
 from .Routes.notifications import register_notification_routes
 from .config import _coerce_config_value, ensure_startup_security_config, load_default_app_config_overrides, save_config, save_default_app_config_overrides
 from .Library.library_db import load_folder_entries, load_palette, load_palette_for_media, load_visualizer_analysis_for_media, save_folder_entries, save_palette
@@ -58,6 +58,7 @@ from .storage.media_likes import get_media_like, list_media_likes, set_media_lik
 from .Services.debrid import DebridAuthError, DebridProviderError, get_active_provider, get_provider, provider_specs, provider_status as debrid_provider_status
 from .Services.debrid.identifiers import normalize_identifier
 from .Tasks.manager import task_belongs_to_owner
+from .user_runtime import USER_RUNTIME_KEY, UserRuntime, UserRuntimeRegistry, user_runtime_for
 from .runtime_state import *
 from .runtime_downloads import *
 from .settings import APP_SETTING_KEYS, DEFAULT_APP_SETTINGS, DEFAULT_UI_SETTINGS, SECRET_SETTING_KEYS, default_app_settings, executable_status, ensure_app_settings, masked_settings, pick_system_path, save_app_settings, settings_fingerprint
@@ -65,9 +66,6 @@ from .settings import APP_SETTING_KEYS, DEFAULT_APP_SETTINGS, DEFAULT_UI_SETTING
 # =========================
 # aiohttp runtime state
 # =========================
-_ACTIVE_SETTINGS_USERNAME = ""
-_ACTIVE_SETTINGS_SIGNATURE: tuple[int, int] = (0, 0)
-_ACTIVE_SETTINGS_DATA: dict[str, Any] = {}
 _RECENT_API_TIMINGS: list[dict[str, Any]] = []
 _FULL_REINDEX_LOCK = threading.Lock()
 _FULL_REINDEX_STATUS: dict[str, Any] = {
@@ -88,198 +86,116 @@ from .runtime_route_state import *
 from .MCP import routes as mcp_routes
 
 
-def _current_settings_username(request: web.Request) -> str:
-    return str(session_for(request).get("username") or "").strip()
-
-
 def _default_app_overrides() -> dict[str, Any]:
     return load_default_app_config_overrides()
 
 
-async def _shutdown_soulseek_service() -> None:
-    service = getattr(state_module, "SOULSEEK_SERVICE", None)
-    state_module.SOULSEEK_SERVICE = None
-    globals()["SOULSEEK_SERVICE"] = None
-    for module in (downloads_module, route_state_module, mcp_routes):
-        if hasattr(module, "SOULSEEK_SERVICE"):
-            setattr(module, "SOULSEEK_SERVICE", None)
-    if service:
-        try:
-            await service.stop()
-        except Exception:
-            pass
+def _runtime_settings(request: web.Request) -> dict[str, Any]:
+    return dict(user_runtime_for(request).settings)
 
 
-async def _start_soulseek_service_for_active_settings() -> None:
-    username = str(SOULSEEK_USERNAME or "").strip()
-    password = str(SOULSEEK_PASSWORD or "").strip()
+def _settings_scope(request: web.Request) -> str:
+    """Compatibility scope until Stage 4 migrates existing settings rows to IDs."""
+    return user_runtime_for(request).settings_scope
+
+
+def _current_user_id(request: web.Request) -> str:
+    return user_runtime_for(request).user_id
+
+
+def _record_user_search_history(runtime: UserRuntime, query: str, source: str, cache_key: str) -> None:
+    item = {"q": str(query or ""), "source": str(source or ""), "cache_key": str(cache_key or ""), "ts": time.time()}
+    if not item["q"]:
+        return
+    history = [row for row in runtime.search_history if str(row.get("q") or "") != item["q"]]
+    history.insert(0, item)
+    try:
+        limit = max(1, int(runtime.settings.get("SEARCH_HISTORY_MAX_ITEMS") or 100))
+    except Exception:
+        limit = 100
+    runtime.search_history[:] = history[:limit]
+
+
+async def _create_soulseek_service(settings: dict[str, Any]) -> Any:
+    username = str(settings.get("SOULSEEK_USERNAME") or "").strip()
+    password = str(settings.get("SOULSEEK_PASSWORD") or "").strip()
     if not username or not password:
-        await _shutdown_soulseek_service()
-        return
-    current = getattr(state_module, "SOULSEEK_SERVICE", None)
-    if (
-        current
-        and getattr(current, "username", "") == username
-        and getattr(current, "password", "") == password
-        and getattr(current, "download_dir", "") == os.path.abspath(SOULSEEK_DOWNLOAD_DIR)
-        and int(getattr(current, "listening_port", 0) or 0) == int(SOULSEEK_LISTENING_PORT or 0)
-        and int(getattr(current, "obfuscated_port", 0) or 0) == int(SOULSEEK_OBFUSCATED_PORT or 0)
-        and int(getattr(current, "search_timeout_sec", 0) or 0) == int(SOULSEEK_SEARCH_TIMEOUT_SEC or 0)
-        and int(getattr(current, "search_max_results", 0) or 0) == int(SOULSEEK_SEARCH_MAX_RESULTS or 0)
-    ):
-        return
-    await _shutdown_soulseek_service()
+        return None
     try:
         service = SoulseekService(
             username=username,
             password=password,
-            download_dir=SOULSEEK_DOWNLOAD_DIR,
-            listening_port=SOULSEEK_LISTENING_PORT,
-            obfuscated_port=SOULSEEK_OBFUSCATED_PORT,
-            search_timeout_sec=SOULSEEK_SEARCH_TIMEOUT_SEC,
-            search_max_results=SOULSEEK_SEARCH_MAX_RESULTS,
+            download_dir=str(settings.get("SOULSEEK_DOWNLOAD_DIR") or ""),
+            listening_port=int(settings.get("SOULSEEK_LISTENING_PORT") or 0),
+            obfuscated_port=int(settings.get("SOULSEEK_OBFUSCATED_PORT") or 0),
+            search_timeout_sec=int(settings.get("SOULSEEK_SEARCH_TIMEOUT_SEC") or 30),
+            search_max_results=int(settings.get("SOULSEEK_SEARCH_MAX_RESULTS") or 500),
         )
+        await service.start()
+        return service
     except Exception:
-        service = None
-    if service is not None:
-        try:
-            await service.start()
-        except Exception:
-            service = None
-    state_module.SOULSEEK_SERVICE = service
-    globals()["SOULSEEK_SERVICE"] = service
-    for module in (downloads_module, route_state_module, mcp_routes):
-        if hasattr(module, "SOULSEEK_SERVICE"):
-            setattr(module, "SOULSEEK_SERVICE", service)
+        return None
 
 
-async def _clear_active_user_runtime_settings() -> None:
-    global _ACTIVE_SETTINGS_DATA, _ACTIVE_SETTINGS_SIGNATURE, _ACTIVE_SETTINGS_USERNAME
-    if not _ACTIVE_SETTINGS_USERNAME:
-        return
-    settings = default_app_settings()
-    modules = (state_module, downloads_module, route_state_module, mcp_routes)
-    for key, raw_value in settings.items():
-        key_upper = str(key).upper()
-        if key_upper not in CONFIG_KEYS:
-            continue
-        value = _coerce_config_value(key_upper, raw_value)
-        globals()[key_upper] = value
-        for module in modules:
-            if hasattr(module, key_upper):
-                setattr(module, key_upper, value)
-    soulseek_module.configure_aioslsk_logging(bool(settings.get("AIOSLSK_LOGGING_ENABLED")))
-    await _shutdown_soulseek_service()
-    try:
-        lastfm_module.reset_lastfm_runtime_state()
-    except Exception:
-        pass
-    try:
-        with route_state_module.SEARCH_STREAMS_LOCK:
-            route_state_module.SEARCH_STREAMS.clear()
-    except Exception:
-        pass
-    try:
-        with soulseek_module._SLSK_SESS_LOCK:
-            soulseek_module._SLSK_SESSIONS.clear()
-    except Exception:
-        pass
-    _ACTIVE_SETTINGS_USERNAME = ""
-    _ACTIVE_SETTINGS_SIGNATURE = (0, 0)
-    _ACTIVE_SETTINGS_DATA = {}
-    reset_search_runtime()
-
-
-async def _apply_runtime_settings_for_user(
-    username: str,
-    force: bool = False,
-    *,
-    http_client: HttpClient | None = None,
-    local_index: LocalTorrentIndex | None = None,
-    local_index_updater: LocalIndexUpdater | None = None,
-) -> dict[str, Any]:
-    global _ACTIVE_SETTINGS_DATA, _ACTIVE_SETTINGS_SIGNATURE, _ACTIVE_SETTINGS_USERNAME
-    if not username:
-        return {}
-    signature = settings_fingerprint(username)
-    if (
-        not force
-        and _ACTIVE_SETTINGS_USERNAME == username
-        and _ACTIVE_SETTINGS_SIGNATURE == signature
-        and _ACTIVE_SETTINGS_DATA
-    ):
-        return dict(_ACTIVE_SETTINGS_DATA)
-    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
-    signature = settings_fingerprint(username)
-    modules = (state_module, downloads_module, route_state_module, mcp_routes)
-    for key, raw_value in settings.items():
-        key_upper = str(key).upper()
-        if key_upper not in CONFIG_KEYS:
-            continue
-        value = _coerce_config_value(key_upper, raw_value)
-        globals()[key_upper] = value
-        for module in modules:
-            if hasattr(module, key_upper):
-                setattr(module, key_upper, value)
-    try:
-        state_module.ensure_dirs()
-    except Exception:
-        pass
-    try:
-        soulseek_module.configure_aioslsk_logging(bool(settings.get("AIOSLSK_LOGGING_ENABLED")))
-        soulseek_module.configure_soulseek_module(
-            download_dir=SOULSEEK_DOWNLOAD_DIR,
-            search_idle_stop_sec=SOULSEEK_SEARCH_IDLE_STOP_SEC,
-            search_hard_max_sec=SOULSEEK_SEARCH_HARD_MAX_SEC,
-            tasks=TASKS,
-            tasks_lock=TASKS_LOCK,
-            get_task_func=get_task,
-            set_task_func=set_task,
-            set_file_control_func=_set_file_control,
-            get_file_control_func=_get_file_control,
-        )
-    except Exception:
-        pass
-    await _start_soulseek_service_for_active_settings()
-    if _ACTIVE_SETTINGS_USERNAME != username:
-        load_playback_state()
-        try:
-            with route_state_module.SEARCH_STREAMS_LOCK:
-                route_state_module.SEARCH_STREAMS.clear()
-        except Exception:
-            pass
-        try:
-            with soulseek_module._SLSK_SESS_LOCK:
-                soulseek_module._SLSK_SESSIONS.clear()
-        except Exception:
-            pass
-        _ACTIVE_SETTINGS_USERNAME = username
-    _ACTIVE_SETTINGS_SIGNATURE = signature
-    _ACTIVE_SETTINGS_DATA = dict(settings)
-    _configure_unified_search_runtime(
-        settings,
-        http_client=http_client,
-        local_index=local_index,
-        local_index_updater=local_index_updater,
+async def _create_user_runtime(services: AppServices, user: Any) -> UserRuntime:
+    # Settings storage is migrated from legacy username keys to immutable IDs
+    # in Stage 4. The runtime itself is already keyed exclusively by user_id.
+    scope = str(getattr(user, "username", "") or "").strip()
+    settings = ensure_app_settings(username=scope, defaults_overrides=_default_app_overrides())
+    runtime = UserRuntime(
+        user_id=str(getattr(user, "user_id", "") or ""),
+        username=scope,
+        role=str(getattr(user, "role", "user") or "user"),
+        settings_scope=scope,
+        settings=dict(settings),
+        settings_signature=settings_fingerprint(scope),
     )
-    return settings
+    runtime.soulseek_service = await _create_soulseek_service(runtime.settings)
+    runtime.search_runtime = _build_unified_search_runtime(
+        runtime.settings,
+        http_client=services.http,
+        local_index=services.local_index,
+        local_index_updater=services.local_index_updater,
+        soulseek_service=runtime.soulseek_service,
+        user_id=runtime.user_id,
+    )
+    runtime.playback.search_stream_get_or_restore = lambda rel: route_state_module._search_stream_get_or_restore(rel, runtime)
+    return runtime
+
+
+async def _reload_request_runtime(request: web.Request) -> UserRuntime:
+    user = current_user(request)
+    if user is None:
+        raise web.HTTPUnauthorized()
+    registry = request.app[SERVICES_KEY].user_runtimes
+    if registry is None:
+        raise RuntimeError("User runtime registry is unavailable")
+    await registry.invalidate_user_runtime(user.user_id)
+    runtime = await registry.get_user_runtime(user)
+    request[USER_RUNTIME_KEY] = runtime
+    return runtime
 
 
 class _UnifiedSearchDiskCache:
+    def __init__(self, user_id: str):
+        self.user_id = str(user_id or "")
+
     def set(self, cache_key: str, payload: dict[str, Any]) -> None:
         stored = {**payload, "schema_version": SEARCH_CACHE_SCHEMA}
         with _SEARCH_DISK_LOCK:
             _disk_cache_set(cache_key, "combined", str(payload.get("query") or ""), {"schema": SEARCH_CACHE_SCHEMA}, stored)
 
 
-def _configure_unified_search_runtime(
-    settings: dict[str, Any] | None = None,
+def _build_unified_search_runtime(
+    settings: dict[str, Any],
     *,
     http_client: HttpClient | None = None,
     local_index: LocalTorrentIndex | None = None,
     local_index_updater: LocalIndexUpdater | None = None,
+    soulseek_service: Any = None,
+    user_id: str = "",
 ):
-    current = dict(settings or ensure_app_settings(defaults_overrides=_default_app_overrides()))
+    current = dict(settings)
     local_index = local_index or LocalTorrentIndex()
     local_index.initialize()
     local_index_provider = LocalIndexSearchProvider(local_index)
@@ -301,14 +217,14 @@ def _configure_unified_search_runtime(
         )
     )
     library = LibrarySearchProvider(root_objects, get_index, library_root_versions)
-    soulseek = SoulseekSearchProvider(lambda: getattr(state_module, "SOULSEEK_SERVICE", None))
+    soulseek = SoulseekSearchProvider(lambda: soulseek_service)
     ytdlp = YtdlpSearchProvider(max_concurrent=int(current.get("YTDLP_SEARCH_MAX_CONCURRENT") or 4))
     providers = [library]
     if current.get("LOCAL_INDEX_ENABLED", True):
         providers.append(local_index_provider)
     providers.extend([soulseek, torrent, ytdlp])
-    pipeline = SearchPipeline(providers, cache=_UnifiedSearchDiskCache())
-    return configure_search_runtime(
+    pipeline = SearchPipeline(providers, cache=_UnifiedSearchDiskCache(user_id))
+    return build_search_runtime(
         pipeline=pipeline,
         library_provider=library,
         local_index_provider=local_index_provider,
@@ -322,37 +238,23 @@ def _configure_unified_search_runtime(
 
 
 def _active_search_runtime(request: web.Request | None = None):
-    try:
-        return get_search_runtime()
-    except RuntimeError:
-        services = request.app[SERVICES_KEY] if request is not None else None
-        return _configure_unified_search_runtime(
-            http_client=services.http if services else None,
-        )
-
-
-async def _apply_request_runtime_settings(request: web.Request, username: str, *, force: bool = False) -> dict[str, Any]:
-    services = request.app[SERVICES_KEY]
-    settings = await _apply_runtime_settings_for_user(
-        username,
-        force=force,
-        http_client=services.http,
-        local_index=getattr(services.search_runtime, "local_index", None),
-        local_index_updater=getattr(services.search_runtime, "local_index_updater", None),
-    )
-    services.search_runtime = get_search_runtime()
-    services.soulseek_service = getattr(state_module, "SOULSEEK_SERVICE", None)
-    return settings
+    if request is None:
+        raise RuntimeError("Search runtime requires an authenticated request")
+    runtime = user_runtime_for(request).search_runtime
+    if runtime is None:
+        raise RuntimeError("User search runtime is unavailable")
+    return runtime
 
 
 @web.middleware
 async def runtime_middleware(request: web.Request, handler):
     started_at = time.perf_counter()
-    username = _current_settings_username(request)
-    if username:
-        await _apply_request_runtime_settings(request, username)
-    else:
-        await _clear_active_user_runtime_settings()
+    user = current_user(request)
+    if user is not None:
+        registry = request.app[SERVICES_KEY].user_runtimes
+        if registry is None:
+            raise RuntimeError("User runtime registry is unavailable")
+        request[USER_RUNTIME_KEY] = await registry.get_user_runtime(user)
     try:
         response = await handler(request)
         elapsed_ms = (time.perf_counter() - started_at) * 1000.0
@@ -453,15 +355,15 @@ async def api_libsearch_combined(request: web.Request):
     q = (request.query.get("q") or "").strip()
     if not q:
         return json_response(ok=False, error="Missing query", results=[], result_count=0, cache_key="", status=400)
-    username = _current_settings_username(request)
-    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
+    user_runtime = user_runtime_for(request)
+    settings = dict(user_runtime.settings)
     runtime = _active_search_runtime(request)
     debug = str(request.query.get("debug") or "").strip().lower() in {"1", "true", "yes"}
     local_diagnostics = await asyncio.to_thread(runtime.local_index.diagnostics)
     local_meta = local_diagnostics.get("meta") if isinstance(local_diagnostics, dict) else {}
     cache_inputs = {
         "schema": SEARCH_CACHE_SCHEMA,
-        "username": username,
+        "user_id": user_runtime.user_id,
         "roots": library_root_versions(),
         "local_index_enabled": bool(settings.get("LOCAL_INDEX_ENABLED", True)),
         "local_index_generation": str((local_meta or {}).get("local_index_generation") or "0"),
@@ -480,7 +382,7 @@ async def api_libsearch_combined(request: web.Request):
         cached_payload = {}
     intent = infer_query_intent(q)
     context = SearchContext(
-        username=username,
+        username=user_runtime.user_id,
         query=q,
         normalized_query=normalize_search_text(q),
         intent=intent,
@@ -505,7 +407,7 @@ async def api_libsearch_combined(request: web.Request):
             else:
                 async for event in runtime.pipeline.search_stream(q, context):
                     await response.write((json.dumps(event, ensure_ascii=False) + "\n").encode("utf-8"))
-            record_search_history(q, "combined", combined_cache_key)
+            _record_user_search_history(user_runtime, q, "combined", combined_cache_key)
             await response.write_eof()
         except ConnectionResetError:
             pass
@@ -513,10 +415,10 @@ async def api_libsearch_combined(request: web.Request):
             raise
         return response
     if cached_payload:
-        record_search_history(q, "combined", combined_cache_key)
+        _record_user_search_history(user_runtime, q, "combined", combined_cache_key)
         return json_response(ok=True, q=q, cache_key=combined_cache_key, cached=True, results=cached_payload.get("results", []), result_count=len(cached_payload.get("results", [])), provider_status=cached_payload.get("provider_status", []), schema_version=SEARCH_CACHE_SCHEMA)
     final = await runtime.pipeline.search_once(q, context)
-    record_search_history(q, "combined", combined_cache_key)
+    _record_user_search_history(user_runtime, q, "combined", combined_cache_key)
     return json_response(ok=True, q=q, cache_key=combined_cache_key, cached=False, results=final.get("results", []), result_count=len(final.get("results", [])), provider_status=final.get("provider_status", []), schema_version=SEARCH_CACHE_SCHEMA)
 
 
@@ -534,7 +436,8 @@ async def api_libsearch_soulseek_start(request: web.Request):
     if not q:
         return json_response(ok=False, error="Missing query", sid="", done=True, slsk_users=[], file_count=0, dir_count=0, cache_key="")
 
-    extra: Dict[str, Any] = {}
+    runtime = user_runtime_for(request)
+    extra: Dict[str, Any] = {"user_id": runtime.user_id}
     cache_key = _make_search_cache_key("soulseek", q, extra)
 
     cached_payload = None
@@ -560,14 +463,14 @@ async def api_libsearch_soulseek_start(request: web.Request):
                 file_count = 0
         return json_response(ok=True, q=q, cache_key=cache_key, sid="", rev=1, done=True, slsk_users=slsk_users, file_count=file_count, dir_count=dir_count, error="", changed=True)
 
-    svc = SOULSEEK_SERVICE
+    svc = user_runtime_for(request).soulseek_service
     if not svc or not svc.is_ready():
         return json_response(ok=False, error="Soulseek service is not ready", sid="", done=True, slsk_users=[], file_count=0, dir_count=0, cache_key=cache_key)
 
     sid = _slsk_session_create(cache_key, q)
 
     try:
-        record_search_history(q, "soulseek", cache_key)
+        _record_user_search_history(runtime, q, "soulseek", cache_key)
     except Exception:
         pass
 
@@ -641,7 +544,8 @@ async def api_libsearch_soulseek(request: web.Request):
     if not q:
         return json_response(ok=False, error="Missing query", slsk_users=[], result_count=0, cache_key="")
 
-    extra: Dict[str, Any] = {}
+    runtime = user_runtime_for(request)
+    extra: Dict[str, Any] = {"user_id": runtime.user_id}
     cache_key = _make_search_cache_key("soulseek", q, extra)
 
     cached_payload = None
@@ -660,7 +564,7 @@ async def api_libsearch_soulseek(request: web.Request):
         except Exception:
             slsk_total_results = sum(int(u.get("total_files") or 0) for u in (slsk_users or []))
     else:
-        svc = SOULSEEK_SERVICE
+        svc = user_runtime_for(request).soulseek_service
         if not svc or not svc.is_ready():
             return json_response(ok=False, error="Soulseek service is not ready", slsk_users=[], result_count=0, cache_key=cache_key)
 
@@ -732,7 +636,7 @@ async def api_libsearch_soulseek(request: web.Request):
             _disk_cache_set(cache_key, "soulseek", q, extra, {"slsk_users": slsk_users, "slsk_total_results": slsk_total_results, "file_count": slsk_total_results, "dir_count": dir_count})
 
     try:
-        record_search_history(q, "soulseek", cache_key)
+        _record_user_search_history(runtime, q, "soulseek", cache_key)
     except Exception:
         pass
 
@@ -744,7 +648,7 @@ async def api_soulseek_browse_user(request: web.Request):
     selected_dir = _slsk_norm_remote_path(request.query.get("selected_dir") or "")
     if not user:
         return json_response(ok=False, error="Missing user", user="", dirs=[], selected_dir="", status=400)
-    svc = SOULSEEK_SERVICE
+    svc = user_runtime_for(request).soulseek_service
     if not svc or not svc.is_ready():
         return json_response(ok=False, error="Soulseek service is not ready", user=user, dirs=[], selected_dir=selected_dir)
 
@@ -841,7 +745,7 @@ async def api_link_inspect(request: web.Request):
         return json_response(ok=False, error="Enter a valid magnet or HTTP(S) link.", status=400)
     try:
         if kind == "magnet":
-            current = ensure_app_settings(username=_current_settings_username(request), defaults_overrides=_default_app_overrides())
+            current = _runtime_settings(request)
             status = debrid_provider_status(current)
             if not status.get("configured"):
                 return json_response(ok=False, error="No debrid provider is configured.", status=400)
@@ -922,7 +826,8 @@ async def api_youtube_enqueue(request: web.Request):
                 break
     if not url:
         return json_response(ok=False, error='No URL found for the selected format', status=400)
-    if not str(YOUTUBE_DOWNLOAD_DIR or "").strip():
+    youtube_root = str(_runtime_settings(request).get("YOUTUBE_DOWNLOAD_DIR") or "").strip()
+    if not youtube_root:
         return json_response(ok=False, error='Pick the YouTube folder in Downloads settings before downloading.', status=400)
     entries: List[Dict[str, Any]] = []
     for i, it in enumerate(selected):
@@ -954,13 +859,12 @@ async def api_youtube_enqueue(request: web.Request):
     if not entries:
         return json_response(ok=False, error='No files selected', status=400)
     task_id = uuid.uuid4().hex
-    youtube_root = _youtube_download_root()
     stamp = time.strftime("%Y%m%d_%H%M%S")
     base = sanitize_folder_name(title)
     folder = sanitize_folder_name(f"{stamp}_{base}_{task_id[:6]}")
     task_dir = os.path.join(youtube_root, folder)
     os.makedirs(task_dir, exist_ok=True)
-    t = Task(id=task_id, title=title, magnet=url, task_dir=task_dir, owner=_current_settings_username(request), source=task_source, source_url=url, origin_client_id=str(request.headers.get("X-DebriPod-Client-Id") or ""), state='queued', message='Queued', youtube_files=entries)
+    t = Task(id=task_id, title=title, magnet=url, task_dir=task_dir, owner=_current_user_id(request), source=task_source, source_url=url, origin_client_id=str(request.headers.get("X-DebriPod-Client-Id") or ""), state='queued', message='Queued', youtube_files=entries)
     with TASKS_LOCK:
         TASKS[task_id] = t
     save_task_metadata(t, original_result_title=title, remote_files=entries, selected_file_ids=[item.get('file_id') for item in entries], version=str(VERSION))
@@ -972,9 +876,7 @@ async def api_youtube_enqueue(request: web.Request):
 @routes.get("/api/search_history")
 async def api_search_history(request: web.Request):
     try:
-        with _SEARCH_DISK_LOCK:
-            items = _load_search_history()
-        return json_response({"ok": True, "items": items})
+        return json_response({"ok": True, "items": list(user_runtime_for(request).search_history)})
     except Exception:
         return json_response({"ok": False, "error": "Failed to browse channel", "items": []})
 
@@ -982,7 +884,7 @@ async def api_search_history(request: web.Request):
 @routes.post("/api/search_history/clear")
 async def api_search_history_clear(request: web.Request):
     try:
-        clear_search_history_and_cache()
+        user_runtime_for(request).search_history.clear()
         return json_response({"ok": True})
     except Exception:
         return json_response({"ok": False, "error": "Failed to clear search history"})
@@ -995,13 +897,13 @@ async def api_libsearch_stream_selected(request: web.Request):
     except Exception:
         data = {}
     try:
-        out = await _engine_prepare_stream_session(data, request.app[SERVICES_KEY].http)
+        out = await _engine_prepare_stream_session(data, request.app[SERVICES_KEY].http, user_runtime_for(request))
         return json_response({"ok": True, **out})
     except Exception:
         return json_response({"ok": False, "error": "Failed to prepare stream"}, status=400)
 @routes.get("/api/debrid/providers")
 async def api_debrid_providers(request: web.Request):
-    settings = ensure_app_settings(username=_current_settings_username(request), defaults_overrides=_default_app_overrides())
+    settings = _runtime_settings(request)
     return json_response({"ok": True, **debrid_provider_status(settings)})
 
 
@@ -1011,7 +913,7 @@ async def api_debrid_connect_token(request: web.Request):
     token = str(data.get("token") or "").strip()
     if not token:
         return json_response({"ok": False, "error": "Paste a debrid token first."}, status=400)
-    settings = ensure_app_settings(username=_current_settings_username(request), defaults_overrides=_default_app_overrides())
+    settings = _runtime_settings(request)
     timeout_seconds = int(settings.get("REQUEST_TIMEOUT_SECONDS") or 25)
     matched_id = ""
     matched_label = ""
@@ -1036,9 +938,9 @@ async def api_debrid_connect_token(request: web.Request):
     updates = {spec.token_setting_key: "" for spec in provider_specs().values()}
     updates[provider_specs()[matched_id].token_setting_key] = token
     updates["DEBRID_PROVIDER"] = matched_id
-    saved = save_app_settings(updates, username=_current_settings_username(request), defaults_overrides=_default_app_overrides())
-    if _current_settings_username(request):
-        saved = await _apply_request_runtime_settings(request, _current_settings_username(request), force=True)
+    saved = save_app_settings(updates, username=_settings_scope(request), defaults_overrides=_default_app_overrides())
+    if _settings_scope(request):
+        saved = (await _reload_request_runtime(request)).settings
     return json_response({"ok": True, "provider": matched_id, "label": matched_label, **debrid_provider_status(saved)})
 
 
@@ -1053,7 +955,7 @@ async def api_debrid_preview_files(request: web.Request):
     if not magnet.startswith("magnet:?"):
         return json_response({"ok": False, "error": "Invalid magnet"}, status=400)
     try:
-        settings = ensure_app_settings(username=_current_settings_username(request), defaults_overrides=_default_app_overrides())
+        settings = _runtime_settings(request)
         status = debrid_provider_status(settings)
         if not status.get("configured"):
             return json_response({"ok": False, "error": "No debrid provider is configured."}, status=400)
@@ -1084,7 +986,8 @@ async def api_debrid_enqueue_selected(request: web.Request):
 
     if not provider_task_id:
         return json_response({"ok": False, "error": "Missing debrid task id"}, status=400)
-    if not str(DOWNLOAD_DIR or "").strip():
+    download_root = str(_runtime_settings(request).get("DOWNLOAD_DIR") or "").strip()
+    if not download_root:
         return json_response({"ok": False, "error": "Pick the Debrid folder in Downloads settings before downloading."}, status=400)
     clean_ids: List[str] = []
     if isinstance(file_ids, list):
@@ -1096,7 +999,7 @@ async def api_debrid_enqueue_selected(request: web.Request):
 
     if not clean_ids:
         return json_response({"ok": False, "error": "No files selected"}, status=400)
-    settings = ensure_app_settings(username=_current_settings_username(request), defaults_overrides=_default_app_overrides())
+    settings = _runtime_settings(request)
     status = debrid_provider_status(settings)
     provider_id = str(status.get("active_provider") or "")
     if not provider_id:
@@ -1105,7 +1008,7 @@ async def api_debrid_enqueue_selected(request: web.Request):
     if requested_provider and requested_provider != provider_id:
         return json_response({"ok": False, "error": "The preview provider is no longer active. Preview the result again."}, status=409)
     task_id = uuid.uuid4().hex
-    task_dir = build_task_dir(task_id, title)
+    task_dir = os.path.join(download_root, sanitize_folder_name(f"{task_id[:8]}_{title}"))
     os.makedirs(task_dir, exist_ok=True)
 
     t = Task(
@@ -1113,7 +1016,7 @@ async def api_debrid_enqueue_selected(request: web.Request):
         title=title,
         magnet=magnet,
         task_dir=task_dir,
-        owner=_current_settings_username(request),
+        owner=_current_user_id(request),
         origin_client_id=str(request.headers.get("X-DebriPod-Client-Id") or ""),
         source="debrid",
         state="queued",
@@ -1132,9 +1035,11 @@ async def api_debrid_enqueue_selected(request: web.Request):
 
 @routes.post("/api/soulseek/enqueue")
 async def api_soulseek_enqueue(request: web.Request):
-    if not str(SOULSEEK_DOWNLOAD_DIR or "").strip():
+    runtime = user_runtime_for(request)
+    soulseek_download_dir = str(runtime.settings.get("SOULSEEK_DOWNLOAD_DIR") or "").strip()
+    if not soulseek_download_dir:
         return json_response({"ok": False, "error": "Pick the Soulseek folder in Downloads settings before downloading."}, status=400)
-    svc = SOULSEEK_SERVICE
+    svc = runtime.soulseek_service
     if not svc or not svc.is_ready():
         return json_response({"ok": False, "error": "Soulseek is configured but not connected. Check username, password, and listening port in Services."}, status=400)
     try:
@@ -1147,11 +1052,11 @@ async def api_soulseek_enqueue(request: web.Request):
     files_in = data.get("files") or []
     title = (data.get("title") or "").strip()
 
-    task_download_dir = _slsk_task_download_dir(directory)
+    task_download_dir = os.path.join(soulseek_download_dir, soulseek_module._slsk_sanitized_dir_name(directory))
     try:
         os.makedirs(task_download_dir, exist_ok=True)
     except Exception:
-        task_download_dir = SOULSEEK_DOWNLOAD_DIR
+        task_download_dir = soulseek_download_dir
 
     files: List[Dict[str, Any]] = []
     remote_paths: List[str] = []
@@ -1206,7 +1111,7 @@ async def api_soulseek_enqueue(request: web.Request):
         title=title,
         magnet="",
         task_dir=task_download_dir,
-        owner=_current_settings_username(request),
+        owner=_current_user_id(request),
         origin_client_id=str(request.headers.get("X-DebriPod-Client-Id") or ""),
         source="soulseek",
         state="queued",
@@ -1235,7 +1140,7 @@ async def cancel(request: web.Request):
     task_id = str(form.get("task_id") or "").strip()
     if not task_id:
         raise web.HTTPBadRequest()
-    if not task_belongs_to_owner(task_id, _current_settings_username(request)):
+    if not task_belongs_to_owner(task_id, _current_user_id(request)):
         raise web.HTTPNotFound()
     cancel_task(task_id)
     raise web.HTTPSeeOther(location="/")
@@ -1349,9 +1254,10 @@ async def api_library_reindex_status(request: web.Request):
 @routes.get("/api/settings")
 async def api_settings_get(request: web.Request):
     cfg = ensure_startup_security_config()
-    username = _current_settings_username(request)
-    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
-    soulseek_service = getattr(state_module, "SOULSEEK_SERVICE", None)
+    runtime = user_runtime_for(request)
+    username = runtime.username
+    settings = dict(runtime.settings)
+    soulseek_service = runtime.soulseek_service
     soulseek_status = soulseek_service.startup_status() if soulseek_service and hasattr(soulseek_service, "startup_status") else {}
     connections = {
         "current_user": username,
@@ -1415,13 +1321,12 @@ def _kick_library_indexes_from_settings(settings: dict[str, Any]) -> None:
             pass
 
 
-def _service_status_payload(settings: dict[str, Any]) -> dict[str, Any]:
+def _service_status_payload(settings: dict[str, Any], soulseek_service: Any = None) -> dict[str, Any]:
     tools = {
         "ffmpeg": executable_status(str(settings.get("FFMPEG_PATH") or "ffmpeg")),
         "ffprobe": executable_status(str(settings.get("FFPROBE_PATH") or "ffprobe")),
         "yt_dlp": executable_status(str(settings.get("YTDLP_CMD") or "yt-dlp")),
     }
-    soulseek_service = getattr(state_module, "SOULSEEK_SERVICE", None)
     soulseek_status = soulseek_service.startup_status() if soulseek_service and hasattr(soulseek_service, "startup_status") else {}
     skipped = _setup_skipped_services(settings)
     debrid_status = debrid_provider_status(settings)
@@ -1542,8 +1447,9 @@ def _setup_status_for_user(username: str, settings: dict[str, Any]) -> dict[str,
 
 @routes.get("/api/setup/status")
 async def api_setup_status(request: web.Request):
-    username = _current_settings_username(request)
-    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
+    runtime = user_runtime_for(request)
+    username = runtime.username
+    settings = dict(runtime.settings)
     return json_response(_setup_status_for_user(username, settings))
 
 
@@ -1554,41 +1460,40 @@ async def api_setup_skip(request: web.Request):
     allowed = {"library", "debrid", "soulseek", "lastfm", "youtube", "ffmpeg", "ffprobe", "ytdlp", "downloads"}
     if service not in allowed:
         return json_response({"ok": False, "error": "Unknown setup step"}, status=400)
-    username = _current_settings_username(request)
-    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
+    username = _settings_scope(request)
+    settings = _runtime_settings(request)
     skipped = _setup_skipped_services(settings)
     skipped[service] = "skipped"
     saved = save_app_settings({"SETUP_SKIPPED_SERVICES": skipped}, username=username, defaults_overrides=_default_app_overrides())
     if username:
-        saved = await _apply_request_runtime_settings(request, username, force=True)
+        saved = (await _reload_request_runtime(request)).settings
     return json_response(_setup_status_for_user(username, saved))
 
 
 @routes.post("/api/setup/finish")
 async def api_setup_finish(request: web.Request):
-    username = _current_settings_username(request)
-    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
+    username = _settings_scope(request)
+    settings = _runtime_settings(request)
     status = _setup_status_for_user(username, settings)
     if not status.get("required_complete"):
         return json_response({"ok": False, "error": "Add a library folder before finishing setup."}, status=400)
     saved = save_app_settings({"SETUP_WIZARD_COMPLETE": True}, username=username, defaults_overrides=_default_app_overrides())
     if username:
-        saved = await _apply_request_runtime_settings(request, username, force=True)
+        saved = (await _reload_request_runtime(request)).settings
     _kick_library_indexes_from_settings(saved)
     return json_response(_setup_status_for_user(username, saved))
 
 
 @routes.get("/api/services/status")
 async def api_services_status(request: web.Request):
-    username = _current_settings_username(request)
-    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
-    return json_response({"ok": True, "services": _service_status_payload(settings)})
+    runtime = user_runtime_for(request)
+    return json_response({"ok": True, "services": _service_status_payload(runtime.settings, runtime.soulseek_service)})
 
 
 @routes.get("/api/settings/export")
 async def api_settings_export(request: web.Request):
-    username = _current_settings_username(request)
-    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
+    username = _settings_scope(request)
+    settings = _runtime_settings(request)
     payload = {}
     for key in sorted(APP_SETTING_KEYS):
         if key in {"SETUP_SKIPPED_SERVICES", "SETUP_WIZARD_COMPLETE"}:
@@ -1615,10 +1520,10 @@ async def api_settings_import(request: web.Request):
         if key_upper in SECRET_SETTING_KEYS and not include_secrets:
             continue
         clean[key_upper] = value
-    username = _current_settings_username(request)
+    username = _settings_scope(request)
     saved = save_app_settings(clean, username=username, defaults_overrides=_default_app_overrides())
     if username:
-        await _apply_request_runtime_settings(request, username, force=True)
+        await _reload_request_runtime(request)
     if "LIBRARY_FOLDERS" in clean:
         _kick_library_indexes_from_settings(saved)
     return json_response({"ok": True, "settings": masked_settings(saved), "imported_keys": sorted(clean.keys())})
@@ -1636,7 +1541,7 @@ async def api_settings_save(request: web.Request):
         if value == "***":
             continue
         clean_settings[key_upper] = value
-    username = _current_settings_username(request)
+    username = _settings_scope(request)
     saved = save_app_settings(clean_settings, username=username, defaults_overrides=_default_app_overrides())
 
     cfg = ensure_startup_security_config()
@@ -1651,11 +1556,8 @@ async def api_settings_save(request: web.Request):
             cfg["MCP_TOKEN"] = secrets.token_urlsafe(48)
     save_config(cfg)
 
-    for key, value in saved.items():
-        if key in CONFIG_KEYS:
-            globals()[key] = _coerce_config_value(key, value)
     if username:
-        saved = await _apply_request_runtime_settings(request, username, force=True)
+        saved = (await _reload_request_runtime(request)).settings
     library_setting_keys = {"LIBRARY_FOLDERS", "DOWNLOAD_DIR", "SOULSEEK_DOWNLOAD_DIR", "YOUTUBE_DOWNLOAD_DIR"}
     if library_setting_keys.intersection(clean_settings):
         clear_index_cache()
@@ -1839,8 +1741,7 @@ def _coerce_app_default_overrides(raw: Any) -> dict[str, Any]:
 
 @routes.get("/api/defaults/diff")
 async def api_defaults_diff(request: web.Request):
-    username = _current_settings_username(request)
-    current = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
+    current = _runtime_settings(request)
     private = {"DOWNLOAD_DIR", "SOULSEEK_DOWNLOAD_DIR", "YOUTUBE_DOWNLOAD_DIR", "LIBRARY_FOLDERS", "FFMPEG_PATH", "FFPROBE_PATH"}
     changed = {}
     for key, source_value in DEFAULT_APP_SETTINGS.items():
@@ -1867,13 +1768,14 @@ async def api_client_state(request: web.Request):
         except Exception:
             pass
     any_building, roots_status = index_building_status()
-    username = _current_settings_username(request)
-    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
-    search_history_items = _load_search_history()
-    with PLAYBACK_STATE_LOCK:
-        playback_recent = PLAYBACK_STATE.get("recent") or []
-        playback_version = int(PLAYBACK_STATE.get("version") or len(playback_recent) or 0)
-    services = _service_status_payload(settings)
+    runtime = user_runtime_for(request)
+    username = runtime.username
+    settings = dict(runtime.settings)
+    search_history_items = list(runtime.search_history)
+    with runtime.playback.lock:
+        playback_recent = runtime.playback.state.get("recent") or []
+        playback_version = int(runtime.playback.state.get("version") or len(playback_recent) or 0)
+    services = _service_status_payload(settings, runtime.soulseek_service)
     return json_response({
         "ok": True,
         "user": username,
@@ -1894,10 +1796,10 @@ async def api_client_state(request: web.Request):
 
 @routes.get("/api/performance")
 async def api_performance(request: web.Request):
-    username = _current_settings_username(request)
-    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
+    runtime = user_runtime_for(request)
+    settings = dict(runtime.settings)
     any_building, roots_status = index_building_status()
-    services = _service_status_payload(settings)
+    services = _service_status_payload(settings, runtime.soulseek_service)
     service_summary = {}
     for key, value in services.items():
         if isinstance(value, dict):
@@ -1927,8 +1829,9 @@ async def api_performance(request: web.Request):
 
 @routes.get("/api/sync")
 async def api_sync(request: web.Request):
-    username = _current_settings_username(request)
-    settings = ensure_app_settings(username=username, defaults_overrides=_default_app_overrides())
+    runtime = user_runtime_for(request)
+    username = runtime.username
+    settings = dict(runtime.settings)
     try:
         since = json.loads(request.query.get("since") or "{}")
     except Exception:
@@ -1950,11 +1853,11 @@ async def api_sync(request: web.Request):
             items = manifest.get("items") or []
             library_changes.extend([dict(item, root_id=rid) for item in items if not item.get("deleted")])
             deleted.extend([dict(item, root_id=rid) for item in items if item.get("deleted")])
-    with PLAYBACK_STATE_LOCK:
-        now = PLAYBACK_STATE.get("now")
-        recent = PLAYBACK_STATE.get("recent") or []
-        version = int(PLAYBACK_STATE.get("version") or len(recent) or 0)
-        playback = {"now": dict(now) if isinstance(now, dict) else None, "recent": [dict(x) for x in recent if isinstance(x, dict)][:100], "session": dict(PLAYBACK_STATE.get("playback_session") or {}), "version": version}
+    with runtime.playback.lock:
+        now = runtime.playback.state.get("now")
+        recent = runtime.playback.state.get("recent") or []
+        version = int(runtime.playback.state.get("version") or len(recent) or 0)
+        playback = {"now": dict(now) if isinstance(now, dict) else None, "recent": [dict(x) for x in recent if isinstance(x, dict)][:100], "session": dict(runtime.playback.state.get("playback_session") or {}), "version": version}
     for item in playback.get("recent") or []:
         for key in ["_key", "_sess", "_stream_item"]:
             item.pop(key, None)
@@ -1972,9 +1875,9 @@ async def api_sync(request: web.Request):
         "library_changes": library_changes,
         "deleted": deleted,
         "settings": masked_settings(settings),
-        "search_history": _load_search_history(),
+        "search_history": list(runtime.search_history),
         "playback": playback,
-        "services": _service_status_payload(settings),
+        "services": _service_status_payload(settings, runtime.soulseek_service),
         "setup_complete": bool(settings.get("SETUP_WIZARD_COMPLETE")),
     }
     return json_response(state_payload)
@@ -2099,12 +2002,13 @@ async def api_library_analysis(request: web.Request):
 # =========================
 @routes.get("/api/playback/snapshot")
 async def api_playback_snapshot(request: web.Request):
-    return json_response(playback_snapshot_public())
+    return json_response(playback_snapshot_public(user_runtime_for(request).playback))
 
 @routes.get("/api/playback/recent")
 async def api_playback_recent(request: web.Request):
-    with PLAYBACK_STATE_LOCK:
-        recent = PLAYBACK_STATE.get("recent") or []
+    runtime = user_runtime_for(request)
+    with runtime.playback.lock:
+        recent = runtime.playback.state.get("recent") or []
         out = []
         for it in recent:
             if not isinstance(it, dict):
@@ -2119,7 +2023,7 @@ async def api_playback_recent(request: web.Request):
 @routes.post("/api/playback/update")
 async def api_playback_update(request: web.Request):
     js = await request.json() or {}
-    out = playback_update_from_client(js)
+    out = playback_update_from_client(js, user_runtime_for(request).playback)
     if not out.get("ok"):
         return json_response(out, status=400)
     return json_response(out)
@@ -2190,6 +2094,7 @@ async def api_library_metadata(request: web.Request):
     root_id = (request.query.get("root_id") or "").strip()
     level = (request.query.get("level") or "").strip().lower()
     value = (request.query.get("value") or "").strip()
+    playback_runtime = user_runtime_for(request).playback
 
     aggregate = root_id == LIBRARY_ALL_ROOT_ID
     r = None if aggregate else root_by_id(root_id)
@@ -2333,7 +2238,7 @@ async def api_library_metadata(request: web.Request):
         parsed = record.get("parse") if isinstance(record.get("parse"), dict) else {}
         rid = str(record.get("root_id") or root_id)
         rel = str(record.get("rel") or "")
-        progress = media_progress_for(rid, rel)
+        progress = media_progress_for(rid, rel, playback_runtime)
         percent = int(progress.get("completion_percent") or record.get("completion_percent") or 0)
         duration = record.get("duration")
         duration_label = duration_text(duration)
@@ -2493,7 +2398,7 @@ async def api_library_metadata(request: web.Request):
         liked_rows: list[dict[str, Any]] = []
         like_root_id = "" if aggregate else root_id
         for requested_type in requested_types:
-            liked_rows.extend(list_media_likes(_current_settings_username(request), media_type=requested_type, root_id=like_root_id))
+            liked_rows.extend(list_media_likes(_current_user_id(request), media_type=requested_type, root_id=like_root_id))
         items = []
         for liked in sorted(liked_rows, key=lambda row: float(row.get("updated_at") or 0), reverse=True):
             media_type = str(liked.get("media_type") or "")
@@ -2623,7 +2528,7 @@ async def api_library_metadata(request: web.Request):
             if not isinstance(show, dict):
                 continue
             episodes = [item for item in (show.get("episodes") or []) if isinstance(item, dict)]
-            percentages = [int(media_progress_for(str(item.get("root_id") or root_id), str(item.get("rel") or "")).get("completion_percent") or 0) for item in episodes]
+            percentages = [int(media_progress_for(str(item.get("root_id") or root_id), str(item.get("rel") or ""), playback_runtime).get("completion_percent") or 0) for item in episodes]
             percent = math.floor(sum(percentages) / len(percentages)) if percentages else 0
             count = len(episodes)
             items.append({
@@ -2644,7 +2549,7 @@ async def api_library_metadata(request: web.Request):
                 seasons.setdefault(int((episode.get("parse") or {}).get("season") or 0), []).append(episode)
         items = []
         for season, episodes in sorted(seasons.items()):
-            percentages = [int(media_progress_for(str(item.get("root_id") or root_id), str(item.get("rel") or "")).get("completion_percent") or 0) for item in episodes]
+            percentages = [int(media_progress_for(str(item.get("root_id") or root_id), str(item.get("rel") or ""), playback_runtime).get("completion_percent") or 0) for item in episodes]
             percent = math.floor(sum(percentages) / len(percentages)) if percentages else 0
             count = len(episodes)
             label = "Specials" if season == 0 else f"Season {season}"
@@ -2818,7 +2723,7 @@ async def api_library_filemeta(request: web.Request):
     root_id = (request.query.get("root_id") or "").strip()
     rel = (request.query.get("rel") or "").strip()
     if root_id == SEARCH_STREAM_ROOT_ID:
-        it = _search_stream_get_or_restore(rel)
+        it = _search_stream_get_or_restore(rel, user_runtime_for(request))
         if not it:
             raise web.HTTPNotFound()
         return json_response({
@@ -2884,7 +2789,7 @@ async def api_library_media_information(request: web.Request):
 
 @routes.route("*", "/api/library/like")
 async def api_library_like(request: web.Request):
-    username = _current_settings_username(request)
+    username = _current_user_id(request)
     if request.method == "GET":
         media_key = (request.query.get("media_key") or "").strip()
         if not media_key:
@@ -2933,7 +2838,7 @@ async def api_library_liked(request: web.Request):
     root_id = (request.query.get("root_id") or "").strip()
     if media_type and media_type not in {"music", "movie", "episode", "video", "youtube"}:
         return json_response(ok=False, error="Unsupported media type", items=[], status=400)
-    rows = list_media_likes(_current_settings_username(request), media_type=media_type, root_id=root_id)
+    rows = list_media_likes(_current_user_id(request), media_type=media_type, root_id=root_id)
     return json_response(ok=True, items=rows)
 
 
@@ -3029,9 +2934,9 @@ def _hls_cache_entry_for_path(src_path: str) -> Tuple[str, str]:
     return key, manifest_path
 
 
-def _resolve_stream_source_for_hls(root_id: str, relpath: str) -> str:
+def _resolve_stream_source_for_hls(root_id: str, relpath: str, runtime: UserRuntime) -> str:
     if root_id == SEARCH_STREAM_ROOT_ID:
-        it = _search_stream_get_or_restore(unquote(relpath))
+        it = _search_stream_get_or_restore(unquote(relpath), runtime)
         if not it:
             raise web.HTTPNotFound()
         if str(it.get("source") or "").strip().lower() == 'youtube':
@@ -3090,7 +2995,7 @@ async def hls_manifest(request: web.Request):
     if not root_id or not rel:
         raise web.HTTPBadRequest()
     try:
-        playable = await asyncio.to_thread(_resolve_stream_source_for_hls, root_id, rel)
+        playable = await asyncio.to_thread(_resolve_stream_source_for_hls, root_id, rel, user_runtime_for(request))
         key, manifest_path = await asyncio.to_thread(_hls_cache_entry_for_path, playable)
         raw = await asyncio.to_thread(Path(manifest_path).read_text, encoding="utf-8", errors="replace")
         return web.Response(text=_rewrite_hls_manifest_text(raw, key), content_type="application/vnd.apple.mpegurl")
@@ -3163,7 +3068,7 @@ async def stream(request: web.Request):
     root_id = request.match_info["root_id"]
     relpath = request.match_info["relpath"]
     if root_id == SEARCH_STREAM_ROOT_ID:
-        it = _search_stream_get_or_restore(unquote(relpath))
+        it = _search_stream_get_or_restore(unquote(relpath), user_runtime_for(request))
         if not it:
             raise web.HTTPNotFound()
         if str(it.get("source") or "").strip().lower() == 'youtube':
@@ -3243,17 +3148,10 @@ async def stream(request: web.Request):
     return await range_response(request, playable)
 
 
-configure_playback_state(
-    search_stream_root_id_provider=lambda: SEARCH_STREAM_ROOT_ID,
-    search_stream_get_or_restore_provider=lambda rel: _search_stream_get_or_restore(rel),
-)
-
-
 async def _local_index_update_loop(services: AppServices) -> None:
     await asyncio.sleep(2.0)
     while True:
-        runtime = services.search_runtime
-        updater = getattr(runtime, "local_index_updater", None)
+        updater = services.local_index_updater
         if updater is None:
             return
         services.local_index_state = {"building": True, **dict(getattr(updater, "state", {}) or {})}
@@ -3263,8 +3161,7 @@ async def _local_index_update_loop(services: AppServices) -> None:
             raise
         except Exception as exc:
             services.local_index_state = {"building": False, "error": str(exc)}
-        active = _ACTIVE_SETTINGS_DATA or DEFAULT_APP_SETTINGS
-        interval = max(300, int(active.get("LOCAL_INDEX_UPDATE_INTERVAL_SECONDS") or 21600))
+        interval = max(300, int(DEFAULT_APP_SETTINGS.get("LOCAL_INDEX_UPDATE_INTERVAL_SECONDS") or 21600))
         await asyncio.sleep(interval)
 
 
@@ -3286,20 +3183,15 @@ async def _application_services(app: web.Application):
     youtube_module.configure_youtube_http(services.http)
     tvmaze_module.configure_tvmaze_http(services.http)
     downloads_module.configure_debrid_downloads(services.http, asyncio.get_running_loop())
-    runtime = _configure_unified_search_runtime(http_client=services.http)
-    services.search_runtime = runtime
-    services.soulseek_service = getattr(state_module, "SOULSEEK_SERVICE", None)
-    services.local_index_state = runtime.local_index.diagnostics()
+    services.local_index = LocalTorrentIndex()
+    services.local_index.initialize()
+    services.local_index_updater = LocalIndexUpdater(services.local_index, http=services.http)
+    services.user_runtimes = UserRuntimeRegistry(lambda user: _create_user_runtime(services, user))
+    services.local_index_state = services.local_index.diagnostics()
     services.local_index_task = asyncio.create_task(_local_index_update_loop(services), name="local-index-updater")
     services.library_reconciliation_task = asyncio.create_task(
         _library_reconciliation_loop(), name="library-native-watcher-reconciliation"
     )
-    try:
-        last_upd = int(lastfm_module.lastfm_loved_updated() or 0)
-        if lastfm_module.lastfm_enabled() and (time.time() - float(last_upd or 0)) > 6 * 3600:
-            lastfm_module._lastfm_async(lastfm_module.lastfm_sync_loved_from_remote, lastfm_module.lastfm_username())
-    except Exception:
-        pass
     try:
         yield
     finally:
@@ -3311,11 +3203,9 @@ async def _application_services(app: web.Application):
             services.library_reconciliation_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await services.library_reconciliation_task
-        soulseek = getattr(state_module, "SOULSEEK_SERVICE", None)
-        if soulseek is not None:
-            await soulseek.stop()
+        if services.user_runtimes is not None:
+            await services.user_runtimes.close_all()
         await asyncio.to_thread(state_module.library_stop_watchers)
-        reset_search_runtime()
         await session.close()
 
 

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import threading
 from dataclasses import dataclass
 from typing import Any
 
@@ -21,11 +20,7 @@ class SearchRuntime:
     torrent_adapters: dict[str, Any]
 
 
-_LOCK = threading.RLock()
-_RUNTIME: SearchRuntime | None = None
-
-
-def configure_search_runtime(
+def build_search_runtime(
     *,
     pipeline: SearchPipeline,
     library_provider: Any,
@@ -37,31 +32,29 @@ def configure_search_runtime(
     local_index_updater: Any,
     torrent_adapters: dict[str, Any],
 ) -> SearchRuntime:
-    global _RUNTIME
-    with _LOCK:
-        _RUNTIME = SearchRuntime(
-            pipeline,
-            library_provider,
-            local_index_provider,
-            soulseek_provider,
-            torrent_provider,
-            ytdlp_provider,
-            pipeline.torrent_accumulator_factory,
-            local_index,
-            local_index_updater,
-            dict(torrent_adapters),
-        )
-        return _RUNTIME
+    return SearchRuntime(
+        pipeline,
+        library_provider,
+        local_index_provider,
+        soulseek_provider,
+        torrent_provider,
+        ytdlp_provider,
+        pipeline.torrent_accumulator_factory,
+        local_index,
+        local_index_updater,
+        dict(torrent_adapters),
+    )
 
 
-def get_search_runtime() -> SearchRuntime:
-    with _LOCK:
-        if _RUNTIME is None:
-            raise RuntimeError("Unified search runtime is not configured")
-        return _RUNTIME
+def configure_search_runtime(**kwargs: Any) -> SearchRuntime:
+    """Compatibility constructor; search runtimes are no longer global."""
+    return build_search_runtime(**kwargs)
 
 
 def reset_search_runtime() -> None:
-    global _RUNTIME
-    with _LOCK:
-        _RUNTIME = None
+    """Compatibility no-op retained for integrations from pre-runtime builds."""
+    return None
+
+
+def get_search_runtime() -> SearchRuntime:
+    raise RuntimeError("Search runtimes are request/user scoped; pass one explicitly")

@@ -4,7 +4,6 @@ import asyncio
 import gc
 import inspect
 import warnings
-from types import SimpleNamespace
 
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -21,7 +20,6 @@ class _LocalIndex:
 
 def test_full_aiohttp_app_routes_and_shared_session_lifecycle(monkeypatch, tmp_path):
     monkeypatch.setenv("DEBRIPOD_DATABASE", str(tmp_path / "app-lifecycle.sqlite3"))
-    runtime = SimpleNamespace(local_index=_LocalIndex(), local_index_updater=None)
     monkeypatch.setattr(
         runtime_routes,
         "ensure_startup_security_config",
@@ -32,8 +30,6 @@ def test_full_aiohttp_app_routes_and_shared_session_lifecycle(monkeypatch, tmp_p
         "ensure_startup_security_config",
         lambda: {"AUTH_USERS": []},
     )
-    monkeypatch.setattr(runtime_routes, "_configure_unified_search_runtime", lambda **_kwargs: runtime)
-
     async def scenario():
         app = await runtime_routes.create_app()
         routes = list(app.router.routes())

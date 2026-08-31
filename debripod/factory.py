@@ -9,6 +9,7 @@ from aiohttp import web
 
 from .Services.http import HttpClient
 from .storage import sessions as session_repository
+from .user_runtime import UserRuntimeRegistry
 
 
 SESSION_COOKIE = "debripod_session"
@@ -69,9 +70,10 @@ class Session(dict[str, Any]):
 @dataclass(slots=True)
 class AppServices:
     http: HttpClient | None = None
-    search_runtime: Any = None
-    soulseek_service: Any = None
     task_manager: Any = None
+    user_runtimes: UserRuntimeRegistry | None = None
+    local_index: Any = None
+    local_index_updater: Any = None
     local_index_task: asyncio.Task[Any] | None = None
     library_reconciliation_task: asyncio.Task[Any] | None = None
     local_index_state: dict[str, Any] = field(default_factory=dict)

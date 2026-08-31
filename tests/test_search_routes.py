@@ -33,16 +33,16 @@ async def _request(monkeypatch, path: str, generation: str = "7"):
         pipeline=Pipeline(),
         local_index=SimpleNamespace(diagnostics=lambda: {"meta": {"local_index_generation": generation}}),
     )
-    monkeypatch.setattr(routes, "_current_settings_username", lambda _request: "tester")
-    monkeypatch.setattr(routes, "ensure_app_settings", lambda **_kwargs: {
+    user_runtime = SimpleNamespace(user_id="user-tester", search_runtime=runtime, search_history=[], settings={
         "LOCAL_INDEX_ENABLED": True,
         "TORRENT_SEARCH_ENABLED_SOURCES": ["knaben"],
         "SOULSEEK_USERNAME": "",
         "SOULSEEK_PASSWORD": "",
         "SOULSEEK_SEARCH_MAX_RESULTS": 5000,
         "YOUTUBE_SEARCH_LIMIT": 24,
+        "SEARCH_HISTORY_MAX_ITEMS": 100,
     })
-    monkeypatch.setattr(routes, "_active_search_runtime", lambda _request=None: runtime)
+    monkeypatch.setattr(routes, "user_runtime_for", lambda _request: user_runtime)
     monkeypatch.setattr(routes, "_disk_cache_get", lambda key: cache_keys.append(key) or None)
     monkeypatch.setattr(routes, "library_root_versions", lambda: {})
     monkeypatch.setattr(routes, "record_search_history", lambda *_args, **_kwargs: None)
