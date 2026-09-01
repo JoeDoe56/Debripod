@@ -37,22 +37,11 @@
   if(BOOTSTRAP_UI_DEFAULTS.liquidGlassElements && typeof BOOTSTRAP_UI_DEFAULTS.liquidGlassElements === "object") Object.assign(DEFAULT_LIQUID_GLASS_ELEMENT_SETTINGS, BOOTSTRAP_UI_DEFAULTS.liquidGlassElements);
   if(BOOTSTRAP_UI_DEFAULTS.textModes && typeof BOOTSTRAP_UI_DEFAULTS.textModes === "object") Object.assign(DEFAULT_TEXT_MODES, BOOTSTRAP_UI_DEFAULTS.textModes);
   if(BOOTSTRAP_UI_DEFAULTS.animationFps && typeof BOOTSTRAP_UI_DEFAULTS.animationFps === "object") Object.assign(DEFAULT_ANIMATION_FPS, BOOTSTRAP_UI_DEFAULTS.animationFps);
-  const VISUALIZER_PRESETS = {
-    album: {label: "Orbit", style: "orbit", motion: 1.0, layers: 5, flow: 0.88, bassResponse: 1.18, midResponse: 0.72, trebleResponse: 0.92, beatResponse: 1.12},
-    aurora: {label: "Aurora", style: "aurora", motion: 0.82, layers: 7, flow: 1.12, bassResponse: 0.52, midResponse: 1.14, trebleResponse: 0.84, beatResponse: 0.62},
-    ember: {label: "Ember", style: "ember", motion: 0.72, layers: 6, flow: 0.68, bassResponse: 1.26, midResponse: 0.68, trebleResponse: 1.08, beatResponse: 1.34},
-    prism: {label: "Prism", style: "prism", motion: 1.18, layers: 8, flow: 0.94, bassResponse: 0.64, midResponse: 0.92, trebleResponse: 1.42, beatResponse: 0.84},
-    sonar: {label: "Sonar", style: "sonar", motion: 0.94, layers: 6, flow: 0.76, bassResponse: 1.42, midResponse: 0.62, trebleResponse: 0.96, beatResponse: 1.48},
-    cascade: {label: "Cascade", style: "cascade", motion: 0.76, layers: 9, flow: 1.22, bassResponse: 0.88, midResponse: 1.2, trebleResponse: 1.04, beatResponse: 0.72},
-    nova: {label: "Nova", style: "nova", motion: 1.08, layers: 6, flow: 0.86, bassResponse: 1.34, midResponse: 0.74, trebleResponse: 0.9, beatResponse: 1.58},
-    lattice: {label: "Lattice", style: "lattice", motion: 0.88, layers: 10, flow: 0.72, bassResponse: 0.82, midResponse: 1.02, trebleResponse: 1.18, beatResponse: 0.74}
-  };
-  const VISUALIZER_BAND_LABELS = ["low low", "low high", "low mids", "mids", "upper mids", "high low", "high high"];
+  const VISUALIZER_BAND_LABELS = ["low-low", "mid-low", "high-low", "low-mid", "mid-mid", "high-mid", "low-high", "mid-high", "high-high"];
   let deviceSettingsUserId = String(window.DEBRIPOD_DEVICE_SETTINGS_USER_ID || "").trim();
   const DEFAULT_UI_SETTINGS = {
       "visualizer": true,
       "visualizerMaxBrightnessPct": 60,
-      "visualizerPreset": "album",
       "visualizerFpsLock": 30,
       "visualizerFrequencyResponse": {"brightness": 1.0, "opacity": 0.0, "saturation": 0.15, "contrast": 0.10},
       "visualizerEnergyResponse": {"brightness": 0.12, "opacity": 0.0, "saturation": 0.05, "contrast": 0.05},
@@ -117,11 +106,6 @@
     if(k === "low") return 35;
     if(k === "medium") return 50;
     return 60;
-  }
-
-  function normalizeVisualizerPreset(value){
-    const k = String(value || "album").trim().toLowerCase();
-    return VISUALIZER_PRESETS[k] ? k : "album";
   }
 
   function normalizeVisualizerFpsLock(value){
@@ -208,7 +192,6 @@
     if(Object.prototype.hasOwnProperty.call(saved, "visualizer")) out.visualizer = !!saved.visualizer;
     if(saved.visualizerMaxBrightnessPct != null) out.visualizerMaxBrightnessPct = normalizeVisualizerMaxBrightnessPct(saved.visualizerMaxBrightnessPct);
     else if(saved.visualizerStrength != null) out.visualizerMaxBrightnessPct = legacyVisualizerBrightnessPct(saved.visualizerStrength);
-    if(saved.visualizerPreset != null) out.visualizerPreset = normalizeVisualizerPreset(saved.visualizerPreset);
     if(saved.visualizerFpsLock != null) out.visualizerFpsLock = normalizeVisualizerFpsLock(saved.visualizerFpsLock);
     if(saved.visualizerFrequencyResponse != null) out.visualizerFrequencyResponse = cloneVisualizerResponse(saved.visualizerFrequencyResponse, out.visualizerFrequencyResponse);
     if(saved.visualizerEnergyResponse != null) out.visualizerEnergyResponse = cloneVisualizerResponse(saved.visualizerEnergyResponse, out.visualizerEnergyResponse);
@@ -271,8 +254,6 @@
       if(visualizer !== null) legacy.visualizer = visualizer === "1";
       const strength = localStorage.getItem("debripod_visualizer_strength");
       if(strength !== null) legacy.visualizerMaxBrightnessPct = legacyVisualizerBrightnessPct(strength);
-      const preset = localStorage.getItem("debripod_visualizer_preset");
-      if(preset !== null) legacy.visualizerPreset = preset;
       const fps = localStorage.getItem("debripod_visualizer_fps_lock");
       if(fps !== null) legacy.visualizerFpsLock = fps;
       const mode = String(localStorage.getItem("debripod_liquid_gl_mode") || "").trim().toLowerCase();
@@ -361,12 +342,10 @@
     DEFAULT_LIQUID_GLASS_ELEMENT_SETTINGS,
     GLASS_ELEMENT_KEYS,
     UI_SETTINGS_KEY,
-    VISUALIZER_PRESETS,
     VISUALIZER_BAND_LABELS,
     clampNumber,
     normalizeVisualizerStrength,
     normalizeVisualizerMaxBrightnessPct,
-    normalizeVisualizerPreset,
     normalizeVisualizerFpsLock,
     normalizeTextMode,
     normalizeTextTransparency,

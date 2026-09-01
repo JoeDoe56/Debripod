@@ -1823,21 +1823,17 @@ async function libDoSearch(engine, q){
         libControlsHide();
         const items = [];
         const vizOn = (typeof visualizerEnabled === "boolean") ? visualizerEnabled : !!uiSettings.visualizer;
-        const presetName = (typeof visualizerPresetName !== "undefined") ? visualizerPresetName : normalizeVisualizerPreset(uiSettings.visualizerPreset);
-        const presetLabel = (typeof visualizerPresetLabel === "function") ? visualizerPresetLabel(presetName) : String(presetName || "album");
         const fps = (typeof visualizerFpsLock !== "undefined") ? visualizerFpsLock : uiSettings.visualizerFpsLock;
-        const bpm = (typeof visualizerBpm !== "undefined") ? visualizerBpm : (state.visualizerBpm || 120);
         items.push({kind:"libui_action", label:"Visualizer", action:"toggle_visualizer", pills:[vizOn ? "On" : "Off"]});
         items.push({
           kind:"libui_action",
           label:"Max visualizer brightness",
-          sub_label:"At 100%, the brightest visualizer output is capped to the measured album cover brightness.",
+          sub_label:"Caps the brightest blurred-artwork output.",
           action:"set_visualizer_max_brightness",
-          pills:[String(normalizeVisualizerMaxBrightnessPct(uiSettings.visualizerMaxBrightnessPct)) + "% of album cover"],
+          pills:[String(normalizeVisualizerMaxBrightnessPct(uiSettings.visualizerMaxBrightnessPct)) + "% cap"],
           forceTwoLine:true,
           settingRow:true
         });
-        items.push({kind:"libui_action", label:"Visualizer Preset", action:"cycle_visualizer_preset", pills:[presetLabel]});
         items.push({kind:"libui_action", label:"FPS Lock", action:"cycle_visualizer_fps_lock", pills:[String(normalizeVisualizerFpsLock(fps)) + " FPS"]});
         [
           ["frequency", "Frequency response", uiSettings.visualizerFrequencyResponse],
@@ -1853,7 +1849,6 @@ async function libDoSearch(engine, q){
         [["sampleFps", "Video ambient sample FPS", 1, 30, true], ["brightness", "Video ambient brightness", 0, 2], ["saturation", "Video ambient saturation", 0, 2], ["audioEnergyBrightness", "Video ambient audio brightness", 0, 2], ["smoothing", "Video ambient smoothing", 0, 0.99]].forEach((entry)=>{
           items.push({kind:"libui_action", label:entry[1], action:"set_video_ambient:" + entry[0], pills:[entry[4] ? String(Math.round(Number(ambient[entry[0]] || 0))) + " FPS" : String(Math.round(Number(ambient[entry[0]] || 0) * 100)) + "%"], forceTwoLine:true, settingRow:true});
         });
-        items.push({kind:"info", label:"Estimated Tempo", pills:[String(Math.round(bpm || 120)) + " BPM"]});
         resetList(items);
       }
     }, push);
@@ -2853,10 +2848,6 @@ async function libDoSearch(engine, q){
             await viewLibUiSettings(false);
           }
         }, true);
-        return true;
-      case "cycle_visualizer_preset":
-        cycleVisualizerPreset();
-        await viewLibUiSettings(false);
         return true;
       case "cycle_visualizer_fps_lock":
         cycleVisualizerFpsLock();

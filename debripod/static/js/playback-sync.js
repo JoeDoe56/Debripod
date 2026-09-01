@@ -32,8 +32,6 @@
     playOrderPlaylist: null,
     preloadedIndex: null,
     visualizerEnabled: visualizerEnabled,
-    visualizerPreset: visualizerPresetName,
-    visualizerBpm: visualizerBpm,
     streamQueue: [],
     streamQueueIndex: -1,
     nowNavContext: null,

@@ -1898,9 +1898,6 @@ def _coerce_advanced_ui_defaults(raw: Any, glass: dict[str, Any]) -> dict[str, A
             value = fallback
         animation_fps[key] = value if value in {30, 60, 120} else fallback
 
-    preset = str(source.get("visualizerPreset") or "album").strip().lower()
-    if preset not in {"album", "aurora", "ember", "prism", "sonar", "cascade", "nova", "lattice"}:
-        preset = "album"
     legacy_strength = str(source.get("visualizerStrength") or "high").strip().lower()
     legacy_brightness = {"low": 35, "medium": 50, "high": 60}.get(legacy_strength, 60)
     try:
@@ -1918,7 +1915,6 @@ def _coerce_advanced_ui_defaults(raw: Any, glass: dict[str, Any]) -> dict[str, A
     return {
         "visualizer": bool(source.get("visualizer", True)),
         "visualizerMaxBrightnessPct": brightness,
-        "visualizerPreset": preset,
         "visualizerFpsLock": fps_lock,
         "textModes": text_modes,
         "textTransparency": clamp_num("textTransparency", 0.68, 0.0, 1.0),
