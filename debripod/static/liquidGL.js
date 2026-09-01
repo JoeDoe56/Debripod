@@ -1850,9 +1850,6 @@
         this._snapshotRectPx = this.snapshotTarget.getBoundingClientRect();
         this.lenses.forEach((lens) => {
           lens.updateMetrics();
-          if (lens._mirrorActive && lens._mirrorClipUpdater) {
-            lens._mirrorClipUpdater();
-          }
         });
         this._metricsDirty = false;
       }
@@ -1868,48 +1865,6 @@
           this._renderLens(lens);
         } else {
           this._debugLensHidden(lens);
-        }
-      });
-
-      this.lenses.forEach((ln) => {
-        if (ln._mirrorActive && ln._mirrorCtx) {
-          const mirror = ln._mirror;
-          if (
-            mirror.width !== this.canvas.width ||
-            mirror.height !== this.canvas.height
-          ) {
-            mirror.width = this.canvas.width;
-            mirror.height = this.canvas.height;
-          }
-          ln._mirrorCtx.drawImage(this.canvas, 0, 0);
-        }
-      });
-
-      const dpr = this._dpr || Math.min(2, window.devicePixelRatio || 1);
-      this.lenses.forEach((ln) => {
-        if (ln._mirrorActive && ln.rectPx) {
-          const { left, top, width, height } = ln.rectPx;
-          const expand = 2;
-          const x = Math.max(0, Math.round(left * dpr) - expand);
-          const y = Math.max(
-            0,
-            Math.round(this.canvas.height - (top + height) * dpr) - expand
-          );
-          const w = Math.min(
-            this.canvas.width - x,
-            Math.round(width * dpr) + expand * 2
-          );
-          const h = Math.min(
-            this.canvas.height - y,
-            Math.round(height * dpr) + expand * 2
-          );
-          if (w > 0 && h > 0) {
-            gl.enable(gl.SCISSOR_TEST);
-            gl.scissor(x, y, w, h);
-            gl.clearColor(0, 0, 0, 0);
-            gl.clear(gl.COLOR_BUFFER_BIT);
-            gl.disable(gl.SCISSOR_TEST);
-          }
         }
       });
 
