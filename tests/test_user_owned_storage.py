@@ -115,6 +115,56 @@ def test_v13_migrates_each_users_existing_library_and_download_roots(tmp_path, m
         conn.close()
 
 
+def test_v16_preserves_setup_for_existing_library_users(tmp_path, monkeypatch):
+    db_path = tmp_path / "legacy-setup.sqlite3"
+    monkeypatch.setenv("DEBRIPOD_DATABASE", str(db_path))
+    conn = sqlite3.connect(db_path)
+    try:
+        all_migrations = migrations.MIGRATIONS
+        monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations[:15])
+        assert migrations.migrate(conn) == 15
+        conn.execute(
+            "INSERT INTO users(user_id,username,password_hash,role,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+            ("returning-id", "returning", "hash", "owner", 1, 1),
+        )
+        conn.execute(
+            "INSERT INTO users(user_id,username,password_hash,role,created_at,updated_at) VALUES(?,?,?,?,?,?)",
+            ("new-id", "new", "hash", "user", 1, 1),
+        )
+        conn.execute(
+            "INSERT INTO app_settings(user_id,key,value_json,updated_at) VALUES(?,?,?,?)",
+            ("returning-id", "LIBRARY_FOLDERS", json.dumps([{"path": "D:/Music"}]), 1),
+        )
+        conn.execute(
+            "INSERT INTO app_settings(user_id,key,value_json,updated_at) VALUES(?,?,?,?)",
+            ("returning-id", "SETUP_WIZARD_COMPLETE", "false", 1),
+        )
+        conn.execute(
+            "INSERT INTO app_settings(user_id,key,value_json,updated_at) VALUES(?,?,?,?)",
+            ("new-id", "LIBRARY_FOLDERS", "[]", 1),
+        )
+        conn.execute(
+            "INSERT INTO app_settings(user_id,key,value_json,updated_at) VALUES(?,?,?,?)",
+            ("new-id", "SETUP_WIZARD_COMPLETE", "false", 1),
+        )
+        conn.commit()
+
+        monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations)
+        assert migrations.migrate(conn) == 16
+        returning = conn.execute(
+            "SELECT value_json FROM app_settings WHERE user_id=? AND key='SETUP_WIZARD_COMPLETE'",
+            ("returning-id",),
+        ).fetchone()
+        new_user = conn.execute(
+            "SELECT value_json FROM app_settings WHERE user_id=? AND key='SETUP_WIZARD_COMPLETE'",
+            ("new-id",),
+        ).fetchone()
+        assert returning[0] == "true"
+        assert new_user[0] == "false"
+    finally:
+        conn.close()
+
+
 def test_account_deletion_removes_only_the_target_users_records(tmp_path, monkeypatch):
     monkeypatch.setenv("DEBRIPOD_DATABASE", str(tmp_path / "deletion.sqlite3"))
     database.initialize_database()

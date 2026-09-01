@@ -409,6 +409,43 @@ def _v15(conn: sqlite3.Connection) -> None:
     conn.execute("DROP TABLE IF EXISTS video_palette_timelines")
 
 
+def _v16(conn: sqlite3.Connection) -> None:
+    """Keep established library users out of first-run onboarding.
+
+    The immutable-user transition persisted the wizard's default ``false``
+    value for some existing accounts even though they already had a durable
+    library configuration.  This one-time repair applies only to accounts and
+    folders that existed before this migration; genuinely new empty accounts
+    still enter the setup wizard.
+    """
+    now = time.time()
+    rows = conn.execute(
+        """SELECT settings.user_id,settings.value_json
+           FROM app_settings AS settings
+           JOIN users ON users.user_id=settings.user_id
+           WHERE settings.key='LIBRARY_FOLDERS'"""
+    ).fetchall()
+    for user_id, raw_value in rows:
+        try:
+            folders = json.loads(str(raw_value or "[]"))
+        except (TypeError, ValueError):
+            continue
+        has_library_folder = isinstance(folders, list) and any(
+            isinstance(folder, dict) and str(folder.get("path") or "").strip()
+            for folder in folders
+        )
+        if not has_library_folder:
+            continue
+        conn.execute(
+            """INSERT INTO app_settings(user_id,key,value_json,updated_at)
+               VALUES(?,?,?,?)
+               ON CONFLICT(user_id,key) DO UPDATE SET
+                 value_json=excluded.value_json,
+                 updated_at=excluded.updated_at""",
+            (str(user_id), "SETUP_WIZARD_COMPLETE", "true", now),
+        )
+
+
 MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (1, "structured_state", _v1),
     (2, "compact_palettes", _v2),
@@ -425,6 +462,7 @@ MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = 
     (13, "user_library_root_associations", _v13),
     (14, "nine_band_visualizer_analysis", _v14),
     (15, "client_video_ambient_lighting", _v15),
+    (16, "preserve_existing_library_setup", _v16),
 )
 
 
