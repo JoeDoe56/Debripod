@@ -8,6 +8,7 @@ from typing import Any
 from aiohttp import web
 
 from .Services.http import HttpClient
+from .security import request_is_secure
 from .storage import sessions as session_repository
 from .user_runtime import UserRuntimeRegistry
 
@@ -88,16 +89,25 @@ def session_for(request: web.Request) -> Session:
 
 
 def _secure_cookie_request(request: web.Request) -> bool:
-    if request.secure:
-        return True
-    forwarded_proto = (request.headers.get("X-Forwarded-Proto") or "").split(",", 1)[0].strip().lower()
-    if forwarded_proto:
-        return forwarded_proto == "https"
-    for part in (request.headers.get("Forwarded") or "").split(";"):
-        key, separator, value = part.strip().partition("=")
-        if separator and key.lower() == "proto":
-            return value.strip('"').lower() == "https"
-    return False
+    return request_is_secure(request)
+
+
+@web.middleware
+async def security_headers_middleware(request: web.Request, handler):
+    try:
+        response = await handler(request)
+    except web.HTTPException as exc:
+        response = exc
+    response.headers.setdefault("Content-Security-Policy", "default-src 'self'; base-uri 'self'; object-src 'none'; frame-ancestors 'none'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: blob:; media-src 'self' blob:; connect-src 'self'; worker-src 'self' blob:")
+    response.headers.setdefault("X-Content-Type-Options", "nosniff")
+    response.headers.setdefault("X-Frame-Options", "DENY")
+    response.headers.setdefault("Referrer-Policy", "same-origin")
+    response.headers.setdefault("Permissions-Policy", "camera=(), microphone=(), geolocation=(), payment=(), usb=()")
+    response.headers.setdefault("Cross-Origin-Opener-Policy", "same-origin")
+    response.headers.setdefault("Cross-Origin-Resource-Policy", "same-origin")
+    if request_is_secure(request):
+        response.headers.setdefault("Strict-Transport-Security", "max-age=31536000")
+    return response
 
 
 @web.middleware

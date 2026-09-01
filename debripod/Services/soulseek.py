@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from logging.handlers import RotatingFileHandler
 import math
 import os
 import re
@@ -553,6 +554,17 @@ class _DropAioslskFilter(logging.Filter):
             return True
 
 
+class _RedactAioslskFilter(logging.Filter):
+    def filter(self, record: logging.LogRecord) -> bool:
+        try:
+            from ..logging_setup import redact_text
+            record.msg = redact_text(record.getMessage())
+            record.args = ()
+        except Exception:
+            pass
+        return True
+
+
 _AIOSLSK_FILE_HANDLER: logging.FileHandler | None = None
 _AIOSLSK_ROOT_FILTER: _DropAioslskFilter | None = None
 
@@ -605,7 +617,8 @@ def configure_aioslsk_logging(enabled: bool = True) -> str:
         pass
 
     fmt = logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s")
-    fh = logging.FileHandler(log_file, encoding="utf-8")
+    fh = RotatingFileHandler(log_file, maxBytes=2 * 1024 * 1024, backupCount=4, encoding="utf-8")
+    fh.addFilter(_RedactAioslskFilter())
     fh.setFormatter(fmt)
     _AIOSLSK_FILE_HANDLER = fh
 

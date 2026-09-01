@@ -4,7 +4,6 @@ import secrets
 import time
 import json
 import logging
-import traceback
 from dataclasses import dataclass
 from typing import Any
 from urllib.parse import quote, urlparse
@@ -15,6 +14,7 @@ from .config import ensure_startup_security_config, save_config
 from .factory import SERVICES_KEY, json_response, session_for
 from .passwords import generate_password_hash, password_hash_supported, verify_password_hash
 from .settings import ensure_app_settings
+from .security import external_scheme
 from .storage import sessions as session_repository
 from .storage import users as user_repository
 from .storage.account_deletion import delete_user_owned_data
@@ -389,17 +389,7 @@ def _webauthn_rp_id(request: web.Request) -> str:
 
 
 def _external_scheme(request: web.Request) -> str:
-    forwarded_proto = (request.headers.get("X-Forwarded-Proto") or "").split(",", 1)[0].strip().lower()
-    if forwarded_proto in {"http", "https"}:
-        return forwarded_proto
-    forwarded = request.headers.get("Forwarded") or ""
-    for part in forwarded.split(";"):
-        key, sep, value = part.strip().partition("=")
-        if sep and key.lower() == "proto":
-            proto = value.strip('"').lower()
-            if proto in {"http", "https"}:
-                return proto
-    return "https" if request.secure else "http"
+    return external_scheme(request)
 
 
 def _webauthn_origin(request: web.Request) -> str:
@@ -690,7 +680,7 @@ def register_auth_routes(app: web.Application) -> None:
             logging.info("Passkey registered for user %s; active passkeys: %s", user.user_id, len(saved))
             return json_response(ok=True, message="Passkey enabled for this device.", passkey_count=len(saved))
         except Exception as exc:
-            logging.warning("Passkey registration verification failed: %s\n%s", exc, traceback.format_exc())
+            logging.warning("Passkey registration verification failed (%s)", type(exc).__name__)
             return json_response(ok=False, error="Passkey setup failed. Use your password and try again.", status=400)
 
     async def api_auth_passkey_login_options(request: web.Request) -> web.Response:
@@ -750,7 +740,7 @@ def register_auth_routes(app: web.Application) -> None:
             _csrf_token(request)
             return json_response(ok=True, username=str(user.get("username") or ""))
         except Exception as exc:
-            logging.warning("Passkey login verification failed: %s\n%s", exc, traceback.format_exc())
+            logging.warning("Passkey login verification failed (%s)", type(exc).__name__)
             return json_response(ok=False, error="Passkey sign in failed. Use your password.", status=400)
 
     async def api_auth_status(request: web.Request) -> web.Response:

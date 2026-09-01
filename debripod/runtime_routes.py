@@ -40,7 +40,7 @@ from .Services.link_intake import classify_link_input
 from .Services.safe_outbound import UnsafeOutboundUrl, request_public_url, validate_public_http_url, validate_ytdlp_target
 from .Library import tvmaze as tvmaze_module
 from .Library.tvmaze import normalized_episode_information
-from .factory import AppServices, SERVICES_KEY, json_response, session_for, session_middleware
+from .factory import AppServices, SERVICES_KEY, json_response, security_headers_middleware, session_for, session_middleware
 from .auth import _csrf_token, auth_middleware, current_user, is_owner, register_auth_routes
 from .Routes.notifications import register_notification_routes
 from .config import _coerce_config_value, ensure_startup_security_config, load_default_app_config_overrides, save_config, save_default_app_config_overrides
@@ -897,7 +897,7 @@ async def api_link_inspect(request: web.Request):
     except DebridProviderError as exc:
         return json_response(ok=False, error=str(exc) or "Failed to inspect link", status=400)
     except Exception as exc:
-        app.logger.warning("Link inspection failed: %s", exc)
+        app.logger.warning("Link inspection failed (%s)", type(exc).__name__)
         return json_response(ok=False, error="This link could not be inspected by yt-dlp.", status=400)
 @routes.get("/api/youtube/comments")
 async def api_youtube_comments(request: web.Request):
@@ -1883,7 +1883,6 @@ def _coerce_advanced_ui_defaults(raw: Any, glass: dict[str, Any]) -> dict[str, A
         "wheelTilt": 60,
         "libraryList": 60,
         "infoPill": 60,
-        "albumArtTransition": 60,
         "pathPill": 60,
         "rowInsertion": 60,
     }
@@ -3490,7 +3489,7 @@ async def _application_services(app: web.Application):
 
 async def create_app() -> web.Application:
     ensure_startup_security_config()
-    app = web.Application(middlewares=[session_middleware, auth_middleware, runtime_middleware])
+    app = web.Application(middlewares=[security_headers_middleware, session_middleware, auth_middleware, runtime_middleware])
     app[SERVICES_KEY] = AppServices()
     app.cleanup_ctx.append(_application_services)
     app.add_routes(routes)

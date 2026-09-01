@@ -15,6 +15,7 @@ from .runtime_downloads import *  # noqa: F401,F403
 from .runtime_state import *  # noqa: F401,F403
 from .passwords import password_hash_supported
 from .config import ensure_startup_security_config
+from .logging_setup import configure_logging
 
 
 _RUNTIME_MODULES = (state, downloads, route_state, mcp_routes, routes)
@@ -68,6 +69,7 @@ def main() -> None:
         globals()["PORT"] = args.port
     _sync_config_overrides()
     state.ensure_dirs()
+    configure_logging(state.PACKAGE_ROOT / "data" / "logs")
     state.load_playback_state()
     try:
         state.configure_aioslsk_logging(bool(state.AIOSLSK_LOGGING_ENABLED))

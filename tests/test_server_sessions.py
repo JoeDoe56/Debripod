@@ -88,9 +88,10 @@ def test_server_side_session_rotation_revocation_and_opaque_cookie(monkeypatch, 
 
 
 def test_forwarded_https_marks_session_cookie_secure():
-    assert _secure_cookie_request(SimpleNamespace(secure=False, headers={"X-Forwarded-Proto": "https"}))
-    assert _secure_cookie_request(SimpleNamespace(secure=False, headers={"Forwarded": "for=127.0.0.1;proto=https"}))
-    assert not _secure_cookie_request(SimpleNamespace(secure=False, headers={}))
+    assert _secure_cookie_request(SimpleNamespace(secure=False, remote="127.0.0.1", headers={"X-Forwarded-Proto": "https"}))
+    assert _secure_cookie_request(SimpleNamespace(secure=False, remote="::1", headers={"Forwarded": "for=127.0.0.1;proto=https"}))
+    assert not _secure_cookie_request(SimpleNamespace(secure=False, remote="203.0.113.9", headers={"X-Forwarded-Proto": "https"}))
+    assert not _secure_cookie_request(SimpleNamespace(secure=False, remote="127.0.0.1", headers={}))
 
 
 def test_expired_sessions_are_rejected(monkeypatch, tmp_path):
