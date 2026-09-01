@@ -403,6 +403,19 @@ def _v14(conn: sqlite3.Connection) -> None:
     )
 
 
+def _v15(conn: sqlite3.Connection) -> None:
+    """Retire server-side video visualizer data in favor of client ambience."""
+    conn.execute(
+        """DELETE FROM visualizer_analysis
+           WHERE metadata_json LIKE '%\"media_kind\":\"video\"%'
+              OR EXISTS (SELECT 1 FROM media_files AS media
+                         WHERE media.root_id=visualizer_analysis.root_id
+                           AND media.rel_path=visualizer_analysis.rel
+                           AND media.media_type IN ('video','movie','episode'))"""
+    )
+    conn.execute("DROP TABLE IF EXISTS video_palette_timelines")
+
+
 MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (1, "structured_state", _v1),
     (2, "compact_palettes", _v2),
@@ -418,6 +431,7 @@ MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = 
     (12, "canonical_user_owned_state", _v12),
     (13, "user_library_root_associations", _v13),
     (14, "nine_band_visualizer_analysis", _v14),
+    (15, "client_video_ambient_lighting", _v15),
 )
 
 

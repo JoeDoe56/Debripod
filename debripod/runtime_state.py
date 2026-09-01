@@ -65,7 +65,6 @@ from .Library.index import (
     library_root_versions,
     library_stop_watchers,
     library_watch_root,
-    queue_video_analysis_warm,
     pause_enrichment_writes,
     set_index_cache,
     track_sort_key,

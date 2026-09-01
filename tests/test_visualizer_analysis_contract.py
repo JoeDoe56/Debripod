@@ -1,10 +1,11 @@
 from __future__ import annotations
 
 import math
+import sqlite3
 
 from debripod.Library import metadata
 from debripod.Library.library_db import load_visualizer_analysis, save_visualizer_analysis
-from debripod.storage import database
+from debripod.storage import database, migrations
 
 
 def _tone_frame(center_hz: int) -> bytes:
@@ -69,3 +70,21 @@ def test_db_returns_raw_frames_and_rejects_old_versions_or_decoder_hashes(tmp_pa
     with database.database() as conn:
         conn.execute("UPDATE visualizer_analysis SET algorithm_version=2 WHERE analysis_key=?", (key,))
     assert load_visualizer_analysis(key, decoder_settings_hash=metadata.DECODER_SETTINGS_HASH) is None
+
+
+def test_video_ambient_migration_removes_server_video_analysis_and_timeline_table():
+    conn = sqlite3.connect(":memory:")
+    conn.executescript(
+        """
+        CREATE TABLE visualizer_analysis(root_id TEXT, rel TEXT, metadata_json TEXT);
+        CREATE TABLE media_files(root_id TEXT, rel_path TEXT, media_type TEXT);
+        CREATE TABLE video_palette_timelines(analysis_key TEXT);
+        INSERT INTO visualizer_analysis VALUES('root','video.mp4','{"media_kind":"video"}');
+        INSERT INTO visualizer_analysis VALUES('root','song.mp3','{"media_kind":"audio"}');
+        INSERT INTO media_files VALUES('root','video.mp4','video');
+        """
+    )
+    migrations._v15(conn)
+    assert conn.execute("SELECT COUNT(*) FROM visualizer_analysis").fetchone()[0] == 1
+    assert conn.execute("SELECT metadata_json FROM visualizer_analysis").fetchone()[0] == '{"media_kind":"audio"}'
+    assert conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='video_palette_timelines'").fetchone() is None

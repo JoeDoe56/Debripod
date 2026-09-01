@@ -368,6 +368,7 @@ async function goBack(){
     }
 
     videoOverlayActive = false;
+    try{ if(window.DebriPod && DebriPod.videoAmbient) DebriPod.videoAmbient.stop(); }catch(e){}
     try{ npVideo.pause(); }catch(e){}
     try{
       npVideo.removeAttribute("src");
@@ -393,6 +394,7 @@ async function goBack(){
 
     if(npVideoOverlay) npVideoOverlay.style.display = "flex";
     videoOverlayActive = true;
+    try{ if(window.DebriPod && DebriPod.videoAmbient) DebriPod.videoAmbient.start(); }catch(e){}
 
     const rootId = item.root.id;
     const rel = item.rel;
@@ -433,8 +435,6 @@ async function goBack(){
       if(vi < 0) vi = state.videoIndex >= 0 ? state.videoIndex : 0;
       buildPlaybackSessionUpdate({now:Object.assign({}, state.now, {meta:meta}), queue:vq, queueIndex:vi, nav:playbackNav, sourceView:sourceView, media:"video"}, "playback-start");
     }catch(e){}
-    try{ loadVisualizerAnalysisForTrack(rootId, rel, "video", {streamed: !!item.streamed}); }catch(err){}
-    visualizerVideoSampleLastTs = 0;
     saveResumeNowPlaying();
 
     await updateNowPlayingDisplay(meta, item.label || "Video", {animateArt: true, animatePill: true});

@@ -703,6 +703,16 @@
     }
     .visualizerBg.active{ opacity:1; }
     .visualizerBg.off{ opacity:0; }
+    #videoAmbientBg{
+      position:fixed;
+      inset:0;
+      z-index:1;
+      pointer-events:none;
+      opacity:0;
+      background:#000;
+      transition:opacity .28s ease;
+    }
+    #videoAmbientBg.active{ opacity:1; }
 
     html.isIphone .visualizerBg,
     html.isIphone .liquidGlassCanvasDefault,
@@ -1722,13 +1732,14 @@
       display:none;
       align-items: stretch;
       justify-content: stretch;
-      background: #000;
+      background: transparent;
       border-radius: inherit;
     }
     .npVideoOverlay video{
       width:100%;
       height:100%;
-      background:#000;
+      background:transparent;
+      object-fit:contain;
       border-radius: inherit;
     }
     .npRow{display:flex; gap: 12px; align-items: center;}

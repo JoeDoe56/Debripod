@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Optional, Tuple
 
-from .metadata import art_identity_for_media, file_meta_cached, warm_art_palette, warm_visualizer_art, warm_audio_analysis, warm_video_audio_analysis, warm_video_frame_palette_analysis
+from .metadata import art_identity_for_media, file_meta_cached, warm_art_palette, warm_visualizer_art, warm_audio_analysis
 from ..storage.tasks import metadata_for_path
 from .library_db import clear_library_cache, load_index_snapshot, load_library_facets, load_show_aliases, root_manifest, root_version, root_versions, save_folder_entries, save_index_snapshot, save_show_aliases, update_media_art_identity
 from .roots import source_origin_for_path
@@ -187,29 +187,6 @@ def queue_audio_analysis_warm(abs_path: str, *, root_id: str, rel: str, media_id
         "stage4_music_audio_analysis",
         f"{record.get('root_id')}:{record.get('rel')}",
         lambda r=dict(record): warm_audio_analysis(str(r.get("abs_path") or ""), root_id=str(r.get("root_id") or ""), rel=str(r.get("rel") or ""), media_id=str(r.get("media_id") or ""), duration=r.get("duration")),
-    )
-    return True
-
-
-def queue_video_analysis_warm(abs_path: str, *, root_id: str, rel: str, media_id: str = "", duration=None) -> bool:
-    record = {
-        "abs_path": os.path.abspath(abs_path),
-        "root_id": str(root_id or ""),
-        "rel": str(rel or ""),
-        "media_id": str(media_id or f"{root_id}:{rel}"),
-        "duration": duration,
-    }
-    if not record["root_id"] or not record["rel"] or not os.path.isfile(record["abs_path"]):
-        return False
-    _queue_enrichment(
-        "stage5_video_audio_analysis",
-        f"{record.get('root_id')}:{record.get('rel')}",
-        lambda r=dict(record): warm_video_audio_analysis(str(r.get("abs_path") or ""), root_id=str(r.get("root_id") or ""), rel=str(r.get("rel") or ""), media_id=str(r.get("media_id") or ""), duration=r.get("duration")),
-    )
-    _queue_enrichment(
-        "stage6_video_frame_palette",
-        f"{record.get('root_id')}:{record.get('rel')}",
-        lambda r=dict(record): warm_video_frame_palette_analysis(str(r.get("abs_path") or ""), root_id=str(r.get("root_id") or ""), rel=str(r.get("rel") or ""), media_id=str(r.get("media_id") or ""), duration=r.get("duration")),
     )
     return True
 

@@ -14,7 +14,6 @@ def cleanup_stale_rows(*, expired_before: float) -> dict[str, int]:
             "metadata_cache": "DELETE FROM metadata_cache WHERE NOT EXISTS (SELECT 1 FROM library_items i WHERE i.abs_path=metadata_cache.abs_path AND i.deleted=0)",
             "media_files": "DELETE FROM media_files WHERE NOT EXISTS (SELECT 1 FROM library_items i WHERE i.root_id=media_files.root_id AND i.rel=media_files.rel_path AND i.deleted=0)",
             "media_palettes": "DELETE FROM media_palettes WHERE root_id<>'' AND NOT EXISTS (SELECT 1 FROM library_items i WHERE i.root_id=media_palettes.root_id AND i.rel=media_palettes.rel AND i.deleted=0)",
-            "video_palette_timelines": "DELETE FROM video_palette_timelines WHERE root_id<>'' AND NOT EXISTS (SELECT 1 FROM library_items i WHERE i.root_id=video_palette_timelines.root_id AND i.rel=video_palette_timelines.rel AND i.deleted=0)",
             "visualizer_analysis": "DELETE FROM visualizer_analysis WHERE root_id<>'' AND NOT EXISTS (SELECT 1 FROM library_items i WHERE i.root_id=visualizer_analysis.root_id AND i.rel=visualizer_analysis.rel AND i.deleted=0)",
             "search_cache": "DELETE FROM search_cache WHERE expires_at IS NOT NULL AND expires_at<?",
             "show_aliases": "DELETE FROM show_aliases WHERE NOT EXISTS (SELECT 1 FROM library_roots r WHERE r.root_id=show_aliases.root_id)",

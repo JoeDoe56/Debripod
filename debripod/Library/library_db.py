@@ -1105,7 +1105,6 @@ def clear_library_cache() -> None:
         conn.execute("DELETE FROM library_roots")
         conn.execute("DELETE FROM art_palette_cache")
         conn.execute("DELETE FROM media_palettes")
-        conn.execute("DELETE FROM video_palette_timelines")
         conn.execute("DELETE FROM visualizer_analysis")
 
 

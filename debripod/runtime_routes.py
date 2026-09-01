@@ -45,7 +45,7 @@ from .auth import _csrf_token, auth_middleware, current_user, is_owner, register
 from .Routes.notifications import register_notification_routes
 from .config import _coerce_config_value, ensure_startup_security_config, load_default_app_config_overrides, save_config, save_default_app_config_overrides
 from .Library.library_db import clear_search_history, load_folder_entries, load_palette, load_palette_for_media, load_search_history, load_visualizer_analysis_for_media, record_search_history_row, save_folder_entries, save_palette
-from .Library.index import build_index_for_root, queue_audio_analysis_warm, queue_video_analysis_warm, set_index_cache
+from .Library.index import build_index_for_root, queue_audio_analysis_warm, set_index_cache
 from .Library.metadata import art_identity_for_media, file_meta_cached, load_visualizer_art, warm_visualizer_art
 from .Library.video_parse import duration_text, normalize_show_key, show_keys_close
 from .Library.library_db import load_show_aliases, save_show_aliases
@@ -54,7 +54,6 @@ from .Library.search_cache import SEARCH_CACHE_SCHEMA
 from .Library.roots import sync_user_roots
 from .Library.index import stop_index_watcher
 from .storage.tasks import save_task_metadata
-from .storage.palettes import load_video_timeline
 from .storage.backups import list_backups
 from .storage.database import create_database_backup, restore_database_backup
 from .storage.media_likes import get_media_like, list_media_likes, set_media_like
@@ -2218,30 +2217,13 @@ async def api_library_analysis(request: web.Request):
                     media_id=f"{root_id}:{rel}",
                     duration=meta.get("duration") if isinstance(meta, dict) else None,
                 )
-            if not is_video(abs_path):
-                return False
-            return queue_video_analysis_warm(
-                abs_path,
-                root_id=root_id,
-                rel=rel,
-                media_id=f"{root_id}:{rel}",
-                duration=meta.get("duration") if isinstance(meta, dict) else None,
-            )
+            return False
         except Exception:
             return False
-    try:
-        meta = analysis.get("metadata") if isinstance(analysis, dict) else {}
-        if isinstance(meta, dict) and meta.get("video_palette_pending"):
-            await asyncio.to_thread(start_analysis_warm)
-    except Exception:
-        pass
     if not analysis:
         warming = await asyncio.to_thread(start_analysis_warm)
         return json_response({"ok": True, "analysis": None, "stale": True, "warming": bool(warming)})
     blob = analysis.pop("feature_blob", b"")
-    timeline = load_video_timeline(str(analysis.get("analysis_key") or ""))
-    if timeline:
-        analysis["video_palette_timeline"] = timeline
     analysis["feature_blob_b64"] = base64.b64encode(blob).decode("ascii")
     analysis["feature_blob_encoding"] = "base64-raw"
     return json_response({"ok": True, "analysis": analysis, "stale": False})
