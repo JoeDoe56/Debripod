@@ -667,6 +667,7 @@
       box-shadow: none;
       padding: 0;
       position: relative;
+      z-index:70;
       overflow:hidden;
       display:block;
       isolation:isolate;
@@ -2029,7 +2030,7 @@
       margin:0;
       border-radius:var(--screenRadius);
       aspect-ratio:auto;
-      z-index:auto;
+      z-index:70;
     }
     .ipodStage.layoutExpanded .wheelZone,
     .ipodStage.layoutExpanded .ipodWheelWrap,

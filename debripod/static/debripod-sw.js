@@ -45,16 +45,9 @@ function isShellAsset(url){
 }
 
 function matchShellAsset(request){
-  return caches.match(request).then((cached)=>{
-    if(cached) return cached;
-    try{
-      const url = new URL(request.url);
-      if(isShellAsset(url)){
-        return caches.match(request, {ignoreSearch:true});
-      }
-    }catch(e){}
-    return null;
-  });
+  // Asset query strings contain the build version. Ignoring that query can
+  // return CSS or JavaScript from an older shell and mix incompatible layers.
+  return caches.match(request);
 }
 
 self.addEventListener("install", (event)=>{

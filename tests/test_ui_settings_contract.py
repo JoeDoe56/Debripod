@@ -86,6 +86,22 @@ def test_cached_view_startup_still_initializes_server_config_and_liquid_glass():
     assert config_call < cached_restore < roots_fallback
 
 
+def test_screen_content_stays_above_the_main_liquid_glass_canvas():
+    css = (REPO / "debripod" / "static" / "debripod.css").read_text(encoding="utf-8")
+    assert ".liquidGlassCanvasMain{ z-index: 65 !important; }" in css
+    screen_rule = css[css.index(".ipodScreen{"):css.index(".ipodScreenContent{")]
+    expanded_start = css.index(".ipodStage.layoutExpanded .ipodScreen{")
+    expanded_rule = css[expanded_start:css.index("}", expanded_start)]
+    assert "z-index:70;" in screen_rule
+    assert "z-index:70;" in expanded_rule
+
+
+def test_service_worker_never_matches_versioned_assets_without_their_query():
+    worker = (REPO / "debripod" / "static" / "debripod-sw.js").read_text(encoding="utf-8")
+    assert "ignoreSearch" not in worker
+    assert "return caches.match(request);" in worker
+
+
 def test_glass_settings_migrate_to_one_signed_material_value_per_target():
     migrated = _coerce_glass_defaults(
         {

@@ -2830,8 +2830,6 @@
       this.el.style.backgroundImage = "none";
       this.el.style.background = "transparent";
 
-      this.el.style.pointerEvents = "none";
-
       this.updateMetrics();
       const initialOptics = this.resolveOptics(1);
       this.setShadow(
