@@ -1240,9 +1240,12 @@ function libTaskBuildItemsForView(view){
   var files = libTaskFilesForTask(t);
   var items = [];
   var selCount = (view && view.selected && view.selected.size) ? view.selected.size : 0;
+  var taskState = String((t && t.state) || "").toLowerCase();
+  var canRestart = ["interrupted", "error", "failed", "canceled", "queued"].indexOf(taskState) >= 0;
 
   items.push({kind:"libtask_action", label:"Pause selected", action:"pause_selected", badge: selCount ? String(selCount) : ""});
   items.push({kind:"libtask_action", label:"Cancel selected", action:"cancel_selected", badge: selCount ? String(selCount) : ""});
+  if(canRestart) items.push({kind:"libtask_action", label:"Restart task", action:"restart_task", pills:["New attempt"]});
   items.push({kind:"libtask_action", label:"Select all", action:"selectall"});
   items.push({kind:"libtask_action", label:"Clear task", action:"clear_task"});
   const libraryNav = (t && t.library_nav) || {};
@@ -1912,7 +1915,10 @@ async function libDoSearch(engine, q){
         forceTwoLine:true,
         settingRow:true
       };
-      return [reindexRow].concat(settingRowsForCategory("advanced").filter((row)=> row && systemKeys.has(String(row.key || ""))).map(settingRowToListItem));
+      const backupRows = state.serverControlsOwner ? [{
+        kind:"libui_action", label:"Database backups", sub_label:"Create a verified backup or restore an existing local backup", action:"database_backups", pills:["Owner"], forceTwoLine:true, settingRow:true
+      }] : [];
+      return [reindexRow].concat(backupRows, settingRowsForCategory("advanced").filter((row)=> row && systemKeys.has(String(row.key || ""))).map(settingRowToListItem));
     }
     return settingRowsForCategory("advanced").filter((row)=>{
       const key = String((row && row.key) || "");
@@ -2221,6 +2227,32 @@ async function libDoSearch(engine, q){
     return arr;
   }
 
+  async function viewLibDatabaseBackups(push){
+    showNowPlaying(false);
+    await setView({
+      kind:"libdatabasebackups",
+      label:"Database backups",
+      load: async function(){
+        libControlsHide();
+        let backups = [];
+        try{
+          const js = await apiGet("/api/system/backups", {networkOnly:true, cache:"no-store"});
+          backups = Array.isArray(js && js.backups) ? js.backups : [];
+        }catch(e){}
+        state.databaseBackups = backups;
+        const items = [{kind:"libui_action", label:"Create backup", sub_label:"Creates and verifies a local SQLite backup", action:"database_backup_create", pills:["Backup"], forceTwoLine:true, settingRow:true}];
+        backups.forEach((backup, index)=>{
+          const name = String((backup && backup.path) || "").split(/[\\/]/).pop() || "Backup";
+          const created = Number((backup && backup.created_at) || 0);
+          const when = created ? new Date(created * 1000).toLocaleString() : "";
+          items.push({kind:"libui_action", label:"Restore " + name, sub_label:"Restores this backup after making a safety backup. Restart DebriPod after restoring." + (when ? (" Created " + when + ".") : ""), action:"database_backup_restore:" + String(index), pills:["Restore"], forceTwoLine:true, settingRow:true});
+        });
+        if(!backups.length) items.push({kind:"info", label:"No backups yet."});
+        resetList(items);
+      }
+    }, push);
+  }
+
   function libSearchCombinedStatusText(status){
     const list = Array.isArray(status) ? status : Object.values(status || {});
     if(!list.length) return "Searching";
@@ -2505,6 +2537,19 @@ async function libDoSearch(engine, q){
   }
 
   async function handleLibUiAction(action){
+    if(String(action || "").indexOf("database_backup_restore:") === 0){
+      const index = Number(String(action).split(":")[1]);
+      const backup = Array.isArray(state.databaseBackups) ? state.databaseBackups[index] : null;
+      const path = String((backup && backup.path) || "");
+      if(!path) return false;
+      try{
+        const res = await apiPost("/api/system/backups/restore", {path:path});
+        const js = res && res.json ? res.json : {};
+        if(!res || !res.ok || !js.ok) throw new Error((js && js.error) || "Restore failed");
+      }catch(e){}
+      await viewLibDatabaseBackups(false);
+      return true;
+    }
     const setNumber = async (key, label, min, max)=>{
       const current = uiSettings[key];
       const returnCategory = (state.current && state.current.kind === "libadvancedcategory") ? (state.current.advancedCategory || "ui") : "ui";
@@ -2635,6 +2680,13 @@ async function libDoSearch(engine, q){
         return true;
       case "full_reindex":
         return await startFullReindex();
+      case "database_backups":
+        await viewLibDatabaseBackups(true);
+        return true;
+      case "database_backup_create":
+        try{ await apiPost("/api/system/backups/create", {}); }catch(e){}
+        await viewLibDatabaseBackups(false);
+        return true;
       case "set_text_transparency":
         await viewRangeEditor({
           label:"Text transparency",

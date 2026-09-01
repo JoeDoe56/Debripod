@@ -55,6 +55,8 @@ from .Library.roots import sync_user_roots
 from .Library.index import stop_index_watcher
 from .storage.tasks import save_task_metadata
 from .storage.palettes import load_video_timeline
+from .storage.backups import list_backups
+from .storage.database import create_database_backup, restore_database_backup
 from .storage.media_likes import get_media_like, list_media_likes, set_media_like
 from .Services.debrid import DebridAuthError, DebridProviderError, get_active_provider, get_provider, provider_specs, provider_status as debrid_provider_status
 from .Services.debrid.identifiers import normalize_identifier
@@ -1723,6 +1725,38 @@ async def api_settings_mcp_reset_token(request: web.Request):
     return json_response({"ok": True, "saved": True})
 
 
+def _owner_backup_access(request: web.Request) -> None:
+    if not is_owner(current_user(request)):
+        raise web.HTTPForbidden(text="Owner access required")
+
+
+@routes.get("/api/system/backups")
+async def api_system_backups(request: web.Request):
+    _owner_backup_access(request)
+    return json_response({"ok": True, "backups": list_backups()})
+
+
+@routes.post("/api/system/backups/create")
+async def api_system_backup_create(request: web.Request):
+    _owner_backup_access(request)
+    result = await asyncio.to_thread(create_database_backup, reason="owner requested backup")
+    return json_response({"ok": True, "backup": result})
+
+
+@routes.post("/api/system/backups/restore")
+async def api_system_backup_restore(request: web.Request):
+    _owner_backup_access(request)
+    data = await request.json() or {}
+    requested = str(data.get("path") or "").strip()
+    available = {str(item.get("path") or "") for item in list_backups()}
+    if not requested or requested not in available:
+        return json_response({"ok": False, "error": "Unknown backup"}, status=404)
+    await asyncio.to_thread(restore_database_backup, requested)
+    clear_all_tasks()
+    restore_persisted_tasks()
+    return json_response({"ok": True, "restart_required": True})
+
+
 @routes.post("/api/settings/pick_path")
 async def api_settings_pick_path(request: web.Request):
     data = await request.json() or {}
@@ -3340,6 +3374,7 @@ async def _library_reconciliation_loop() -> None:
 
 async def _application_services(app: web.Application):
     services = app[SERVICES_KEY]
+    restore_persisted_tasks()
     session = create_client_session(str(VERSION))
     services.http = HttpClient(session)
     lastfm_module.configure_lastfm_http(services.http)

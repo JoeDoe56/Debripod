@@ -1942,6 +1942,11 @@ if(it.kind === "libtask_action"){
     await libTasksPollTick();
     return;
   }
+  if(it.action === "restart_task"){
+    await apiPost("/api/tasks/restart", {task_id: tid});
+    await libTasksPollTick();
+    return;
+  }
   if(it.action === "open_library_location"){
     const nav = it.library_nav || {};
     if(!nav.available) return;

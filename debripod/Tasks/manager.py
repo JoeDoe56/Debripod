@@ -1,12 +1,15 @@
 from __future__ import annotations
 
+import json
 import threading
 import time
 import os
+import uuid
 from dataclasses import dataclass, field
 from typing import Any, Callable, Dict, List, Optional
 
 from ..storage.tasks import update_task_state
+from ..storage.database import database
 from ..Services.debrid.identifiers import first_identifier, normalize_identifier
 
 
@@ -47,6 +50,10 @@ class Task:
     youtube_files: List[Dict[str, Any]] = field(default_factory=list)
     source_url: str = ""
     origin_client_id: str = ""
+    attempt: int = 1
+    previous_task_id: str = ""
+    lifecycle_state: str = ""
+    interrupted_at: float = 0.0
 
     created: float = field(default_factory=time.time)
     state: str = "queued"
@@ -75,6 +82,9 @@ class Task:
         canonical = str(self.owner_user_id or self.owner or "").strip()
         self.owner_user_id = canonical
         self.owner = canonical
+        self.attempt = max(1, int(self.attempt or 1))
+        if not self.lifecycle_state:
+            self.lifecycle_state = task_lifecycle_for_state(self.state)
 
 
 TASKS: Dict[str, Task] = {}
@@ -82,6 +92,23 @@ TASKS_LOCK = threading.Lock()
 _soulseek_service_provider: Callable[[str], Any] = lambda _user_id: None
 _retry_worker_provider: Callable[[str], Optional[Callable[[str], None]]] = lambda source: None
 _completion_notifier: Callable[[Task], None] = lambda task: None
+
+
+def task_lifecycle_for_state(state: Any) -> str:
+    value = str(state or "").strip().lower()
+    if value in {"done", "completed"}:
+        return "completed"
+    if value in {"error", "failed"}:
+        return "failed"
+    if value in {"canceled", "canceling"}:
+        return "canceled"
+    if value == "paused":
+        return "paused"
+    if value == "interrupted":
+        return "interrupted"
+    if value == "queued":
+        return "queued"
+    return "active"
 
 
 def configure_task_manager(
@@ -117,6 +144,8 @@ def set_task(task_id: str, **kwargs: Any) -> None:
         previous_state = str(getattr(t, "state", "") or "")
         for k, v in kwargs.items():
             setattr(t, k, v)
+        if "state" in kwargs:
+            t.lifecycle_state = task_lifecycle_for_state(t.state)
         completed = previous_state != "done" and str(getattr(t, "state", "") or "") == "done"
         changed = t
     if changed is not None:
@@ -146,6 +175,114 @@ def list_tasks_for_user(user_id: str) -> List[Task]:
             key=lambda x: x.created,
             reverse=True,
         )
+
+
+def _task_from_persisted_row(row: Any) -> Task | None:
+    try:
+        payload = json.loads(str(row["state_json"] or "{}"))
+    except (TypeError, ValueError, KeyError):
+        payload = {}
+    if not isinstance(payload, dict):
+        payload = {}
+    task_id = str(payload.get("id") or row["task_id"] or "").strip()
+    if not task_id:
+        return None
+    task = Task(
+        id=task_id,
+        title=str(payload.get("title") or row["title"] or "Task"),
+        magnet=str(payload.get("magnet") or ""),
+        task_dir=str(payload.get("task_dir") or row["task_dir"] or ""),
+        owner_user_id=str(payload.get("owner_user_id") or row["owner_user_id"] or row["owner"] or ""),
+        source=str(payload.get("source") or row["source"] or "debrid"),
+        state=str(payload.get("state") or "queued"),
+        message=str(payload.get("message") or ""),
+    )
+    for field_name in Task.__dataclass_fields__:
+        if field_name in {"pause_event", "cancel_event"} or field_name not in payload:
+            continue
+        try:
+            setattr(task, field_name, payload[field_name])
+        except Exception:
+            continue
+    task.__post_init__()
+    if task.paused or task.state == "paused":
+        task.pause_event.set()
+    return task
+
+
+def restore_persisted_tasks() -> list[Task]:
+    """Load prior attempts and explicitly interrupt work that died with the process."""
+    with database(write=False) as conn:
+        rows = conn.execute("SELECT * FROM tasks ORDER BY created_at, task_id").fetchall()
+    restored: list[Task] = []
+    for row in rows:
+        task = _task_from_persisted_row(row)
+        if task is None:
+            continue
+        if task_lifecycle_for_state(task.state) == "active":
+            task.state = "interrupted"
+            task.lifecycle_state = "interrupted"
+            task.interrupted_at = time.time()
+            task.message = "Interrupted when DebriPod last stopped. Restart to begin a new attempt."
+            update_task_state(task)
+        with TASKS_LOCK:
+            TASKS[task.id] = task
+        restored.append(task)
+    return restored
+
+
+def restart_task_attempt(task_id: str) -> Task | None:
+    """Clone a non-active task into a new attempt without touching old artifacts."""
+    with TASKS_LOCK:
+        previous = TASKS.get(str(task_id or ""))
+        if previous is None or task_lifecycle_for_state(previous.state) == "active":
+            return None
+        new_id = uuid.uuid4().hex
+        old_dir = str(previous.task_dir or "").strip()
+        if old_dir:
+            parent = os.path.dirname(old_dir)
+            base = os.path.basename(old_dir.rstrip("\\/")) or "task"
+            task_dir = os.path.join(parent, f"{base}-attempt-{int(previous.attempt or 1) + 1}-{new_id[:6]}")
+        else:
+            task_dir = ""
+        clone = Task(
+            id=new_id,
+            title=previous.title,
+            magnet=previous.magnet,
+            task_dir=task_dir,
+            owner_user_id=previous.owner_user_id,
+            source=previous.source,
+            state="queued",
+            message=f"Restart queued (attempt {int(previous.attempt or 1) + 1})",
+            debrid_provider=previous.debrid_provider,
+            debrid_task_id=previous.debrid_task_id,
+            debrid_selected_file_ids=list(previous.debrid_selected_file_ids or []),
+            source_url=previous.source_url,
+            origin_client_id=previous.origin_client_id,
+            attempt=int(previous.attempt or 1) + 1,
+            previous_task_id=previous.id,
+            slsk_user=previous.slsk_user,
+            slsk_directory=previous.slsk_directory,
+        )
+        clone.debrid_files = [
+            {**dict(item), "done": 0, "speed": 0.0, "state": "queued", "error": "", "paused": False, "canceled": False, "out_path": ""}
+            for item in list(previous.debrid_files or []) if isinstance(item, dict)
+        ]
+        clone.youtube_files = [
+            {**dict(item), "done": 0, "speed": 0.0, "state": "queued", "error": "", "paused": False, "canceled": False, "out_path": ""}
+            for item in list(previous.youtube_files or []) if isinstance(item, dict)
+        ]
+        clone.slsk_files = []
+        for item in list(previous.slsk_files or []):
+            if not isinstance(item, dict):
+                continue
+            copied = {**dict(item), "done": 0, "speed": 0.0, "state": "queued", "error": "", "paused": False, "canceled": False}
+            old_local = str(copied.get("local_path") or "")
+            if old_dir and old_local and old_local.startswith(old_dir):
+                copied["local_path"] = task_dir + old_local[len(old_dir):]
+            clone.slsk_files.append(copied)
+        TASKS[clone.id] = clone
+    return clone
 
 
 def task_belongs_to_user(task_id: str, user_id: str) -> bool:
@@ -410,6 +547,9 @@ def task_public_dict(t: Task) -> dict:
         "created": t.created,
         "paused": bool(getattr(t, "paused", False)),
         "state": t.state,
+        "lifecycle_state": getattr(t, "lifecycle_state", task_lifecycle_for_state(t.state)),
+        "attempt": int(getattr(t, "attempt", 1) or 1),
+        "previous_task_id": str(getattr(t, "previous_task_id", "") or ""),
         "message": t.message,
         "debrid_provider": getattr(t, "debrid_provider", ""),
         "debrid_task_id": getattr(t, "debrid_task_id", None),

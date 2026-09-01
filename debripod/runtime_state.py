@@ -144,6 +144,8 @@ from .Tasks.manager import (
     list_tasks,
     pause_task,
     resume_task,
+    restart_task_attempt,
+    restore_persisted_tasks,
     set_task,
     task_file_action,
     task_public_dict,
