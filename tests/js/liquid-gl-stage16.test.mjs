@@ -28,7 +28,9 @@ test("reactive artwork is uploaded only on its art key and sampled as uniforms",
 
 test("the glass backing scale is independent of device DPR and frost is deterministic", () => {
   assert.match(liquid, /glassRenderScale/);
-  assert.match(liquid, /const int SAMPLES = 8/);
+  assert.match(liquid, /_configuredFrostSamples\(\)/);
+  assert.match(liquid, /value : 8/);
+  assert.match(liquid, /const int MAX_FROST_SAMPLES = 16/);
   assert.doesNotMatch(liquid, /random\(v_uv/);
   assert.match(liquid, /antialias: false/);
   assert.match(liquid, /depth: false/);

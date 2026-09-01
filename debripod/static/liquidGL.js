@@ -540,6 +540,7 @@
         uniform float u_bevelDepth;
         uniform float u_bevelWidth;
         uniform float u_frost;
+        uniform float u_frostSamples;
         uniform float u_radius;
         uniform float u_time;
         uniform bool  u_specular;
@@ -574,6 +575,8 @@
         uniform vec4  u_reactiveFrequencyResponse;
         uniform vec4  u_reactiveEnergyResponse;
         uniform vec4  u_reactiveBeatResponse;
+        uniform vec2  u_globalLight;
+        uniform float u_globalLightIntensity;
 
         float udRoundBox( vec2 p, vec2 b, float r ) {
           return length(max(abs(p)-b+r,0.0))-r;
@@ -722,19 +725,21 @@
           vec2 texel = 1.0 / u_textureResolution;
           vec4 refrCol;
 
-          if (u_frost > 0.0) {
+          if (u_frost > 0.0 && u_frostSamples > 0.5) {
               float radiusCss = u_frost * 2.0;
               vec4 sum = vec4(0.0);
-              const int SAMPLES = 8;
+              const int MAX_FROST_SAMPLES = 16;
+              int sampleCount = int(clamp(u_frostSamples, 1.0, 16.0));
 
-              for (int i = 0; i < SAMPLES; i++) {
-                  float angle = (float(i) + 0.5) * 0.78539816339;
+              for (int i = 0; i < MAX_FROST_SAMPLES; i++) {
+                if (i >= sampleCount) break;
+                float angle = (float(i) + 0.5) * 0.78539816339;
                   float distCss = (0.35 + 0.65 * mod(float(i) * 0.61803398875, 1.0)) * radiusCss;
                   vec2 offsetUv = vec2(cos(angle), sin(angle)) *
                     distCss * u_sourceTexelsPerCssPixel * texel;
                   sum += sampleLiquidSource(sampleUV + offsetUv);
               }
-              refrCol = sum / float(SAMPLES);
+              refrCol = sum / float(sampleCount);
           } else {
               refrCol = sampleLiquidSource(sampleUV);
               refrCol += sampleLiquidSource(sampleUV + vec2( texel.x, 0.0));
@@ -800,8 +805,9 @@
             vec3 N = normalize(vec3(n2 * rimSlope, 0.62));
             vec2 tiltNormal = vec2(sin(radians(u_tiltY)), -sin(radians(u_tiltX))) * 0.34;
             N = normalize(vec3(N.xy + tiltNormal, N.z));
-            vec3 primaryLight = normalize(vec3(-0.48, 0.76, 0.52));
-            vec3 secondaryLight = normalize(vec3(0.42, -0.78, 0.46));
+            vec2 globalLight = u_globalLight * u_globalLightIntensity;
+            vec3 primaryLight = normalize(vec3(-0.48 + globalLight.x * 0.24, 0.76 - globalLight.y * 0.24, 0.52));
+            vec3 secondaryLight = normalize(vec3(0.42 - globalLight.x * 0.18, -0.78 + globalLight.y * 0.18, 0.46));
             float primaryFacing = max(dot(N, primaryLight), 0.0);
             float secondaryFacing = max(dot(N, secondaryLight), 0.0);
             float sharp = outerPeak * pow(primaryFacing, 7.0) * u_specularPrimary;
@@ -861,6 +867,7 @@
         bevelDepth: gl.getUniformLocation(this.program, "u_bevelDepth"),
         bevelWidth: gl.getUniformLocation(this.program, "u_bevelWidth"),
         frost: gl.getUniformLocation(this.program, "u_frost"),
+        frostSamples: gl.getUniformLocation(this.program, "u_frostSamples"),
         radius: gl.getUniformLocation(this.program, "u_radius"),
         time: gl.getUniformLocation(this.program, "u_time"),
         specular: gl.getUniformLocation(this.program, "u_specular"),
@@ -895,6 +902,8 @@
         reactiveFrequencyResponse: gl.getUniformLocation(this.program, "u_reactiveFrequencyResponse"),
         reactiveEnergyResponse: gl.getUniformLocation(this.program, "u_reactiveEnergyResponse"),
         reactiveBeatResponse: gl.getUniformLocation(this.program, "u_reactiveBeatResponse"),
+        globalLight: gl.getUniformLocation(this.program, "u_globalLight"),
+        globalLightIntensity: gl.getUniformLocation(this.program, "u_globalLightIntensity"),
       };
     }
 
@@ -1053,7 +1062,7 @@
         renderCount: this.renderCount || 0,
         visibleLensCount: (this.lenses || []).filter((lens) => this._lensVisible(lens)).length,
         sourceRefreshCount: this.sourceRefreshCount || 0,
-        frostSamples: 8,
+        frostSamples: this._configuredFrostSamples(),
         renderScale: this._dpr || 1,
         averageRenderSubmissionMs: this._renderSubmissionSamples && this._renderSubmissionSamples.length
           ? this._renderSubmissionTotalMs / this._renderSubmissionSamples.length
@@ -1195,6 +1204,16 @@
       gl.activeTexture(gl.TEXTURE0);
     }
 
+    _configuredFrostSamples() {
+      try {
+        const settings = window.DebriPod && window.DebriPod.uiSettings && window.DebriPod.uiSettings.settings || {};
+        const value = Number(settings.glassFrostSamples);
+        return Math.max(0, Math.min(16, Math.round(Number.isFinite(value) ? value : 8)));
+      } catch (e) {
+        return 8;
+      }
+    }
+
     _bindReactiveVisualizerUniforms(frameState) {
       const gl = this.gl;
       const fs = frameState || {};
@@ -1221,6 +1240,34 @@
       gl.uniform4fv(this.u.reactiveFrequencyResponse, new Float32Array(response("frequency")));
       gl.uniform4fv(this.u.reactiveEnergyResponse, new Float32Array(response("energy")));
       gl.uniform4fv(this.u.reactiveBeatResponse, new Float32Array(response("beat")));
+    }
+
+    _globalLightingState() {
+      try {
+        const lighting = window.DebriPod && window.DebriPod.glassLighting;
+        const state = lighting && typeof lighting.state === "function" ? lighting.state() : null;
+        if (!state) return { x: -0.16, y: -0.22, intensity: 0.22, source: "default" };
+        return {
+          x: Math.max(-1, Math.min(1, Number(state.x) || 0)),
+          y: Math.max(-1, Math.min(1, Number(state.y) || 0)),
+          intensity: Math.max(0, Math.min(1, Number(state.intensity) || 0)),
+          source: String(state.source || "default")
+        };
+      } catch (e) {
+        return { x: -0.16, y: -0.22, intensity: 0.22, source: "default" };
+      }
+    }
+
+    _bindGlobalLightingUniforms(state) {
+      const light = state || this._globalLightingState();
+      if (this.u.globalLight) this.gl.uniform2f(this.u.globalLight, light.x, light.y);
+      if (this.u.globalLightIntensity) this.gl.uniform1f(this.u.globalLightIntensity, light.intensity);
+      const signature = [light.x.toFixed(3), light.y.toFixed(3), light.intensity.toFixed(3)].join(":");
+      if (signature === this._globalLightSignature) return;
+      this._globalLightSignature = signature;
+      this.lenses.forEach((lens) => {
+        try { if (lens && lens.setGlobalLighting) lens.setGlobalLighting(light); } catch (e) {}
+      });
     }
 
     refreshSourceTexture(reason = "") {
@@ -1794,6 +1841,7 @@
       gl.uniform1i(this.u.tex, 0);
       this._bindAlbumTransitionUniforms();
       this._bindReactiveVisualizerUniforms(fs);
+      this._bindGlobalLightingUniforms(this._globalLightingState());
 
       const time = Number.isFinite(fs.timestamp) ? fs.timestamp / 1000 : (Date.now() - this.startTime) / 1000;
       gl.uniform1f(this.u.time, time);
@@ -2020,6 +2068,7 @@
       gl.uniform1f(this.u.bevelDepth, resolved.bevelDepth);
       gl.uniform1f(this.u.bevelWidth, resolved.bevelWidth);
       gl.uniform1f(this.u.frost, Math.max(0, resolved.frostSigmaPx));
+      gl.uniform1f(this.u.frostSamples, this._configuredFrostSamples());
       gl.uniform1f(this.u.radius, lens.radiusGl);
       gl.uniform1i(this.u.specular, resolved.specular ? 1 : 0);
       gl.uniform1f(this.u.revealProgress, lens._revealProgress || 1.0);
@@ -3186,12 +3235,28 @@
     }
 
     /* ----------------------------- */
+    _shadowValue(strength) {
+      const light = this._globalLightState || { x: 0, y: 0, intensity: 0 };
+      const intensity = clamp(finiteNumber(light.intensity, 0), 0, 1);
+      const offsetX = clamp(finiteNumber(light.x, 0), -1, 1) * intensity * 2.0;
+      const offsetY = clamp(finiteNumber(light.y, 0), -1, 1) * intensity * 2.0;
+      return `${offsetX.toFixed(2)}px ${(10 + offsetY).toFixed(2)}px 30px rgba(0,0,0,${strength.toFixed(4)}), ` +
+        `${(-offsetX * 0.25).toFixed(2)}px ${(-offsetY * 0.25).toFixed(2)}px 0 0.5px rgba(0,0,0,${(strength * 0.5).toFixed(4)})`;
+    }
+
+    setGlobalLighting(state) {
+      this._globalLightState = state || { x: 0, y: 0, intensity: 0 };
+      if (!this.options || !this.options.shadow) return;
+      const value = this._shadowValue(clamp(finiteNumber(this._shadowStrength, 0.1), 0, 0.4));
+      this.el.style.boxShadow = value;
+      if (this._shadowEl) this._shadowEl.style.boxShadow = value;
+    }
+
     setShadow(enabled, strength) {
       this.options.shadow = !!enabled;
       const shadowStrength = clamp(finiteNumber(strength, 0.1), 0, 0.4);
-      const shadowValue =
-        `0 10px 30px rgba(0,0,0,${shadowStrength.toFixed(4)}), ` +
-        `0 0 0 0.5px rgba(0,0,0,${(shadowStrength * 0.5).toFixed(4)})`;
+      this._shadowStrength = shadowStrength;
+      const shadowValue = this._shadowValue(shadowStrength);
 
       const syncShadow = () => {
         if (!this._shadowEl) return;
