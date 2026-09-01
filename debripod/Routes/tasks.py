@@ -23,13 +23,13 @@ from ..Tasks.manager import (
 from ..Library.roots import root_objects
 
 
-def _task_library_nav(task) -> dict:
+def _task_library_nav(task, user_id: str) -> dict:
     raw_task_dir = str(getattr(task, "task_dir", "") or "").strip()
     if not raw_task_dir:
         return {"root_id": "", "rel": "", "label": "Open library location", "available": False}
     task_dir = os.path.realpath(os.path.abspath(raw_task_dir))
     matches = []
-    for root in root_objects():
+    for root in root_objects(user_id):
         root_abs = os.path.realpath(os.path.abspath(str(root.get("path") or "")))
         try:
             if root_abs and os.path.commonpath([root_abs, task_dir]) == root_abs:
@@ -57,7 +57,7 @@ def register_task_routes(app) -> None:
         for t in list_tasks_for_user(current_user_id(request)):
             try:
                 payload = task_public_dict(t)
-                payload["library_nav"] = _task_library_nav(t)
+                payload["library_nav"] = _task_library_nav(t, current_user_id(request))
                 out.append(payload)
             except Exception as e:
                 try:

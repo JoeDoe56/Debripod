@@ -30,6 +30,7 @@ from .Library.library_db import (
     save_user_passkey,
     update_passkey_sign_count,
 )
+from .Library.index import stop_index_watcher
 
 try:
     from webauthn import (
@@ -303,7 +304,8 @@ async def _delete_current_user(request: web.Request, password: str) -> tuple[boo
     clear_all_tasks(active.user_id)
     delete_user_secrets(active.user_id)
     delete_user_secrets(active.username)
-    delete_user_owned_data(active.user_id)
+    for root_id in delete_user_owned_data(active.user_id):
+        stop_index_watcher(root_id)
     user_repository.delete_user(active.user_id)
     session_for(request).clear()
     return True, "", not bool(remaining)

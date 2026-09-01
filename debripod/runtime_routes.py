@@ -52,6 +52,8 @@ from .Library.video_parse import duration_text, normalize_show_key, show_keys_cl
 from .Library.library_db import load_show_aliases, save_show_aliases
 from .Library.search_ranker import infer_query_intent, normalize_search_text, rank_combined_results, source_priority_for_intent
 from .Library.search_cache import SEARCH_CACHE_SCHEMA
+from .Library.roots import sync_user_roots
+from .Library.index import stop_index_watcher
 from .storage.tasks import save_task_metadata
 from .storage.palettes import load_video_timeline
 from .storage.media_likes import get_media_like, list_media_likes, set_media_like
@@ -80,6 +82,9 @@ _FULL_REINDEX_STATUS: dict[str, Any] = {
     "finished_at": 0.0,
     "error": "",
 }
+_HLS_ACCESS_LOCK = threading.RLock()
+_HLS_ACCESS: dict[str, tuple[str, str, str, float]] = {}
+_HLS_ACCESS_TTL_SECONDS = 15 * 60
 routes = web.RouteTableDef()
 
 
@@ -102,6 +107,65 @@ def _settings_scope(request: web.Request) -> str:
 
 def _current_user_id(request: web.Request) -> str:
     return user_runtime_for(request).user_id
+
+
+def _request_roots(request: web.Request) -> list[tuple[str, str, str, str]]:
+    return roots(_current_user_id(request))
+
+
+def _request_root_by_id(request: web.Request, root_id: str):
+    return root_by_id(root_id, _current_user_id(request))
+
+
+def _sync_user_library_roots(user_id: str, settings: dict[str, Any]) -> None:
+    for root_id in sync_user_roots(user_id, settings):
+        stop_index_watcher(root_id)
+
+
+def _user_library_versions(user_id: str) -> dict[str, int]:
+    """Expose only physical roots explicitly associated with this user."""
+    available = library_root_versions()
+    return {
+        root_id: int(available.get(root_id) or 0)
+        for root_id, _name, _path, _mode in roots(user_id)
+    }
+
+
+def _request_library_versions(request: web.Request) -> dict[str, int]:
+    return _user_library_versions(_current_user_id(request))
+
+
+def _user_index_status(user_id: str) -> tuple[bool, dict[str, bool]]:
+    _any_building, all_roots = index_building_status()
+    allowed = {root_id for root_id, _name, _path, _mode in roots(user_id)}
+    visible = {root_id: bool(value) for root_id, value in all_roots.items() if root_id in allowed}
+    return any(visible.values()), visible
+
+
+def _new_hls_access_token(user_id: str, root_id: str, key: str) -> str:
+    """Bind cache-segment access to the authenticated manifest recipient."""
+    token = secrets.token_urlsafe(24)
+    now = time.monotonic()
+    with _HLS_ACCESS_LOCK:
+        expired = [candidate for candidate, (_owner, _root, _key, deadline) in _HLS_ACCESS.items() if deadline <= now]
+        for candidate in expired:
+            _HLS_ACCESS.pop(candidate, None)
+        _HLS_ACCESS[token] = (str(user_id), str(root_id), str(key), now + _HLS_ACCESS_TTL_SECONDS)
+    return token
+
+
+def _hls_access_allowed(token: str, user_id: str, key: str) -> bool:
+    with _HLS_ACCESS_LOCK:
+        entry = _HLS_ACCESS.get(str(token or ""))
+        if not entry:
+            return False
+        owner, root_id, expected_key, deadline = entry
+        if deadline <= time.monotonic():
+            _HLS_ACCESS.pop(str(token or ""), None)
+            return False
+    if not secrets.compare_digest(owner, str(user_id or "")) or not secrets.compare_digest(expected_key, str(key or "")):
+        return False
+    return root_id == SEARCH_STREAM_ROOT_ID or root_by_id(root_id, str(user_id or "")) is not None
 
 
 def _record_user_search_history(runtime: UserRuntime, query: str, source: str, cache_key: str) -> None:
@@ -148,6 +212,7 @@ async def _create_user_runtime(services: AppServices, user: Any) -> UserRuntime:
         legacy_username=username,
         defaults_overrides=_default_app_overrides(),
     )
+    _sync_user_library_roots(user_id, settings)
     runtime = UserRuntime(
         user_id=user_id,
         username=username,
@@ -225,7 +290,11 @@ def _build_unified_search_runtime(
             max_concurrent=int(current.get("TORRENT_SEARCH_MAX_CONCURRENT") or 7),
         )
     )
-    library = LibrarySearchProvider(root_objects, get_index, library_root_versions)
+    library = LibrarySearchProvider(
+        lambda: root_objects(user_id),
+        get_index,
+        lambda: {root_id: library_root_versions().get(root_id, 0) for root_id, _name, _path, _mode in roots(user_id)},
+    )
     soulseek = SoulseekSearchProvider(lambda: soulseek_service)
     ytdlp = YtdlpSearchProvider(max_concurrent=int(current.get("YTDLP_SEARCH_MAX_CONCURRENT") or 4))
     providers = [library]
@@ -373,7 +442,7 @@ async def api_libsearch_combined(request: web.Request):
     cache_inputs = {
         "schema": SEARCH_CACHE_SCHEMA,
         "user_id": user_runtime.user_id,
-        "roots": library_root_versions(),
+        "roots": _request_library_versions(request),
         "local_index_enabled": bool(settings.get("LOCAL_INDEX_ENABLED", True)),
         "local_index_generation": str((local_meta or {}).get("local_index_generation") or "0"),
         "torrent_sources": sorted(str(value).strip().lower() for value in (settings.get("TORRENT_SEARCH_ENABLED_SOURCES") or []) if str(value).strip()),
@@ -1167,9 +1236,9 @@ async def cancel(request: web.Request):
 async def api_library_config(request: web.Request):
     lastfm = user_runtime_for(request).lastfm
     rts = []
-    versions = library_root_versions()
-    source_by_id = {str(item.get("id") or ""): str(item.get("source") or "library") for item in root_objects()}
-    for rid, name, ap, mode in roots():
+    versions = _request_library_versions(request)
+    source_by_id = {str(item.get("id") or ""): str(item.get("source") or "library") for item in root_objects(_current_user_id(request))}
+    for rid, name, ap, mode in _request_roots(request):
         if mode in {"meta", "metadata"}:
             try:
                 ensure_index_async(rid, os.path.abspath(ap), mode=mode)
@@ -1223,7 +1292,7 @@ async def api_library_reindex(request: web.Request):
 
     def run_full_reindex() -> None:
         try:
-            root_rows = [(rid, name, os.path.abspath(path), mode) for rid, name, path, mode in roots()]
+            root_rows = [(rid, name, os.path.abspath(path), mode) for rid, name, path, mode in _request_roots(request)]
             total_roots = max(1, len(root_rows))
             set_status(total_roots=len(root_rows), phase="clearing cache", percent=1)
             clear_index_cache()
@@ -1320,8 +1389,9 @@ def _setup_skipped_services(settings: dict[str, Any]) -> dict[str, str]:
     return out
 
 
-def _kick_library_indexes_from_settings(settings: dict[str, Any]) -> None:
-    for root in root_objects():
+def _kick_library_indexes_from_settings(user_id: str, settings: dict[str, Any]) -> None:
+    _sync_user_library_roots(user_id, settings)
+    for root in root_objects(user_id):
         try:
             path = str(root.get("path") or "").strip()
             mode = "metadata"
@@ -1493,7 +1563,7 @@ async def api_setup_finish(request: web.Request):
     saved = save_app_settings({"SETUP_WIZARD_COMPLETE": True}, user_id=user_id, defaults_overrides=_default_app_overrides())
     if user_id:
         saved = (await _reload_request_runtime(request)).settings
-    _kick_library_indexes_from_settings(saved)
+    _kick_library_indexes_from_settings(user_id, saved)
     runtime = user_runtime_for(request)
     return json_response(_setup_status_for_user(runtime.username, saved, runtime.lastfm))
 
@@ -1539,7 +1609,7 @@ async def api_settings_import(request: web.Request):
     if user_id:
         await _reload_request_runtime(request)
     if "LIBRARY_FOLDERS" in clean:
-        _kick_library_indexes_from_settings(saved)
+        _kick_library_indexes_from_settings(user_id, saved)
     return json_response({"ok": True, "settings": masked_settings(saved), "imported_keys": sorted(clean.keys())})
 
 
@@ -1574,10 +1644,9 @@ async def api_settings_save(request: web.Request):
         saved = (await _reload_request_runtime(request)).settings
     library_setting_keys = {"LIBRARY_FOLDERS", "DOWNLOAD_DIR", "SOULSEEK_DOWNLOAD_DIR", "YOUTUBE_DOWNLOAD_DIR"}
     if library_setting_keys.intersection(clean_settings):
-        clear_index_cache()
-        _kick_library_indexes_from_settings(saved)
+        _kick_library_indexes_from_settings(user_id, saved)
     restart_required = bool(set(startup_updates).intersection({"PORT", "ENABLE_MCP"}))
-    return json_response({"ok": True, "settings": masked_settings(saved), "restart_required": restart_required, "library_versions": library_root_versions()})
+    return json_response({"ok": True, "settings": masked_settings(saved), "restart_required": restart_required, "library_versions": _user_library_versions(user_id)})
 
 
 @routes.post("/api/settings/mcp_reset_token")
@@ -1769,19 +1838,19 @@ async def api_defaults_diff(request: web.Request):
 
 @routes.get("/api/library/building")
 async def api_library_building(request: web.Request):
-    any_building, roots_status = index_building_status()
-    return json_response({"ok": True, "any_building": any_building, "roots": roots_status, "versions": library_root_versions()})
+    any_building, roots_status = _user_index_status(_current_user_id(request))
+    return json_response({"ok": True, "any_building": any_building, "roots": roots_status, "versions": _request_library_versions(request)})
 
 
 @routes.get("/api/client-state")
 async def api_client_state(request: web.Request):
-    for rid, _, root_abs, mode in roots():
+    for rid, _, root_abs, mode in _request_roots(request):
         try:
             ensure_index_async(rid, root_abs, mode=mode)
             library_watch_root(rid, root_abs, mode=mode)
         except Exception:
             pass
-    any_building, roots_status = index_building_status()
+    any_building, roots_status = _user_index_status(_current_user_id(request))
     runtime = user_runtime_for(request)
     username = runtime.username
     settings = dict(runtime.settings)
@@ -1798,7 +1867,7 @@ async def api_client_state(request: web.Request):
         "asset_version": str(ASSET_VERSION),
         "icon_version": str(ICON_VERSION),
         "settings_version": abs(hash(json.dumps(masked_settings(settings), sort_keys=True, default=str))) % 1000000007,
-        "library_versions": library_root_versions(),
+        "library_versions": _request_library_versions(request),
         "search_history_version": int(max([float(x.get("ts") or 0) for x in search_history_items] + [0])),
         "playback_version": playback_version,
         "service_status_version": abs(hash(json.dumps(services, sort_keys=True, default=str))) % 1000000007,
@@ -1812,7 +1881,7 @@ async def api_client_state(request: web.Request):
 async def api_performance(request: web.Request):
     runtime = user_runtime_for(request)
     settings = dict(runtime.settings)
-    any_building, roots_status = index_building_status()
+    any_building, roots_status = _user_index_status(_current_user_id(request))
     services = _service_status_payload(settings, runtime.soulseek_service, runtime.lastfm)
     service_summary = {}
     for key, value in services.items():
@@ -1825,7 +1894,7 @@ async def api_performance(request: web.Request):
             }
     return json_response({
         "ok": True,
-        "library_versions": library_root_versions(),
+        "library_versions": _request_library_versions(request),
         "indexing": {"any_building": bool(any_building), "roots": roots_status, "enrichment": enrichment_status()},
         "services": service_summary,
         "api_timings": list(_RECENT_API_TIMINGS[-30:]),
@@ -1853,10 +1922,11 @@ async def api_sync(request: web.Request):
     if not isinstance(since, dict):
         since = {}
     since_roots = since.get("library_versions") if isinstance(since.get("library_versions"), dict) else {}
-    root_payload = [{"id": rid, "name": name, "mode": mode, "version": int(library_root_versions().get(rid) or 0)} for rid, name, _, mode in roots()]
+    versions = _request_library_versions(request)
+    root_payload = [{"id": rid, "name": name, "mode": mode, "version": int(versions.get(rid) or 0)} for rid, name, _, mode in _request_roots(request)]
     library_changes = []
     deleted = []
-    for rid, _, root_abs, mode in roots():
+    for rid, _, root_abs, mode in _request_roots(request):
         try:
             ensure_index_async(rid, root_abs, mode=mode)
         except Exception:
@@ -1885,7 +1955,7 @@ async def api_sync(request: web.Request):
         "asset_version": str(ASSET_VERSION),
         "icon_version": str(ICON_VERSION),
         "roots": root_payload,
-        "library_versions": library_root_versions(),
+        "library_versions": versions,
         "library_changes": library_changes,
         "deleted": deleted,
         "settings": masked_settings(settings),
@@ -1904,7 +1974,7 @@ async def api_library_manifest(request: web.Request):
         since_version = int(request.query.get("since_version") or 0)
     except Exception:
         since_version = 0
-    r = root_by_id(root_id)
+    r = _request_root_by_id(request, root_id)
     if not r:
         raise web.HTTPNotFound()
     _, _, root_abs, mode = r
@@ -1924,9 +1994,10 @@ async def api_library_palette(request: web.Request):
         cache_key = (request.query.get("key") or "").strip()
         if not cache_key:
             return json_response({"ok": False, "error": "Missing palette key"}, status=400)
+        _require_palette_root_membership(request, cache_key)
         palette = load_palette(cache_key)
         if palette is None:
-            palette = _palette_from_art_cache_key(cache_key)
+            palette = _palette_from_art_cache_key(cache_key, _current_user_id(request))
         return json_response({"ok": True, "palette": palette})
 
     data = await request.json() or {}
@@ -1934,18 +2005,43 @@ async def api_library_palette(request: web.Request):
     palette = data.get("palette")
     if not cache_key or not isinstance(palette, dict):
         return json_response({"ok": False, "error": "Missing palette key or palette"}, status=400)
+    root_id = str(data.get("root_id") or "")
+    if root_id and not _request_root_by_id(request, root_id):
+        raise web.HTTPNotFound()
     save_palette(
         cache_key,
         palette,
         source_kind=str(data.get("source_kind") or ""),
         source_identity=str(data.get("source_identity") or ""),
-        root_id=str(data.get("root_id") or ""),
+        root_id=root_id,
         rel=str(data.get("rel") or ""),
     )
     return json_response({"ok": True})
 
 
-def _palette_from_art_cache_key(cache_key: str) -> dict | None:
+def _palette_root_id_from_cache_key(cache_key: str) -> str:
+    try:
+        path_part = str(cache_key or "").split("|", 1)[0]
+        marker = "/art/"
+        if marker not in path_part:
+            return ""
+        suffix = path_part.split(marker, 1)[1].strip("/")
+        if not suffix or "/" not in suffix:
+            return ""
+        root_id, rel_encoded = suffix.split("/", 1)
+        root_id = unquote(root_id)
+        return root_id if root_id and rel_encoded else ""
+    except Exception:
+        return ""
+
+
+def _require_palette_root_membership(request: web.Request, cache_key: str) -> None:
+    root_id = _palette_root_id_from_cache_key(cache_key)
+    if root_id and not _request_root_by_id(request, root_id):
+        raise web.HTTPNotFound()
+
+
+def _palette_from_art_cache_key(cache_key: str, user_id: str) -> dict | None:
     try:
         path_part = str(cache_key or "").split("|", 1)[0]
         marker = "/art/"
@@ -1957,7 +2053,7 @@ def _palette_from_art_cache_key(cache_key: str) -> dict | None:
         root_id, rel_encoded = suffix.split("/", 1)
         root_id = unquote(root_id)
         rel = unquote(rel_encoded)
-        if not root_id or not rel:
+        if not root_id or not rel or not root_by_id(root_id, user_id):
             return None
         return load_palette_for_media(root_id, rel)
     except Exception:
@@ -1970,7 +2066,7 @@ async def api_library_analysis(request: web.Request):
     rel = (request.query.get("rel") or "").strip()
     if not root_id or not rel:
         return json_response({"ok": False, "error": "Missing root_id or rel"}, status=400)
-    r = root_by_id(root_id)
+    r = _request_root_by_id(request, root_id)
     if not r:
         raise web.HTTPNotFound()
     analysis = load_visualizer_analysis_for_media(root_id, rel)
@@ -2047,7 +2143,7 @@ async def api_playback_update(request: web.Request):
 async def api_library_browse(request: web.Request):
     root_id = (request.query.get("root_id") or "").strip()
     rel = (request.query.get("rel") or "").strip()
-    r = root_by_id(root_id)
+    r = _request_root_by_id(request, root_id)
     if not r:
         raise web.HTTPNotFound()
     _, _, root_abs, mode = r
@@ -2113,7 +2209,7 @@ async def api_library_metadata(request: web.Request):
     lastfm = runtime.lastfm
 
     aggregate = root_id == LIBRARY_ALL_ROOT_ID
-    r = None if aggregate else root_by_id(root_id)
+    r = None if aggregate else _request_root_by_id(request, root_id)
     if not aggregate and not r:
         raise web.HTTPNotFound()
     root_abs = "" if aggregate else r[2]
@@ -2122,7 +2218,7 @@ async def api_library_metadata(request: web.Request):
     if level == "playlists":
         items = []
         if aggregate:
-            for root in root_objects():
+            for root in root_objects(_current_user_id(request)):
                 for item in scan_root_playlists(str(root.get("path") or "")):
                     if isinstance(item, dict):
                         row = dict(item)
@@ -2134,7 +2230,7 @@ async def api_library_metadata(request: web.Request):
             items = scan_root_playlists(root_abs)
         if not items:
             items = [{"kind": "info", "label": "No playlists found"}]
-        return json_response({"items": items, "version": (sum(library_root_versions().values()) if aggregate else library_root_version(root_id)), "stale": False})
+        return json_response({"items": items, "version": (sum(_request_library_versions(request).values()) if aggregate else library_root_version(root_id)), "stale": False})
 
     if level == "playlist_tracks":
         playlist_root_id = root_id
@@ -2145,7 +2241,7 @@ async def api_library_metadata(request: web.Request):
                 selector = {}
             playlist_root_id = str(selector.get("root_id") or request.query.get("item_root_id") or "")
             value = str(selector.get("rel") or selector.get("value") or value)
-            selected_root = root_by_id(playlist_root_id)
+            selected_root = _request_root_by_id(request, playlist_root_id)
             if not selected_root:
                 raise web.HTTPNotFound()
             root_abs = selected_root[2]
@@ -2165,7 +2261,7 @@ async def api_library_metadata(request: web.Request):
         aggregate_shows: list[dict[str, Any]] = []
         building_map = index_building_status()[1]
         building = False
-        for root in root_objects():
+        for root in root_objects(_current_user_id(request)):
             rid = str(root.get("id") or "")
             path = str(root.get("path") or "")
             ensure_index_async(rid, path, mode="metadata")
@@ -2191,7 +2287,8 @@ async def api_library_metadata(request: web.Request):
                         episodes.append(episode)
                 show["episodes"] = episodes
                 aggregate_shows.append(show)
-        aliases = load_show_aliases(LIBRARY_ALL_ROOT_ID)
+        aggregate_alias_root_id = f"{LIBRARY_ALL_ROOT_ID}:{_current_user_id(request)}"
+        aliases = load_show_aliases(aggregate_alias_root_id)
         show_buckets: dict[str, dict[str, Any]] = {}
         for show in aggregate_shows:
             label = str(show.get("label") or "Show")
@@ -2213,8 +2310,8 @@ async def api_library_metadata(request: web.Request):
                 str(item.get("root_id") or ""),
                 str(item.get("rel") or "").lower(),
             ))
-        save_show_aliases(LIBRARY_ALL_ROOT_ID, aliases)
-        data["version"] = sum(int(value or 0) for value in library_root_versions().values())
+        save_show_aliases(aggregate_alias_root_id, aliases)
+        data["version"] = sum(int(version or 0) for version in _request_library_versions(request).values())
     else:
         ensure_index_async(root_id, root_abs, mode=mode)
         data = get_index(root_id)
@@ -2603,7 +2700,7 @@ async def api_library_playlist_create(request: web.Request):
     root_id = str(js.get("root_id") or "").strip()
     name = str(js.get("name") or "").strip()
 
-    r = root_by_id(root_id)
+    r = _request_root_by_id(request, root_id)
     if not r:
         raise web.HTTPNotFound()
     _, _, root_abs, _ = r
@@ -2621,7 +2718,7 @@ async def api_library_playlist_rename(request: web.Request):
     playlist_rel = str(js.get("rel") or "").strip()
     name = str(js.get("name") or "").strip()
 
-    r = root_by_id(root_id)
+    r = _request_root_by_id(request, root_id)
     if not r:
         raise web.HTTPNotFound()
     _, _, root_abs, _ = r
@@ -2640,7 +2737,7 @@ async def api_library_playlist_add(request: web.Request):
     tracks = js.get("tracks") if isinstance(js.get("tracks"), list) else []
     clean_tracks = [str(x or "").strip() for x in tracks if str(x or "").strip()]
 
-    r = root_by_id(root_id)
+    r = _request_root_by_id(request, root_id)
     if not r:
         raise web.HTTPNotFound()
     _, _, root_abs, _ = r
@@ -2659,7 +2756,7 @@ async def api_library_playlist_remove(request: web.Request):
     tracks = js.get("tracks") if isinstance(js.get("tracks"), list) else []
     clean_tracks = [str(x or "").strip() for x in tracks if str(x or "").strip()]
 
-    r = root_by_id(root_id)
+    r = _request_root_by_id(request, root_id)
     if not r:
         raise web.HTTPNotFound()
     _, _, root_abs, _ = r
@@ -2678,7 +2775,7 @@ async def api_library_playlist_delete(request: web.Request):
     root_id = str(js.get("root_id") or "").strip()
     playlist_rel = str(js.get("rel") or "").strip()
 
-    r = root_by_id(root_id)
+    r = _request_root_by_id(request, root_id)
     if not r:
         raise web.HTTPNotFound()
     _, _, root_abs, _ = r
@@ -2695,7 +2792,7 @@ async def api_library_smart_playlist_create(request: web.Request):
     root_id = str(js.get("root_id") or "").strip()
     name = str(js.get("name") or "").strip()
 
-    r = root_by_id(root_id)
+    r = _request_root_by_id(request, root_id)
     if not r:
         raise web.HTTPNotFound()
     _, _, root_abs, _ = r
@@ -2711,7 +2808,7 @@ async def api_library_smart_playlist_rules(request: web.Request):
     if request.method == "GET":
         root_id = (request.query.get("root_id") or "").strip()
         playlist_rel = (request.query.get("rel") or "").strip()
-        r = root_by_id(root_id)
+        r = _request_root_by_id(request, root_id)
         if not r:
             raise web.HTTPNotFound()
         _, _, root_abs, _ = r
@@ -2724,7 +2821,7 @@ async def api_library_smart_playlist_rules(request: web.Request):
     root_id = str(js.get("root_id") or "").strip()
     playlist_rel = str(js.get("rel") or "").strip()
     text = str(js.get("text") or "")
-    r = root_by_id(root_id)
+    r = _request_root_by_id(request, root_id)
     if not r:
         raise web.HTTPNotFound()
     _, _, root_abs, _ = r
@@ -2751,7 +2848,7 @@ async def api_library_filemeta(request: web.Request):
             "tech": str(it.get("quality") or it.get("ext") or ""),
             "art": str(it.get("art") or ""),
         })
-    r = root_by_id(root_id)
+    r = _request_root_by_id(request, root_id)
     if not r:
         raise web.HTTPNotFound()
     _, _, root_abs, _ = r
@@ -2864,7 +2961,7 @@ async def api_library_liked(request: web.Request):
 async def art(request: web.Request):
     root_id = request.match_info["root_id"]
     relpath = request.match_info["relpath"]
-    r = root_by_id(root_id)
+    r = _request_root_by_id(request, root_id)
     if not r:
         raise web.HTTPNotFound()
     _, _, root_abs, _ = r
@@ -2963,7 +3060,7 @@ def _resolve_stream_source_for_hls(root_id: str, relpath: str, runtime: UserRunt
             except Exception:
                 raise RuntimeError("Unable to fetch stream")
         raise web.HTTPBadRequest()
-    r = root_by_id(root_id)
+    r = root_by_id(root_id, runtime.user_id)
     if not r:
         raise web.HTTPNotFound()
     _, _, root_abs, _ = r
@@ -2987,8 +3084,9 @@ def _resolve_stream_source_for_hls(root_id: str, relpath: str, runtime: UserRunt
         raise RuntimeError(msg)
 
 
-def _rewrite_hls_manifest_text(text: str, key: str) -> str:
+def _rewrite_hls_manifest_text(text: str, key: str, access_token: str) -> str:
     base = "/hls/file/" + quote(key, safe="") + "/"
+    query = "?access_token=" + quote(access_token, safe="")
     out: List[str] = []
     for raw in text.splitlines():
         line = raw.strip()
@@ -2996,13 +3094,13 @@ def _rewrite_hls_manifest_text(text: str, key: str) -> str:
             out.append(raw)
             continue
         if line.startswith("#EXT-X-MAP:"):
-            line = re.sub(r'URI="([^"]+)"', lambda m: 'URI="' + base + quote(os.path.basename(m.group(1)), safe="/._-") + '"', line)
+            line = re.sub(r'URI="([^"]+)"', lambda m: 'URI="' + base + quote(os.path.basename(m.group(1)), safe="/._-") + query + '"', line)
             out.append(line)
             continue
         if line.startswith("#"):
             out.append(raw)
             continue
-        out.append(base + quote(line, safe="/._-"))
+        out.append(base + quote(line, safe="/._-") + query)
     return "\n".join(out) + "\n"
 
 
@@ -3016,7 +3114,8 @@ async def hls_manifest(request: web.Request):
         playable = await asyncio.to_thread(_resolve_stream_source_for_hls, root_id, rel, user_runtime_for(request))
         key, manifest_path = await asyncio.to_thread(_hls_cache_entry_for_path, playable)
         raw = await asyncio.to_thread(Path(manifest_path).read_text, encoding="utf-8", errors="replace")
-        return web.Response(text=_rewrite_hls_manifest_text(raw, key), content_type="application/vnd.apple.mpegurl")
+        access_token = _new_hls_access_token(_current_user_id(request), root_id, key)
+        return web.Response(text=_rewrite_hls_manifest_text(raw, key, access_token), content_type="application/vnd.apple.mpegurl")
     except RuntimeError:
         return web.Response(text="Unable to prepare stream", status=500, content_type="text/plain")
 
@@ -3027,6 +3126,8 @@ async def hls_file(request: web.Request):
     name = request.match_info["name"]
     key2 = re.sub(r"[^a-fA-F0-9]", "", str(key or ""))[:64]
     if not key2:
+        raise web.HTTPNotFound()
+    if not _hls_access_allowed(str(request.query.get("access_token") or ""), _current_user_id(request), key2):
         raise web.HTTPNotFound()
     base = os.path.join(hls_cache_dir(), key2)
     try:
@@ -3134,7 +3235,7 @@ async def stream(request: web.Request):
         finally:
             upstream.close()
         return response
-    r = root_by_id(root_id)
+    r = _request_root_by_id(request, root_id)
     if not r:
         raise web.HTTPNotFound()
     _, _, root_abs, _ = r

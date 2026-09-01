@@ -160,6 +160,14 @@
     return Array.isArray(s.LIBRARY_FOLDERS) ? s.LIBRARY_FOLDERS.slice() : [];
   }
 
+  function canEditLibraryFolders(){
+    return !(window.DebriPodPlatform && window.DebriPodPlatform.canEditLibraryFolders === false);
+  }
+
+  function libraryFolderDesktopMessage(){
+    return "Library folders can be changed from a desktop browser.";
+  }
+
   const DEBRID_PROVIDER_ROWS = [
     {id:"real_debrid", label:"Real Debrid", key:"REAL_DEBRID_API_KEY"},
     {id:"alldebrid", label:"AllDebrid", key:"ALLDEBRID_API_KEY"},
@@ -509,14 +517,17 @@
       load: async function(){
         await settingsLoad();
         const folders = libraryFolders();
-        const items = [{kind:"settings_add_library_folder", label:"Add folder"}];
+        const editable = canEditLibraryFolders();
+        const items = [{kind:"settings_add_library_folder", label:"Add folder", disabled:!editable}];
+        if(!editable) items.push({kind:"info", label:"Library folders are read-only on this device", sub_label:libraryFolderDesktopMessage(), forceTwoLine:true});
         folders.forEach((f, idx)=>{
           items.push({
             kind:"settings_library_folder",
             label:settingPathBase(f && f.path),
             sub_label:String((f && f.path) || ""),
             folderIndex:idx,
-            pills:["Indexed"]
+            pills:["Indexed"],
+            disabled:!editable
           });
         });
         if(!folders.length) items.push({kind:"info", label:"No library folders yet. Add one in Library settings or run setup."});
@@ -538,7 +549,8 @@
       load: async function(){
         resetList([
           {kind:"info", label:"Indexed library folder", sub_label:String(folderPath || ""), forceTwoLine:true},
-          ...(isExisting ? [{kind:"settings_library_remove", label:"Remove folder", sub_label:String(folderPath || ""), pills:[{text:"Delete", tone:"warn"}]}] : [])
+          ...(canEditLibraryFolders() && isExisting ? [{kind:"settings_library_remove", label:"Remove folder", sub_label:String(folderPath || ""), pills:[{text:"Delete", tone:"warn"}]}] : []),
+          ...(!canEditLibraryFolders() ? [{kind:"info", label:"Library folders are read-only on this device", sub_label:libraryFolderDesktopMessage(), forceTwoLine:true}] : [])
         ]);
       }
     };
@@ -621,6 +633,7 @@
   }
 
   async function settingsPickPath(kind){
+    if((kind || "directory") === "directory" && !canEditLibraryFolders()) return "";
     const res = await apiPost("/api/settings/pick_path", {kind:kind || "directory"});
     const js = (res && res.json) ? res.json : {};
     if(res && res.ok && js && js.ok && js.path) return String(js.path || "");
@@ -629,6 +642,7 @@
   }
 
   async function setupPickPath(kind){
+    if((kind || "directory") === "directory" && !canEditLibraryFolders()) return "";
     const res = await apiPost("/api/settings/pick_path", {kind:kind || "directory"});
     const js = (res && res.json) ? res.json : {};
     if(res && res.ok && js && js.ok && js.path) return String(js.path || "");
@@ -671,6 +685,7 @@
     const value = String(cur.editorValue == null ? "" : cur.editorValue).trim();
     const returnPage = String(cur.setupEditorReturnPage || "library");
     if(cur.setupEditorLibraryPath){
+      if(!canEditLibraryFolders()) return false;
       if(!value){
         libSetStatus("Enter a folder path first.", "warn");
         return false;
@@ -1570,6 +1585,7 @@ async function libDoSearch(engine, q){
         sub_label:path,
         folderIndex:idx,
         pills:["Indexed"],
+        disabled:!canEditLibraryFolders(),
         forceTwoLine:true
       };
     });
@@ -1621,7 +1637,8 @@ async function libDoSearch(engine, q){
         const soulLastDone = slUser && slPass && slDir && lfKey && lfSecret && lfSession;
         if(setupPage === "library"){
           items.push({kind:"info", label:"Why this is required", sub_label:"DebriPod needs at least one local folder for initial library indexing. This enables local browsing, artwork palettes, playback history, and precomputed local audio analysis. You can add more folders later from Library settings.", pills:[setupRequiredPill(status, skipped)], forceTwoLine:true});
-          items.push({kind:"settings_add_library_folder", setupReturnPage:"library", label:"Add folder", sub_label:"Choose a folder to index for music, movies, shows, videos, and folder browsing.", pills:["Required"], forceTwoLine:true});
+          if(!canEditLibraryFolders()) items.push({kind:"info", label:"Library folders are read-only on this device", sub_label:libraryFolderDesktopMessage(), forceTwoLine:true});
+          items.push({kind:"settings_add_library_folder", setupReturnPage:"library", label:"Add folder", sub_label:"Choose a folder to index for music, movies, shows, videos, and folder browsing.", pills:["Required"], disabled:!canEditLibraryFolders(), forceTwoLine:true});
           setupFolderRows(folders).forEach((row)=>items.push(row));
           if(status.library_folder_count){
             items.push({kind:"libinfo_action", label:"Continue", sub_label:"Move to optional tool setup.", action:"setup_page:tools", pills:["Ready"]});

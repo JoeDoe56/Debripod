@@ -5,6 +5,7 @@ import re
 from typing import Any, Callable, List, Optional, Tuple
 
 from ..utils import sha1_text
+from .library_db import associated_library_roots, replace_user_library_roots, user_has_library_root, user_library_roots
 
 _library_folders_provider: Callable[[], List[Any]] = lambda: []
 _download_folders_provider: Callable[[], dict[str, str]] = lambda: {}
@@ -31,73 +32,93 @@ def _parse_library_folder_spec(spec: Any) -> Optional[Tuple[str, str, str]]:
     if not path or not os.path.isabs(path):
         return None
 
-    ap = os.path.abspath(path)
+    ap = os.path.realpath(os.path.abspath(path))
     name = os.path.basename(ap.rstrip("\\/")) or ap
     return name, ap, "metadata"
 
 
-def roots() -> List[Tuple[str, str, str, str]]:
-    parsed: List[Tuple[str, str, str]] = []
+def root_id_for_path(path: str) -> str:
+    return sha1_text(os.path.realpath(os.path.abspath(str(path or ""))))
 
-    for spec in (_library_folders_provider() or []):
+
+def _settings_root_specs(settings: dict[str, Any]) -> list[dict[str, Any]]:
+    parsed: list[tuple[str, str, str, str]] = []
+    for spec in (settings.get("LIBRARY_FOLDERS") or []):
         p = _parse_library_folder_spec(spec)
         if not p:
             continue
         name, ap, mode = p
-        parsed.append((name, ap, mode))
+        parsed.append((name, ap, mode, "library"))
     labels = {"debrid": "Debrid", "soulseek": "Soulseek", "youtube": "YouTube"}
-    for source, path in (_download_folders_provider() or {}).items():
+    for source, key in (("debrid", "DOWNLOAD_DIR"), ("soulseek", "SOULSEEK_DOWNLOAD_DIR"), ("youtube", "YOUTUBE_DOWNLOAD_DIR")):
+        path = settings.get(key)
         clean = str(path or "").strip()
         if not clean or not os.path.isabs(clean):
             continue
-        ap = os.path.abspath(clean)
-        parsed.append((labels.get(str(source), os.path.basename(ap.rstrip("\\/")) or ap), ap, "metadata"))
+        ap = os.path.realpath(os.path.abspath(clean))
+        parsed.append((labels.get(source, os.path.basename(ap.rstrip("\\/")) or ap), ap, "metadata", source))
 
-    out: List[Tuple[str, str, str, str]] = []
+    out: list[dict[str, Any]] = []
     seen = set()
-    for name, ap, mode in parsed:
-        ap2 = os.path.abspath(ap)
-        key = os.path.normcase(os.path.realpath(ap2))
+    for name, ap, mode, source in parsed:
+        key = os.path.normcase(ap)
         if key in seen:
             continue
         seen.add(key)
-        rid = sha1_text(ap2)
-        out.append((rid, name, ap2, mode))
+        out.append({"id": root_id_for_path(ap), "name": name, "path": ap, "mode": mode, "source": source})
     return out
 
 
-def root_objects() -> List[dict]:
-    download_roots = {
-        os.path.normcase(os.path.realpath(os.path.abspath(str(path)))): str(source)
-        for source, path in (_download_folders_provider() or {}).items()
-        if str(path or "").strip() and os.path.isabs(str(path))
-    }
-    out = []
-    for rid, name, ap, mode in roots():
-        source = download_roots.get(os.path.normcase(os.path.realpath(ap)), "library")
-        out.append({"id": rid, "name": name, "path": ap, "mode": mode, "source": source})
-    return out
+def sync_user_roots(user_id: str, settings: dict[str, Any]) -> list[str]:
+    """Persist one user's root memberships and preserve shared physical IDs."""
+    return replace_user_library_roots(str(user_id or ""), _settings_root_specs(settings))
 
 
-def source_origin_for_path(abs_path: str) -> str:
+def roots(user_id: str | None = None) -> List[Tuple[str, str, str, str]]:
+    rows = user_library_roots(str(user_id)) if user_id is not None else associated_library_roots()
+    return [
+        (
+            str(row.get("root_id") or ""),
+            str(row.get("display_name") or row.get("root_abs") or ""),
+            str(row.get("root_abs") or ""),
+            str(row.get("mode") or "metadata"),
+        )
+        for row in rows
+    ]
+
+
+def root_objects(user_id: str | None = None) -> List[dict]:
+    rows = user_library_roots(str(user_id)) if user_id is not None else associated_library_roots()
+    return [
+        {
+            "id": str(row.get("root_id") or ""),
+            "name": str(row.get("display_name") or row.get("root_abs") or ""),
+            "path": str(row.get("root_abs") or ""),
+            "mode": str(row.get("mode") or "metadata"),
+            "source": str(row.get("source") or "library"),
+        }
+        for row in rows
+    ]
+
+
+def source_origin_for_path(abs_path: str, user_id: str | None = None) -> str:
     candidate = os.path.realpath(os.path.abspath(str(abs_path or "")))
     matches: list[tuple[int, str]] = []
-    for source, root in (_download_folders_provider() or {}).items():
-        clean = str(root or "").strip()
-        if not clean:
-            continue
-        root_abs = os.path.realpath(os.path.abspath(clean))
+    for root in root_objects(user_id):
+        root_abs = str(root.get("path") or "")
         try:
             if os.path.commonpath([root_abs, candidate]) == root_abs:
-                matches.append((len(root_abs), str(source)))
+                matches.append((len(root_abs), str(root.get("source") or "library")))
         except Exception:
             continue
     return max(matches, default=(0, "library"))[1]
 
 
-def root_by_id(root_id: str) -> Optional[Tuple[str, str, str, str]]:
-    for rid, name, ap, mode in roots():
-        if rid == root_id:
+def root_by_id(root_id: str, user_id: str | None = None) -> Optional[Tuple[str, str, str, str]]:
+    if user_id is not None and not user_has_library_root(str(user_id), root_id):
+        return None
+    for rid, name, ap, mode in roots(user_id):
+        if rid == str(root_id or ""):
             return rid, name, ap, mode
     return None
 

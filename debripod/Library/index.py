@@ -553,6 +553,33 @@ def stop_all_index_watchers() -> None:
             pass
 
 
+def stop_index_watcher(root_id: str) -> None:
+    """Stop one physical root watcher when its last user association is gone."""
+    root = str(root_id or "")
+    with INDEX_LOCK:
+        watcher = WATCHERS.pop(root, None)
+        timer = WATCHER_TIMERS.pop(root, None)
+        WATCHER_CHANGED_PATHS.pop(root, None)
+        build = INDEX_BUILD_THREADS.pop(root, None)
+        INDEX_BUILDING.pop(root, None)
+        INDEX_CACHE.pop(root, None)
+    if timer is not None:
+        try:
+            timer.cancel()
+        except Exception:
+            pass
+    if build is not None:
+        try:
+            build[1].set()
+        except Exception:
+            pass
+    if watcher is not None:
+        try:
+            watcher.stop()
+        except Exception:
+            pass
+
+
 def _folder_entries_for_dir(root_abs: str, dir_abs: str) -> tuple[str, list[dict]]:
     rel_dir = os.path.relpath(dir_abs, root_abs).replace("\\", "/")
     rel_dir = "" if rel_dir == "." else rel_dir.strip("/")

@@ -345,6 +345,106 @@ def root_versions() -> dict[str, int]:
     return {str(row["root_id"]): int(row["version"] or 0) for row in rows}
 
 
+def user_library_roots(user_id: str) -> list[dict[str, Any]]:
+    """Return only physical roots explicitly associated with one user."""
+    with library_db() as conn:
+        rows = conn.execute(
+            """SELECT association.root_id,association.display_name,association.mode,association.source,association.sort_order,
+                      physical.root_abs,physical.version
+               FROM user_library_roots AS association
+               JOIN library_roots AS physical ON physical.root_id=association.root_id
+               WHERE association.user_id=?
+               ORDER BY association.sort_order,association.root_id""",
+            (str(user_id or ""),),
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def associated_library_roots() -> list[dict[str, Any]]:
+    """One row per referenced physical root for shared watchers/indexing."""
+    with library_db() as conn:
+        rows = conn.execute(
+            """SELECT physical.root_id,physical.root_abs,physical.mode,physical.version,
+                      MIN(association.display_name) AS display_name,MIN(association.source) AS source
+               FROM library_roots AS physical
+               JOIN user_library_roots AS association ON association.root_id=physical.root_id
+               GROUP BY physical.root_id,physical.root_abs,physical.mode,physical.version
+               ORDER BY physical.root_id"""
+        ).fetchall()
+    return [dict(row) for row in rows]
+
+
+def user_has_library_root(user_id: str, root_id: str) -> bool:
+    with library_db() as conn:
+        row = conn.execute(
+            "SELECT 1 FROM user_library_roots WHERE user_id=? AND root_id=?",
+            (str(user_id or ""), str(root_id or "")),
+        ).fetchone()
+    return row is not None
+
+
+def replace_user_library_roots(user_id: str, roots: list[dict[str, Any]]) -> list[str]:
+    """Replace one user's root memberships and return newly-unreferenced IDs."""
+    owner = str(user_id or "").strip()
+    if not owner:
+        raise ValueError("A user ID is required")
+    now = time.time()
+    clean: list[dict[str, Any]] = []
+    seen: set[str] = set()
+    for order, item in enumerate(roots or []):
+        root_id = str(item.get("root_id") or item.get("id") or "").strip()
+        raw_path = str(item.get("path") or item.get("root_abs") or "").strip()
+        if not root_id or not raw_path or not os.path.isabs(raw_path) or root_id in seen:
+            continue
+        root_abs = os.path.realpath(os.path.abspath(raw_path))
+        seen.add(root_id)
+        clean.append({
+            "root_id": root_id,
+            "root_abs": root_abs,
+            "display_name": str(item.get("name") or item.get("display_name") or os.path.basename(root_abs.rstrip("\\/")) or root_abs),
+            "mode": str(item.get("mode") or "metadata").strip().lower() or "metadata",
+            "source": str(item.get("source") or "library").strip().lower() or "library",
+            "sort_order": order,
+        })
+    with library_db() as conn:
+        existing = {str(row[0]) for row in conn.execute("SELECT root_id FROM user_library_roots WHERE user_id=?", (owner,)).fetchall()}
+        wanted = {row["root_id"] for row in clean}
+        conn.execute("DELETE FROM user_library_roots WHERE user_id=?", (owner,))
+        for row in clean:
+            conn.execute(
+                """INSERT INTO library_roots(root_id,root_abs,mode,version,last_scan_started_at,last_scan_finished_at)
+                   VALUES(?,?,?,?,?,?) ON CONFLICT(root_id) DO UPDATE SET root_abs=excluded.root_abs,mode=excluded.mode""",
+                (row["root_id"], row["root_abs"], row["mode"], 0, None, None),
+            )
+            conn.execute(
+                """INSERT INTO user_library_roots(user_id,root_id,display_name,mode,source,sort_order,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?)""",
+                (owner, row["root_id"], row["display_name"], row["mode"], row["source"], row["sort_order"], now, now),
+            )
+        orphan_rows = conn.execute(
+            """SELECT root_id FROM library_roots WHERE root_id IN ({})
+               AND NOT EXISTS (SELECT 1 FROM user_library_roots WHERE user_library_roots.root_id=library_roots.root_id)""".format(",".join("?" for _ in existing - wanted) if existing - wanted else "''"),
+            tuple(existing - wanted),
+        ).fetchall() if existing - wanted else []
+    return [str(row[0]) for row in orphan_rows]
+
+
+def delete_user_library_roots(user_id: str) -> list[str]:
+    owner = str(user_id or "").strip()
+    with library_db() as conn:
+        previous = [str(row[0]) for row in conn.execute("SELECT root_id FROM user_library_roots WHERE user_id=?", (owner,)).fetchall()]
+        conn.execute("DELETE FROM user_library_roots WHERE user_id=?", (owner,))
+        if not previous:
+            return []
+        placeholders = ",".join("?" for _ in previous)
+        rows = conn.execute(
+            f"""SELECT root_id FROM library_roots WHERE root_id IN ({placeholders})
+                AND NOT EXISTS (SELECT 1 FROM user_library_roots WHERE user_library_roots.root_id=library_roots.root_id)""",
+            previous,
+        ).fetchall()
+    return [str(row[0]) for row in rows]
+
+
 def load_show_aliases(root_id: str) -> dict[str, str]:
     with library_db() as conn:
         rows = conn.execute("SELECT alias_key, show_key FROM show_aliases WHERE root_id = ?", (str(root_id or ""),)).fetchall()

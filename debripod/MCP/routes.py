@@ -473,9 +473,9 @@ async def _mcp_start_slsk_download(user: str, directory: str, files_in: List[Dic
     return {'task_id': task_id, 'task_dir': task_download_dir, 'file_count': len(remote_paths), 'user': user, 'directory': directory}
 
 
-def _mcp_build_library_tree() -> dict:
+def _mcp_build_library_tree(runtime: UserRuntime) -> dict:
     roots_out = []
-    for rid, name, root_abs, mode in roots():
+    for rid, name, root_abs, mode in roots(runtime.user_id):
         tree = {'name': name, 'root_id': rid, 'path': root_abs, 'mode': mode, 'folders': []}
         index: Dict[str, dict] = {'': tree}
         for base, dirs, _files in os.walk(root_abs):
@@ -561,7 +561,7 @@ async def _mcp_handle_tool_call(name: str, args: dict, http, runtime: UserRuntim
         return _mcp_tool_result(data, json.dumps(data, ensure_ascii=False, indent=2))
 
     if name == 'debripod_get_library':
-        data = {'ok': True, **_mcp_build_library_tree()}
+        data = {'ok': True, **_mcp_build_library_tree(runtime)}
         return _mcp_tool_result(data, json.dumps(data, ensure_ascii=False, indent=2))
 
     if name == 'debripod_get_recents':

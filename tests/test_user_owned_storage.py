@@ -2,9 +2,19 @@ from __future__ import annotations
 
 import json
 import sqlite3
+import asyncio
+from pathlib import Path
+from types import SimpleNamespace
 
+import pytest
+from aiohttp import web
+from aiohttp.test_utils import make_mocked_request
+
+from debripod.Library.library_db import associated_library_roots, user_library_roots
+from debripod.Library.roots import root_by_id, sync_user_roots
 from debripod.Library.library_db import clear_search_history, load_search_history, record_search_history_row
 from debripod.playback.state import load_playback_runtime, playback_update_from_client
+from debripod.runtime_routes import USER_RUNTIME_KEY, _hls_access_allowed, _new_hls_access_token, stream
 from debripod.settings import ensure_app_settings, save_app_settings
 from debripod.storage import database, migrations, users
 from debripod.storage.account_deletion import delete_user_owned_data
@@ -35,7 +45,7 @@ def test_v12_migrates_legacy_username_owned_rows_to_user_ids(tmp_path, monkeypat
         conn.execute("INSERT INTO lastfm_loved_tracks(user_id,track_key,loved,metadata_json,updated_at) VALUES(?,?,?,?,?)", ("alice", "artist\\ntrack\\n", 1, "{}", 1))
         conn.commit()
         monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations)
-        assert migrations.migrate(conn) == 12
+        assert migrations.migrate(conn) == 13
 
         assert conn.execute("SELECT value_json FROM app_settings WHERE user_id='user-alice'").fetchone()[0] == json.dumps("D:/alice")
         assert conn.execute("SELECT user_id FROM playback_state WHERE user_id='user-alice'").fetchone()[0] == "user-alice"
@@ -80,6 +90,31 @@ def test_user_owned_settings_playback_history_likes_and_push_are_isolated(tmp_pa
     assert not subscriptions_for_client(bob["user_id"], "phone")
 
 
+def test_v13_migrates_each_users_existing_library_and_download_roots(tmp_path, monkeypatch):
+    db_path = tmp_path / "legacy-roots.sqlite3"
+    media = tmp_path / "media"
+    downloads = tmp_path / "downloads"
+    media.mkdir()
+    downloads.mkdir()
+    monkeypatch.setenv("DEBRIPOD_DATABASE", str(db_path))
+    conn = sqlite3.connect(db_path)
+    try:
+        all_migrations = migrations.MIGRATIONS
+        monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations[:12])
+        assert migrations.migrate(conn) == 12
+        conn.execute("INSERT INTO users(user_id,username,password_hash,role,created_at,updated_at) VALUES(?,?,?,?,?,?)", ("user-alice", "alice", "hash", "owner", 1, 1))
+        conn.execute("INSERT INTO app_settings(user_id,key,value_json,updated_at) VALUES(?,?,?,?)", ("user-alice", "LIBRARY_FOLDERS", json.dumps([{ "path": str(media) }]), 1))
+        conn.execute("INSERT INTO app_settings(user_id,key,value_json,updated_at) VALUES(?,?,?,?)", ("user-alice", "DOWNLOAD_DIR", json.dumps(str(downloads)), 1))
+        conn.commit()
+
+        monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations)
+        assert migrations.migrate(conn) == 13
+        rows = conn.execute("SELECT display_name,source FROM user_library_roots WHERE user_id=? ORDER BY source", ("user-alice",)).fetchall()
+        assert rows == [("Debrid", "debrid"), (media.name, "library")]
+    finally:
+        conn.close()
+
+
 def test_account_deletion_removes_only_the_target_users_records(tmp_path, monkeypatch):
     monkeypatch.setenv("DEBRIPOD_DATABASE", str(tmp_path / "deletion.sqlite3"))
     database.initialize_database()
@@ -117,3 +152,82 @@ def test_account_deletion_removes_only_the_target_users_records(tmp_path, monkey
             assert conn.execute(f"SELECT COUNT(*) FROM {table} WHERE {column}=?", (bob["user_id"],)).fetchone()[0] == 1
         assert conn.execute("SELECT COUNT(*) FROM task_files WHERE task_id=?", ("task-" + alice["user_id"],)).fetchone()[0] == 0
         assert conn.execute("SELECT COUNT(*) FROM media_files WHERE media_id='shared'").fetchone()[0] == 1
+
+
+def test_library_roots_are_user_scoped_and_shared_physical_roots_are_not_duplicated(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEBRIPOD_DATABASE", str(tmp_path / "roots.sqlite3"))
+    database.initialize_database()
+    alice = users.create_user("alice", "hash", role="owner")
+    bob = users.create_user("bob", "hash", role="user")
+    alice_only = tmp_path / "alice-only"
+    bob_only = tmp_path / "bob-only"
+    shared = tmp_path / "shared"
+    for directory in (alice_only, bob_only, shared):
+        directory.mkdir()
+
+    sync_user_roots(alice["user_id"], {"LIBRARY_FOLDERS": [{"path": str(alice_only)}, {"path": str(shared)}]})
+    sync_user_roots(bob["user_id"], {"LIBRARY_FOLDERS": [{"path": str(bob_only)}, {"path": str(shared)}]})
+
+    alice_rows = user_library_roots(alice["user_id"])
+    bob_rows = user_library_roots(bob["user_id"])
+    alice_ids = {row["root_id"] for row in alice_rows}
+    bob_ids = {row["root_id"] for row in bob_rows}
+    shared_id = next(row["root_id"] for row in alice_rows if row["root_abs"] == str(shared.resolve()))
+    bob_only_id = next(row["root_id"] for row in bob_rows if row["root_abs"] == str(bob_only.resolve()))
+
+    assert shared_id in bob_ids
+    assert alice_ids - {shared_id}
+    assert bob_ids - {shared_id}
+    assert root_by_id(bob_only_id, alice["user_id"]) is None
+    assert root_by_id(bob_only_id, bob["user_id"])
+    assert [row["root_id"] for row in associated_library_roots()].count(shared_id) == 1
+
+    orphaned = sync_user_roots(alice["user_id"], {"LIBRARY_FOLDERS": []})
+    assert shared_id not in orphaned
+    assert not user_library_roots(alice["user_id"])
+    assert root_by_id(shared_id, bob["user_id"])
+    assert any(row["root_id"] == shared_id for row in associated_library_roots())
+
+
+def test_stream_route_rejects_a_root_not_associated_with_the_user(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEBRIPOD_DATABASE", str(tmp_path / "hls-roots.sqlite3"))
+    database.initialize_database()
+    alice = users.create_user("alice", "hash", role="owner")
+    bob = users.create_user("bob", "hash", role="user")
+    bob_root = tmp_path / "bob-library"
+    bob_root.mkdir()
+    (bob_root / "private.mp3").write_bytes(b"not a real mp3")
+    sync_user_roots(bob["user_id"], {"LIBRARY_FOLDERS": [{"path": str(bob_root)}]})
+    bob_root_id = user_library_roots(bob["user_id"])[0]["root_id"]
+
+    request = make_mocked_request("GET", f"/stream/{bob_root_id}/private.mp3", match_info={"root_id": bob_root_id, "relpath": "private.mp3"})
+    request[USER_RUNTIME_KEY] = SimpleNamespace(user_id=alice["user_id"])
+    with pytest.raises(web.HTTPNotFound):
+        asyncio.run(stream(request))
+
+
+def test_hls_segment_token_requires_the_manifest_users_root_membership(tmp_path, monkeypatch):
+    monkeypatch.setenv("DEBRIPOD_DATABASE", str(tmp_path / "hls-token-roots.sqlite3"))
+    database.initialize_database()
+    alice = users.create_user("alice", "hash", role="owner")
+    bob = users.create_user("bob", "hash", role="user")
+    bob_root = tmp_path / "bob-library"
+    bob_root.mkdir()
+    sync_user_roots(bob["user_id"], {"LIBRARY_FOLDERS": [{"path": str(bob_root)}]})
+    bob_root_id = user_library_roots(bob["user_id"])[0]["root_id"]
+    token = _new_hls_access_token(bob["user_id"], bob_root_id, "cache-key")
+
+    assert _hls_access_allowed(token, bob["user_id"], "cache-key")
+    assert not _hls_access_allowed(token, alice["user_id"], "cache-key")
+    sync_user_roots(bob["user_id"], {"LIBRARY_FOLDERS": []})
+    assert not _hls_access_allowed(token, bob["user_id"], "cache-key")
+
+
+def test_mobile_library_folder_controls_are_capability_based_and_read_only():
+    project_root = Path(__file__).resolve().parents[1]
+    platform = (project_root / "debripod/static/js/platform.js").read_text(encoding="utf-8")
+    settings_ui = (project_root / "debripod/static/js/settings-ui.js").read_text(encoding="utf-8")
+    assert "canEditLibraryFolders" in platform
+    assert "pointer: coarse" in platform
+    assert "Library folders can be changed from a desktop browser." in settings_ui
+    assert "disabled:!editable" in settings_ui

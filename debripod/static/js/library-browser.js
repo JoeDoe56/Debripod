@@ -1488,6 +1488,7 @@ if(it.kind === "libtasks_entry"){
     }
 
     if(it.kind === "settings_add_library_folder"){
+      if(window.DebriPodPlatform && window.DebriPodPlatform.canEditLibraryFolders === false) return;
       const setupReturnPage = String(it.setupReturnPage || "");
       const picked = setupReturnPage && typeof setupPickPath === "function" ? await setupPickPath("directory") : await settingsPickPath("directory");
       if(!picked){
@@ -1512,6 +1513,7 @@ if(it.kind === "libtasks_entry"){
     }
 
     if(it.kind === "settings_library_remove"){
+      if(window.DebriPodPlatform && window.DebriPodPlatform.canEditLibraryFolders === false) return;
       const cur = state.current || {};
       const setupReturnPage = String(cur.setupReturnPage || "");
       if(setupReturnPage && typeof viewSetupRemoveFolderConfirm === "function"){

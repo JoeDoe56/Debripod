@@ -17,7 +17,7 @@ def test_migration_creates_verified_backup_before_advancing(tmp_path, monkeypatc
         monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations[:9])
         assert migrations.migrate(conn) == 9
         monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations)
-        assert migrations.migrate(conn) == 12
+        assert migrations.migrate(conn) == 13
     finally:
         conn.close()
 

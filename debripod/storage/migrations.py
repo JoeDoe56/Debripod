@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import sqlite3
 import time
+import hashlib
+import json
+import os
 from collections.abc import Callable
 
 from .backups import create_backup
@@ -316,6 +319,78 @@ def _v12(conn: sqlite3.Connection) -> None:
     """)
 
 
+def _v13(conn: sqlite3.Connection) -> None:
+    """Create user-to-root associations without duplicating physical roots."""
+    conn.executescript("""
+    CREATE TABLE IF NOT EXISTS user_library_roots(
+      user_id TEXT NOT NULL,
+      root_id TEXT NOT NULL,
+      display_name TEXT NOT NULL DEFAULT '',
+      mode TEXT NOT NULL DEFAULT 'metadata',
+      source TEXT NOT NULL DEFAULT 'library',
+      sort_order INTEGER NOT NULL DEFAULT 0,
+      created_at REAL NOT NULL,
+      updated_at REAL NOT NULL,
+      PRIMARY KEY(user_id,root_id)
+    );
+    CREATE INDEX IF NOT EXISTS idx_user_library_roots_user_order ON user_library_roots(user_id,sort_order,root_id);
+    CREATE INDEX IF NOT EXISTS idx_user_library_roots_root ON user_library_roots(root_id,user_id);
+    """)
+    now = time.time()
+    rows = conn.execute(
+        """SELECT user_id,key,value_json FROM app_settings
+           WHERE user_id<>'' AND key IN ('LIBRARY_FOLDERS','DOWNLOAD_DIR','SOULSEEK_DOWNLOAD_DIR','YOUTUBE_DOWNLOAD_DIR')"""
+    ).fetchall()
+    settings_by_user: dict[str, dict[str, object]] = {}
+    for user_id, key, raw_value in rows:
+        try:
+            value = json.loads(str(raw_value or "null"))
+        except (TypeError, ValueError):
+            value = None
+        settings_by_user.setdefault(str(user_id), {})[str(key)] = value
+    labels = {
+        "DOWNLOAD_DIR": ("Debrid", "debrid"),
+        "SOULSEEK_DOWNLOAD_DIR": ("Soulseek", "soulseek"),
+        "YOUTUBE_DOWNLOAD_DIR": ("YouTube", "youtube"),
+    }
+    for user_id, settings in settings_by_user.items():
+        raw_value = settings.get("LIBRARY_FOLDERS")
+        try:
+            folders = raw_value if isinstance(raw_value, list) else []
+        except TypeError:
+            folders = []
+        specs: list[tuple[str, str, str, str]] = []
+        for spec in folders:
+            if isinstance(spec, dict):
+                specs.append((str(spec.get("path") or ""), "", str(spec.get("mode") or "metadata"), "library"))
+        for key, (label, source) in labels.items():
+            path = settings.get(key)
+            if isinstance(path, str) and path.strip():
+                specs.append((path, label, "metadata", source))
+        seen_paths: set[str] = set()
+        for order, (raw_path, display_name, raw_mode, source) in enumerate(specs):
+            path = str(raw_path or "").strip().strip('"').strip("'")
+            if not path or not os.path.isabs(path):
+                continue
+            root_abs = os.path.realpath(os.path.abspath(path))
+            if os.path.normcase(root_abs) in seen_paths:
+                continue
+            seen_paths.add(os.path.normcase(root_abs))
+            root_id = hashlib.sha1(root_abs.encode("utf-8", "ignore")).hexdigest()
+            name = display_name or os.path.basename(root_abs.rstrip("\\/")) or root_abs
+            mode = str(raw_mode or "metadata").strip().lower() or "metadata"
+            conn.execute(
+                """INSERT OR IGNORE INTO library_roots(root_id,root_abs,mode,version,last_scan_started_at,last_scan_finished_at)
+                   VALUES(?,?,?,?,?,?)""",
+                (root_id, root_abs, mode, 0, None, None),
+            )
+            conn.execute(
+                """INSERT OR IGNORE INTO user_library_roots(user_id,root_id,display_name,mode,source,sort_order,created_at,updated_at)
+                   VALUES(?,?,?,?,?,?,?,?)""",
+                (str(user_id), root_id, name, mode, source, order, now, now),
+            )
+
+
 MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (1, "structured_state", _v1),
     (2, "compact_palettes", _v2),
@@ -329,6 +404,7 @@ MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = 
     (10, "migration_backup_foundation", _v10),
     (11, "immutable_user_roles", _v11),
     (12, "canonical_user_owned_state", _v12),
+    (13, "user_library_root_associations", _v13),
 )
 
 
