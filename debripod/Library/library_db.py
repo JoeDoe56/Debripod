@@ -936,10 +936,10 @@ def save_search_cache(cache_key: str, engine: str, q: str, extra: Optional[dict]
         )
 
 
-def load_search_history(max_items: int = 0) -> list[dict[str, Any]]:
+def load_search_history(max_items: int = 0, *, user_id: str = "") -> list[dict[str, Any]]:
     limit = max(0, int(max_items or 0))
-    sql = "SELECT query, engine, cache_key, ts FROM search_history ORDER BY ts DESC"
-    params: list[Any] = []
+    sql = "SELECT query, engine, cache_key, ts FROM search_history WHERE user_id=? ORDER BY ts DESC"
+    params: list[Any] = [str(user_id or "")]
     if limit:
         sql += " LIMIT ?"
         params.append(limit)
@@ -956,35 +956,40 @@ def load_search_history(max_items: int = 0) -> list[dict[str, Any]]:
     ]
 
 
-def record_search_history_row(q: str, engine: str, cache_key: str, *, max_items: int = 0) -> None:
+def record_search_history_row(q: str, engine: str, cache_key: str, *, max_items: int = 0, user_id: str = "") -> None:
     qq = str(q or "").strip()
     eng = str(engine or "").strip().lower()
     key = str(cache_key or "").strip()
     if not qq or not eng or not key:
         return
+    owner = str(user_id or "")
     with library_db() as conn:
-        conn.execute("DELETE FROM search_history WHERE query = ? AND engine = ?", (qq, eng))
+        conn.execute("DELETE FROM search_history WHERE user_id=? AND query=? AND engine=?", (owner, qq, eng))
         conn.execute(
-            "INSERT INTO search_history(query, engine, cache_key, ts) VALUES(?, ?, ?, ?)",
-            (qq, eng, key, time.time()),
+            "INSERT INTO search_history(user_id, query, engine, cache_key, ts) VALUES(?, ?, ?, ?, ?)",
+            (owner, qq, eng, key, time.time()),
         )
         limit = max(0, int(max_items or 0))
         if limit:
             conn.execute(
                 """
                 DELETE FROM search_history
-                WHERE id NOT IN (
-                  SELECT id FROM search_history ORDER BY ts DESC LIMIT ?
+                WHERE user_id=? AND id NOT IN (
+                  SELECT id FROM search_history WHERE user_id=? ORDER BY ts DESC LIMIT ?
                 )
                 """,
-                (limit,),
+                (owner, owner, limit),
             )
+
+
+def clear_search_history(*, user_id: str) -> None:
+    with library_db() as conn:
+        conn.execute("DELETE FROM search_history WHERE user_id=?", (str(user_id or ""),))
 
 
 def clear_search_cache() -> None:
     with library_db() as conn:
         conn.execute("DELETE FROM search_cache")
-        conn.execute("DELETE FROM search_history")
 
 
 def clear_library_cache() -> None:

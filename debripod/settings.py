@@ -120,6 +120,8 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {'APP_NAME': 'DebriPod',
  'LASTFM_API_KEY': '',
  'LASTFM_API_SECRET': '',
  'LASTFM_SESSION_KEY': '',
+ 'LASTFM_USERNAME': '',
+ 'LASTFM_SESSION_UPDATED': 0,
  'LASTFM_CALLBACK_URL': '',
  'LASTFM_API_ROOT': 'https://ws.audioscrobbler.com/2.0/',
  'LASTFM_REQUEST_TIMEOUT_SECONDS': 12,
@@ -148,13 +150,13 @@ def _user_settings_path(username: str) -> Path:
     return PACKAGE_ROOT / "data" / "users" / digest / "settings.json"
 
 
-def default_app_settings(username: str | None = None, defaults_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+def default_app_settings(user_id: str | None = None, defaults_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
     out = dict(DEFAULT_APP_SETTINGS)
     for key, value in (defaults_overrides or {}).items():
         key_upper = str(key).upper()
         if key_upper in APP_SETTING_KEYS and key_upper not in SECRET_SETTING_KEYS:
             out[key_upper] = _coerce_setting(key_upper, value)
-    if str(username or "").strip():
+    if str(user_id or "").strip():
         out["LIBRARY_FOLDERS"] = []
     return out
 
@@ -168,15 +170,17 @@ def ui_setting_updates(value: Any) -> dict[str, Any]:
     return {key: item for key, item in out.items() if item is not None}
 
 
-def _settings_path(username: str | None = None) -> Path:
-    username = str(username or "").strip()
-    if username:
-        return _user_settings_path(username)
+def _settings_path(user_id: str | None = None) -> Path:
+    user_id = str(user_id or "").strip()
+    if user_id:
+        # This path is only retained to import pre-database JSON settings. New
+        # user-owned settings live in SQLite under the immutable user ID.
+        return _user_settings_path(user_id)
     return SETTINGS_PATH
 
 
-def settings_fingerprint(username: str | None = None) -> tuple[int, int]:
-    return settings_repository.fingerprint(str(username or ""))
+def settings_fingerprint(user_id: str | None = None) -> tuple[int, int]:
+    return settings_repository.fingerprint(str(user_id or ""))
 
 
 def _coerce_setting(key: str, value: Any) -> Any:
@@ -245,8 +249,8 @@ def _coerce_setting(key: str, value: Any) -> Any:
     return "" if value is None else str(value)
 
 
-def normalize_settings(data: dict[str, Any], username: str | None = None, defaults_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
-    out = default_app_settings(username, defaults_overrides=defaults_overrides)
+def normalize_settings(data: dict[str, Any], user_id: str | None = None, defaults_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+    out = default_app_settings(user_id, defaults_overrides=defaults_overrides)
     for key, value in (data or {}).items():
         key_upper = str(key).upper()
         if key_upper in APP_SETTING_KEYS:
@@ -265,16 +269,16 @@ def _secret_service(key: str, values: dict[str, Any]) -> str:
     return key
 
 
-def _load_saved_secrets(values: dict[str, Any], username: str | None) -> None:
-    user_id = str(username or "global")
+def _load_saved_secrets(values: dict[str, Any], user_id: str | None) -> None:
+    user_id = str(user_id or "global")
     status = saved_status(user_id)
     for key in SECRET_SETTING_KEYS:
         service = _secret_service(key, values)
         values[key] = get_secret(user_id, service) if bool((status.get(service) or {}).get("saved")) else ""
 
 
-def _save_secret_updates(updates: dict[str, Any], current: dict[str, Any], username: str | None) -> None:
-    user_id = str(username or "global")
+def _save_secret_updates(updates: dict[str, Any], current: dict[str, Any], user_id: str | None) -> None:
+    user_id = str(user_id or "global")
     for key, value in updates.items():
         key_upper = str(key).upper()
         if key_upper not in SECRET_SETTING_KEYS or value == "***":
@@ -284,11 +288,57 @@ def _save_secret_updates(updates: dict[str, Any], current: dict[str, Any], usern
         current[key_upper] = clean
 
 
-def ensure_app_settings(startup_config: dict[str, Any] | None = None, username: str | None = None, defaults_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
-    path = _settings_path(username)
-    raw = settings_repository.load(str(username or ""))
+def migrate_user_secrets(legacy_username: str, user_id: str) -> None:
+    """Copy legacy username-keyed secrets to a stable user ID once.
+
+    Keyring contents cannot be migrated by an SQLite schema transaction, so
+    this deliberately best-effort bridge runs when a user runtime is created.
+    A failed or unavailable keyring never destroys the legacy secret.
+    """
+    old_scope = str(legacy_username or "").strip()
+    new_scope = str(user_id or "").strip()
+    if not old_scope or not new_scope or old_scope == new_scope:
+        return
+    services = {_secret_service(key, {}) for key in SECRET_SETTING_KEYS}
+    try:
+        services.update(saved_status(old_scope).keys())
+    except Exception:
+        pass
+    for service in services:
+        try:
+            value = get_secret(old_scope, service)
+            if value:
+                set_secret(new_scope, service, value)
+                set_secret(old_scope, service, "")
+        except Exception:
+            continue
+
+
+def ensure_app_settings(
+    startup_config: dict[str, Any] | None = None,
+    user_id: str | None = None,
+    defaults_overrides: dict[str, Any] | None = None,
+    *,
+    legacy_username: str | None = None,
+    username: str | None = None,
+) -> dict[str, Any]:
+    """Load settings for a stable user ID.
+
+    ``username`` is an intentionally narrow compatibility input for callers
+    upgrading from the old API. Runtime request paths pass only ``user_id``.
+    ``legacy_username`` is used solely to import a retired JSON settings file.
+    """
+    if user_id is None and username is not None:
+        user_id = username
+    scope = str(user_id or "").strip()
+    path = _settings_path(scope)
+    legacy_path = path
+    raw = settings_repository.load(scope)
     changed = not bool(raw)
     legacy_value = read_legacy_json(path)
+    if not legacy_value and legacy_username:
+        legacy_path = _user_settings_path(str(legacy_username))
+        legacy_value = read_legacy_json(legacy_path)
     legacy = legacy_value if isinstance(legacy_value, dict) else {}
     if legacy and not raw:
         raw = dict(legacy)
@@ -302,42 +352,51 @@ def ensure_app_settings(startup_config: dict[str, Any] | None = None, username: 
         raw.update(ui_setting_updates(old_ui_defaults))
         changed = True
     merged = dict(raw)
-    if not username:
+    if not scope:
         for key, value in (startup_config or {}).items():
             key_upper = str(key).upper()
             if key_upper in APP_SETTING_KEYS and key_upper not in merged:
                 merged[key_upper] = value
                 changed = True
-    normalized = normalize_settings(merged, username=username, defaults_overrides=defaults_overrides)
+    normalized = normalize_settings(merged, user_id=scope, defaults_overrides=defaults_overrides)
     legacy_secrets = {key: normalized.get(key) for key in SECRET_SETTING_KEYS if normalized.get(key)}
     if legacy_secrets:
-        _save_secret_updates(legacy_secrets, normalized, username)
+        _save_secret_updates(legacy_secrets, normalized, scope)
     if not str(normalized.get("DEBRID_PROVIDER") or "").strip():
         if str(normalized.get("REAL_DEBRID_API_KEY") or "").strip():
             normalized["DEBRID_PROVIDER"] = "real_debrid"
             changed = True
     persisted = _persistable_settings(normalized)
     if changed or persisted != raw:
-        settings_repository.save(persisted, str(username or ""))
-    if legacy and path.is_file():
+        settings_repository.save(persisted, scope)
+    if legacy and legacy_path.is_file():
         try:
-            retire_legacy(path)
+            retire_legacy(legacy_path)
         except OSError:
             pass
-    _load_saved_secrets(normalized, username)
+    _load_saved_secrets(normalized, scope)
     return normalized
 
 
-def save_app_settings(updates: dict[str, Any], username: str | None = None, defaults_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
-    current = ensure_app_settings(username=username, defaults_overrides=defaults_overrides)
-    _save_secret_updates(updates, current, username)
+def save_app_settings(
+    updates: dict[str, Any],
+    user_id: str | None = None,
+    defaults_overrides: dict[str, Any] | None = None,
+    *,
+    username: str | None = None,
+) -> dict[str, Any]:
+    if user_id is None and username is not None:
+        user_id = username
+    scope = str(user_id or "").strip()
+    current = ensure_app_settings(user_id=scope, defaults_overrides=defaults_overrides)
+    _save_secret_updates(updates, current, scope)
     for key, value in (updates or {}).items():
         key_upper = str(key).upper()
         if key_upper in APP_SETTING_KEYS and key_upper not in NON_PERSISTED_APP_SETTING_KEYS and key_upper not in SECRET_SETTING_KEYS:
             current[key_upper] = _coerce_setting(key_upper, value)
-    current = normalize_settings(current, username=username, defaults_overrides=defaults_overrides)
-    settings_repository.save(_persistable_settings(current), str(username or ""))
-    _load_saved_secrets(current, username)
+    current = normalize_settings(current, user_id=scope, defaults_overrides=defaults_overrides)
+    settings_repository.save(_persistable_settings(current), scope)
+    _load_saved_secrets(current, scope)
     return current
 
 

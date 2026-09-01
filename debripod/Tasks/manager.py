@@ -17,6 +17,7 @@ class Task:
     magnet: str
     task_dir: str
     owner: str = ""
+    owner_user_id: str = ""
     source: str = "debrid"  # "debrid", "soulseek", or "youtube"
 
     # Pause control (set pause_event to pause; clear to resume)
@@ -66,6 +67,14 @@ class Task:
 
     downloads_complete: bool = False
     cancel_event: threading.Event = field(default_factory=threading.Event)
+
+    def __post_init__(self) -> None:
+        # ``owner`` was the historic username field. Keep it mirrored while
+        # old task state remains readable, but make ownership authoritative by
+        # immutable ID from this point forward.
+        canonical = str(self.owner_user_id or self.owner or "").strip()
+        self.owner_user_id = canonical
+        self.owner = canonical
 
 
 TASKS: Dict[str, Task] = {}
@@ -121,21 +130,27 @@ def list_tasks() -> List[Task]:
         return sorted(TASKS.values(), key=lambda x: x.created, reverse=True)
 
 
-def list_tasks_for_owner(owner: str) -> List[Task]:
-    clean_owner = str(owner or "").strip()
+def list_tasks_for_user(user_id: str) -> List[Task]:
+    clean_user_id = str(user_id or "").strip()
     with TASKS_LOCK:
         return sorted(
-            [t for t in TASKS.values() if str(getattr(t, "owner", "") or "").strip() == clean_owner],
+            [t for t in TASKS.values() if str(getattr(t, "owner_user_id", "") or "").strip() == clean_user_id],
             key=lambda x: x.created,
             reverse=True,
         )
 
 
-def task_belongs_to_owner(task_id: str, owner: str) -> bool:
-    clean_owner = str(owner or "").strip()
+def task_belongs_to_user(task_id: str, user_id: str) -> bool:
+    clean_user_id = str(user_id or "").strip()
     with TASKS_LOCK:
         t = TASKS.get(task_id)
-        return bool(t and str(getattr(t, "owner", "") or "").strip() == clean_owner)
+        return bool(t and str(getattr(t, "owner_user_id", "") or "").strip() == clean_user_id)
+
+
+# Compatibility imports for third-party task workers. Application request
+# routes use the explicit immutable-ID helpers above.
+list_tasks_for_owner = list_tasks_for_user
+task_belongs_to_owner = task_belongs_to_user
 
 
 def cancel_task(task_id: str) -> bool:
@@ -443,12 +458,12 @@ def clear_task(task_id: str) -> bool:
     return True
 
 
-def clear_all_tasks(owner: str | None = None) -> None:
+def clear_all_tasks(user_id: str | None = None) -> None:
     slsk_ids: List[str] = []
-    clean_owner = str(owner or "").strip()
+    clean_user_id = str(user_id or "").strip()
     with TASKS_LOCK:
         for t in list(TASKS.values()):
-            if owner is not None and str(getattr(t, "owner", "") or "").strip() != clean_owner:
+            if user_id is not None and str(getattr(t, "owner_user_id", "") or "").strip() != clean_user_id:
                 continue
             if t.state not in ("done", "error", "canceled"):
                 try:

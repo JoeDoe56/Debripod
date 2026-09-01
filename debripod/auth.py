@@ -12,11 +12,14 @@ from urllib.parse import quote, urlparse
 from aiohttp import web
 
 from .config import ensure_startup_security_config, save_config
-from .factory import json_response, session_for
+from .factory import SERVICES_KEY, json_response, session_for
 from .passwords import generate_password_hash, password_hash_supported, verify_password_hash
 from .settings import ensure_app_settings
 from .storage import sessions as session_repository
 from .storage import users as user_repository
+from .storage.account_deletion import delete_user_owned_data
+from .secrets import delete_user_secrets
+from .Tasks.manager import clear_all_tasks
 from .Library.library_db import (
     passkey_by_credential_id,
     passkeys_for_user,
@@ -264,20 +267,24 @@ def _create_user(username: str, password: str) -> tuple[bool, str]:
     users = _valid_users()
     if any(str(u.get("username") or "").strip().lower() == username.lower() for u in users):
         return False, "User already exists"
-    user_repository.create_user(username, generate_password_hash(password), role="owner" if not users else "user")
-    _initialize_new_user_settings(username)
+    created = user_repository.create_user(username, generate_password_hash(password), role="owner" if not users else "user")
+    _initialize_new_user_settings(created)
     return True, ""
 
 
-def _initialize_new_user_settings(username: str) -> None:
-    # ``ensure_app_settings`` restores a retired legacy settings file when one
-    # exists and otherwise creates defaults for a genuinely new username.  Do
-    # not overwrite an existing user's library and completed-wizard state when
-    # repairing or recreating only their login credential.
-    ensure_app_settings(username=username)
+def _initialize_new_user_settings(user: dict[str, Any] | str) -> None:
+    """Create settings under the immutable ID, importing old JSON once."""
+    if isinstance(user, str):
+        # Compatibility for maintenance callers that predate immutable IDs.
+        ensure_app_settings(user_id=user)
+        return
+    ensure_app_settings(
+        user_id=str(user.get("user_id") or ""),
+        legacy_username=str(user.get("username") or ""),
+    )
 
 
-def _delete_current_user(request: web.Request, password: str) -> tuple[bool, str, bool]:
+async def _delete_current_user(request: web.Request, password: str) -> tuple[bool, str, bool]:
     active = current_user(request)
     if not active:
         return False, "Authentication required", _setup_needed()
@@ -288,14 +295,15 @@ def _delete_current_user(request: web.Request, password: str) -> tuple[bool, str
     remaining = [u for u in _valid_users() if str(u.get("user_id") or u.get("id") or "") != active.user_id]
     if active.role == "owner" and remaining:
         return False, "Transfer ownership before deleting an owner account.", False
-    try:
-      for item in passkeys_for_user(active.user_id):
-          credential_id = str(item.get("credential_id") or "")
-          if credential_id:
-              revoke_passkey(active.user_id, credential_id)
-    except Exception:
-        pass
-    session_repository.revoke_user(active.user_id)
+    # Stop user-owned workers before their persisted task rows disappear.
+    services = request.app.get(SERVICES_KEY)
+    registry = getattr(services, "user_runtimes", None)
+    if registry is not None:
+        await registry.close_user_runtime(active.user_id)
+    clear_all_tasks(active.user_id)
+    delete_user_secrets(active.user_id)
+    delete_user_secrets(active.username)
+    delete_user_owned_data(active.user_id)
     user_repository.delete_user(active.user_id)
     session_for(request).clear()
     return True, "", not bool(remaining)
@@ -524,7 +532,7 @@ def register_auth_routes(app: web.Application) -> None:
                 raise web.HTTPFound(location="/setup?error=1")
             else:
                 first_user = user_repository.create_user(username, generate_password_hash(password), role="owner")
-                _initialize_new_user_settings(username)
+                _initialize_new_user_settings(first_user)
                 _set_session_user(request, first_user)
                 _mark_recent_password_auth(request)
                 _csrf_token(request)
@@ -780,7 +788,7 @@ def register_auth_routes(app: web.Application) -> None:
         if not _is_logged_in(request):
             return json_response(ok=False, error="Authentication required", status=401)
         data = await request.json()
-        ok, error, setup_required = _delete_current_user(request, str(data.get("password") or ""))
+        ok, error, setup_required = await _delete_current_user(request, str(data.get("password") or ""))
         if not ok:
             return json_response(ok=False, error=error or "Could not delete user", status=400)
         return json_response(ok=True, setup_required=bool(setup_required))

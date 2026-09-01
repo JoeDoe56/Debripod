@@ -30,6 +30,7 @@ class UserRuntime:
     settings_signature: tuple[int, int]
     search_runtime: Any = None
     soulseek_service: Any = None
+    lastfm: Any = None
     streams: SearchStreamStore = field(default_factory=SearchStreamStore)
     playback: PlaybackRuntime = field(default_factory=PlaybackRuntime)
     search_history: list[dict[str, Any]] = field(default_factory=list)

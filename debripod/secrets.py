@@ -71,6 +71,25 @@ def delete_secret(user_id: str, service: str) -> None:
     set_secret(user_id, service, "")
 
 
+def delete_user_secrets(user_id: str) -> None:
+    """Best-effort removal of every keyring entry associated with one user."""
+    owner = str(user_id or "").strip()
+    if not owner:
+        return
+    try:
+        services = set(saved_status(owner))
+    except Exception:
+        services = set()
+    services.update(SECRET_SERVICES)
+    for service in services:
+        try:
+            delete_secret(owner, service)
+        except Exception:
+            # Account deletion still clears every database reference even when
+            # an operating-system keyring is temporarily unavailable.
+            continue
+
+
 def saved_status(user_id: str) -> dict[str, dict[str, object]]:
     with database(write=False) as conn:
         rows = conn.execute("SELECT service,saved,keyring_ref,provider_identity,updated_at FROM service_status WHERE user_id=?", (str(user_id or ""),)).fetchall()

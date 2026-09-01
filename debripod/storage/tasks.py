@@ -20,14 +20,14 @@ def save_task_metadata(task: Any, *, original_result_title: str = "", remote_fil
     state = {key: value for key, value in vars(task).items() if key not in {"pause_event", "cancel_event"}}
     state_payload = json.dumps(state, separators=(",", ":"), ensure_ascii=False, default=str)
     with database() as conn:
-        conn.execute("""INSERT INTO tasks(task_id,owner,source,title,original_result_title,task_dir,provider,remote_task_id,
+        conn.execute("""INSERT INTO tasks(task_id,owner,owner_user_id,source,title,original_result_title,task_dir,provider,remote_task_id,
           source_blob,source_codec,source_uncompressed_bytes,state_json,created_at,updated_at,version,origin_client_id)
-          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET owner=excluded.owner,source=excluded.source,
+          VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?) ON CONFLICT(task_id) DO UPDATE SET owner=excluded.owner,owner_user_id=excluded.owner_user_id,source=excluded.source,
           title=excluded.title,original_result_title=excluded.original_result_title,task_dir=excluded.task_dir,provider=excluded.provider,
           remote_task_id=excluded.remote_task_id,source_blob=excluded.source_blob,source_codec=excluded.source_codec,
           source_uncompressed_bytes=excluded.source_uncompressed_bytes,updated_at=excluded.updated_at,version=excluded.version,
           origin_client_id=excluded.origin_client_id""",
-          (task_id, str(getattr(task, "owner", "") or ""), str(getattr(task, "source", "debrid") or "debrid"),
+          (task_id, str(getattr(task, "owner_user_id", "") or getattr(task, "owner", "") or ""), str(getattr(task, "owner_user_id", "") or getattr(task, "owner", "") or ""), str(getattr(task, "source", "debrid") or "debrid"),
            str(getattr(task, "title", "") or ""), str(original_result_title or ""), str(getattr(task, "task_dir", "") or ""),
            str(getattr(task, "debrid_provider", "") or ""), normalize_identifier(getattr(task, "debrid_task_id", None)) or "", blob, codec_name,
            raw_len, state_payload, float(getattr(task, "created", now) or now), now, str(version or ""),

@@ -37,8 +37,8 @@ class DownloadHTTPError(RuntimeError):
 def _debrid_settings(task: Task) -> dict[str, Any]:
     # Background workers cannot rely on module globals: those contain the
     # process defaults, while a queued task belongs to a specific user.
-    owner = str(getattr(task, "owner", "") or "").strip()
-    saved = ensure_app_settings(username=owner or None)
+    user_id = str(getattr(task, "owner_user_id", "") or getattr(task, "owner", "") or "").strip()
+    saved = ensure_app_settings(user_id=user_id or None)
     keys = (
         "DEBRID_PROVIDER", "REAL_DEBRID_API_KEY", "RD_BASE",
         "ALLDEBRID_API_KEY", "ALLDEBRID_BASE", "PREMIUMIZE_API_KEY", "PREMIUMIZE_BASE",

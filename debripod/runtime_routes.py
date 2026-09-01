@@ -45,7 +45,7 @@ from .factory import AppServices, SERVICES_KEY, json_response, session_for, sess
 from .auth import _csrf_token, auth_middleware, current_user, register_auth_routes
 from .Routes.notifications import register_notification_routes
 from .config import _coerce_config_value, ensure_startup_security_config, load_default_app_config_overrides, save_config, save_default_app_config_overrides
-from .Library.library_db import load_folder_entries, load_palette, load_palette_for_media, load_visualizer_analysis_for_media, save_folder_entries, save_palette
+from .Library.library_db import clear_search_history, load_folder_entries, load_palette, load_palette_for_media, load_search_history, load_visualizer_analysis_for_media, record_search_history_row, save_folder_entries, save_palette
 from .Library.index import build_index_for_root, set_index_cache
 from .Library.metadata import file_meta_cached
 from .Library.video_parse import duration_text, normalize_show_key, show_keys_close
@@ -57,11 +57,12 @@ from .storage.palettes import load_video_timeline
 from .storage.media_likes import get_media_like, list_media_likes, set_media_like
 from .Services.debrid import DebridAuthError, DebridProviderError, get_active_provider, get_provider, provider_specs, provider_status as debrid_provider_status
 from .Services.debrid.identifiers import normalize_identifier
-from .Tasks.manager import task_belongs_to_owner
+from .Tasks.manager import task_belongs_to_user
 from .user_runtime import USER_RUNTIME_KEY, UserRuntime, UserRuntimeRegistry, user_runtime_for
 from .runtime_state import *
 from .runtime_downloads import *
-from .settings import APP_SETTING_KEYS, DEFAULT_APP_SETTINGS, DEFAULT_UI_SETTINGS, SECRET_SETTING_KEYS, default_app_settings, executable_status, ensure_app_settings, masked_settings, pick_system_path, save_app_settings, settings_fingerprint
+from .settings import APP_SETTING_KEYS, DEFAULT_APP_SETTINGS, DEFAULT_UI_SETTINGS, SECRET_SETTING_KEYS, default_app_settings, executable_status, ensure_app_settings, masked_settings, migrate_user_secrets, pick_system_path, save_app_settings, settings_fingerprint
+from .playback.state import load_playback_runtime
 
 # =========================
 # aiohttp runtime state
@@ -95,7 +96,7 @@ def _runtime_settings(request: web.Request) -> dict[str, Any]:
 
 
 def _settings_scope(request: web.Request) -> str:
-    """Compatibility scope until Stage 4 migrates existing settings rows to IDs."""
+    """The immutable user ID used for all request-owned settings."""
     return user_runtime_for(request).settings_scope
 
 
@@ -114,6 +115,7 @@ def _record_user_search_history(runtime: UserRuntime, query: str, source: str, c
     except Exception:
         limit = 100
     runtime.search_history[:] = history[:limit]
+    record_search_history_row(item["q"], item["source"], item["cache_key"], max_items=limit, user_id=runtime.user_id)
 
 
 async def _create_soulseek_service(settings: dict[str, Any]) -> Any:
@@ -138,19 +140,26 @@ async def _create_soulseek_service(settings: dict[str, Any]) -> Any:
 
 
 async def _create_user_runtime(services: AppServices, user: Any) -> UserRuntime:
-    # Settings storage is migrated from legacy username keys to immutable IDs
-    # in Stage 4. The runtime itself is already keyed exclusively by user_id.
-    scope = str(getattr(user, "username", "") or "").strip()
-    settings = ensure_app_settings(username=scope, defaults_overrides=_default_app_overrides())
+    user_id = str(getattr(user, "user_id", "") or "").strip()
+    username = str(getattr(user, "username", "") or "").strip()
+    migrate_user_secrets(username, user_id)
+    settings = ensure_app_settings(
+        user_id=user_id,
+        legacy_username=username,
+        defaults_overrides=_default_app_overrides(),
+    )
     runtime = UserRuntime(
-        user_id=str(getattr(user, "user_id", "") or ""),
-        username=scope,
+        user_id=user_id,
+        username=username,
         role=str(getattr(user, "role", "user") or "user"),
-        settings_scope=scope,
+        settings_scope=user_id,
         settings=dict(settings),
-        settings_signature=settings_fingerprint(scope),
+        settings_signature=settings_fingerprint(user_id),
+        playback=load_playback_runtime(user_id),
+        search_history=load_search_history(int(settings.get("SEARCH_HISTORY_MAX_ITEMS") or 100), user_id=user_id),
     )
     runtime.soulseek_service = await _create_soulseek_service(runtime.settings)
+    runtime.lastfm = lastfm_module.LastfmClient(runtime.user_id, runtime.settings, services.http)
     runtime.search_runtime = _build_unified_search_runtime(
         runtime.settings,
         http_client=services.http,
@@ -864,7 +873,7 @@ async def api_youtube_enqueue(request: web.Request):
     folder = sanitize_folder_name(f"{stamp}_{base}_{task_id[:6]}")
     task_dir = os.path.join(youtube_root, folder)
     os.makedirs(task_dir, exist_ok=True)
-    t = Task(id=task_id, title=title, magnet=url, task_dir=task_dir, owner=_current_user_id(request), source=task_source, source_url=url, origin_client_id=str(request.headers.get("X-DebriPod-Client-Id") or ""), state='queued', message='Queued', youtube_files=entries)
+    t = Task(id=task_id, title=title, magnet=url, task_dir=task_dir, owner_user_id=_current_user_id(request), source=task_source, source_url=url, origin_client_id=str(request.headers.get("X-DebriPod-Client-Id") or ""), state='queued', message='Queued', youtube_files=entries)
     with TASKS_LOCK:
         TASKS[task_id] = t
     save_task_metadata(t, original_result_title=title, remote_files=entries, selected_file_ids=[item.get('file_id') for item in entries], version=str(VERSION))
@@ -884,7 +893,9 @@ async def api_search_history(request: web.Request):
 @routes.post("/api/search_history/clear")
 async def api_search_history_clear(request: web.Request):
     try:
-        user_runtime_for(request).search_history.clear()
+        runtime = user_runtime_for(request)
+        runtime.search_history.clear()
+        clear_search_history(user_id=runtime.user_id)
         return json_response({"ok": True})
     except Exception:
         return json_response({"ok": False, "error": "Failed to clear search history"})
@@ -938,7 +949,7 @@ async def api_debrid_connect_token(request: web.Request):
     updates = {spec.token_setting_key: "" for spec in provider_specs().values()}
     updates[provider_specs()[matched_id].token_setting_key] = token
     updates["DEBRID_PROVIDER"] = matched_id
-    saved = save_app_settings(updates, username=_settings_scope(request), defaults_overrides=_default_app_overrides())
+    saved = save_app_settings(updates, user_id=_settings_scope(request), defaults_overrides=_default_app_overrides())
     if _settings_scope(request):
         saved = (await _reload_request_runtime(request)).settings
     return json_response({"ok": True, "provider": matched_id, "label": matched_label, **debrid_provider_status(saved)})
@@ -1016,7 +1027,7 @@ async def api_debrid_enqueue_selected(request: web.Request):
         title=title,
         magnet=magnet,
         task_dir=task_dir,
-        owner=_current_user_id(request),
+        owner_user_id=_current_user_id(request),
         origin_client_id=str(request.headers.get("X-DebriPod-Client-Id") or ""),
         source="debrid",
         state="queued",
@@ -1111,7 +1122,7 @@ async def api_soulseek_enqueue(request: web.Request):
         title=title,
         magnet="",
         task_dir=task_download_dir,
-        owner=_current_user_id(request),
+        owner_user_id=_current_user_id(request),
         origin_client_id=str(request.headers.get("X-DebriPod-Client-Id") or ""),
         source="soulseek",
         state="queued",
@@ -1140,7 +1151,7 @@ async def cancel(request: web.Request):
     task_id = str(form.get("task_id") or "").strip()
     if not task_id:
         raise web.HTTPBadRequest()
-    if not task_belongs_to_owner(task_id, _current_user_id(request)):
+    if not task_belongs_to_user(task_id, _current_user_id(request)):
         raise web.HTTPNotFound()
     cancel_task(task_id)
     raise web.HTTPSeeOther(location="/")
@@ -1154,6 +1165,7 @@ async def cancel(request: web.Request):
 
 @routes.get("/api/library/config")
 async def api_library_config(request: web.Request):
+    lastfm = user_runtime_for(request).lastfm
     rts = []
     versions = library_root_versions()
     source_by_id = {str(item.get("id") or ""): str(item.get("source") or "library") for item in root_objects()}
@@ -1174,7 +1186,7 @@ async def api_library_config(request: web.Request):
             "aggregate_root": {"id": LIBRARY_ALL_ROOT_ID, "name": "Library", "mode": "metadata"},
             "preload_enabled": bool(PRELOAD_NEXT_FOR_GAPLESS),
             "preload_bytes": int(PRELOAD_NEXT_CHUNK_BYTES),
-            "lastfm_enabled": bool(lastfm_enabled()),
+            "lastfm_enabled": bool(lastfm and lastfm.enabled()),
             "wheel_rotation_max_degrees": float(WHEEL_ROTATION_MAX_DEGREES),
             "playback_streaming_mode": str(PLAYBACK_STREAMING_MODE or "http").strip().lower() or "http",
             "library_versions": versions,
@@ -1278,7 +1290,7 @@ async def api_settings_get(request: web.Request):
         },
         "LASTFM_API_KEY": {"set": bool(str(settings.get("LASTFM_API_KEY") or "").strip())},
         "LASTFM_API_SECRET": {"set": bool(str(settings.get("LASTFM_API_SECRET") or "").strip())},
-        "LASTFM_SESSION": {"set": bool(lastfm_session_key()), "username": lastfm_username()},
+        "LASTFM_SESSION": {"set": bool(runtime.lastfm and runtime.lastfm.session_key), "username": str(getattr(runtime.lastfm, "session_username", "") or "")},
     }
     return json_response({
         "ok": True,
@@ -1321,7 +1333,7 @@ def _kick_library_indexes_from_settings(settings: dict[str, Any]) -> None:
             pass
 
 
-def _service_status_payload(settings: dict[str, Any], soulseek_service: Any = None) -> dict[str, Any]:
+def _service_status_payload(settings: dict[str, Any], soulseek_service: Any = None, lastfm_client: Any = None) -> dict[str, Any]:
     tools = {
         "ffmpeg": executable_status(str(settings.get("FFMPEG_PATH") or "ffmpeg")),
         "ffprobe": executable_status(str(settings.get("FFPROBE_PATH") or "ffprobe")),
@@ -1350,8 +1362,8 @@ def _service_status_payload(settings: dict[str, Any], soulseek_service: Any = No
         },
         "lastfm": {
             "api_configured": bool(str(settings.get("LASTFM_API_KEY") or "").strip() and str(settings.get("LASTFM_API_SECRET") or "").strip()),
-            "session_user": lastfm_username(),
-            "status": skipped.get("lastfm") or ("logged_in" if lastfm_username() else ("configured" if str(settings.get("LASTFM_API_KEY") or "").strip() and str(settings.get("LASTFM_API_SECRET") or "").strip() else "not_configured")),
+            "session_user": str(getattr(lastfm_client, "session_username", settings.get("LASTFM_USERNAME") or "") or ""),
+            "status": skipped.get("lastfm") or ("logged_in" if str(getattr(lastfm_client, "session_username", settings.get("LASTFM_USERNAME") or "") or "") else ("configured" if str(settings.get("LASTFM_API_KEY") or "").strip() and str(settings.get("LASTFM_API_SECRET") or "").strip() else "not_configured")),
         },
         "torrent_search": {
             "enabled_sources": list(settings.get("TORRENT_SEARCH_ENABLED_SOURCES") or []),
@@ -1369,7 +1381,7 @@ def _service_status_payload(settings: dict[str, Any], soulseek_service: Any = No
     }
 
 
-def _setup_status_for_user(username: str, settings: dict[str, Any]) -> dict[str, Any]:
+def _setup_status_for_user(username: str, settings: dict[str, Any], lastfm_client: Any = None) -> dict[str, Any]:
     folders = settings.get("LIBRARY_FOLDERS") if isinstance(settings.get("LIBRARY_FOLDERS"), list) else []
     skipped = _setup_skipped_services(settings)
     required_complete = bool(folders)
@@ -1394,7 +1406,7 @@ def _setup_status_for_user(username: str, settings: dict[str, Any]) -> dict[str,
         )
     )
     should_show = not bool(settings.get("SETUP_WIZARD_COMPLETE"))
-    services = _service_status_payload(settings)
+    services = _service_status_payload(settings, lastfm_client=lastfm_client)
     tools = {
         "ffmpeg": services.get("ffmpeg") or executable_status(str(settings.get("FFMPEG_PATH") or "ffmpeg")),
         "ffprobe": services.get("ffprobe") or executable_status(str(settings.get("FFPROBE_PATH") or "ffprobe")),
@@ -1408,7 +1420,7 @@ def _setup_status_for_user(username: str, settings: dict[str, Any]) -> dict[str,
         "soulseek_download_folder_configured": bool(str(settings.get("SOULSEEK_DOWNLOAD_DIR") or "").strip()),
         "lastfm_api_key_configured": bool(str(settings.get("LASTFM_API_KEY") or "").strip()),
         "lastfm_secret_configured": bool(str(settings.get("LASTFM_API_SECRET") or "").strip()),
-        "lastfm_session_configured": bool(lastfm_session_key()),
+        "lastfm_session_configured": bool(getattr(lastfm_client, "session_key", settings.get("LASTFM_SESSION_KEY") or "")),
     }
     debrid_status = debrid_provider_status(settings)
     setup["debrid_provider"] = debrid_status["active_provider"]
@@ -1450,7 +1462,7 @@ async def api_setup_status(request: web.Request):
     runtime = user_runtime_for(request)
     username = runtime.username
     settings = dict(runtime.settings)
-    return json_response(_setup_status_for_user(username, settings))
+    return json_response(_setup_status_for_user(username, settings, runtime.lastfm))
 
 
 @routes.post("/api/setup/skip")
@@ -1460,39 +1472,41 @@ async def api_setup_skip(request: web.Request):
     allowed = {"library", "debrid", "soulseek", "lastfm", "youtube", "ffmpeg", "ffprobe", "ytdlp", "downloads"}
     if service not in allowed:
         return json_response({"ok": False, "error": "Unknown setup step"}, status=400)
-    username = _settings_scope(request)
+    user_id = _settings_scope(request)
     settings = _runtime_settings(request)
     skipped = _setup_skipped_services(settings)
     skipped[service] = "skipped"
-    saved = save_app_settings({"SETUP_SKIPPED_SERVICES": skipped}, username=username, defaults_overrides=_default_app_overrides())
-    if username:
+    saved = save_app_settings({"SETUP_SKIPPED_SERVICES": skipped}, user_id=user_id, defaults_overrides=_default_app_overrides())
+    if user_id:
         saved = (await _reload_request_runtime(request)).settings
-    return json_response(_setup_status_for_user(username, saved))
+    runtime = user_runtime_for(request)
+    return json_response(_setup_status_for_user(runtime.username, saved, runtime.lastfm))
 
 
 @routes.post("/api/setup/finish")
 async def api_setup_finish(request: web.Request):
-    username = _settings_scope(request)
+    user_id = _settings_scope(request)
     settings = _runtime_settings(request)
-    status = _setup_status_for_user(username, settings)
+    status = _setup_status_for_user(user_runtime_for(request).username, settings, user_runtime_for(request).lastfm)
     if not status.get("required_complete"):
         return json_response({"ok": False, "error": "Add a library folder before finishing setup."}, status=400)
-    saved = save_app_settings({"SETUP_WIZARD_COMPLETE": True}, username=username, defaults_overrides=_default_app_overrides())
-    if username:
+    saved = save_app_settings({"SETUP_WIZARD_COMPLETE": True}, user_id=user_id, defaults_overrides=_default_app_overrides())
+    if user_id:
         saved = (await _reload_request_runtime(request)).settings
     _kick_library_indexes_from_settings(saved)
-    return json_response(_setup_status_for_user(username, saved))
+    runtime = user_runtime_for(request)
+    return json_response(_setup_status_for_user(runtime.username, saved, runtime.lastfm))
 
 
 @routes.get("/api/services/status")
 async def api_services_status(request: web.Request):
     runtime = user_runtime_for(request)
-    return json_response({"ok": True, "services": _service_status_payload(runtime.settings, runtime.soulseek_service)})
+    return json_response({"ok": True, "services": _service_status_payload(runtime.settings, runtime.soulseek_service, runtime.lastfm)})
 
 
 @routes.get("/api/settings/export")
 async def api_settings_export(request: web.Request):
-    username = _settings_scope(request)
+    runtime = user_runtime_for(request)
     settings = _runtime_settings(request)
     payload = {}
     for key in sorted(APP_SETTING_KEYS):
@@ -1502,7 +1516,7 @@ async def api_settings_export(request: web.Request):
         if key in SECRET_SETTING_KEYS:
             continue
         payload[key] = settings.get(key)
-    return json_response({"ok": True, "version": 1, "username": username, "include_secrets": False, "settings": payload})
+    return json_response({"ok": True, "version": 1, "username": runtime.username, "include_secrets": False, "settings": payload})
 
 
 @routes.post("/api/settings/import")
@@ -1520,9 +1534,9 @@ async def api_settings_import(request: web.Request):
         if key_upper in SECRET_SETTING_KEYS and not include_secrets:
             continue
         clean[key_upper] = value
-    username = _settings_scope(request)
-    saved = save_app_settings(clean, username=username, defaults_overrides=_default_app_overrides())
-    if username:
+    user_id = _settings_scope(request)
+    saved = save_app_settings(clean, user_id=user_id, defaults_overrides=_default_app_overrides())
+    if user_id:
         await _reload_request_runtime(request)
     if "LIBRARY_FOLDERS" in clean:
         _kick_library_indexes_from_settings(saved)
@@ -1541,8 +1555,8 @@ async def api_settings_save(request: web.Request):
         if value == "***":
             continue
         clean_settings[key_upper] = value
-    username = _settings_scope(request)
-    saved = save_app_settings(clean_settings, username=username, defaults_overrides=_default_app_overrides())
+    user_id = _settings_scope(request)
+    saved = save_app_settings(clean_settings, user_id=user_id, defaults_overrides=_default_app_overrides())
 
     cfg = ensure_startup_security_config()
     if "PORT" in startup_updates:
@@ -1556,7 +1570,7 @@ async def api_settings_save(request: web.Request):
             cfg["MCP_TOKEN"] = secrets.token_urlsafe(48)
     save_config(cfg)
 
-    if username:
+    if user_id:
         saved = (await _reload_request_runtime(request)).settings
     library_setting_keys = {"LIBRARY_FOLDERS", "DOWNLOAD_DIR", "SOULSEEK_DOWNLOAD_DIR", "YOUTUBE_DOWNLOAD_DIR"}
     if library_setting_keys.intersection(clean_settings):
@@ -1775,7 +1789,7 @@ async def api_client_state(request: web.Request):
     with runtime.playback.lock:
         playback_recent = runtime.playback.state.get("recent") or []
         playback_version = int(runtime.playback.state.get("version") or len(playback_recent) or 0)
-    services = _service_status_payload(settings, runtime.soulseek_service)
+    services = _service_status_payload(settings, runtime.soulseek_service, runtime.lastfm)
     return json_response({
         "ok": True,
         "user": username,
@@ -1799,7 +1813,7 @@ async def api_performance(request: web.Request):
     runtime = user_runtime_for(request)
     settings = dict(runtime.settings)
     any_building, roots_status = index_building_status()
-    services = _service_status_payload(settings, runtime.soulseek_service)
+    services = _service_status_payload(settings, runtime.soulseek_service, runtime.lastfm)
     service_summary = {}
     for key, value in services.items():
         if isinstance(value, dict):
@@ -1877,7 +1891,7 @@ async def api_sync(request: web.Request):
         "settings": masked_settings(settings),
         "search_history": list(runtime.search_history),
         "playback": playback,
-        "services": _service_status_payload(settings, runtime.soulseek_service),
+        "services": _service_status_payload(settings, runtime.soulseek_service, runtime.lastfm),
         "setup_complete": bool(settings.get("SETUP_WIZARD_COMPLETE")),
     }
     return json_response(state_payload)
@@ -2094,7 +2108,9 @@ async def api_library_metadata(request: web.Request):
     root_id = (request.query.get("root_id") or "").strip()
     level = (request.query.get("level") or "").strip().lower()
     value = (request.query.get("value") or "").strip()
-    playback_runtime = user_runtime_for(request).playback
+    runtime = user_runtime_for(request)
+    playback_runtime = runtime.playback
+    lastfm = runtime.lastfm
 
     aggregate = root_id == LIBRARY_ALL_ROOT_ID
     r = None if aggregate else root_by_id(root_id)
@@ -2360,7 +2376,7 @@ async def api_library_metadata(request: web.Request):
         album = (sel.get("album") or "").strip()
         genre = (sel.get("genre") or "").strip()
         liked_only = bool(sel.get("liked") or sel.get("loved") or sel.get("liked_only"))
-        if liked_only and not lastfm_enabled():
+        if liked_only and not (lastfm and lastfm.enabled()):
             return json_response({"items": [{"kind": "info", "label": "Last.fm is not configured. Add API credentials or skip Last.fm features."}], **response_meta})
         if not liked_only and isinstance(facets.get("tracks_by_key"), dict):
             payload = facets.get("tracks_by_key", {}).get(track_facet_key(artist=artist, album=album, genre=genre))
@@ -2378,7 +2394,7 @@ async def api_library_metadata(request: web.Request):
                 a = (t.get("artist") or "").strip()
                 tt = (t.get("title") or t.get("name") or "").strip()
                 b = (t.get("album") or "").strip()
-                if not a or not tt or (not lastfm_is_loved(a, tt, b)):
+                if not a or not tt or not lastfm or not lastfm.is_loved(a, tt, b):
                     continue
             label = t.get("title") or t.get("name") or "Track"
             tr.append({"kind": "track", "label": label, "rel": t.get("rel"), "root_id": t.get("root_id") or root_id, "root": {"id": t.get("root_id") or root_id}, "badge": (t.get("track") or "")})
@@ -2789,29 +2805,30 @@ async def api_library_media_information(request: web.Request):
 
 @routes.route("*", "/api/library/like")
 async def api_library_like(request: web.Request):
-    username = _current_user_id(request)
+    user_id = _current_user_id(request)
+    lastfm = user_runtime_for(request).lastfm
     if request.method == "GET":
         media_key = (request.query.get("media_key") or "").strip()
         if not media_key:
             return json_response(ok=False, error="Missing media key", status=400)
-        row = get_media_like(username, media_key)
+        row = get_media_like(user_id, media_key)
         if row is None:
             artist = (request.query.get("artist") or "").strip()
             title = (request.query.get("title") or "").strip()
             album = (request.query.get("album") or "").strip()
-            if artist and title and lastfm_module.lastfm_is_loved(artist, title, album):
+            if artist and title and lastfm and lastfm.is_loved(artist, title, album):
                 target = {
                     "media_type": "music", "source": "lastfm", "artist": artist,
                     "title": title, "album": album,
                 }
-                row = set_media_like(username, target, True)
+                row = set_media_like(user_id, target, True)
         return json_response(ok=True, like=row)
 
     payload = await request.json() or {}
     if not isinstance(payload.get("liked"), bool):
         return json_response(ok=False, error="liked must be a boolean", status=400)
     try:
-        row = set_media_like(username, payload, bool(payload["liked"]))
+        row = set_media_like(user_id, payload, bool(payload["liked"]))
     except ValueError as exc:
         return json_response(ok=False, error=str(exc), status=400)
     warning = ""
@@ -2821,12 +2838,13 @@ async def api_library_like(request: web.Request):
         album = str(row.get("album") or "")
         if artist and title:
             try:
-                lastfm_module.lastfm_set_loved_local(artist, title, album, bool(row["liked"]))
-                if lastfm_module.lastfm_enabled():
+                if lastfm:
+                    lastfm.set_loved_local(artist, title, album, bool(row["liked"]))
+                if lastfm and lastfm.enabled():
                     if row["liked"]:
-                        await lastfm_module.lastfm_love_track(artist, title)
+                        await lastfm.love_track(artist, title)
                     else:
-                        await lastfm_module.lastfm_unlove_track(artist, title)
+                        await lastfm.unlove_track(artist, title)
             except Exception:
                 warning = "Local like saved; Last.fm sync failed"
     return json_response(ok=True, like=row, sync_warning=warning)
@@ -3217,11 +3235,7 @@ async def create_app() -> web.Application:
     app.add_routes(routes)
     register_shell_routes(app, render_shell)
     register_icon_routes(app)
-    register_lastfm_routes(
-        app,
-        api_key_provider=lambda: LASTFM_API_KEY,
-        api_secret_provider=lambda: LASTFM_API_SECRET,
-    )
+    register_lastfm_routes(app)
     register_task_routes(app)
     register_notification_routes(app)
     register_auth_routes(app)

@@ -78,6 +78,7 @@ def _default_playback_state() -> dict:
 class PlaybackRuntime:
     """In-memory playback state for exactly one authenticated user."""
 
+    user_id: str = ""
     state: dict = field(default_factory=_default_playback_state)
     lock: threading.RLock = field(default_factory=threading.RLock)
     search_stream_get_or_restore: Callable[[str], Optional[Dict[str, Any]]] | None = None
@@ -94,7 +95,61 @@ def _runtime_parts(runtime: PlaybackRuntime | None = None) -> tuple[dict, thread
     target = runtime or _LEGACY_PLAYBACK_RUNTIME
     return target.state, target.lock
 
+def _normalized_playback_state(value: Any) -> dict:
+    base = _default_playback_state()
+    if not isinstance(value, dict) or not value:
+        return base
+    base.update(value)
+    if not isinstance(base.get("recent"), list):
+        base["recent"] = []
+    if not isinstance(base.get("media_progress"), dict):
+        base["media_progress"] = {}
+    for name in ("audio_session", "video_session"):
+        session = base.get(name)
+        if not isinstance(session, dict):
+            session = {}
+        session.setdefault("session_id", "")
+        session.setdefault("last_activity_ts", 0.0)
+        session.setdefault("last_stop_ts", 0.0)
+        base[name] = session
+    session = base.get("playback_session")
+    if not isinstance(session, dict):
+        session = {}
+    if not isinstance(session.get("queue"), list):
+        session["queue"] = []
+    if not isinstance(session.get("history"), list):
+        session["history"] = []
+    try:
+        session["queueIndex"] = int(session.get("queueIndex") if session.get("queueIndex") is not None else -1)
+    except Exception:
+        session["queueIndex"] = -1
+    try:
+        session["revision"] = int(session.get("revision") or base.get("version") or 0)
+    except Exception:
+        session["revision"] = 0
+    session.setdefault("now", None)
+    session.setdefault("nav", None)
+    session.setdefault("sourceView", None)
+    session.setdefault("updatedAt", 0)
+    base["playback_session"] = session
+    try:
+        base["version"] = int(base.get("version") or session.get("revision") or 0)
+    except Exception:
+        base["version"] = 0
+    return base
+
+
+def load_playback_runtime(user_id: str) -> PlaybackRuntime:
+    runtime = PlaybackRuntime(user_id=str(user_id or "").strip())
+    try:
+        runtime.state = _normalized_playback_state(playback_repository.load(runtime.user_id))
+    except Exception:
+        runtime.state = _default_playback_state()
+    return runtime
+
+
 def load_playback_state() -> None:
+    """Load the retired shared state only for legacy non-request integrations."""
     global PLAYBACK_STATE
     p = playback_state_path()
     try:
@@ -103,90 +158,28 @@ def load_playback_state() -> None:
         if not js and os.path.exists(p):
             js = read_legacy_json(p)
             legacy = True
-        if isinstance(js, dict) and js:
-                base = _default_playback_state()
-                base.update(js)
-
-                # recent must be a list
-                if not isinstance(base.get("recent"), list):
-                    base["recent"] = []
-                if not isinstance(base.get("media_progress"), dict):
-                    base["media_progress"] = {}
-
-                # normalize audio_session
-                a = base.get("audio_session")
-                if not isinstance(a, dict):
-                    a = {}
-                if "session_id" not in a:
-                    a["session_id"] = ""
-                if "last_activity_ts" not in a:
-                    a["last_activity_ts"] = 0.0
-                if "last_stop_ts" not in a:
-                    a["last_stop_ts"] = 0.0
-                base["audio_session"] = a
-
-                # normalize video_session
-                v = base.get("video_session")
-                if not isinstance(v, dict):
-                    v = {}
-                if "session_id" not in v:
-                    v["session_id"] = ""
-                if "last_activity_ts" not in v:
-                    v["last_activity_ts"] = 0.0
-                if "last_stop_ts" not in v:
-                    v["last_stop_ts"] = 0.0
-                base["video_session"] = v
-
-                ps = base.get("playback_session")
-                if not isinstance(ps, dict):
-                    ps = {}
-                if not isinstance(ps.get("queue"), list):
-                    ps["queue"] = []
-                if not isinstance(ps.get("history"), list):
-                    ps["history"] = []
-                try:
-                    ps["queueIndex"] = int(ps.get("queueIndex") if ps.get("queueIndex") is not None else -1)
-                except Exception:
-                    ps["queueIndex"] = -1
-                try:
-                    ps["revision"] = int(ps.get("revision") or base.get("version") or 0)
-                except Exception:
-                    ps["revision"] = 0
-                ps.setdefault("now", None)
-                ps.setdefault("nav", None)
-                ps.setdefault("sourceView", None)
-                ps.setdefault("updatedAt", 0)
-                base["playback_session"] = ps
-                try:
-                    base["version"] = int(base.get("version") or ps.get("revision") or 0)
-                except Exception:
-                    base["version"] = 0
-
-                with PLAYBACK_STATE_LOCK:
-                    PLAYBACK_STATE.clear()
-                    PLAYBACK_STATE.update(base)
-                if legacy:
-                    playback_repository.save(base)
-                    try:
-                        retire_legacy(p)
-                    except OSError:
-                        pass
+        base = _normalized_playback_state(js)
+        with PLAYBACK_STATE_LOCK:
+            PLAYBACK_STATE.clear()
+            PLAYBACK_STATE.update(base)
+        if legacy:
+            playback_repository.save(base)
+            try:
+                retire_legacy(p)
+            except OSError:
+                pass
     except Exception:
         with PLAYBACK_STATE_LOCK:
             PLAYBACK_STATE.clear()
             PLAYBACK_STATE.update(_default_playback_state())
 
 def save_playback_state_best_effort(runtime: PlaybackRuntime | None = None) -> None:
-    # Scoped persistence is introduced with the user-owned storage migration.
-    # Until then a user runtime intentionally remains in-memory rather than
-    # writing its state into the old shared playback record.
-    if runtime is not None:
-        return
     try:
-        with PLAYBACK_STATE_LOCK:
-            PLAYBACK_STATE["updated"] = time.time()
-            data = dict(PLAYBACK_STATE)
-        playback_repository.save(data)
+        target = runtime or _LEGACY_PLAYBACK_RUNTIME
+        with target.lock:
+            target.state["updated"] = time.time()
+            data = dict(target.state)
+        playback_repository.save(data, target.user_id)
     except Exception:
         pass
 

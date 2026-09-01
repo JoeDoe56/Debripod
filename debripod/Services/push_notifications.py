@@ -67,12 +67,12 @@ def _default_sender(subscription: dict[str, Any], payload: str, private_key: str
 
 def enqueue_task_completion(task: Any, sender: Callable[[dict[str, Any], str, str], None] | None = None) -> bool:
     task_id = str(getattr(task, "id", "") or "").strip()
-    username = str(getattr(task, "owner", "") or "").strip()
+    user_id = str(getattr(task, "owner_user_id", "") or getattr(task, "owner", "") or "").strip()
     client_id = str(getattr(task, "origin_client_id", "") or "").strip()
-    if not task_id or not username or not client_id:
+    if not task_id or not user_id or not client_id:
         return False
-    subscriptions = subscriptions_for_client(username, client_id)
-    if not subscriptions or not claim_delivery(task_id, username, client_id, "done"):
+    subscriptions = subscriptions_for_client(user_id, client_id)
+    if not subscriptions or not claim_delivery(task_id, user_id, client_id, "done"):
         return False
     payload = json.dumps({
         "title": str(getattr(task, "title", "") or "Task"),
@@ -92,10 +92,10 @@ def enqueue_task_completion(task: Any, sender: Callable[[dict[str, Any], str, st
                 except Exception as exc:
                     response = getattr(exc, "response", None)
                     if int(getattr(response, "status_code", 0) or 0) in {404, 410}:
-                        revoke_subscription(username, client_id, str(subscription.get("endpoint") or ""))
-            update_delivery_status(task_id, username, client_id, "done", status)
+                        revoke_subscription(user_id, client_id, str(subscription.get("endpoint") or ""))
+            update_delivery_status(task_id, user_id, client_id, "done", status)
         except Exception:
-            update_delivery_status(task_id, username, client_id, "done", status)
+            update_delivery_status(task_id, user_id, client_id, "done", status)
 
     threading.Thread(target=deliver, name="debripod-push", daemon=True).start()
     return True

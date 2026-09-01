@@ -4,6 +4,7 @@ import hashlib
 import asyncio
 import threading
 import time
+from dataclasses import dataclass, field
 from typing import Any, Dict, Optional
 from urllib.parse import quote
 
@@ -20,6 +21,216 @@ LASTFM_API_ROOT = ""
 LASTFM_REQUEST_TIMEOUT_SECONDS = 0
 _LASTFM_HTTP: HttpClient | None = None
 _LASTFM_BACKGROUND_TASKS: set[asyncio.Task[Any]] = set()
+
+
+@dataclass(slots=True)
+class LastfmClient:
+    """Per-user Last.fm state and requests backed by one shared HTTP client."""
+
+    user_id: str
+    settings: dict[str, Any]
+    http: HttpClient
+    session_username: str = ""
+    tracks: dict[str, int] = field(default_factory=dict)
+    loved_updated: int = 0
+    _background_tasks: set[asyncio.Task[Any]] = field(default_factory=set)
+
+    def __post_init__(self) -> None:
+        self.user_id = str(self.user_id or "").strip()
+        self.session_username = str(self.settings.get("LASTFM_USERNAME") or "").strip()
+        self.tracks, self.loved_updated = load_loved(self.user_id)
+
+    @property
+    def api_key(self) -> str:
+        return str(self.settings.get("LASTFM_API_KEY") or "").strip()
+
+    @property
+    def api_secret(self) -> str:
+        return str(self.settings.get("LASTFM_API_SECRET") or "").strip()
+
+    @property
+    def session_key(self) -> str:
+        return str(self.settings.get("LASTFM_SESSION_KEY") or "").strip()
+
+    @property
+    def api_root(self) -> str:
+        return str(self.settings.get("LASTFM_API_ROOT") or "https://ws.audioscrobbler.com/2.0/").strip()
+
+    @property
+    def timeout(self) -> int:
+        try:
+            return max(1, int(self.settings.get("LASTFM_REQUEST_TIMEOUT_SECONDS") or 12))
+        except Exception:
+            return 12
+
+    def has_api_credentials(self) -> bool:
+        return bool(self.api_key and self.api_secret)
+
+    def enabled(self) -> bool:
+        return bool(self.has_api_credentials() and self.session_key)
+
+    def _sign(self, params: Dict[str, Any]) -> str:
+        parts = sorted(
+            (str(key), _lastfm_param_str(value))
+            for key, value in (params or {}).items()
+            if key not in {"format", "callback"}
+        )
+        return _md5_hex("".join(key + value for key, value in parts) + self.api_secret)
+
+    async def _api(self, method: str, params: Dict[str, Any] | None = None, *, auth: bool = False, verb: str = "POST") -> Dict[str, Any]:
+        if not self.has_api_credentials():
+            raise RuntimeError("Last.fm API key/secret not configured")
+        payload: Dict[str, Any] = {"method": method, "api_key": self.api_key, "format": "json"}
+        payload.update(params or {})
+        if auth:
+            if not self.session_key:
+                raise RuntimeError("Last.fm session key not configured")
+            payload["sk"] = self.session_key
+        payload["api_sig"] = self._sign(payload)
+        kwargs = {"data" if verb == "POST" else "params": {key: _lastfm_param_str(value) for key, value in payload.items()}, "timeout": self.timeout}
+        response = await self.http.json(verb, self.api_root, **kwargs)
+        if isinstance(response, dict) and response.get("error"):
+            raise RuntimeError(str(response.get("message") or "Last.fm API error"))
+        return response if isinstance(response, dict) else {}
+
+    def _persist_session(self, session_key: str, username: str) -> None:
+        clean_key = str(session_key or "").strip()
+        self.settings["LASTFM_SESSION_KEY"] = clean_key
+        self.settings["LASTFM_USERNAME"] = str(username or "").strip()
+        self.settings["LASTFM_SESSION_UPDATED"] = int(time.time())
+        set_secret(self.user_id, "LASTFM_SESSION_KEY", clean_key)
+        stored = settings_repository.load(self.user_id)
+        stored.update({
+            "LASTFM_USERNAME": self.settings["LASTFM_USERNAME"],
+            "LASTFM_SESSION_UPDATED": self.settings["LASTFM_SESSION_UPDATED"],
+        })
+        settings_repository.save(stored, self.user_id)
+        self.session_username = self.settings["LASTFM_USERNAME"]
+
+    async def auth_start(self) -> Dict[str, Any]:
+        response = await self._api("auth.getToken", auth=False)
+        token = str((response.get("token") or {}).get("#text") if isinstance(response.get("token"), dict) else response.get("token") or "").strip()
+        if not token:
+            raise RuntimeError("Could not get Last.fm token")
+        url = f"https://www.last.fm/api/auth/?api_key={quote(self.api_key)}&token={quote(token)}"
+        callback = str(self.settings.get("LASTFM_CALLBACK_URL") or "").strip()
+        if callback:
+            url += f"&cb={quote(callback, safe='')}"
+        return {"token": token, "auth_url": url}
+
+    async def auth_finish(self, token: str) -> Dict[str, Any]:
+        clean_token = str(token or "").strip()
+        if not clean_token:
+            raise RuntimeError("Missing token")
+        response = await self._api("auth.getSession", {"token": clean_token}, auth=False)
+        session = response.get("session") if isinstance(response.get("session"), dict) else {}
+        key = str(session.get("key") or "").strip()
+        username = str(session.get("name") or "").strip()
+        if not key:
+            raise RuntimeError("Missing session key")
+        self._persist_session(key, username)
+        self.spawn(self.sync_loved_from_remote, username)
+        return {"sk": key, "username": username}
+
+    async def sync_loved_from_remote(self, username: str = "", max_pages: int = 20, limit: int = 200) -> int:
+        account = str(username or self.session_username or "").strip()
+        if not account:
+            return 0
+        seen = 0
+        page = 1
+        total_pages: int | None = None
+        while page <= max(1, int(max_pages)) and (total_pages is None or page <= total_pages):
+            response = await self._api("user.getLovedTracks", {"user": account, "limit": str(min(200, max(10, int(limit)))), "page": str(page)}, verb="GET")
+            loved = response.get("lovedtracks") if isinstance(response.get("lovedtracks"), dict) else {}
+            attr = loved.get("@attr") if isinstance(loved.get("@attr"), dict) else {}
+            try:
+                total_pages = int(attr.get("totalPages") or 0) or None
+            except Exception:
+                total_pages = None
+            rows = loved.get("track")
+            rows = rows if isinstance(rows, list) else ([rows] if isinstance(rows, dict) else [])
+            if not rows:
+                break
+            for row in rows:
+                artist_data = row.get("artist") if isinstance(row, dict) else {}
+                artist = str(artist_data.get("name") or artist_data.get("#text") or "") if isinstance(artist_data, dict) else str(artist_data or "")
+                title = str(row.get("name") or "") if isinstance(row, dict) else ""
+                key = _lastfm_track_key(artist, title, "")
+                if key.strip():
+                    self.tracks[key] = 1
+                    seen += 1
+            page += 1
+        if seen:
+            self._save_loved()
+        return seen
+
+    def _save_loved(self) -> None:
+        self.loved_updated = save_loved(self.tracks, self.user_id)
+
+    def is_loved(self, artist: str, title: str, album: str = "") -> bool:
+        return bool(self.tracks.get(_lastfm_track_key(artist, title, album)) or self.tracks.get(_lastfm_track_key(artist, title, "")))
+
+    def set_loved_local(self, artist: str, title: str, album: str, loved: bool) -> bool:
+        key = _lastfm_track_key(artist, title, album)
+        broad = _lastfm_track_key(artist, title, "")
+        if not key.strip():
+            return False
+        if loved:
+            self.tracks[key] = 1
+            self.tracks[broad] = 1
+        else:
+            self.tracks.pop(key, None)
+            self.tracks.pop(broad, None)
+        self._save_loved()
+        return True
+
+    async def remote_is_loved(self, artist: str, title: str, username: str = "") -> Optional[bool]:
+        account = str(username or self.session_username or "").strip()
+        if not artist or not title or not account:
+            return None
+        try:
+            response = await self._api("track.getInfo", {"artist": artist, "track": title, "username": account, "autocorrect": "1"}, verb="GET")
+            track = response.get("track") if isinstance(response.get("track"), dict) else {}
+            return str(track.get("userloved")).strip() == "1" if track.get("userloved") is not None else None
+        except Exception:
+            return None
+
+    async def love_track(self, artist: str, title: str) -> bool:
+        await self._api("track.love", {"artist": artist, "track": title}, auth=True)
+        return True
+
+    async def unlove_track(self, artist: str, title: str) -> bool:
+        await self._api("track.unlove", {"artist": artist, "track": title}, auth=True)
+        return True
+
+    async def update_now_playing(self, artist: str, title: str, album: str = "", duration: Optional[int] = None) -> bool:
+        payload: Dict[str, Any] = {"artist": artist, "track": title}
+        if album:
+            payload["album"] = album
+        if duration and int(duration) > 0:
+            payload["duration"] = str(int(duration))
+        await self._api("track.updateNowPlaying", payload, auth=True)
+        return True
+
+    async def scrobble(self, artist: str, title: str, album: str = "", duration: Optional[int] = None, start_ts: Optional[int] = None) -> bool:
+        payload: Dict[str, Any] = {"artist[0]": artist, "track[0]": title, "timestamp[0]": str(int(start_ts) if start_ts else int(time.time()))}
+        if album:
+            payload["album[0]"] = album
+        if duration and int(duration) > 0:
+            payload["duration[0]"] = str(int(duration))
+        await self._api("track.scrobble", payload, auth=True)
+        return True
+
+    def spawn(self, operation, *args: Any) -> None:
+        if not self.enabled():
+            return
+        try:
+            loop = asyncio.get_running_loop()
+        except RuntimeError:
+            return
+        task = loop.create_task(operation(*args), name=f"lastfm:{self.user_id}")
+        self._background_tasks.add(task)
+        task.add_done_callback(self._background_tasks.discard)
 
 def configure_lastfm(
     *,

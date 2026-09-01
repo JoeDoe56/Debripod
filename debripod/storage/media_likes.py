@@ -61,10 +61,10 @@ def _public(row: Any) -> dict[str, Any]:
     return data
 
 
-def set_media_like(username: str, target: dict[str, Any], liked: bool) -> dict[str, Any]:
-    user = _text(username)
+def set_media_like(user_id: str, target: dict[str, Any], liked: bool) -> dict[str, Any]:
+    user = _text(user_id)
     if not user:
-        raise ValueError("A username is required")
+        raise ValueError("A user ID is required")
     media_type = _text(target.get("media_type") or target.get("type")).lower()
     if media_type not in MEDIA_TYPES:
         raise ValueError("Unsupported media type")
@@ -79,16 +79,17 @@ def set_media_like(username: str, target: dict[str, Any], liked: bool) -> dict[s
         conn.execute(
             """
             INSERT INTO media_likes(
-              username,media_key,media_type,root_id,rel,source,source_id,title,artist,album,
+              username,user_id,media_key,media_type,root_id,rel,source,source_id,title,artist,album,
               metadata_json,liked,updated_at
-            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
+            ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?,?)
             ON CONFLICT(username,media_key) DO UPDATE SET
-              media_type=excluded.media_type,root_id=excluded.root_id,rel=excluded.rel,
+              user_id=excluded.user_id,media_type=excluded.media_type,root_id=excluded.root_id,rel=excluded.rel,
               source=excluded.source,source_id=excluded.source_id,title=excluded.title,
               artist=excluded.artist,album=excluded.album,metadata_json=excluded.metadata_json,
               liked=excluded.liked,updated_at=excluded.updated_at
             """,
             (
+                user,
                 user,
                 media_key,
                 media_type,
@@ -105,24 +106,24 @@ def set_media_like(username: str, target: dict[str, Any], liked: bool) -> dict[s
             ),
         )
         row = conn.execute(
-            "SELECT * FROM media_likes WHERE username=? AND media_key=?",
+            "SELECT * FROM media_likes WHERE user_id=? AND media_key=?",
             (user, media_key),
         ).fetchone()
     return _public(row)
 
 
-def get_media_like(username: str, media_key: str) -> dict[str, Any] | None:
+def get_media_like(user_id: str, media_key: str) -> dict[str, Any] | None:
     with database(write=False) as conn:
         row = conn.execute(
-            "SELECT * FROM media_likes WHERE username=? AND media_key=?",
-            (_text(username), _text(media_key)),
+            "SELECT * FROM media_likes WHERE user_id=? AND media_key=?",
+            (_text(user_id), _text(media_key)),
         ).fetchone()
     return _public(row) if row else None
 
 
-def list_media_likes(username: str, *, media_type: str = "", root_id: str = "") -> list[dict[str, Any]]:
-    clauses = ["username=?", "liked=1"]
-    values: list[Any] = [_text(username)]
+def list_media_likes(user_id: str, *, media_type: str = "", root_id: str = "") -> list[dict[str, Any]]:
+    clauses = ["user_id=?", "liked=1"]
+    values: list[Any] = [_text(user_id)]
     if media_type:
         clauses.append("media_type=?")
         values.append(_text(media_type).lower())

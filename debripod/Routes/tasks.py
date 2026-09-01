@@ -6,16 +6,17 @@ from typing import List
 
 from aiohttp import web
 
-from ..factory import json_response, session_for
+from ..auth import current_user
+from ..factory import json_response
 
 from ..Tasks.manager import (
     cancel_task,
     clear_all_tasks,
     clear_task,
-    list_tasks_for_owner,
+    list_tasks_for_user,
     pause_task,
     resume_task,
-    task_belongs_to_owner,
+    task_belongs_to_user,
     task_file_action,
     task_public_dict,
 )
@@ -44,15 +45,16 @@ def _task_library_nav(task) -> dict:
 
 
 def register_task_routes(app) -> None:
-    def current_owner(request: web.Request) -> str:
-        return str(session_for(request).get("username") or "").strip()
+    def current_user_id(request: web.Request) -> str:
+        user = current_user(request)
+        return str(getattr(user, "user_id", "") or "").strip()
 
     def owns_task(request: web.Request, task_id: str) -> bool:
-        return task_belongs_to_owner(task_id, current_owner(request))
+        return task_belongs_to_user(task_id, current_user_id(request))
 
     async def api_tasks_list(request: web.Request):
         out: List[dict] = []
-        for t in list_tasks_for_owner(current_owner(request)):
+        for t in list_tasks_for_user(current_user_id(request)):
             try:
                 payload = task_public_dict(t)
                 payload["library_nav"] = _task_library_nav(t)
@@ -141,7 +143,7 @@ def register_task_routes(app) -> None:
         return json_response({"ok": ok})
 
     async def api_tasks_clear_all(request: web.Request):
-        clear_all_tasks(current_owner(request))
+        clear_all_tasks(current_user_id(request))
         return json_response({"ok": True})
 
     app.router.add_get("/api/tasks", api_tasks_list)

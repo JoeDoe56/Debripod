@@ -226,6 +226,96 @@ def _v11(conn: sqlite3.Connection) -> None:
     conn.execute("UPDATE passkey_challenges SET user_id=COALESCE((SELECT user_id FROM users WHERE users.username=passkey_challenges.username), user_id, '') WHERE user_id='' ")
 
 
+def _v12(conn: sqlite3.Connection) -> None:
+    """Move all durable user-owned rows to immutable user IDs.
+
+    Earlier releases used a mixture of username keys and one shared playback /
+    search-history record.  The migration keeps username columns temporarily so
+    an interrupted upgrade remains recoverable, but every new query uses the
+    canonical ``user_id`` columns added here.
+    """
+    columns = {
+        table: {str(row[1]) for row in conn.execute(f"PRAGMA table_info({table})")}
+        for table in ("tasks", "search_history", "media_likes", "push_subscriptions", "notification_deliveries")
+    }
+    if "owner_user_id" not in columns["tasks"]:
+        conn.execute("ALTER TABLE tasks ADD COLUMN owner_user_id TEXT NOT NULL DEFAULT ''")
+    if "user_id" not in columns["search_history"]:
+        conn.execute("ALTER TABLE search_history ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
+    if "user_id" not in columns["media_likes"]:
+        conn.execute("ALTER TABLE media_likes ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
+    if "user_id" not in columns["push_subscriptions"]:
+        conn.execute("ALTER TABLE push_subscriptions ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
+    if "user_id" not in columns["notification_deliveries"]:
+        conn.execute("ALTER TABLE notification_deliveries ADD COLUMN user_id TEXT NOT NULL DEFAULT ''")
+
+    # Copy old per-username data to its stable ID before removing legacy keys.
+    # INSERT OR IGNORE ensures a newer canonical row always wins on retries.
+    conn.execute(
+        """INSERT OR IGNORE INTO app_settings(user_id,key,value_json,updated_at)
+           SELECT u.user_id,t.key,t.value_json,t.updated_at FROM app_settings AS t
+           JOIN users AS u ON u.username=t.user_id WHERE t.user_id<>''"""
+    )
+    conn.execute("DELETE FROM app_settings WHERE user_id<>'' AND user_id IN (SELECT username FROM users)")
+    conn.execute(
+        """INSERT OR IGNORE INTO service_status(user_id,service,saved,keyring_ref,provider_identity,updated_at)
+           SELECT u.user_id,t.service,t.saved,t.keyring_ref,t.provider_identity,t.updated_at FROM service_status AS t
+           JOIN users AS u ON u.username=t.user_id WHERE t.user_id<>''"""
+    )
+    conn.execute("DELETE FROM service_status WHERE user_id<>'' AND user_id IN (SELECT username FROM users)")
+    conn.execute(
+        """INSERT OR IGNORE INTO playback_state(user_id,state_json,updated_at)
+           SELECT u.user_id,t.state_json,t.updated_at FROM playback_state AS t
+           JOIN users AS u ON u.username=t.user_id WHERE t.user_id<>''"""
+    )
+    conn.execute("DELETE FROM playback_state WHERE user_id<>'' AND user_id IN (SELECT username FROM users)")
+
+    # The first SELECT above cannot be used for tables whose primary-key shape
+    # includes a username.  Those retain their legacy column for compatibility
+    # and gain a canonical ownership column instead.
+    conn.execute("UPDATE tasks SET owner_user_id=COALESCE((SELECT user_id FROM users WHERE users.username=tasks.owner), owner_user_id, '') WHERE owner_user_id='' ")
+    conn.execute("UPDATE media_likes SET user_id=COALESCE((SELECT user_id FROM users WHERE users.username=media_likes.username), user_id, '') WHERE user_id='' ")
+    conn.execute("UPDATE push_subscriptions SET user_id=COALESCE((SELECT user_id FROM users WHERE users.username=push_subscriptions.username), user_id, '') WHERE user_id='' ")
+    conn.execute("UPDATE notification_deliveries SET user_id=COALESCE((SELECT user_id FROM users WHERE users.username=notification_deliveries.username), user_id, '') WHERE user_id='' ")
+    conn.execute("""DELETE FROM media_likes AS legacy WHERE legacy.user_id<>'' AND legacy.username<>legacy.user_id
+                    AND EXISTS (SELECT 1 FROM media_likes AS canonical WHERE canonical.username=legacy.user_id AND canonical.media_key=legacy.media_key)""")
+    conn.execute("UPDATE media_likes SET username=user_id WHERE user_id<>'' AND username<>user_id")
+    conn.execute("""DELETE FROM push_subscriptions AS legacy WHERE legacy.user_id<>'' AND legacy.username<>legacy.user_id
+                    AND EXISTS (SELECT 1 FROM push_subscriptions AS canonical WHERE canonical.username=legacy.user_id AND canonical.client_id=legacy.client_id AND canonical.endpoint=legacy.endpoint)""")
+    conn.execute("UPDATE push_subscriptions SET username=user_id WHERE user_id<>'' AND username<>user_id")
+    conn.execute("""DELETE FROM notification_deliveries AS legacy WHERE legacy.user_id<>'' AND legacy.username<>legacy.user_id
+                    AND EXISTS (SELECT 1 FROM notification_deliveries AS canonical WHERE canonical.username=legacy.user_id AND canonical.task_id=legacy.task_id AND canonical.client_id=legacy.client_id AND canonical.event=legacy.event)""")
+    conn.execute("UPDATE notification_deliveries SET username=user_id WHERE user_id<>'' AND username<>user_id")
+    conn.execute(
+        """INSERT OR IGNORE INTO lastfm_loved_tracks(user_id,track_key,loved,metadata_json,updated_at)
+           SELECT u.user_id,t.track_key,t.loved,t.metadata_json,t.updated_at FROM lastfm_loved_tracks AS t
+           JOIN users AS u ON u.username=t.user_id WHERE t.user_id<>''"""
+    )
+    conn.execute("DELETE FROM lastfm_loved_tracks WHERE user_id<>'' AND user_id IN (SELECT username FROM users)")
+
+    # A pre-multiuser shared playback row and history have no trustworthy owner.
+    # Preserve them only when there is exactly one account; otherwise leaving
+    # them unowned prevents accidental cross-user disclosure.
+    users = conn.execute("SELECT user_id FROM users ORDER BY created_at,user_id").fetchall()
+    if len(users) == 1:
+        user_id = str(users[0][0])
+        conn.execute(
+            """INSERT OR IGNORE INTO playback_state(user_id,state_json,updated_at)
+               SELECT ?,state_json,updated_at FROM playback_state WHERE user_id=''""",
+            (user_id,),
+        )
+        conn.execute("DELETE FROM playback_state WHERE user_id='' ")
+        conn.execute("UPDATE search_history SET user_id=? WHERE user_id='' ", (user_id,))
+
+    conn.executescript("""
+    CREATE INDEX IF NOT EXISTS idx_tasks_owner_user_id_updated ON tasks(owner_user_id,updated_at DESC);
+    CREATE INDEX IF NOT EXISTS idx_search_history_user_recent ON search_history(user_id,ts DESC);
+    CREATE INDEX IF NOT EXISTS idx_media_likes_user_id_type_liked_updated ON media_likes(user_id,media_type,liked,updated_at);
+    CREATE INDEX IF NOT EXISTS idx_push_subscriptions_user_client ON push_subscriptions(user_id,client_id,revoked);
+    CREATE INDEX IF NOT EXISTS idx_notification_deliveries_user_task ON notification_deliveries(user_id,task_id);
+    """)
+
+
 MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (1, "structured_state", _v1),
     (2, "compact_palettes", _v2),
@@ -238,6 +328,7 @@ MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = 
     (9, "server_side_auth_sessions", _v9),
     (10, "migration_backup_foundation", _v10),
     (11, "immutable_user_roles", _v11),
+    (12, "canonical_user_owned_state", _v12),
 )
 
 
