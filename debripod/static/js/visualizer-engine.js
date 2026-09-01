@@ -101,8 +101,8 @@ var visualizerAnalysisState = {
   loading: false,
   stale: false,
   rate: 30,
-  stride: 9,
-  bandCount: 7,
+  stride: 11,
+  bandCount: 9,
   frameCount: 0,
   bytes: null,
   rootId: "",
@@ -215,8 +215,8 @@ function resetVisualizerAnalysis(reason){
     loading: false,
     stale: false,
     rate: 30,
-    stride: 9,
-    bandCount: 7,
+    stride: 11,
+    bandCount: 9,
     frameCount: 0,
     bytes: null,
     rootId: "",
@@ -273,7 +273,7 @@ function applyVisualizerAnalysis(rootId, rel, analysis, nonce){
     }
     const bytes = bytesFromBase64(analysis.feature_blob_b64 || "");
     const metadata = analysis.metadata && typeof analysis.metadata === "object" ? analysis.metadata : {};
-    const bandCount = Math.max(1, Math.min(7, Number(analysis.band_count || 7)));
+    const bandCount = Math.max(1, Math.min(9, Number(analysis.band_count || 9)));
     const stride = Math.max(bandCount + 2, Number(metadata.frame_stride || (bandCount + 2)));
     const frameCount = Math.max(0, Number(analysis.frame_count || Math.floor((bytes ? bytes.length : 0) / stride)));
     if(!bytes || !frameCount || bytes.length < stride){
@@ -401,14 +401,21 @@ function sampleCachedVisualizerAnalysis(el){
     const off0 = i0 * stride;
     const off1 = i1 * stride;
     const bytes = analysis.bytes;
-    const bands = [];
-    for(let i = 0; i < 7; i++){
+    const rawBands = [];
+    const bandCount = Math.max(1, Math.min(stride - 2, Number(analysis.bandCount || 9)));
+    for(let i = 0; i < bandCount; i++){
       const a = Number(bytes[off0 + i] || 0) / 255;
       const b = Number(bytes[off1 + i] || 0) / 255;
-      bands.push(a + (b - a) * frac);
+      rawBands.push(a + (b - a) * frac);
     }
-    const energyIdx = Math.min(stride - 2, 7);
-    const beatIdx = Math.min(stride - 1, 8);
+    const bands = Array.from({length:7}, (_value, index)=>{
+      const position = (index / 6) * Math.max(0, rawBands.length - 1);
+      const left = Math.floor(position);
+      const right = Math.min(rawBands.length - 1, left + 1);
+      return (rawBands[left] || 0) + (((rawBands[right] || 0) - (rawBands[left] || 0)) * (position - left));
+    });
+    const energyIdx = Math.min(stride - 2, bandCount);
+    const beatIdx = Math.min(stride - 1, bandCount + 1);
     const e0 = Number(bytes[off0 + energyIdx] || 0) / 255;
     const e1 = Number(bytes[off1 + energyIdx] || 0) / 255;
     const p0 = Number(bytes[off0 + beatIdx] || 0) / 255;
@@ -420,9 +427,9 @@ function sampleCachedVisualizerAnalysis(el){
     }
     return {
       bands: bands,
-      bass: clamp01((bands[0] + bands[1]) * 0.5),
-      mid: clamp01((bands[2] + bands[3] + bands[4]) / 3),
-      treble: clamp01((bands[5] + bands[6]) * 0.5),
+      bass: clamp01((rawBands[0] + rawBands[1] + rawBands[2]) / 3),
+      mid: clamp01((rawBands[3] + rawBands[4] + rawBands[5]) / 3),
+      treble: clamp01((rawBands[6] + rawBands[7] + rawBands[8]) / 3),
       energy: clamp01(energy),
       beat: clamp01(beat)
     };

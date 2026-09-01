@@ -166,6 +166,24 @@ def _queue_index_enrichment(data: dict) -> None:
         )
 
 
+def queue_audio_analysis_warm(abs_path: str, *, root_id: str, rel: str, media_id: str = "", duration=None) -> bool:
+    record = {
+        "abs_path": os.path.abspath(abs_path),
+        "root_id": str(root_id or ""),
+        "rel": str(rel or ""),
+        "media_id": str(media_id or f"{root_id}:{rel}"),
+        "duration": duration,
+    }
+    if not record["root_id"] or not record["rel"] or not os.path.isfile(record["abs_path"]):
+        return False
+    _queue_enrichment(
+        "stage4_music_audio_analysis",
+        f"{record.get('root_id')}:{record.get('rel')}",
+        lambda r=dict(record): warm_audio_analysis(str(r.get("abs_path") or ""), root_id=str(r.get("root_id") or ""), rel=str(r.get("rel") or ""), media_id=str(r.get("media_id") or ""), duration=r.get("duration")),
+    )
+    return True
+
+
 def queue_video_analysis_warm(abs_path: str, *, root_id: str, rel: str, media_id: str = "", duration=None) -> bool:
     record = {
         "abs_path": os.path.abspath(abs_path),

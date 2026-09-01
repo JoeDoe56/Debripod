@@ -12,8 +12,10 @@ from ..storage.database import database
 from ..storage.palettes import load_palette as load_packed_palette, save_palette as save_packed_palette
 from ..storage.codec import CodecError, decode as decode_blob, encode as encode_blob
 
-SCHEMA_VERSION = 4
-ANALYSIS_ALGORITHM_VERSION = 2
+SCHEMA_VERSION = 5
+ANALYSIS_ALGORITHM_VERSION = 3
+ANALYSIS_BAND_COUNT = 9
+ANALYSIS_DELTA_ENCODING = "delta-zlib-v1"
 _DB_LOCK = threading.RLock()
 
 
@@ -147,7 +149,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
           mtime_ns INTEGER NOT NULL DEFAULT 0,
           duration REAL,
           analysis_rate_hz INTEGER NOT NULL DEFAULT 30,
-          band_count INTEGER NOT NULL DEFAULT 7,
+          band_count INTEGER NOT NULL DEFAULT 9,
           compression TEXT NOT NULL DEFAULT 'none',
           decoder_settings_hash TEXT NOT NULL DEFAULT '',
           algorithm_version INTEGER NOT NULL DEFAULT 1,
@@ -227,7 +229,7 @@ def ensure_schema(conn: sqlite3.Connection) -> None:
     _ensure_column(conn, "visualizer_analysis", "root_id", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "visualizer_analysis", "rel", "TEXT NOT NULL DEFAULT ''")
     _ensure_column(conn, "visualizer_analysis", "analysis_rate_hz", "INTEGER NOT NULL DEFAULT 30")
-    _ensure_column(conn, "visualizer_analysis", "band_count", "INTEGER NOT NULL DEFAULT 7")
+    _ensure_column(conn, "visualizer_analysis", "band_count", "INTEGER NOT NULL DEFAULT 9")
     _ensure_column(conn, "visualizer_analysis", "compression", "TEXT NOT NULL DEFAULT 'none'")
     _ensure_column(conn, "visualizer_analysis", "decoder_settings_hash", "TEXT NOT NULL DEFAULT ''")
 
@@ -1162,7 +1164,24 @@ def save_palette(cache_key: str, palette: dict, *, source_kind: str = "", source
     save_packed_palette(str(cache_key or ""), palette, source_kind=source_kind, source_identity=source_identity, root_id=root_id, rel=rel)
 
 
-def load_visualizer_analysis(analysis_key: str) -> Optional[dict[str, Any]]:
+def _delta_decode_analysis_blob(delta_blob: bytes, frame_stride: int) -> bytes:
+    stride = max(1, int(frame_stride or 0))
+    payload = bytes(delta_blob or b"")
+    if not payload or len(payload) % stride:
+        raise ValueError("Invalid delta analysis payload")
+    decoded = bytearray(payload[:stride])
+    previous = bytearray(payload[:stride])
+    for offset in range(stride, len(payload), stride):
+        frame = payload[offset:offset + stride]
+        restored = bytearray(stride)
+        for index, value in enumerate(frame):
+            restored[index] = (previous[index] + value) & 0xFF
+        decoded.extend(restored)
+        previous = restored
+    return bytes(decoded)
+
+
+def load_visualizer_analysis(analysis_key: str, *, decoder_settings_hash: str = "") -> Optional[dict[str, Any]]:
     with library_db() as conn:
         row = conn.execute(
             """
@@ -1176,6 +1195,12 @@ def load_visualizer_analysis(analysis_key: str) -> Optional[dict[str, Any]]:
         ).fetchone()
     if not row:
         return None
+    if int(row["algorithm_version"] or 0) != ANALYSIS_ALGORITHM_VERSION:
+        return None
+    if int(row["band_count"] or 0) != ANALYSIS_BAND_COUNT:
+        return None
+    if decoder_settings_hash and str(row["decoder_settings_hash"] or "") != str(decoder_settings_hash):
+        return None
     try:
         metadata = json.loads(str(row["metadata_json"] or "{}"))
     except Exception:
@@ -1183,7 +1208,7 @@ def load_visualizer_analysis(analysis_key: str) -> Optional[dict[str, Any]]:
     stored_blob = bytes(row["feature_blob"] or b"")
     try:
         feature_blob = decode_blob(stored_blob)
-        storage_compression = str(row["compression"] or "raw")
+        storage_compression = "envelope"
     except CodecError:
         # Ordered migration of pre-envelope analysis values.
         if str(row["compression"] or "") == "zlib":
@@ -1194,7 +1219,21 @@ def load_visualizer_analysis(analysis_key: str) -> Optional[dict[str, Any]]:
         envelope, storage_compression, _ = encode_blob(feature_blob)
         with library_db() as migrate_conn:
             migrate_conn.execute("UPDATE visualizer_analysis SET feature_blob=?,compression=? WHERE analysis_key=?",
-                (envelope, storage_compression, str(analysis_key or "")))
+                (envelope, "none", str(analysis_key or "")))
+    compression = str(row["compression"] or "none")
+    if compression == ANALYSIS_DELTA_ENCODING:
+        try:
+            import zlib
+            stride = int(metadata.get("frame_stride") or (int(row["band_count"] or 0) + 2))
+            feature_blob = _delta_decode_analysis_blob(zlib.decompress(feature_blob), stride)
+        except Exception:
+            return None
+    elif compression not in {"", "none", "raw", "zlib"}:
+        return None
+    frame_stride = int(metadata.get("frame_stride") or (int(row["band_count"] or 0) + 2))
+    frame_count = int(row["frame_count"] or 0)
+    if frame_stride != ANALYSIS_BAND_COUNT + 2 or frame_count <= 0 or len(feature_blob) != frame_stride * frame_count:
+        return None
     return {
         "analysis_key": str(analysis_key or ""),
         "media_id": str(row["media_id"] or ""),
@@ -1205,18 +1244,18 @@ def load_visualizer_analysis(analysis_key: str) -> Optional[dict[str, Any]]:
         "mtime_ns": int(row["mtime_ns"] or 0),
         "duration": row["duration"],
         "analysis_rate_hz": int(row["analysis_rate_hz"] or 30),
-        "band_count": int(row["band_count"] or 7),
+        "band_count": int(row["band_count"] or ANALYSIS_BAND_COUNT),
         "compression": "none",
         "storage_compression": storage_compression,
         "decoder_settings_hash": str(row["decoder_settings_hash"] or ""),
         "algorithm_version": int(row["algorithm_version"] or ANALYSIS_ALGORITHM_VERSION),
-        "frame_count": int(row["frame_count"] or 0),
+        "frame_count": frame_count,
         "feature_blob": feature_blob,
         "metadata": metadata if isinstance(metadata, dict) else {},
     }
 
 
-def load_visualizer_analysis_for_media(root_id: str, rel: str) -> Optional[dict[str, Any]]:
+def load_visualizer_analysis_for_media(root_id: str, rel: str, *, decoder_settings_hash: str = "") -> Optional[dict[str, Any]]:
     with library_db() as conn:
         row = conn.execute(
             """
@@ -1230,15 +1269,16 @@ def load_visualizer_analysis_for_media(root_id: str, rel: str) -> Optional[dict[
             WHERE va.root_id = ?
               AND va.rel = ?
               AND va.algorithm_version = ?
+              AND va.band_count = ?
               AND mf.media_type IN ('audio', 'video')
             ORDER BY va.saved_at DESC
             LIMIT 1
             """,
-            (str(root_id or ""), str(rel or ""), ANALYSIS_ALGORITHM_VERSION),
+            (str(root_id or ""), str(rel or ""), ANALYSIS_ALGORITHM_VERSION, ANALYSIS_BAND_COUNT),
         ).fetchone()
     if not row:
         return None
-    return load_visualizer_analysis(str(row["analysis_key"] or ""))
+    return load_visualizer_analysis(str(row["analysis_key"] or ""), decoder_settings_hash=decoder_settings_hash)
 
 
 def save_visualizer_analysis(
@@ -1262,7 +1302,7 @@ def save_visualizer_analysis(
     if compression == "zlib":
         import zlib
         raw_blob = zlib.decompress(raw_blob)
-    envelope, storage_compression, _raw_len = encode_blob(raw_blob)
+    envelope, _storage_compression, _raw_len = encode_blob(raw_blob)
     with library_db() as conn:
         conn.execute(
             """
@@ -1299,8 +1339,8 @@ def save_visualizer_analysis(
                 mtime_ns,
                 duration,
                 int(analysis_rate_hz or 30),
-                int(band_count or 7),
-                storage_compression,
+                int(band_count or ANALYSIS_BAND_COUNT),
+                str(compression or "none"),
                 str(decoder_settings_hash or ""),
                 ANALYSIS_ALGORITHM_VERSION,
                 time.time(),

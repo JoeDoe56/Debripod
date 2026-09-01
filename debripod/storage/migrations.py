@@ -391,6 +391,18 @@ def _v13(conn: sqlite3.Connection) -> None:
             )
 
 
+def _v14(conn: sqlite3.Connection) -> None:
+    """Discard incompatible seven-band visualizer rows after the DB backup.
+
+    The audio source remains playable while index enrichment rebuilds this
+    cache, so keeping obsolete blobs provides no migration value.
+    """
+    conn.execute(
+        "DELETE FROM visualizer_analysis WHERE algorithm_version <> ? OR band_count <> ?",
+        (3, 9),
+    )
+
+
 MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = (
     (1, "structured_state", _v1),
     (2, "compact_palettes", _v2),
@@ -405,6 +417,7 @@ MIGRATIONS: tuple[tuple[int, str, Callable[[sqlite3.Connection], None]], ...] = 
     (11, "immutable_user_roles", _v11),
     (12, "canonical_user_owned_state", _v12),
     (13, "user_library_root_associations", _v13),
+    (14, "nine_band_visualizer_analysis", _v14),
 )
 
 

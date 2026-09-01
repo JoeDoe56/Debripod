@@ -45,7 +45,7 @@ def test_v12_migrates_legacy_username_owned_rows_to_user_ids(tmp_path, monkeypat
         conn.execute("INSERT INTO lastfm_loved_tracks(user_id,track_key,loved,metadata_json,updated_at) VALUES(?,?,?,?,?)", ("alice", "artist\\ntrack\\n", 1, "{}", 1))
         conn.commit()
         monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations)
-        assert migrations.migrate(conn) == 13
+        assert migrations.migrate(conn) == migrations.MIGRATIONS[-1][0]
 
         assert conn.execute("SELECT value_json FROM app_settings WHERE user_id='user-alice'").fetchone()[0] == json.dumps("D:/alice")
         assert conn.execute("SELECT user_id FROM playback_state WHERE user_id='user-alice'").fetchone()[0] == "user-alice"
@@ -108,7 +108,7 @@ def test_v13_migrates_each_users_existing_library_and_download_roots(tmp_path, m
         conn.commit()
 
         monkeypatch.setattr(migrations, "MIGRATIONS", all_migrations)
-        assert migrations.migrate(conn) == 13
+        assert migrations.migrate(conn) == migrations.MIGRATIONS[-1][0]
         rows = conn.execute("SELECT display_name,source FROM user_library_roots WHERE user_id=? ORDER BY source", ("user-alice",)).fetchall()
         assert rows == [("Debrid", "debrid"), (media.name, "library")]
     finally:

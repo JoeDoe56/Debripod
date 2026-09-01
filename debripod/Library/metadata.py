@@ -53,9 +53,11 @@ DEFAULT_VISUALIZER_PALETTE: list[tuple[int, int, int]] = [
     (90, 200, 250),
 ]
 ANALYSIS_RATE_HZ = 30
-ANALYSIS_SAMPLE_RATE_HZ = 8820
-ANALYSIS_BANDS = [60, 120, 250, 500, 1000, 2000, 3600]
-DECODER_SETTINGS_HASH = sha1_text(f"pcm_s16le_mono_{ANALYSIS_SAMPLE_RATE_HZ}_goertzel_video_exact_stride_v3_palette16")
+ANALYSIS_SAMPLE_RATE_HZ = 16000
+ANALYSIS_BANDS = [60, 110, 190, 330, 600, 1050, 1900, 3400, 6200]
+ANALYSIS_FRAME_STRIDE = len(ANALYSIS_BANDS) + 2
+ANALYSIS_DELTA_ENCODING = "delta-zlib-v1"
+DECODER_SETTINGS_HASH = sha1_text(f"pcm_s16le_mono_{ANALYSIS_SAMPLE_RATE_HZ}_goertzel_9band_delta_v4_palette16")
 
 
 
@@ -573,7 +575,115 @@ def warm_art_palette(abs_path: str, *, root_id: str = "", rel: str = "", art_inf
 
 def _analysis_key(abs_path: str) -> str:
     size, mtime_ns = file_identity(abs_path)
-    return sha1_text(f"analysis:{os.path.abspath(abs_path)}:{size}:{mtime_ns}:{ANALYSIS_RATE_HZ}:{DECODER_SETTINGS_HASH}:v1")
+    return sha1_text(f"analysis:{os.path.abspath(abs_path)}:{size}:{mtime_ns}:{ANALYSIS_RATE_HZ}:{DECODER_SETTINGS_HASH}:v2")
+
+
+def _audio_feature_frame(floats: list[float], energy_avg: float) -> tuple[bytes, float]:
+    if not floats:
+        return bytes(ANALYSIS_FRAME_STRIDE), energy_avg
+    rms = math.sqrt(sum(sample * sample for sample in floats) / len(floats))
+    energy = max(0.0, min(1.0, rms * 3.2))
+    smoothed_energy = energy if not energy_avg else (energy_avg * 0.965 + energy * 0.035)
+    beat = max(0.0, min(1.0, (energy - max(0.06, smoothed_energy * 1.28)) * 3.0))
+    frame_values: list[int] = []
+    for freq in ANALYSIS_BANDS:
+        coeff = 2.0 * math.cos(2.0 * math.pi * freq / ANALYSIS_SAMPLE_RATE_HZ)
+        q0 = q1 = q2 = 0.0
+        for sample in floats:
+            q0 = coeff * q1 - q2 + sample
+            q2 = q1
+            q1 = q0
+        power = q1 * q1 + q2 * q2 - coeff * q1 * q2
+        value = max(0.0, min(1.0, math.sqrt(max(0.0, power)) / len(floats) * 10.0))
+        frame_values.append(int(round(value * 255)))
+    return bytes(frame_values + [int(round(energy * 255)), int(round(beat * 255))]), smoothed_energy
+
+
+def _delta_encode_analysis_blob(raw_blob: bytes, frame_stride: int = ANALYSIS_FRAME_STRIDE) -> bytes:
+    stride = max(1, int(frame_stride or 0))
+    raw = bytes(raw_blob or b"")
+    if not raw or len(raw) % stride:
+        raise ValueError("Invalid raw analysis payload")
+    encoded = bytearray(raw[:stride])
+    previous = raw[:stride]
+    for offset in range(stride, len(raw), stride):
+        frame = raw[offset:offset + stride]
+        encoded.extend((frame[index] - previous[index]) & 0xFF for index in range(stride))
+        previous = frame
+    return bytes(encoded)
+
+
+def _delta_decode_analysis_blob(delta_blob: bytes, frame_stride: int = ANALYSIS_FRAME_STRIDE) -> bytes:
+    stride = max(1, int(frame_stride or 0))
+    encoded = bytes(delta_blob or b"")
+    if not encoded or len(encoded) % stride:
+        raise ValueError("Invalid delta analysis payload")
+    decoded = bytearray(encoded[:stride])
+    previous = bytearray(encoded[:stride])
+    for offset in range(stride, len(encoded), stride):
+        frame = encoded[offset:offset + stride]
+        restored = bytearray((previous[index] + frame[index]) & 0xFF for index in range(stride))
+        decoded.extend(restored)
+        previous = restored
+    return bytes(decoded)
+
+
+def _compress_analysis_blob(raw_blob: bytes) -> tuple[bytes, str]:
+    delta = _delta_encode_analysis_blob(raw_blob)
+    return zlib.compress(delta, level=3), ANALYSIS_DELTA_ENCODING
+
+
+def _decompress_analysis_blob(stored_blob: bytes, compression: str) -> bytes:
+    if str(compression or "") == ANALYSIS_DELTA_ENCODING:
+        return _delta_decode_analysis_blob(zlib.decompress(bytes(stored_blob or b"")))
+    return bytes(stored_blob or b"")
+
+
+def _analysis_activity_metadata(raw_blob: bytes) -> dict[str, object]:
+    raw = bytes(raw_blob or b"")
+    if not raw or len(raw) % ANALYSIS_FRAME_STRIDE:
+        return {
+            "band_centers_hz": list(ANALYSIS_BANDS),
+            "band_activity_p95": [0] * len(ANALYSIS_BANDS),
+            "active_bands": [True] * len(ANALYSIS_BANDS),
+            "lowest_active_band": 0,
+            "highest_active_band": len(ANALYSIS_BANDS) - 1,
+        }
+    distributions = [[] for _ in ANALYSIS_BANDS]
+    for offset in range(0, len(raw), ANALYSIS_FRAME_STRIDE):
+        for index in range(len(ANALYSIS_BANDS)):
+            distributions[index].append(raw[offset + index])
+    p95: list[int] = []
+    for values in distributions:
+        values.sort()
+        p95.append(int(values[min(len(values) - 1, max(0, math.ceil((len(values) - 1) * 0.95)))]) if values else 0)
+    strongest = max(p95) if p95 else 0
+    threshold = max(12, int(round(strongest * 0.18)))
+    active = [value >= threshold for value in p95]
+    indices = [index for index, is_active in enumerate(active) if is_active]
+    if not indices:
+        active = [True] * len(ANALYSIS_BANDS)
+        indices = list(range(len(ANALYSIS_BANDS)))
+    return {
+        "band_centers_hz": list(ANALYSIS_BANDS),
+        "band_activity_p95": p95,
+        "active_bands": active,
+        "lowest_active_band": indices[0],
+        "highest_active_band": indices[-1],
+    }
+
+
+def _analysis_metadata(raw_blob: bytes, stored_blob: bytes, *, media_kind: str = "audio") -> dict[str, object]:
+    metadata: dict[str, object] = {
+        "media_kind": str(media_kind or "audio"),
+        "frame_stride": ANALYSIS_FRAME_STRIDE,
+        "raw_bytes": len(raw_blob),
+        "stored_bytes": len(stored_blob),
+        "storage_encoding": ANALYSIS_DELTA_ENCODING,
+        "fields": [*(f"band{index}" for index in range(len(ANALYSIS_BANDS))), "energy", "beat"],
+    }
+    metadata.update(_analysis_activity_metadata(raw_blob))
+    return metadata
 
 
 def warm_audio_analysis(abs_path: str, *, root_id: str = "", rel: str = "", media_id: str = "", duration: Optional[float] = None) -> Optional[dict]:
@@ -630,24 +740,8 @@ def _decode_audio_feature_blob(abs_path: str) -> tuple[bytes, int]:
                 break
             samples = struct.unpack("<" + "h" * frame_samples, chunk)
             floats = [s / 32768.0 for s in samples]
-            rms = math.sqrt(sum(s * s for s in floats) / len(floats))
-            energy = max(0.0, min(1.0, rms * 3.2))
-            energy_avg = energy if not energy_avg else (energy_avg * 0.965 + energy * 0.035)
-            beat = max(0.0, min(1.0, (energy - max(0.06, energy_avg * 1.28)) * 3.0))
-            frame_values = []
-            for freq in ANALYSIS_BANDS:
-                coeff = 2.0 * math.cos(2.0 * math.pi * freq / ANALYSIS_SAMPLE_RATE_HZ)
-                q0 = q1 = q2 = 0.0
-                for sample in floats:
-                    q0 = coeff * q1 - q2 + sample
-                    q2 = q1
-                    q1 = q0
-                power = q1 * q1 + q2 * q2 - coeff * q1 * q2
-                value = max(0.0, min(1.0, math.sqrt(max(0.0, power)) / len(floats) * 10.0))
-                frame_values.append(int(round(value * 255)))
-            blob.extend(max(0, min(255, v)) for v in frame_values)
-            blob.append(int(round(energy * 255)))
-            blob.append(int(round(beat * 255)))
+            frame, energy_avg = _audio_feature_frame(floats, energy_avg)
+            blob.extend(frame)
             frame_count += 1
         try:
             proc.kill()
@@ -661,99 +755,11 @@ def _decode_audio_feature_blob(abs_path: str) -> tuple[bytes, int]:
     return bytes(blob), frame_count
 
 
-def _compress_analysis_blob(raw_blob: bytes) -> tuple[bytes, str]:
-    stored_blob = raw_blob
-    compression = "none"
-    try:
-        compressed = zlib.compress(raw_blob, level=3)
-        if len(compressed) < len(raw_blob) * 0.96:
-            stored_blob = compressed
-            compression = "zlib"
-    except Exception:
-        stored_blob = raw_blob
-        compression = "none"
-    return stored_blob, compression
-
-
 def _compute_audio_analysis(abs_path: str, key: str, *, root_id: str, rel: str, media_id: str, duration: Optional[float]) -> Optional[dict]:
-    import subprocess
-
-    frame_samples = max(1, int(ANALYSIS_SAMPLE_RATE_HZ / ANALYSIS_RATE_HZ))
-    frame_bytes = frame_samples * 2
-    args = [
-        _ffmpeg_path_value(),
-        "-hide_banner",
-        "-loglevel",
-        "error",
-        "-i",
-        abs_path,
-        "-vn",
-        "-ac",
-        "1",
-        "-ar",
-        str(ANALYSIS_SAMPLE_RATE_HZ),
-        "-f",
-        "s16le",
-        "pipe:1",
-    ]
-    blob = bytearray()
-    energy_avg = 0.0
-    frame_count = 0
-    try:
-        proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL)
-    except Exception:
-        return None
-    try:
-        assert proc.stdout is not None
-        while True:
-            chunk = proc.stdout.read(frame_bytes)
-            if not chunk:
-                break
-            if len(chunk) < frame_bytes:
-                break
-            samples = struct.unpack("<" + "h" * frame_samples, chunk)
-            floats = [s / 32768.0 for s in samples]
-            rms = math.sqrt(sum(s * s for s in floats) / len(floats))
-            energy = max(0.0, min(1.0, rms * 3.2))
-            energy_avg = energy if not energy_avg else (energy_avg * 0.965 + energy * 0.035)
-            beat = max(0.0, min(1.0, (energy - max(0.06, energy_avg * 1.28)) * 3.0))
-            frame_values = []
-            for freq in ANALYSIS_BANDS:
-                coeff = 2.0 * math.cos(2.0 * math.pi * freq / ANALYSIS_SAMPLE_RATE_HZ)
-                q0 = q1 = q2 = 0.0
-                for sample in floats:
-                    q0 = coeff * q1 - q2 + sample
-                    q2 = q1
-                    q1 = q0
-                power = q1 * q1 + q2 * q2 - coeff * q1 * q2
-                value = max(0.0, min(1.0, math.sqrt(max(0.0, power)) / len(floats) * 10.0))
-                frame_values.append(int(round(value * 255)))
-            blob.extend(max(0, min(255, v)) for v in frame_values)
-            blob.append(int(round(energy * 255)))
-            blob.append(int(round(beat * 255)))
-            frame_count += 1
-        try:
-            proc.kill()
-        except Exception:
-            pass
-    finally:
-        try:
-            proc.stdout.close() if proc.stdout else None
-        except Exception:
-            pass
+    raw_blob, frame_count = _decode_audio_feature_blob(abs_path)
     if frame_count <= 0:
         return None
-    raw_blob = bytes(blob)
-    stored_blob = raw_blob
-    compression = "none"
-    try:
-        compressed = zlib.compress(raw_blob, level=3)
-        if len(compressed) < len(raw_blob) * 0.96:
-            stored_blob = compressed
-            compression = "zlib"
-    except Exception:
-        stored_blob = raw_blob
-        compression = "none"
+    stored_blob, compression = _compress_analysis_blob(raw_blob)
 
     save_visualizer_analysis(
         key,
@@ -768,7 +774,7 @@ def _compute_audio_analysis(abs_path: str, key: str, *, root_id: str, rel: str, 
         feature_blob=stored_blob,
         compression=compression,
         decoder_settings_hash=DECODER_SETTINGS_HASH,
-        metadata={"frame_stride": len(ANALYSIS_BANDS) + 2, "raw_bytes": len(raw_blob), "stored_bytes": len(stored_blob), "fields": ["band0", "band1", "band2", "band3", "band4", "band5", "band6", "energy", "beat"]},
+        metadata=_analysis_metadata(raw_blob, stored_blob),
     )
     return load_visualizer_analysis(key)
 
@@ -899,7 +905,7 @@ def _extract_video_palette_frames(abs_path: str) -> tuple[list[list[object]], in
 
 def _idle_video_feature_blob(frame_count: int) -> bytes:
     count = max(1, int(frame_count or 0))
-    frame = bytes([0, 0, 0, 0, 0, 0, 0, 18, 0])
+    frame = bytes([0] * len(ANALYSIS_BANDS) + [18, 0])
     return frame * count
 
 
@@ -911,16 +917,15 @@ def _video_analysis_metadata(
     palette_frames: Optional[list[list[object]]] = None,
     palette_stride: int = 0,
     palette_pending: bool = True,
+    raw_blob: bytes = b"",
 ) -> dict:
-    metadata = {
-        "media_kind": "video",
-        "frame_stride": len(ANALYSIS_BANDS) + 2,
+    metadata = _analysis_metadata(raw_blob, b"", media_kind="video")
+    metadata.update({
         "raw_bytes": int(raw_bytes or 0),
         "stored_bytes": int(stored_bytes or 0),
-        "fields": ["band0", "band1", "band2", "band3", "band4", "band5", "band6", "energy", "beat"],
         "video_palette_sample_rate_hz": VIDEO_PALETTE_SAMPLE_RATE_HZ,
         "audio_source": str(audio_source or ""),
-    }
+    })
     if palette_pending:
         metadata["video_palette_pending"] = True
     return metadata
@@ -958,6 +963,7 @@ def _compute_video_audio_analysis(abs_path: str, key: str, *, root_id: str, rel:
             stored_bytes=len(stored_blob),
             audio_source=audio_source,
             palette_pending=True,
+            raw_blob=raw_blob,
         ),
     )
     return load_visualizer_analysis(key)
@@ -970,14 +976,12 @@ def _compute_video_frame_palette_analysis(abs_path: str, key: str, *, root_id: s
     duration_value = duration if duration is not None else probed_duration
     palette_frames, palette_stride, decoded_video_frames = _extract_video_palette_frames(abs_path)
     if cached:
-        stored_blob = bytes(cached.get("feature_blob") or b"")
-        compression = str(cached.get("compression") or "none")
+        raw_blob = bytes(cached.get("feature_blob") or b"")
         frame_count = int(cached.get("frame_count") or 0)
-        raw_bytes = int(cached_meta.get("raw_bytes") or 0) if isinstance(cached_meta, dict) else 0
+        raw_bytes = len(raw_blob)
         audio_source = str(cached_meta.get("audio_source") or "decoded") if isinstance(cached_meta, dict) else "decoded"
     else:
-        stored_blob = b""
-        compression = "none"
+        raw_blob = b""
         frame_count = 0
         raw_bytes = 0
         audio_source = "idle"
@@ -986,12 +990,12 @@ def _compute_video_frame_palette_analysis(abs_path: str, key: str, *, root_id: s
             frame_count = max(1, int(float(duration_value) * ANALYSIS_RATE_HZ))
         else:
             frame_count = 1
-    if not stored_blob:
+    if not raw_blob:
         raw_blob = _idle_video_feature_blob(frame_count)
         raw_bytes = len(raw_blob)
-        stored_blob, compression = _compress_analysis_blob(raw_blob)
-    if frame_count <= 0 or not stored_blob:
+    if frame_count <= 0 or not raw_blob:
         return None
+    stored_blob, compression = _compress_analysis_blob(raw_blob)
     save_video_timeline(
         key,
         [(int(frame[0]), list(frame[1])) for frame in palette_frames if isinstance(frame, list) and len(frame) > 1],
@@ -1023,6 +1027,7 @@ def _compute_video_frame_palette_analysis(abs_path: str, key: str, *, root_id: s
             palette_frames=palette_frames,
             palette_stride=palette_stride,
             palette_pending=False,
+            raw_blob=raw_blob,
         ),
     )
     return load_visualizer_analysis(key)
