@@ -72,11 +72,19 @@
               <div class="infoPillContent" id="infoPillContent" data-liquid-ignore>
                 <div class="npBarArea">
                   <div class="npProgressWrap" id="npProgressWrap">
-                    <input class="npSeek" id="npSeek" type="range" min="0" max="1000" value="0">
+                    <div class="npMeter npProgressMeter">
+                      <div class="npMeterTrack">
+                        <div class="npBufferedFill" id="npBufferedFill"></div>
+                        <div class="npMeterFill npProgressFill" id="npProgressFill"></div>
+                      </div>
+                      <input class="npSeek" id="npSeek" type="range" min="0" max="1000" value="0" aria-label="Playback position">
+                    </div>
                     <div class="npSeekIndicator" id="npSeekIndicator"></div>
                   </div>
                   <div class="npVolumeWrap" id="npVolumeWrap">
-                    <div class="npVolumeBar"><div class="npVolumeFill" id="npVolumeFill"></div></div>
+                    <div class="npMeter npVolumeMeter" role="meter" aria-label="Volume" aria-valuemin="0" aria-valuemax="100" aria-valuenow="100">
+                      <div class="npMeterTrack"><div class="npMeterFill npVolumeFill" id="npVolumeFill"></div></div>
+                    </div>
                   </div>
                 </div>
                 <div class="npTime">

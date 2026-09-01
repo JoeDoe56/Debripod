@@ -225,11 +225,19 @@
   var npDur = document.getElementById("npDur");
   var npTech = document.getElementById("npTech");
   var npProgressWrap = document.getElementById("npProgressWrap");
+  var npProgressFill = document.getElementById("npProgressFill");
   var npVideoOverlay = document.getElementById("npVideoOverlay");
   var npVideo = document.getElementById("npVideo");
   var npVolumeWrap = document.getElementById("npVolumeWrap");
   var npVolumeFill = document.getElementById("npVolumeFill");
   var npSeekIndicator = document.getElementById("npSeekIndicator");
+  var pathPillMotion = {
+    currentWidth: 0,
+    targetWidth: 0,
+    raf: 0,
+    lastStepTs: 0,
+    initialized: false
+  };
   if(infoPill){
     infoPill.addEventListener("transitionend", ()=>{ forceInfoPillGlassRender("info pill transition", false); }, {passive:true});
     try{
@@ -248,15 +256,107 @@
     }
   }
 
+  function constrainPathPillWidth(infoPillMaxWidth, coverDisplayedWidth, screenFallbackWidth){
+    const fallback = Math.max(1, Number(screenFallbackWidth) || 1);
+    const info = Math.max(1, Number(infoPillMaxWidth) || fallback);
+    const cover = Math.max(1, Number(coverDisplayedWidth) || fallback);
+    return Math.max(1, Math.floor(Math.min(info, cover)));
+  }
+
+  function pathPillMotionNextWidth(currentWidth, targetWidth, elapsedMs){
+    const current = Number(currentWidth) || 0;
+    const target = Number(targetWidth) || 0;
+    const elapsed = Math.max(1, Number(elapsedMs) || 16.7);
+    const mix = 1 - Math.exp(-elapsed / 92);
+    return current + ((target - current) * mix);
+  }
+
+  function pathPillTextOverflows(scrollWidth, clientWidth){
+    return Number(scrollWidth) > Number(clientWidth) + 1;
+  }
+
+  function updatePathPillScrollingMasks(){
+    try{
+      [document.getElementById("libHeaderText"), pathPillNowText].forEach((el)=>{
+        if(!el || !el.classList) return;
+        el.classList.toggle("pathPillTextScrollable", pathPillTextOverflows(el.scrollWidth, el.clientWidth));
+      });
+    }catch(e){}
+  }
+
+  function markPathPillWidthChanged(){
+    try{
+      const renderer = liquidGlassRendererByKey("default");
+      if(renderer){
+        renderer._metricsDirty = true;
+        (renderer.lenses || []).forEach((lens)=>{ try{ if(lens && lens.el && lens.el.classList && lens.el.classList.contains("pathPillGlass")) lens.rectPx = null; }catch(e){} });
+      }
+      const scheduler = window.DebriPod && window.DebriPod.frameScheduler;
+      if(scheduler && scheduler.mark) scheduler.mark({metrics:true, render:true, textContrast:true});
+    }catch(e){}
+  }
+
+  function schedulePathPillMotion(){
+    if(pathPillMotion.raf) return;
+    pathPillMotion.raf = 1;
+    const step = (frameState)=>{
+      pathPillMotion.raf = 0;
+      try{
+        const now = Number((frameState && (frameState.timestamp || frameState.time)) || performance.now());
+        const interval = (typeof animationFrameIntervalMs === "function") ? animationFrameIntervalMs("pathPill") : (1000 / 60);
+        if(pathPillMotion.lastStepTs && now - pathPillMotion.lastStepTs < interval - 1){
+          schedulePathPillMotion();
+          return;
+        }
+        const elapsed = pathPillMotion.lastStepTs ? Math.max(1, now - pathPillMotion.lastStepTs) : interval;
+        pathPillMotion.lastStepTs = now;
+        pathPillMotion.currentWidth = pathPillMotionNextWidth(pathPillMotion.currentWidth, pathPillMotion.targetWidth, elapsed);
+        if(Math.abs(pathPillMotion.targetWidth - pathPillMotion.currentWidth) < 0.35){
+          pathPillMotion.currentWidth = pathPillMotion.targetWidth;
+        }
+        document.documentElement.style.setProperty("--pathPillRenderedWidth", pathPillMotion.currentWidth.toFixed(2) + "px");
+        markPathPillWidthChanged();
+        updatePathPillScrollingMasks();
+        if(pathPillMotion.currentWidth !== pathPillMotion.targetWidth) schedulePathPillMotion();
+      }catch(e){}
+    };
+    try{
+      const scheduler = window.DebriPod && window.DebriPod.frameScheduler;
+      if(scheduler && scheduler.request){
+        scheduler.request("path-pill-motion", step);
+        return;
+      }
+    }catch(e){}
+    requestAnimationFrame((timestamp)=>step({timestamp:timestamp}));
+  }
+
+  function setPathPillTargetWidth(target){
+    const next = Math.max(1, Number(target) || 1);
+    const root = document.documentElement;
+    root.style.setProperty("--pathPillTargetWidth", next + "px");
+    pathPillMotion.targetWidth = next;
+    if(!pathPillMotion.initialized){
+      pathPillMotion.initialized = true;
+      pathPillMotion.currentWidth = next;
+      root.style.setProperty("--pathPillRenderedWidth", next + "px");
+      updatePathPillScrollingMasks();
+      return;
+    }
+    schedulePathPillMotion();
+  }
+
   function updatePathPillMaxWidth(){
     try{
       const content = document.querySelector(".ipodScreenContent");
       const rect = content ? content.getBoundingClientRect() : null;
       const root = document.documentElement;
-      const maxWidth = rect && rect.width ? Math.max(1, Math.floor(rect.width)) : Math.max(1, Math.floor(window.innerWidth || 1) - 24);
+      const fallbackWidth = rect && rect.width ? Math.max(1, Math.floor(rect.width)) : Math.max(1, Math.floor(window.innerWidth || 1) - 24);
       const rootStyle = getComputedStyle(root);
       const screenFrame = Math.max(0, parseFloat(rootStyle.getPropertyValue("--screenFrame")) || 0);
-      const infoWidth = Math.max(1, Math.floor(maxWidth - (screenFrame * 2)));
+      const infoWidth = Math.max(1, Math.floor(fallbackWidth - (screenFrame * 2)));
+      const coverRect = npArt && npArt.getBoundingClientRect ? npArt.getBoundingClientRect() : null;
+      const coverWidth = coverRect && coverRect.width > 1 ? coverRect.width : fallbackWidth;
+      const maxWidth = constrainPathPillWidth(infoWidth, coverWidth, fallbackWidth);
       root.style.setProperty("--pathPillMaxWidth", maxWidth + "px");
       root.style.setProperty("--infoPillWidth", infoWidth + "px");
       root.style.setProperty("--infoPillHeight", "42px");
@@ -272,10 +372,16 @@
       const measured = Math.max(pathWidth, nowWidth) + targetPad * 2;
       const minWidth = expanded ? Math.min(maxWidth, 150) : Math.min(maxWidth, 72);
       const target = Math.max(1, Math.min(maxWidth, Math.max(minWidth, measured || minWidth)));
-      root.style.setProperty("--pathPillTargetWidth", target + "px");
+      setPathPillTargetWidth(target);
     }catch(e){}
   }
   try{ window.updatePathPillMaxWidth = updatePathPillMaxWidth; }catch(e){}
+  try{
+    if("ResizeObserver" in window){
+      const pathPillGeometryObserver = new ResizeObserver(()=>updatePathPillMaxWidth());
+      [npArt, document.querySelector(".ipodScreenContent"), infoPill].filter(Boolean).forEach((el)=>pathPillGeometryObserver.observe(el));
+    }
+  }catch(e){}
 
   function refreshPlaybackPillTextLayer(reason, force){
     try{

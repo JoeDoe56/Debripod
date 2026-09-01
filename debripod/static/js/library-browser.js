@@ -903,6 +903,7 @@ async function goBack(){
       const t = el.currentTime || 0;
       if(d > 0){
         npSeek.value = Math.floor((t / d) * 1000);
+        updateProgressMeterFill((t / d) * 100);
       }
       try{ syncMediaSessionPosition(); }catch(e){}
       try{ syncMediaSessionControls(); }catch(e){}
@@ -974,6 +975,7 @@ async function goBack(){
       const t = npVideo.currentTime || 0;
       if(d > 0){
         npSeek.value = Math.floor((t / d) * 1000);
+        updateProgressMeterFill((t / d) * 100);
       }
       try{ updateBufferedBarFor(npVideo); }catch(e){}
       renderInfoPillLabels();
@@ -1034,6 +1036,7 @@ async function goBack(){
     const m = wheelMedia();
     const d = (m && m.duration) ? m.duration : 0;
     if(d > 0){
+      updateProgressMeterFill((parseInt(npSeek.value, 10) / 1000) * 100);
       try{ m.currentTime = (parseInt(npSeek.value, 10) / 1000) * d; }catch(e){}
     }
   });

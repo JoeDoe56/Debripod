@@ -72,6 +72,10 @@
       --playbackPillRowGap: 1px;
       --playbackPillMaxWidth: min(calc(100vw - 24px), var(--pathPillMaxWidth, calc(100vw - 24px)));
       --pathPillTargetWidth: auto;
+      --pathPillRenderedWidth: var(--pathPillTargetWidth);
+      --path-text-fade: 12px;
+      --infoBarThickness: 8.4px;
+      --infoBarInsetX: 9px;
       --infoPillWidth: var(--pathPillMaxWidth, calc(100vw - 24px));
       --infoPillHeight: 42px;
       --wheelZoneHeight: calc(var(--wheelSize) + (var(--wheelGap) * 2));
@@ -486,6 +490,7 @@
       justify-content: center;
       gap: 10px;
       pointer-events: auto;
+      overflow:visible;
     }
 .pathPill{
       display:inline-flex;
@@ -493,7 +498,7 @@
       z-index:30;
       isolation:isolate;
       align-items:center;
-      width:var(--pathPillTargetWidth);
+      width:var(--pathPillRenderedWidth);
       max-width: var(--playbackPillMaxWidth);
       padding: 8px 12px;
       border-radius: 999px;
@@ -507,11 +512,11 @@
       user-select:none;
       opacity: 1;
       transform: translateY(0);
-      transition: opacity var(--playbackPillFadeMs) ease, transform var(--playbackPillFadeMs) ease, width var(--playbackPillFadeMs) ease, max-width var(--playbackPillFadeMs) ease;
+      transition: opacity var(--playbackPillFadeMs) ease, transform var(--playbackPillFadeMs) ease;
       will-change: opacity, transform, width;
     }
     .pathPill.pathPillExpanded{
-      width:var(--pathPillTargetWidth);
+      width:var(--pathPillRenderedWidth);
       border-radius:var(--playbackPillRadius);
       padding:var(--playbackPillPadY) var(--playbackPillPadX);
     }
@@ -606,6 +611,11 @@
     }
     .pathPillNowTextSmall{
       font-size:11px;
+    }
+    .pathPillText.pathPillTextScrollable,
+    .pathPillNowText.pathPillTextScrollable{
+      -webkit-mask-image:linear-gradient(to right, transparent 0, #000 var(--path-text-fade), #000 calc(100% - var(--path-text-fade)), transparent 100%);
+      mask-image:linear-gradient(to right, transparent 0, #000 var(--path-text-fade), #000 calc(100% - var(--path-text-fade)), transparent 100%);
     }
     .pathPill.pathPillHidden{
       opacity: 0;
@@ -1631,6 +1641,7 @@
   display:flex;
   justify-content:center;
   pointer-events:none;
+  overflow:visible;
 }
 .infoPill{
   position:relative;
@@ -1656,7 +1667,7 @@
 }
 .infoPill.infoPillHidden{
   opacity:0;
-  transform:translateY(8px);
+  transform:translateY(-8px);
   pointer-events:none;
   visibility:hidden;
   transition:opacity var(--playbackPillFadeMs) ease, transform var(--playbackPillFadeMs) ease, visibility 0s linear var(--playbackPillFadeMs);
@@ -1678,7 +1689,7 @@
 .infoPillContent{
   position:relative;
   z-index:120;
-  padding:4px 9px 3px;
+  padding:4px var(--infoBarInsetX) 3px;
   width:100%;
   height:100%;
   min-height:0;
@@ -1738,32 +1749,56 @@
       text-overflow: ellipsis;
     }
     .artistStrong{font-weight: 700; color: inherit;}
-    .npSeek{width: 100%; margin: 0;}
+    .npSeek{width:100%; margin:0;}
     input[type="range"].npSeek{
-      accent-color: var(--theme-accent-strong);
-      height: 24px;
-      transition: accent-color .45s ease;
-    }
-    .npBarArea{margin-top: 10px; height: 24px; position:relative;}
-    .npProgressWrap{position: relative; height: 24px;}
-    .npBufferedBar{
       position:absolute;
-      left: 9px;
-      right: 9px;
-      top: 50%;
-      height: 4px;
-      transform: translateY(-50%);
-      background: rgba(118,118,128,.16);
+      inset:0;
+      width:100%;
+      height:100%;
+      opacity:0;
+      appearance:none;
+      -webkit-appearance:none;
+      background:transparent;
+      cursor:pointer;
+    }
+    input[type="range"].npSeek:focus-visible{
+      outline:0;
+    }
+    .npProgressWrap:focus-within .npMeterTrack{
+      outline:2px solid var(--lib-selected-render-contrast);
+      outline-offset:2px;
+    }
+    .npBarArea{margin-top:10px; height:24px; position:relative;}
+    .npProgressWrap{position:relative; height:24px;}
+    .npMeter{position:relative; width:100%; height:100%;}
+    .npMeterTrack{
+      position:absolute;
+      inset:50% 0 auto;
+      height:var(--infoBarThickness);
+      transform:translateY(-50%);
+      background:color-mix(in srgb, var(--dp-text-info-pill) 24%, transparent);
       border-radius: 999px;
       overflow: hidden;
       pointer-events: none;
     }
     .npBufferedFill{
+      position:absolute;
+      inset:0 auto 0 0;
       height: 100%;
       width: 0%;
-      background: rgba(160,160,170,.62);
+      background:color-mix(in srgb, var(--dp-text-info-pill) 30%, transparent);
       border-radius: 999px;
       transition: width .15s linear;
+    }
+    .npMeterFill{
+      position:absolute;
+      inset:0 auto 0 0;
+      height:100%;
+      width:0%;
+      min-width:0;
+      border-radius:999px;
+      background:var(--lib-selected-render-contrast);
+      transition:width .12s linear;
     }
     .npSeekIndicator{
       position:absolute;
@@ -1775,20 +1810,7 @@
       display:none;
       pointer-events:none;
     }
-    .npVolumeWrap{display:none; position:relative; height: 24px;}
-    .npVolumeBar{
-      position:absolute;
-      left: 0;
-      right: 0;
-      top: 50%;
-      transform: translateY(-50%);
-      height: 10px;
-      border-radius: 999px;
-      border: 1px solid rgba(255,255,255,.10);
-      background: rgba(118,118,128,.18);
-      overflow:hidden;
-    }
-    .npVolumeFill{height: 100%; width: 0%; background: rgba(235,235,245,.88);}
+    .npVolumeWrap{display:none; position:relative; height:24px;}
     .npTime{
       display:flex;
       justify-content: space-between;
@@ -1805,20 +1827,11 @@
     .infoPill .npVolumeWrap{
       height:16px;
     }
-    .infoPill input[type="range"].npSeek{
-      accent-color:var(--lib-selected-render-contrast);
-      height:16px;
-    }
+    .infoPill input[type="range"].npSeek{height:16px;}
     .infoPill .npSeekIndicator{
       top:4px;
       bottom:4px;
       width:2px;
-      background:var(--lib-selected-render-contrast);
-    }
-    .infoPill .npVolumeBar{
-      height:7px;
-    }
-    .infoPill .npVolumeFill{
       background:var(--lib-selected-render-contrast);
     }
     .infoPill .npTime{
@@ -1838,18 +1851,6 @@
       white-space:nowrap;
       overflow:hidden;
       text-overflow:ellipsis;
-    }
-    .infoPill input[type="range"].npSeek::-webkit-slider-thumb{
-      width:8px;
-      height:8px;
-      border-radius:999px;
-      margin-top:0;
-    }
-    .infoPill input[type="range"].npSeek::-moz-range-thumb{
-      width:8px;
-      height:8px;
-      border-radius:999px;
-      border:0;
     }
     .npHint{
       color: var(--muted);

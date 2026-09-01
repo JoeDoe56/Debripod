@@ -123,8 +123,18 @@ function setInfoPillControlMode(mode, reason){
 
 function updateVolumeFillOnly(){
   try{
-    if(npVolumeFill) npVolumeFill.style.width = Math.round(userVol * 100) + "%";
+    const percent = Math.round(userVol * 100);
+    if(npVolumeFill) npVolumeFill.style.width = percent + "%";
+    const meter = npVolumeWrap && npVolumeWrap.querySelector ? npVolumeWrap.querySelector(".npVolumeMeter") : null;
+    if(meter) meter.setAttribute("aria-valuenow", String(percent));
     renderInfoPillLabels();
+  }catch(e){}
+}
+
+function updateProgressMeterFill(percent){
+  try{
+    const value = Math.max(0, Math.min(100, Number(percent) || 0));
+    if(npProgressFill) npProgressFill.style.width = value.toFixed(2) + "%";
   }catch(e){}
 }
 
@@ -173,10 +183,14 @@ function updateSeekIndicator(){
     const d = (m && m.duration) ? m.duration : 0;
     if(d <= 0){
       npSeekIndicator.style.left = "0%";
+      updateProgressMeterFill(0);
       return;
     }
     const pct = Math.max(0, Math.min(1, (seekPreview || 0) / d)) * 100;
-    npSeekIndicator.style.left = "calc(" + pct + "% - 1px)";
+    updateProgressMeterFill(pct);
+    const wrapWidth = npProgressWrap ? Number(npProgressWrap.clientWidth || 0) : 0;
+    const inset = Math.max(0, parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--infoBarInsetX")) || 0);
+    npSeekIndicator.style.left = Math.round(inset + Math.max(0, wrapWidth - (inset * 2)) * (pct / 100) - 1) + "px";
   }catch(e){}
 }
 
@@ -202,6 +216,11 @@ function cancelSeekMode(){
   try{ if(seekIdleTimer) clearTimeout(seekIdleTimer); }catch(e){}
   seekIdleTimer = null;
   try{ npSeekIndicator.style.display = "none"; }catch(e){}
+  try{
+    const m = wheelMedia();
+    const d = (m && m.duration) ? m.duration : 0;
+    updateProgressMeterFill(d > 0 ? ((Number(m.currentTime || 0) / d) * 100) : 0);
+  }catch(e){}
   showProgressBar("seek cancel");
   updateWheelLabels();
 }

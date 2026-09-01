@@ -673,6 +673,16 @@
     }
   }
 
+  function rowPillIntersectsListInnerRect(pillRect, innerRect, overscanPx){
+    const pill = pillRect || {};
+    const inner = innerRect || {};
+    const overscan = Math.max(0, Number(overscanPx) || 0);
+    return Number(pill.right) > Number(inner.left) - overscan &&
+      Number(pill.left) < Number(inner.right) + overscan &&
+      Number(pill.bottom) > Number(inner.top) - overscan &&
+      Number(pill.top) < Number(inner.bottom) + overscan;
+  }
+
   function computeEligibleRowPillElements(){
     const out = [];
     try{
@@ -687,9 +697,9 @@
           const row = pill.closest(".ipodItem");
           if(!row || !row.isConnected || !list.contains(row)) return;
           const rowRect = row.getBoundingClientRect();
-          if(rowRect.width <= 0 || rowRect.height <= 0) return;
-          if(rowRect.top < inner.top || rowRect.bottom > inner.bottom) return;
-          if(rowRect.right <= inner.left || rowRect.left >= inner.right) return;
+          const pillRect = pill.getBoundingClientRect();
+          if(rowRect.width <= 0 || rowRect.height <= 0 || pillRect.width <= 0 || pillRect.height <= 0) return;
+          if(!rowPillIntersectsListInnerRect(pillRect, inner, 2)) return;
           pill.style.visibility = "";
           const rowPills = Array.from(row.querySelectorAll(".ipodPill[data-liquid-row-pill]"));
           pill.setAttribute("data-liquid-pill-id", stableRowPillId(row, pill, rowPills.indexOf(pill)));
