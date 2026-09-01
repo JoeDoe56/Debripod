@@ -1,12 +1,10 @@
 from __future__ import annotations
 
-import ipaddress
 import json
 import re
 import base64
 import zlib
 import secrets
-import socket
 import time
 import asyncio
 import concurrent.futures
@@ -15,7 +13,7 @@ import logging
 import math
 import threading
 from pathlib import Path
-from urllib.parse import unquote, urlparse
+from urllib.parse import unquote, urlsplit
 
 from aiohttp import web
 
@@ -39,10 +37,11 @@ from .Services.search.pipeline import SearchPipeline
 from .Services.search.providers import SearchContext
 from .Services.search.runtime import build_search_runtime
 from .Services.link_intake import classify_link_input
+from .Services.safe_outbound import UnsafeOutboundUrl, request_public_url, validate_public_http_url, validate_ytdlp_target
 from .Library import tvmaze as tvmaze_module
 from .Library.tvmaze import normalized_episode_information
 from .factory import AppServices, SERVICES_KEY, json_response, session_for, session_middleware
-from .auth import _csrf_token, auth_middleware, current_user, register_auth_routes
+from .auth import _csrf_token, auth_middleware, current_user, is_owner, register_auth_routes
 from .Routes.notifications import register_notification_routes
 from .config import _coerce_config_value, ensure_startup_security_config, load_default_app_config_overrides, save_config, save_default_app_config_overrides
 from .Library.library_db import clear_search_history, load_folder_entries, load_palette, load_palette_for_media, load_search_history, load_visualizer_analysis_for_media, record_search_history_row, save_folder_entries, save_palette
@@ -86,6 +85,10 @@ _HLS_ACCESS_LOCK = threading.RLock()
 _HLS_ACCESS: dict[str, tuple[str, str, str, float]] = {}
 _HLS_ACCESS_TTL_SECONDS = 15 * 60
 routes = web.RouteTableDef()
+_OWNER_ONLY_SETTING_KEYS = {
+    "RD_BASE", "ALLDEBRID_BASE", "PREMIUMIZE_BASE", "TORBOX_BASE",
+    "YOUTUBE_WEB_BASE", "LASTFM_API_ROOT", "LASTFM_CALLBACK_URL",
+}
 
 
 from .runtime_route_state import *
@@ -98,6 +101,17 @@ def _default_app_overrides() -> dict[str, Any]:
 
 def _runtime_settings(request: web.Request) -> dict[str, Any]:
     return dict(user_runtime_for(request).settings)
+
+
+async def _validated_ytdlp_url(request: web.Request, raw_url: str) -> str:
+    services = request.app[SERVICES_KEY]
+    http = getattr(services, "http", None)
+    session = getattr(http, "session", None)
+    if session is None:
+        raise UnsafeOutboundUrl("Outbound URL validation is unavailable.")
+    return await validate_ytdlp_target(
+        session, raw_url, timeout=float(_runtime_settings(request).get("REQUEST_TIMEOUT_SECONDS") or 25)
+    )
 
 
 def _settings_scope(request: web.Request) -> str:
@@ -182,13 +196,14 @@ def _record_user_search_history(runtime: UserRuntime, query: str, source: str, c
     record_search_history_row(item["q"], item["source"], item["cache_key"], max_items=limit, user_id=runtime.user_id)
 
 
-async def _create_soulseek_service(settings: dict[str, Any]) -> Any:
+async def _create_soulseek_service(user_id: str, settings: dict[str, Any]) -> Any:
     username = str(settings.get("SOULSEEK_USERNAME") or "").strip()
     password = str(settings.get("SOULSEEK_PASSWORD") or "").strip()
     if not username or not password:
         return None
     try:
         service = SoulseekService(
+            user_id=user_id,
             username=username,
             password=password,
             download_dir=str(settings.get("SOULSEEK_DOWNLOAD_DIR") or ""),
@@ -196,6 +211,8 @@ async def _create_soulseek_service(settings: dict[str, Any]) -> Any:
             obfuscated_port=int(settings.get("SOULSEEK_OBFUSCATED_PORT") or 0),
             search_timeout_sec=int(settings.get("SOULSEEK_SEARCH_TIMEOUT_SEC") or 30),
             search_max_results=int(settings.get("SOULSEEK_SEARCH_MAX_RESULTS") or 500),
+            search_idle_stop_sec=float(settings.get("SOULSEEK_SEARCH_IDLE_STOP_SEC") or 2.5),
+            search_hard_max_sec=float(settings.get("SOULSEEK_SEARCH_HARD_MAX_SEC") or 60),
         )
         await service.start()
         return service
@@ -223,7 +240,7 @@ async def _create_user_runtime(services: AppServices, user: Any) -> UserRuntime:
         playback=load_playback_runtime(user_id),
         search_history=load_search_history(int(settings.get("SEARCH_HISTORY_MAX_ITEMS") or 100), user_id=user_id),
     )
-    runtime.soulseek_service = await _create_soulseek_service(runtime.settings)
+    runtime.soulseek_service = await _create_soulseek_service(runtime.user_id, runtime.settings)
     runtime.lastfm = lastfm_module.LastfmClient(runtime.user_id, runtime.settings, services.http)
     runtime.search_runtime = _build_unified_search_runtime(
         runtime.settings,
@@ -545,7 +562,7 @@ async def api_libsearch_soulseek_start(request: web.Request):
     if not svc or not svc.is_ready():
         return json_response(ok=False, error="Soulseek service is not ready", sid="", done=True, slsk_users=[], file_count=0, dir_count=0, cache_key=cache_key)
 
-    sid = _slsk_session_create(cache_key, q)
+    sid = svc.create_search_session(cache_key, q)
 
     try:
         _record_user_search_history(runtime, q, "soulseek", cache_key)
@@ -555,7 +572,7 @@ async def api_libsearch_soulseek_start(request: web.Request):
     try:
         svc.start_search_session(sid, q)
     except Exception:
-        _slsk_session_mark_done(sid, error="Soulseek search failed")
+        svc.mark_search_session_done(sid, error="Soulseek search failed")
         return json_response(ok=False, error="Soulseek search failed", sid=sid, done=True, slsk_users=[], file_count=0, dir_count=0, cache_key=cache_key)
 
     return json_response(ok=True, q=q, cache_key=cache_key, sid=sid, rev=0, done=False, slsk_users=[], file_count=0, dir_count=0, error="", changed=True)
@@ -570,11 +587,14 @@ async def api_libsearch_soulseek_poll(request: web.Request):
     except Exception:
         want_rev = 0
 
-    snap = _slsk_session_snapshot(sid)
+    svc = user_runtime_for(request).soulseek_service
+    if not svc:
+        return json_response(ok=False, error="Soulseek service is not ready", done=True)
+    snap = svc.search_session_snapshot(sid)
     if not snap:
         return json_response(ok=False, error="Unknown sid", done=True)
 
-    _slsk_session_touch(sid)
+    svc.touch_search_session(sid)
 
     rev = int(snap.get("rev") or 0)
     done = bool(snap.get("done"))
@@ -586,7 +606,7 @@ async def api_libsearch_soulseek_poll(request: web.Request):
 
     slsk_users = []
     if changed:
-        slsk_users = _slsk_group_snapshot_to_users(snap)
+        slsk_users = _slsk_group_snapshot_to_users(snap, user_runtime_for(request).user_id)
 
     if done and not err:
         # Persist to disk cache for fast repeat loads
@@ -722,11 +742,12 @@ async def api_libsearch_soulseek(request: web.Request):
 
 @routes.get("/api/soulseek/browse_user")
 async def api_soulseek_browse_user(request: web.Request):
+    runtime = user_runtime_for(request)
     user = (request.query.get("user") or "").strip()
     selected_dir = _slsk_norm_remote_path(request.query.get("selected_dir") or "")
     if not user:
         return json_response(ok=False, error="Missing user", user="", dirs=[], selected_dir="", status=400)
-    svc = user_runtime_for(request).soulseek_service
+    svc = runtime.soulseek_service
     if not svc or not svc.is_ready():
         return json_response(ok=False, error="Soulseek service is not ready", user=user, dirs=[], selected_dir=selected_dir)
 
@@ -735,7 +756,7 @@ async def api_soulseek_browse_user(request: web.Request):
     except Exception:
         return json_response(ok=False, error="Soulseek browse failed", user=user, dirs=[], selected_dir=selected_dir)
 
-    dirs = _slsk_group_items_to_dirs(user, items)
+    dirs = _slsk_group_items_to_dirs(user, items, runtime.user_id)
     dir_paths = {str(d.get("directory") or "") for d in dirs}
     if selected_dir and selected_dir not in dir_paths:
         selected_dir = ""
@@ -752,9 +773,15 @@ async def api_ytdlp_files(request: web.Request):
     if not url:
         return json_response(ok=False, error='Missing URL', files=[], file_count=0, size=0, status=400)
     try:
-        files = await asyncio.to_thread(ytdlp_list_formats, url)
+        safe_url = await _validated_ytdlp_url(request, url)
+        files = await asyncio.to_thread(ytdlp_list_formats, safe_url)
+        for file in files:
+            if isinstance(file, dict):
+                file["source_url"] = safe_url
         total_size = sum(int(f.get('size') or 0) for f in files)
         return json_response(ok=True, files=files, file_count=len(files), size=total_size)
+    except UnsafeOutboundUrl as exc:
+        return json_response(ok=False, error=str(exc), files=[], file_count=0, size=0, status=400)
     except Exception:
         return json_response(ok=False, error="Failed to list formats", files=[], file_count=0, size=0, status=500)
 @routes.get("/api/ytdlp/directory")
@@ -763,8 +790,10 @@ async def api_ytdlp_directory(request: web.Request):
     if not url:
         return json_response(ok=False, error="Missing URL", entries=[], result_count=0, status=400)
     try:
-        entries = await run_flat_entries_async(url)
+        entries = await run_flat_entries_async(await _validated_ytdlp_url(request, url))
         return json_response(ok=True, entries=entries, result_count=len(entries))
+    except UnsafeOutboundUrl as exc:
+        return json_response(ok=False, error=str(exc), entries=[], result_count=0, status=400)
     except Exception as exc:
         return json_response(ok=False, error=str(exc) or "Failed to load directory", entries=[], result_count=0, status=400)
 
@@ -851,8 +880,10 @@ async def api_link_inspect(request: web.Request):
                 "provider_data": {"infohash": "", "magnet": value, "indexer_ids": [], "indexer_labels": [], "source_urls": [], "seeders": 0, "leechers": 0, "verified": False, "category": "", "provider": provider.id, "debrid_task_id": preview.provider_task_id},
             }
             return json_response(ok=True, detail_kind="debrid_files", result=result)
-        result = await asyncio.to_thread(ytdlp_inspect, value)
+        result = await asyncio.to_thread(ytdlp_inspect, await _validated_ytdlp_url(request, value))
         return json_response(ok=True, detail_kind="ytdlp_formats", result=result)
+    except UnsafeOutboundUrl as exc:
+        return json_response(ok=False, error=str(exc), status=400)
     except DebridProviderError as exc:
         return json_response(ok=False, error=str(exc) or "Failed to inspect link", status=400)
     except Exception as exc:
@@ -864,11 +895,10 @@ async def api_youtube_comments(request: web.Request):
     if not url:
         return json_response(ok=False, error="Missing URL", comments=[], status=400)
     try:
-        parsed = urlparse(url)
-        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
-            return json_response(ok=False, error="Invalid URL", comments=[], status=400)
-        comments = await asyncio.to_thread(ytdlp_comments, url, limit=100)
+        comments = await asyncio.to_thread(ytdlp_comments, await _validated_ytdlp_url(request, url), limit=100)
         return json_response(ok=True, comments=comments)
+    except UnsafeOutboundUrl as exc:
+        return json_response(ok=False, error=str(exc), comments=[], status=400)
     except Exception:
         return json_response(ok=False, error="Failed to load comments", comments=[], status=500)
 
@@ -904,16 +934,28 @@ async def api_youtube_enqueue(request: web.Request):
                 break
     if not url:
         return json_response(ok=False, error='No URL found for the selected format', status=400)
+    try:
+        url = await _validated_ytdlp_url(request, url)
+    except UnsafeOutboundUrl as exc:
+        return json_response(ok=False, error=str(exc), status=400)
     youtube_root = str(_runtime_settings(request).get("YOUTUBE_DOWNLOAD_DIR") or "").strip()
     if not youtube_root:
         return json_response(ok=False, error='Pick the YouTube folder in Downloads settings before downloading.', status=400)
     entries: List[Dict[str, Any]] = []
+    safe_source_urls = {url: url}
     for i, it in enumerate(selected):
         if not isinstance(it, dict):
             continue
         name = str(it.get('name') or it.get('title') or f'Format {i+1}')
         ext = str(it.get('ext') or 'mp4').lower()
         file_id = str(it.get('file_id') or it.get('itag') or sha1_text(name + '|' + ext)[:12])
+        item_source_url = _ytdlp_enqueue_source_url(it) or url
+        if item_source_url not in safe_source_urls:
+            try:
+                safe_source_urls[item_source_url] = await _validated_ytdlp_url(request, item_source_url)
+            except UnsafeOutboundUrl as exc:
+                return json_response(ok=False, error=str(exc), status=400)
+        item_source_url = safe_source_urls[item_source_url]
         entries.append({
             'file_id': file_id,
             'itag': str(it.get('itag') or it.get('format_id') or it.get('file_id') or ''),
@@ -923,8 +965,8 @@ async def api_youtube_enqueue(request: web.Request):
             'ext': ext,
             'media': str(it.get('media') or '').strip().lower(),
             'direct_url': str(it.get('direct_url') or '').strip(),
-            'source_url': _ytdlp_enqueue_source_url(it) or url,
-            'url': _ytdlp_enqueue_source_url(it) or url,
+            'source_url': item_source_url,
+            'url': item_source_url,
             'total': int(it.get('size') or 0) if str(it.get('size') or '').strip() else 0,
             'done': 0,
             'speed': 0.0,
@@ -977,8 +1019,19 @@ async def api_libsearch_stream_selected(request: web.Request):
     except Exception:
         data = {}
     try:
+        if str(data.get("source") or "").strip().lower() == "youtube":
+            for candidate in [data, *[item for item in (data.get("selected") or []) if isinstance(item, dict)]]:
+                raw_url = _ytdlp_enqueue_source_url(candidate)
+                if not raw_url:
+                    continue
+                safe_url = await _validated_ytdlp_url(request, raw_url)
+                for key in ("source_url", "original_url", "canonical_url", "youtube_url", "url"):
+                    if candidate.get(key):
+                        candidate[key] = safe_url
         out = await _engine_prepare_stream_session(data, request.app[SERVICES_KEY].http, user_runtime_for(request))
         return json_response({"ok": True, **out})
+    except UnsafeOutboundUrl as exc:
+        return json_response({"ok": False, "error": str(exc)}, status=400)
     except Exception:
         return json_response({"ok": False, "error": "Failed to prepare stream"}, status=400)
 @routes.get("/api/debrid/providers")
@@ -1132,7 +1185,7 @@ async def api_soulseek_enqueue(request: web.Request):
     files_in = data.get("files") or []
     title = (data.get("title") or "").strip()
 
-    task_download_dir = os.path.join(soulseek_download_dir, soulseek_module._slsk_sanitized_dir_name(directory))
+    task_download_dir = svc.task_download_dir(directory)
     try:
         os.makedirs(task_download_dir, exist_ok=True)
     except Exception:
@@ -1158,7 +1211,7 @@ async def api_soulseek_enqueue(request: web.Request):
         rel = _slsk_relative_under_directory(directory, rp)
         rel_parts = [x for x in _slsk_norm_remote_path(rel).split("\\") if x]
         local_path = os.path.join(task_download_dir, *rel_parts) if rel_parts else task_download_dir
-        incoming_path = _slsk_expected_incoming_path(rp)
+        incoming_path = svc.expected_incoming_path(rp)
         files.append(
             {
                 "user": user,
@@ -1336,6 +1389,7 @@ async def api_library_reindex_status(request: web.Request):
 async def api_settings_get(request: web.Request):
     cfg = ensure_startup_security_config()
     runtime = user_runtime_for(request)
+    server_controls_owner = is_owner(current_user(request))
     username = runtime.username
     settings = dict(runtime.settings)
     soulseek_service = runtime.soulseek_service
@@ -1364,10 +1418,11 @@ async def api_settings_get(request: web.Request):
     return json_response({
         "ok": True,
         "startup": {
-            "PORT": int(PORT),
-            "ENABLE_MCP": bool(cfg.get("ENABLE_MCP")),
-            "MCP_TOKEN_SET": bool(str(cfg.get("MCP_TOKEN") or "").strip()),
+            "PORT": int(PORT) if server_controls_owner else None,
+            "ENABLE_MCP": bool(cfg.get("ENABLE_MCP")) if server_controls_owner else None,
+            "MCP_TOKEN_SET": bool(str(cfg.get("MCP_TOKEN") or "").strip()) if server_controls_owner else None,
         },
+        "server_controls_owner": server_controls_owner,
         "settings": masked_settings(settings),
         "tools": {
             "ffmpeg": executable_status(str(settings.get("FFMPEG_PATH") or "ffmpeg")),
@@ -1596,6 +1651,7 @@ async def api_settings_import(request: web.Request):
     if not isinstance(raw_settings, dict):
         return json_response({"ok": False, "error": "Import file must contain a settings object."}, status=400)
     include_secrets = bool(data.get("include_secrets"))
+    server_controls_owner = is_owner(current_user(request))
     clean = {}
     for key, value in raw_settings.items():
         key_upper = str(key).upper()
@@ -1603,6 +1659,8 @@ async def api_settings_import(request: web.Request):
             continue
         if key_upper in SECRET_SETTING_KEYS and not include_secrets:
             continue
+        if key_upper in _OWNER_ONLY_SETTING_KEYS and not server_controls_owner:
+            return json_response({"ok": False, "error": "Only the owner can import server endpoint settings."}, status=403)
         clean[key_upper] = value
     user_id = _settings_scope(request)
     saved = save_app_settings(clean, user_id=user_id, defaults_overrides=_default_app_overrides())
@@ -1618,12 +1676,17 @@ async def api_settings_save(request: web.Request):
     data = await request.json() or {}
     settings_updates = data.get("settings") if isinstance(data.get("settings"), dict) else {}
     startup_updates = data.get("startup") if isinstance(data.get("startup"), dict) else {}
+    server_controls_owner = is_owner(current_user(request))
+    if startup_updates and not server_controls_owner:
+        return json_response({"ok": False, "error": "Only the owner can change server settings."}, status=403)
 
     clean_settings = {}
     for key, value in settings_updates.items():
         key_upper = str(key).upper()
         if value == "***":
             continue
+        if key_upper in _OWNER_ONLY_SETTING_KEYS and not server_controls_owner:
+            return json_response({"ok": False, "error": "Only the owner can change server endpoint settings."}, status=403)
         clean_settings[key_upper] = value
     user_id = _settings_scope(request)
     saved = save_app_settings(clean_settings, user_id=user_id, defaults_overrides=_default_app_overrides())
@@ -1651,6 +1714,8 @@ async def api_settings_save(request: web.Request):
 
 @routes.post("/api/settings/mcp_reset_token")
 async def api_settings_mcp_reset_token(request: web.Request):
+    if not is_owner(current_user(request)):
+        return json_response({"ok": False, "error": "Only the owner can reset the MCP token."}, status=403)
     cfg = ensure_startup_security_config()
     cfg["MCP_TOKEN"] = secrets.token_urlsafe(48)
     cfg["ENABLE_MCP"] = True
@@ -3144,13 +3209,9 @@ async def hls_file(request: web.Request):
 
 def _proxy_url_allowed(raw_url: str, *, trusted_provider_stream: bool = False) -> bool:
     try:
-        parsed = urlparse(str(raw_url or "").strip())
-    except Exception:
-        return False
-    if parsed.scheme not in {"http", "https"}:
-        return False
-    host = (parsed.hostname or "").strip().lower()
-    if not host or host in {"localhost", "local"} or host.endswith(".localhost") or host.endswith(".local"):
+        validated = validate_public_http_url(raw_url)
+        host = str(urlsplit(validated).hostname or "").lower()
+    except UnsafeOutboundUrl:
         return False
     allowed_suffixes = []
     for raw_suffix in (STREAM_PROXY_ALLOWED_HOST_SUFFIXES or []):
@@ -3159,17 +3220,6 @@ def _proxy_url_allowed(raw_url: str, *, trusted_provider_stream: bool = False) -
             allowed_suffixes.append(suffix)
     if not trusted_provider_stream and allowed_suffixes and not any(host == suffix or host.endswith("." + suffix) for suffix in allowed_suffixes):
         return False
-    try:
-        addresses = {ipaddress.ip_address(host)}
-    except ValueError:
-        try:
-            infos = socket.getaddrinfo(host, parsed.port or (443 if parsed.scheme == "https" else 80), type=socket.SOCK_STREAM)
-            addresses = {ipaddress.ip_address(info[4][0]) for info in infos}
-        except Exception:
-            return False
-    for addr in addresses:
-        if addr.is_private or addr.is_loopback or addr.is_link_local or addr.is_multicast or addr.is_reserved or addr.is_unspecified:
-            return False
     return True
 
 
@@ -3207,16 +3257,10 @@ async def stream(request: web.Request):
         method = "HEAD" if request.method == "HEAD" else "GET"
         session = request.app[SERVICES_KEY].http.session
         try:
-            upstream = await session.request(
-                method,
-                upstream_url,
-                headers=headers,
-                timeout=REQUEST_TIMEOUT_SECONDS,
-                allow_redirects=True,
+            upstream, _final_url = await request_public_url(
+                session, method, upstream_url, headers=headers,
+                timeout=float(REQUEST_TIMEOUT_SECONDS),
             )
-            if not _proxy_url_allowed(str(upstream.url or ""), trusted_provider_stream=trusted_provider_stream):
-                upstream.close()
-                raise web.HTTPBadRequest()
         except web.HTTPException:
             raise
         except Exception:
@@ -3306,6 +3350,11 @@ async def _application_services(app: web.Application):
     services.local_index.initialize()
     services.local_index_updater = LocalIndexUpdater(services.local_index, http=services.http)
     services.user_runtimes = UserRuntimeRegistry(lambda user: _create_user_runtime(services, user))
+    configure_task_manager(
+        soulseek_service_provider=lambda user_id: getattr(
+            services.user_runtimes.snapshot().get(str(user_id or "")), "soulseek_service", None
+        )
+    )
     services.local_index_state = services.local_index.diagnostics()
     services.local_index_task = asyncio.create_task(_local_index_update_loop(services), name="local-index-updater")
     services.library_reconciliation_task = asyncio.create_task(

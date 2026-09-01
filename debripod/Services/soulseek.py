@@ -21,8 +21,8 @@ SOULSEEK_SEARCH_HARD_MAX_SEC = 0.0
 TASKS: Dict[str, Any] = {}
 TASKS_LOCK = threading.Lock()
 SOULSEEK_ENQUEUE_SEMAPHORE = asyncio.Semaphore(3)
-_SLSK_SESS_LOCK = threading.Lock()
-_SLSK_SESSIONS: Dict[str, Dict[str, Any]] = {}
+_SLSK_PORT_LOCK = threading.Lock()
+_SLSK_RESERVED_PORTS: Dict[int, str] = {}
 
 
 def _missing_task(_task_id: str) -> Any:
@@ -71,146 +71,107 @@ def configure_soulseek_module(
     _set_file_control = set_file_control_func
     _get_file_control = get_file_control_func
 
-def _slsk_gc_sessions(max_keep: int = 20) -> None:
-    with _SLSK_SESS_LOCK:
-        if len(_SLSK_SESSIONS) <= max_keep:
+
+class SoulseekSearchSessions:
+    """Runtime-owned live Soulseek search state."""
+
+    def __init__(self) -> None:
+        self._lock = threading.Lock()
+        self._sessions: Dict[str, Dict[str, Any]] = {}
+
+    def _gc_locked(self, max_keep: int = 20) -> None:
+        if len(self._sessions) <= max_keep:
             return
-        # Drop oldest done sessions first
-        items = list(_SLSK_SESSIONS.items())
-        items.sort(key=lambda kv: float(kv[1].get("created") or 0.0))
-        for sid, sess in items:
-            if len(_SLSK_SESSIONS) <= max_keep:
+        for sid, session in sorted(self._sessions.items(), key=lambda item: float(item[1].get("created") or 0.0)):
+            if len(self._sessions) <= max_keep:
                 break
-            if sess.get("done"):
-                _SLSK_SESSIONS.pop(sid, None)
+            if session.get("done"):
+                self._sessions.pop(sid, None)
 
-def _slsk_session_create(cache_key: str, q: str) -> str:
-    sid = uuid.uuid4().hex
-    with _SLSK_SESS_LOCK:
-        _slsk_gc_sessions()
-        _SLSK_SESSIONS[sid] = {
-            "id": sid,
-            "cache_key": cache_key,
-            "q": q,
-            "created": time.time(),
-            "rev": 0,
-            "done": False,
-            "error": "",
-            "items": {},
-            "user_speed": {},
-            "file_count": 0,
-            "dir_count": 0,
-            "last_touch": time.time(),
-        }
-    return sid
-
-def _slsk_session_touch(sid: str) -> None:
-    with _SLSK_SESS_LOCK:
-        s = _SLSK_SESSIONS.get(sid)
-        if s:
-            s["last_touch"] = time.time()
-
-def _slsk_session_add_items(session_id: str, items: List[Dict[str, Any]]) -> None:
-    if not items:
-        return
-    with _SLSK_SESS_LOCK:
-        s = _SLSK_SESSIONS.get(session_id)
-        if not s or s.get("done"):
-            return
-        store = s.get("items")
-        if not isinstance(store, dict):
-            store = {}
-            s["items"] = store
-        user_speed = s.get("user_speed")
-        if not isinstance(user_speed, dict):
-            user_speed = {}
-            s["user_speed"] = user_speed
-
-        new_any = False
-        for it in items:
-            user = (it.get("user") or "").strip()
-            rp = str(it.get("remote_path") or "")
-            if not user or not rp:
-                continue
-            rp_norm = _slsk_norm_remote_path(rp)
-            parts = rp_norm.split("\\")
-            fname = parts[-1] if parts else rp_norm
-            directory = "\\".join(parts[:-1]) if len(parts) > 1 else ""
-            key = user + "|" + rp_norm
-            if key in store:
-                continue
-            kind, ext, br, bd, sr, dur, vbr, codec = _slsk_guess_kind_ext_attrs(fname, it)
-            try:
-                size = int(it.get("size") or 0)
-            except Exception:
-                size = 0
-            try:
-                speed = int(it.get("speed") or 0)
-            except Exception:
-                speed = 0
-
-            store[key] = {
-                "user": user,
-                "directory": directory,
-                "name": fname,
-                "remote_path": rp_norm,
-                "size": size,
-                "ext": ext,
-                "kind": kind,
-                "bitrate": br,
-                "bit_depth": bd,
-                "sample_rate": sr,
-                "duration": dur,
-                "vbr": vbr,
-                "codec": codec,
-                "speed": speed,
+    def create(self, cache_key: str, query: str) -> str:
+        sid = uuid.uuid4().hex
+        now = time.time()
+        with self._lock:
+            self._gc_locked()
+            self._sessions[sid] = {
+                "id": sid, "cache_key": cache_key, "q": query, "created": now,
+                "rev": 0, "done": False, "error": "", "items": {}, "user_speed": {},
+                "file_count": 0, "dir_count": 0, "last_touch": now,
             }
-            if speed and (user_speed.get(user, 0) < speed):
-                user_speed[user] = speed
-            new_any = True
+        return sid
 
-        if new_any:
-            # Recompute counts
-            file_count = len(store)
-            dirs = set()
-            for v in store.values():
-                dirs.add((v.get("user") or "", v.get("directory") or ""))
-            s["file_count"] = int(file_count)
-            s["dir_count"] = int(len(dirs))
-            s["rev"] = int(s.get("rev") or 0) + 1
-            s["last_touch"] = time.time()
+    def touch(self, session_id: str) -> None:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if session:
+                session["last_touch"] = time.time()
 
-def _slsk_session_mark_done(session_id: str, error: str = "") -> None:
-    with _SLSK_SESS_LOCK:
-        s = _SLSK_SESSIONS.get(session_id)
-        if not s:
+    def add_items(self, session_id: str, items: List[Dict[str, Any]]) -> None:
+        if not items:
             return
-        if s.get("done"):
-            return
-        s["done"] = True
-        s["error"] = str(error or "")
-        s["rev"] = int(s.get("rev") or 0) + 1
-        s["last_touch"] = time.time()
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if not session or session.get("done"):
+                return
+            store = session.setdefault("items", {})
+            speeds = session.setdefault("user_speed", {})
+            changed = False
+            for item in items:
+                user = str(item.get("user") or "").strip()
+                remote_path = _slsk_norm_remote_path(str(item.get("remote_path") or ""))
+                if not user or not remote_path:
+                    continue
+                key = user + "|" + remote_path
+                if key in store:
+                    continue
+                name = remote_path.rsplit("\\", 1)[-1]
+                directory = remote_path.rsplit("\\", 1)[0] if "\\" in remote_path else ""
+                kind, ext, br, bd, sr, dur, vbr, codec = _slsk_guess_kind_ext_attrs(name, item)
+                try:
+                    size = int(item.get("size") or 0)
+                except Exception:
+                    size = 0
+                try:
+                    speed = int(item.get("speed") or 0)
+                except Exception:
+                    speed = 0
+                store[key] = {
+                    "user": user, "directory": directory, "name": name, "remote_path": remote_path,
+                    "size": size, "ext": ext, "kind": kind, "bitrate": br, "bit_depth": bd,
+                    "sample_rate": sr, "duration": dur, "vbr": vbr, "codec": codec, "speed": speed,
+                }
+                if speed > int(speeds.get(user) or 0):
+                    speeds[user] = speed
+                changed = True
+            if changed:
+                session["file_count"] = len(store)
+                session["dir_count"] = len({(item.get("user") or "", item.get("directory") or "") for item in store.values()})
+                session["rev"] = int(session.get("rev") or 0) + 1
+                session["last_touch"] = time.time()
 
-def _slsk_session_snapshot(session_id: str) -> Optional[Dict[str, Any]]:
-    with _SLSK_SESS_LOCK:
-        s = _SLSK_SESSIONS.get(session_id)
-        if not s:
-            return None
-        # Lightweight copy
-        return {
-            "id": s.get("id") or "",
-            "cache_key": s.get("cache_key") or "",
-            "q": s.get("q") or "",
-            "created": float(s.get("created") or 0.0),
-            "rev": int(s.get("rev") or 0),
-            "done": bool(s.get("done")),
-            "error": s.get("error") or "",
-            "file_count": int(s.get("file_count") or 0),
-            "dir_count": int(s.get("dir_count") or 0),
-            "items": dict(s.get("items") or {}),
-            "user_speed": dict(s.get("user_speed") or {}),
-        }
+    def mark_done(self, session_id: str, error: str = "") -> None:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if not session or session.get("done"):
+                return
+            session["done"] = True
+            session["error"] = str(error or "")
+            session["rev"] = int(session.get("rev") or 0) + 1
+            session["last_touch"] = time.time()
+
+    def snapshot(self, session_id: str) -> Optional[Dict[str, Any]]:
+        with self._lock:
+            session = self._sessions.get(session_id)
+            if not session:
+                return None
+            return {
+                "id": session.get("id") or "", "cache_key": session.get("cache_key") or "",
+                "q": session.get("q") or "", "created": float(session.get("created") or 0.0),
+                "rev": int(session.get("rev") or 0), "done": bool(session.get("done")),
+                "error": session.get("error") or "", "file_count": int(session.get("file_count") or 0),
+                "dir_count": int(session.get("dir_count") or 0), "items": dict(session.get("items") or {}),
+                "user_speed": dict(session.get("user_speed") or {}),
+            }
 
 def _slsk_download_state_priority(state: str) -> int:
     s = _slsk_clean_state_token(state)
@@ -223,7 +184,7 @@ def _slsk_download_state_priority(state: str) -> int:
     return 0
 
 
-def _slsk_lookup_download_state(user: str, remote_path: str) -> Dict[str, Any]:
+def _slsk_lookup_download_state(user: str, remote_path: str, owner_user_id: str = "") -> Dict[str, Any]:
     user_s = str(user or "").strip()
     rp_norm = _slsk_norm_remote_path(remote_path or "")
     if not user_s or not rp_norm:
@@ -236,6 +197,8 @@ def _slsk_lookup_download_state(user: str, remote_path: str) -> Dict[str, Any]:
 
     for t in tasks:
         if (getattr(t, "source", "") or "").lower() != "soulseek":
+            continue
+        if owner_user_id and str(getattr(t, "owner_user_id", "") or "") != str(owner_user_id):
             continue
         for f in list(getattr(t, "slsk_files", []) or []):
             try:
@@ -266,16 +229,16 @@ def _slsk_lookup_download_state(user: str, remote_path: str) -> Dict[str, Any]:
     return best
 
 
-def _slsk_annotate_file_with_download_state(file_obj: Dict[str, Any], user: str) -> Dict[str, Any]:
+def _slsk_annotate_file_with_download_state(file_obj: Dict[str, Any], user: str, owner_user_id: str = "") -> Dict[str, Any]:
     if not isinstance(file_obj, dict):
         return file_obj
-    info = _slsk_lookup_download_state(user, str(file_obj.get("remote_path") or ""))
+    info = _slsk_lookup_download_state(user, str(file_obj.get("remote_path") or ""), owner_user_id)
     if info:
         file_obj.update(info)
     return file_obj
 
 
-def _slsk_group_snapshot_to_users(snap: Dict[str, Any]) -> List[Dict[str, Any]]:
+def _slsk_group_snapshot_to_users(snap: Dict[str, Any], owner_user_id: str = "") -> List[Dict[str, Any]]:
     store = snap.get("items") or {}
     user_speed = snap.get("user_speed") or {}
     users: Dict[str, Dict[str, Any]] = {}
@@ -308,7 +271,7 @@ def _slsk_group_snapshot_to_users(snap: Dict[str, Any]) -> List[Dict[str, Any]]:
             "vbr": v.get("vbr"),
             "codec": v.get("codec") or "",
         }
-        fobj = _slsk_annotate_file_with_download_state(fobj, user)
+        fobj = _slsk_annotate_file_with_download_state(fobj, user, owner_user_id)
         dd["files"].append(fobj)
         dd["total_size"] = int(dd.get("total_size") or 0) + int(fobj.get("size") or 0)
         u["total_files"] = int(u.get("total_files") or 0) + 1
@@ -375,7 +338,10 @@ def soulseek_log_file_path() -> str:
     return os.path.join(cache_dir(), "incoming", "soulseek_aioslsk.log")
 
 
-def soulseek_incoming_dir() -> str:
+def soulseek_incoming_dir(user_id: str = "") -> str:
+    clean_user_id = sanitize_filename(str(user_id or "").strip())
+    if clean_user_id:
+        return os.path.join(cache_dir(), "incoming", "soulseek", clean_user_id)
     return os.path.join(cache_dir(), "incoming", "soulseek")
 
 
@@ -506,7 +472,7 @@ def _slsk_collect_browse_items(obj: Any, user: str = "", base_dir: str = "", _se
     return items
 
 
-def _slsk_group_items_to_dirs(user: str, items: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+def _slsk_group_items_to_dirs(user: str, items: List[Dict[str, Any]], owner_user_id: str = "") -> List[Dict[str, Any]]:
     dirs: Dict[str, Dict[str, Any]] = {}
     seen: set = set()
     for it in (items or []):
@@ -537,7 +503,7 @@ def _slsk_group_items_to_dirs(user: str, items: List[Dict[str, Any]]) -> List[Di
             "vbr": it.get("vbr"),
             "codec": it.get("codec") or "",
         }
-        fobj = _slsk_annotate_file_with_download_state(fobj, user)
+        fobj = _slsk_annotate_file_with_download_state(fobj, user, owner_user_id)
         dd["files"].append(fobj)
         dd["total_size"] = int(dd.get("total_size") or 0) + int(fobj.get("size") or 0)
         dd["total_files"] = int(dd.get("total_files") or 0) + 1
@@ -1404,6 +1370,7 @@ def _slsk_guess_kind_ext_attrs(name: str, shared_item: Any) -> Tuple[str, str, O
 class SoulseekService:
     def __init__(
         self,
+        user_id: str,
         username: str,
         password: str,
         download_dir: str,
@@ -1411,7 +1378,10 @@ class SoulseekService:
         obfuscated_port: int,
         search_timeout_sec: int = 8,
         search_max_results: int = 60,
+        search_idle_stop_sec: float = 2.5,
+        search_hard_max_sec: float = 60.0,
     ):
+        self.user_id = str(user_id or "").strip()
         self.username = (username or "").strip()
         self.password = (password or "").strip()
         self.download_dir = os.path.abspath(download_dir)
@@ -1419,6 +1389,8 @@ class SoulseekService:
         self.obfuscated_port = int(obfuscated_port)
         self.search_timeout_sec = max(2, int(search_timeout_sec))
         self.search_max_results = max(10, int(search_max_results))
+        self.search_idle_stop_sec = max(0.1, float(search_idle_stop_sec or 2.5))
+        self.search_hard_max_sec = max(self.search_idle_stop_sec, float(search_hard_max_sec or 60.0))
 
         self._loop = asyncio.get_running_loop()
         self._start_task = None
@@ -1427,6 +1399,8 @@ class SoulseekService:
         self._client = None
         self._start_error = None
         self._start_warning = ""
+        self._sessions = SoulseekSearchSessions()
+        self._reserved_ports: set[int] = set()
         self._startup_status = {
             "username_set": bool(self.username),
             "download_dir": self.download_dir,
@@ -1443,8 +1417,30 @@ class SoulseekService:
             "warning": "",
         }
 
-        self.incoming_dir = soulseek_incoming_dir()
+        self.incoming_dir = soulseek_incoming_dir(self.user_id)
         os.makedirs(self.incoming_dir, exist_ok=True)
+
+    def create_search_session(self, cache_key: str, query: str) -> str:
+        return self._sessions.create(cache_key, query)
+
+    def touch_search_session(self, session_id: str) -> None:
+        self._sessions.touch(session_id)
+
+    def search_session_snapshot(self, session_id: str) -> Optional[Dict[str, Any]]:
+        return self._sessions.snapshot(session_id)
+
+    def mark_search_session_done(self, session_id: str, error: str = "") -> None:
+        self._sessions.mark_done(session_id, error)
+
+    def _add_search_session_items(self, session_id: str, items: List[Dict[str, Any]]) -> None:
+        self._sessions.add_items(session_id, items)
+
+    def expected_incoming_path(self, remote_path: str) -> str:
+        filename = _slsk_norm_remote_path(remote_path or "").split("\\")[-1]
+        return os.path.join(self.incoming_dir, sanitize_filename(filename)) if filename else self.incoming_dir
+
+    def task_download_dir(self, remote_directory: str) -> str:
+        return os.path.join(self.download_dir, _slsk_sanitized_dir_name(remote_directory))
 
     async def start(self) -> None:
         """Start the long-lived aioslsk client on the aiohttp application loop."""
@@ -1502,10 +1498,37 @@ class SoulseekService:
         await self._stop_client_obj(self._client)
         self._client = None
         self._ready.clear()
+        self._release_ports()
 
     def _is_non_obfuscated_listen_error(self, exc: Exception) -> bool:
         text = str(exc or "").lower().replace("_", "-")
         return "non-obfuscated" in text and "listening port" in text
+
+    @staticmethod
+    def _is_port_collision_error(exc: Exception) -> bool:
+        text = str(exc or "").lower()
+        return "address already in use" in text or "eaddrinuse" in text or "already bound" in text
+
+    def _reserve_ports(self) -> None:
+        requested = {port for port in (self.listening_port, self.obfuscated_port) if int(port or 0) > 0}
+        with _SLSK_PORT_LOCK:
+            for port in requested:
+                holder = _SLSK_RESERVED_PORTS.get(port)
+                if holder and holder != self.user_id:
+                    raise RuntimeError(
+                        f"Soulseek port {port} is already used by another DebriPod account. "
+                        "Choose a different per-user port in Services."
+                    )
+            for port in requested:
+                _SLSK_RESERVED_PORTS[port] = self.user_id
+            self._reserved_ports = requested
+
+    def _release_ports(self) -> None:
+        with _SLSK_PORT_LOCK:
+            for port in self._reserved_ports:
+                if _SLSK_RESERVED_PORTS.get(port) == self.user_id:
+                    _SLSK_RESERVED_PORTS.pop(port, None)
+            self._reserved_ports.clear()
 
     async def _stop_client_obj(self, client: Any) -> None:
         if not client:
@@ -1602,12 +1625,18 @@ class SoulseekService:
             self._ready.set()
 
         try:
+            self._reserve_ports()
             try:
                 await _attempt_start(_build_settings(self.listening_port, self.obfuscated_port))
                 return
             except Exception as first_exc:
                 await self._stop_client_obj(self._client)
                 self._client = None
+                if self._is_port_collision_error(first_exc):
+                    raise RuntimeError(
+                        "Soulseek could not bind this account's configured port because it is already in use. "
+                        "Choose another port in Services."
+                    ) from first_exc
                 if not self._is_non_obfuscated_listen_error(first_exc):
                     raise
                 warning = f"Configured listening port failed; Soulseek started with fallback listener settings. Original error: {first_exc}"
@@ -1623,6 +1652,7 @@ class SoulseekService:
             self._startup_status["error"] = self._start_error
             self._startup_status["ready"] = False
             self._ready.set()
+            self._release_ports()
 
     def _schedule(self, coroutine_factory, *, name: str) -> None:
         """Schedule a Soulseek operation on the application loop without blocking."""
@@ -1645,7 +1675,7 @@ class SoulseekService:
     def start_search_session(self, session_id: str, query: str) -> None:
         q = (query or "").strip()
         if not q:
-            _slsk_session_mark_done(session_id, error="Missing query")
+            self.mark_search_session_done(session_id, error="Missing query")
             return
         try:
             self._schedule(
@@ -1653,7 +1683,7 @@ class SoulseekService:
                 name=f"soulseek-search:{session_id}",
             )
         except Exception as e:
-            _slsk_session_mark_done(session_id, error=str(e))
+            self.mark_search_session_done(session_id, error=str(e))
 
     async def search_async(self, query: str) -> List[Dict[str, Any]]:
         q = (query or "").strip()
@@ -1756,7 +1786,7 @@ class SoulseekService:
 
     async def _search_stream_coro(self, query: str, session_id: str) -> None:
         if not self._client:
-            _slsk_session_mark_done(session_id, error="Soulseek client not started")
+            self.mark_search_session_done(session_id, error="Soulseek client not started")
             return
 
         searcher = None
@@ -1774,17 +1804,17 @@ class SoulseekService:
             except Exception:
                 searcher = None
         if searcher is None:
-            _slsk_session_mark_done(session_id, error="Soulseek client does not expose a search manager")
+            self.mark_search_session_done(session_id, error="Soulseek client does not expose a search manager")
             return
 
         try:
             req = await searcher(query)
         except Exception as e:
-            _slsk_session_mark_done(session_id, error=str(e))
+            self.mark_search_session_done(session_id, error=str(e))
             return
 
-        idle_stop = float(SOULSEEK_SEARCH_IDLE_STOP_SEC or 2.5)
-        hard_max = float(SOULSEEK_SEARCH_HARD_MAX_SEC or 60)
+        idle_stop = self.search_idle_stop_sec
+        hard_max = self.search_hard_max_sec
         start_t = time.time()
         last_growth = start_t
         seen: set = set()
@@ -1871,7 +1901,7 @@ class SoulseekService:
 
             if new_items:
                 last_growth = time.time()
-                _slsk_session_add_items(session_id, new_items)
+                self._add_search_session_items(session_id, new_items)
 
             if len(seen) >= int(self.search_max_results):
                 break
@@ -1884,7 +1914,7 @@ class SoulseekService:
             except Exception:
                 break
 
-        _slsk_session_mark_done(session_id, error="")
+        self.mark_search_session_done(session_id, error="")
 
     async def browse_user_async(self, username: str) -> List[Dict[str, Any]]:
         user = (username or "").strip()
@@ -2452,7 +2482,12 @@ class SoulseekService:
 
             # Snapshot Soulseek tasks
             with TASKS_LOCK:
-                slsk_tasks = [t for t in TASKS.values() if (t.source or "").lower() == "soulseek" and t.state not in {"done", "error", "canceled"}]
+                slsk_tasks = [
+                    t for t in TASKS.values()
+                    if (t.source or "").lower() == "soulseek"
+                    and str(getattr(t, "owner_user_id", "") or "") == self.user_id
+                    and t.state not in {"done", "error", "canceled"}
+                ]
 
             for t in slsk_tasks:
                 if t.cancel_event.is_set():
@@ -2484,9 +2519,9 @@ class SoulseekService:
                     if not final_lp:
                         rel = _slsk_relative_under_directory(t.slsk_directory, rp_norm)
                         rel_parts = [x for x in _slsk_norm_remote_path(rel).split("\\") if x]
-                        base_dir = _slsk_task_download_dir(t.slsk_directory)
+                        base_dir = self.task_download_dir(t.slsk_directory)
                         final_lp = os.path.join(base_dir, *rel_parts) if rel_parts else base_dir
-                    incoming_lp = f.get("incoming_path") or _slsk_expected_incoming_path(rp)
+                    incoming_lp = f.get("incoming_path") or self.expected_incoming_path(rp)
                     f["local_path"] = final_lp
                     f["incoming_path"] = incoming_lp
                     f["total"] = int(total) if total else 0

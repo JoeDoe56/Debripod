@@ -27,7 +27,7 @@ class SoulseekSearchProvider:
         directories: list[dict[str, Any]] = []
         for username, user_items in by_user.items():
             speed = max((int(item.get("speed") or 0) for item in user_items), default=0)
-            for directory in _slsk_group_items_to_dirs(username, user_items):
+            for directory in _slsk_group_items_to_dirs(username, user_items, str(getattr(service, "user_id", "") or "")):
                 directory["user"] = username
                 directory["speed"] = speed
                 directories.append(directory)

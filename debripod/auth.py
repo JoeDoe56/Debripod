@@ -468,9 +468,10 @@ async def auth_middleware(request: web.Request, handler):
         raise web.HTTPFound(location=_safe_next_url(request, "/"))
 
     if request.path == "/mcp":
-        if not _mcp_enabled():
+        has_owner = any(str(item.get("role") or "") == "owner" for item in user_repository.list_users())
+        if not _mcp_enabled() or not has_owner:
             raise web.HTTPNotFound()
-        if not (_is_logged_in(request) or _mcp_bearer_token_valid(request)):
+        if not _mcp_bearer_token_valid(request):
             return _auth_required_response(request)
     elif _setup_needed():
         if not _is_static_or_public_path(request):

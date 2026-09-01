@@ -19,15 +19,11 @@ from ..user_runtime import UserRuntime
 
 
 async def _mcp_runtime(request: web.Request) -> UserRuntime:
-    """Resolve an explicit owner runtime for browser or bearer MCP traffic."""
-    user = current_user(request)
-    if user is None:
-        owner = next((item for item in user_repository.list_users() if str(item.get("role") or "") == "owner"), None)
-        if owner is None:
-            raise web.HTTPUnauthorized(text="No owner account is available")
-        user = UserContext(str(owner.get("user_id") or ""), str(owner.get("username") or ""), "owner")
-    if user.role != "owner":
-        raise web.HTTPForbidden(text="MCP access requires an owner account")
+    """MCP always runs as the current server owner's isolated runtime."""
+    owner = next((item for item in user_repository.list_users() if str(item.get("role") or "") == "owner"), None)
+    if owner is None:
+        raise web.HTTPUnauthorized(text="No owner account is available")
+    user = UserContext(str(owner.get("user_id") or ""), str(owner.get("username") or ""), "owner")
     registry = request.app[SERVICES_KEY].user_runtimes
     if registry is None:
         raise RuntimeError("User runtime registry is unavailable")
@@ -410,7 +406,7 @@ async def _mcp_start_slsk_download(user: str, directory: str, files_in: List[Dic
     if not svc or not svc.is_ready():
         raise RuntimeError('Soulseek is not configured or failed to start')
     soulseek_download_dir = str(runtime.settings.get("SOULSEEK_DOWNLOAD_DIR") or "").strip()
-    task_download_dir = os.path.join(soulseek_download_dir, _slsk_sanitized_dir_name(directory))
+    task_download_dir = svc.task_download_dir(directory)
     try:
         os.makedirs(task_download_dir, exist_ok=True)
     except Exception:
@@ -429,7 +425,7 @@ async def _mcp_start_slsk_download(user: str, directory: str, files_in: List[Dic
         rel = _slsk_relative_under_directory(directory, rp)
         rel_parts = [x for x in _slsk_norm_remote_path(rel).split('\\') if x]
         local_path = os.path.join(task_download_dir, *rel_parts) if rel_parts else task_download_dir
-        incoming_path = _slsk_expected_incoming_path(rp)
+        incoming_path = svc.expected_incoming_path(rp)
         files.append({
             'user': user,
             'directory': directory,
@@ -685,6 +681,7 @@ async def mcp_get(request: web.Request):
     bad = _mcp_validate_origin(request)
     if bad is not None:
         return bad
+    await _mcp_runtime(request)
     session_id = (request.headers.get('Mcp-Session-Id') or '').strip()
     return await _mcp_sse_response(request, session_id)
 
@@ -693,6 +690,7 @@ async def mcp_delete(request: web.Request):
     bad = _mcp_validate_origin(request)
     if bad is not None:
         return bad
+    await _mcp_runtime(request)
     session_id = (request.headers.get('Mcp-Session-Id') or '').strip()
     if session_id:
         with MCP_SESSIONS_LOCK:

@@ -79,14 +79,14 @@ class Task:
 
 TASKS: Dict[str, Task] = {}
 TASKS_LOCK = threading.Lock()
-_soulseek_service_provider: Callable[[], Any] = lambda: None
+_soulseek_service_provider: Callable[[str], Any] = lambda _user_id: None
 _retry_worker_provider: Callable[[str], Optional[Callable[[str], None]]] = lambda source: None
 _completion_notifier: Callable[[Task], None] = lambda task: None
 
 
 def configure_task_manager(
     *,
-    soulseek_service_provider: Optional[Callable[[], Any]] = None,
+    soulseek_service_provider: Optional[Callable[[str], Any]] = None,
     retry_worker_provider: Optional[Callable[[str], Optional[Callable[[str], None]]]] = None,
     completion_notifier: Optional[Callable[[Task], None]] = None,
 ) -> None:
@@ -97,6 +97,14 @@ def configure_task_manager(
         _retry_worker_provider = retry_worker_provider
     if completion_notifier is not None:
         _completion_notifier = completion_notifier
+
+
+def _soulseek_service_for_task(task: Task) -> Any:
+    try:
+        return _soulseek_service_provider(str(getattr(task, "owner_user_id", "") or ""))
+    except TypeError:
+        # Compatibility for integrations that have not yet accepted user IDs.
+        return _soulseek_service_provider()  # type: ignore[call-arg]
 
 
 def set_task(task_id: str, **kwargs: Any) -> None:
@@ -166,7 +174,7 @@ def cancel_task(task_id: str) -> bool:
         src = (t.source or "debrid").lower()
 
     if src == "soulseek":
-        svc = _soulseek_service_provider()
+        svc = _soulseek_service_for_task(t)
         if svc:
             try:
                 svc.abort_task(task_id)
@@ -192,7 +200,7 @@ def pause_task(task_id: str) -> bool:
         src = (t.source or "debrid").lower()
 
     if src == "soulseek":
-        svc = _soulseek_service_provider()
+        svc = _soulseek_service_for_task(t)
         if svc:
             try:
                 svc.pause_task(task_id)
@@ -218,7 +226,7 @@ def resume_task(task_id: str) -> bool:
         src = (t.source or "debrid").lower()
 
     if src == "soulseek":
-        svc = _soulseek_service_provider()
+        svc = _soulseek_service_for_task(t)
         if svc:
             try:
                 svc.resume_task(task_id)
@@ -300,7 +308,7 @@ def task_file_action(task_id: str, file_id: str, action: str) -> bool:
             _set_file_control(task_id, file_id, paused=False, canceled=False)
             _update_task_file_entry(task_id, "slsk_files", file_id, paused=False, canceled=False, done=0, speed=0.0, error="", state="queued")
 
-        svc = _soulseek_service_provider()
+        svc = _soulseek_service_for_task(t)
         if svc:
             try:
                 if action == "pause":
@@ -448,7 +456,7 @@ def clear_task(task_id: str) -> bool:
         TASKS.pop(task_id, None)
 
     if src == "soulseek":
-        svc = _soulseek_service_provider()
+        svc = _soulseek_service_for_task(t)
         if svc:
             try:
                 svc.abort_task(task_id)
@@ -459,7 +467,7 @@ def clear_task(task_id: str) -> bool:
 
 
 def clear_all_tasks(user_id: str | None = None) -> None:
-    slsk_ids: List[str] = []
+    slsk_tasks: List[Task] = []
     clean_user_id = str(user_id or "").strip()
     with TASKS_LOCK:
         for t in list(TASKS.values()):
@@ -471,14 +479,14 @@ def clear_all_tasks(user_id: str | None = None) -> None:
                 except Exception:
                     pass
             if (t.source or "").lower() == "soulseek":
-                slsk_ids.append(t.id)
+                slsk_tasks.append(t)
             TASKS.pop(t.id, None)
 
-    if slsk_ids:
-        svc = _soulseek_service_provider()
-        if svc:
-            for tid in slsk_ids:
+    if slsk_tasks:
+        for task in slsk_tasks:
+            svc = _soulseek_service_for_task(task)
+            if svc:
                 try:
-                    svc.abort_task(tid)
+                    svc.abort_task(task.id)
                 except Exception:
                     pass

@@ -49,6 +49,7 @@
       uiSettings = DebriPod.uiSettings.settings;
     }
     state.startupSettings = Object.assign({}, (js && js.startup) || {});
+    state.serverControlsOwner = !!(js && js.server_controls_owner);
     state.toolStatus = Object.assign({}, (js && js.tools) || {});
     state.connectionStatus = Object.assign({}, (js && js.connections) || {});
     return js;
@@ -185,6 +186,7 @@
     const tools = state.toolStatus || {};
     const ffmpeg = tools.ffmpeg || {};
     const ffprobe = tools.ffprobe || {};
+    const canManageServer = !!state.serverControlsOwner;
     const groups = {
       ui: [
         {key:"TASKS_POLL_MS", label:"Task refresh", type:"number", value:s.TASKS_POLL_MS, advanced:true}
@@ -214,7 +216,7 @@
         {key:"FFPROBE_PATH", label:"ffprobe", type:"tool_path", value:s.FFPROBE_PATH, tool:"ffprobe", toolStatus:ffprobe, sub_label: ffprobe.ok ? ("Detected: " + (ffprobe.found || "ffprobe")) : (ffprobe.install_hint || "Install ffprobe or set a path."), advanced:true}
       ],
       advanced: [
-      {key:"PORT", label:"Port", type:"startup_number", value:startup.PORT},
+      {key:"PORT", label:"Port", type:"startup_number", value:startup.PORT, ownerOnly:true},
       {key:"WHEEL_ROTATION_MAX_DEGREES", label:"Max wheel tilt", type:"number", value:(s.WHEEL_ROTATION_MAX_DEGREES == null ? 10 : s.WHEEL_ROTATION_MAX_DEGREES)},
       {key:"RESULTS_PER_PAGE", label:"Results per page", type:"number", value:s.RESULTS_PER_PAGE},
       {key:"MAX_FILES_PER_TORRENT", label:"Max files per torrent", type:"number", value:s.MAX_FILES_PER_TORRENT},
@@ -231,21 +233,21 @@
       {key:"SOULSEEK_SEARCH_HARD_MAX_SEC", label:"Soulseek hard max", type:"number", value:s.SOULSEEK_SEARCH_HARD_MAX_SEC},
       {key:"AIOSLSK_LOGGING_ENABLED", label:"aioslsk diagnostic logging", type:"bool", value:s.AIOSLSK_LOGGING_ENABLED, sub_label:"Writes verbose Soulseek protocol diagnostics to a dedicated log file. Keep off unless troubleshooting."},
       {key:"YOUTUBE_STREAM_CACHE_SUBDIR", label:"YouTube stream cache", type:"text", value:s.YOUTUBE_STREAM_CACHE_SUBDIR},
-      {key:"YOUTUBE_WEB_BASE", label:"YouTube web base", type:"text", value:s.YOUTUBE_WEB_BASE},
+      {key:"YOUTUBE_WEB_BASE", label:"YouTube web base", type:"text", value:s.YOUTUBE_WEB_BASE, ownerOnly:true},
       {key:"YOUTUBE_SEARCH_LIMIT", label:"YouTube search limit", type:"number", value:s.YOUTUBE_SEARCH_LIMIT},
       {key:"YOUTUBE_CHANNEL_BROWSE_LIMIT", label:"YouTube channel limit", type:"number", value:s.YOUTUBE_CHANNEL_BROWSE_LIMIT},
       {key:"YOUTUBE_REQUEST_HEADERS", label:"YouTube request headers", type:"json", value:s.YOUTUBE_REQUEST_HEADERS},
       {key:"AUTO_TRANSCODE_FOR_BROWSER_COMPATIBILITY", label:"Auto browser transcode", type:"bool", value:s.AUTO_TRANSCODE_FOR_BROWSER_COMPATIBILITY},
       {key:"PRELOAD_NEXT_CHUNK_BYTES", label:"Preload chunk bytes", type:"number", value:s.PRELOAD_NEXT_CHUNK_BYTES},
-      {key:"RD_BASE", label:"Real Debrid API base", type:"text", value:s.RD_BASE},
-      {key:"ALLDEBRID_BASE", label:"AllDebrid API base", type:"text", value:s.ALLDEBRID_BASE},
-      {key:"PREMIUMIZE_BASE", label:"Premiumize API base", type:"text", value:s.PREMIUMIZE_BASE},
-      {key:"TORBOX_BASE", label:"TorBox API base", type:"text", value:s.TORBOX_BASE},
-      {key:"LASTFM_CALLBACK_URL", label:"Last.fm callback URL", type:"text", value:s.LASTFM_CALLBACK_URL},
-      {key:"LASTFM_API_ROOT", label:"Last.fm API root", type:"text", value:s.LASTFM_API_ROOT},
+      {key:"RD_BASE", label:"Real Debrid API base", type:"text", value:s.RD_BASE, ownerOnly:true},
+      {key:"ALLDEBRID_BASE", label:"AllDebrid API base", type:"text", value:s.ALLDEBRID_BASE, ownerOnly:true},
+      {key:"PREMIUMIZE_BASE", label:"Premiumize API base", type:"text", value:s.PREMIUMIZE_BASE, ownerOnly:true},
+      {key:"TORBOX_BASE", label:"TorBox API base", type:"text", value:s.TORBOX_BASE, ownerOnly:true},
+      {key:"LASTFM_CALLBACK_URL", label:"Last.fm callback URL", type:"text", value:s.LASTFM_CALLBACK_URL, ownerOnly:true},
+      {key:"LASTFM_API_ROOT", label:"Last.fm API root", type:"text", value:s.LASTFM_API_ROOT, ownerOnly:true},
       {key:"LASTFM_REQUEST_TIMEOUT_SECONDS", label:"Last.fm timeout", type:"number", value:s.LASTFM_REQUEST_TIMEOUT_SECONDS},
-      {key:"ENABLE_MCP", label:"MCP enabled", type:"startup_bool", value:startup.ENABLE_MCP},
-      {key:"MCP_TOKEN", label:"Reset MCP token", type:"mcp_token", value:startup.MCP_TOKEN_SET ? "Saved" : "Unset"},
+      {key:"ENABLE_MCP", label:"MCP enabled", type:"startup_bool", value:startup.ENABLE_MCP, ownerOnly:true},
+      {key:"MCP_TOKEN", label:"Reset MCP token", type:"mcp_token", value:startup.MCP_TOKEN_SET ? "Saved" : "Unset", ownerOnly:true},
       {key:"MCP_PROTOCOL_VERSION", label:"MCP protocol", type:"text", value:s.MCP_PROTOCOL_VERSION},
       {key:"MCP_SEARCH_RESULT_LIMIT", label:"MCP result limit", type:"number", value:s.MCP_SEARCH_RESULT_LIMIT},
       {key:"MCP_SSE_KEEPALIVE_SECONDS", label:"MCP keepalive", type:"number", value:s.MCP_SSE_KEEPALIVE_SECONDS},
@@ -257,7 +259,7 @@
       ]
     };
     if(cat === "advanced"){
-      return groups.advanced.concat(groups.ui, groups.downloads, groups.services, groups.playback).filter(r => r && (r.advanced || groups.advanced.indexOf(r) >= 0));
+      return groups.advanced.concat(groups.ui, groups.downloads, groups.services, groups.playback).filter(r => r && (!r.ownerOnly || canManageServer) && (r.advanced || groups.advanced.indexOf(r) >= 0));
     }
     return (groups[cat] || []).filter(r => r && !r.advanced);
   }

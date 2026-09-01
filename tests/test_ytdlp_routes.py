@@ -10,6 +10,9 @@ from debripod.Services import youtube
 
 async def _client(monkeypatch):
     monkeypatch.setattr(routes, "ytdlp_list_formats", lambda url: [{"file_id":"1","name":"Audio","source_label":"SoundCloud" if "soundcloud" in url else "YouTube"}])
+    async def validate_url(_request, url):
+        return url
+    monkeypatch.setattr(routes, "_validated_ytdlp_url", validate_url)
 
     async def flat_entries(url):
         return [{"id": "v1", "url": url, "title": "Entry"}]

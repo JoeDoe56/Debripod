@@ -110,18 +110,11 @@ from .Services.lastfm import (
 )
 from .Services.soulseek import (
     SoulseekService,
-    _slsk_annotate_file_with_download_state,
-    _slsk_expected_incoming_path,
     _slsk_group_items_to_dirs,
     _slsk_group_snapshot_to_users,
     _slsk_guess_kind_ext_attrs,
     _slsk_norm_remote_path,
     _slsk_relative_under_directory,
-    _slsk_session_create,
-    _slsk_session_mark_done,
-    _slsk_session_snapshot,
-    _slsk_session_touch,
-    _slsk_task_download_dir,
     configure_aioslsk_logging,
     configure_soulseek_module,
     soulseek_incoming_dir,
@@ -350,13 +343,6 @@ def check_canceled(t: Task) -> None:
 # Soulseek (aioslsk) service
 # =========================
 SOULSEEK_SERVICE = None  # initialized in main()
-
-# =========================
-# Soulseek streaming search sessions
-# =========================
-_SLSK_SESS_LOCK = threading.Lock()
-_SLSK_SESSIONS: Dict[str, Dict[str, Any]] = {}
-
 
 __all__ = [name for name in globals() if not name.startswith("__")]
 

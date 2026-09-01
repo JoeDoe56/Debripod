@@ -9,7 +9,7 @@ from .Services.push_notifications import enqueue_task_completion
 
 
 configure_task_manager(
-    soulseek_service_provider=lambda: _state.SOULSEEK_SERVICE,
+    soulseek_service_provider=lambda _user_id: _state.SOULSEEK_SERVICE,
     retry_worker_provider=lambda source: (
         youtube_download_remaining_worker if source == "youtube"
         else schedule_debrid_download_remaining if source == "debrid"
