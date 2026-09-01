@@ -301,7 +301,7 @@
         }catch(e){
           libSetFileStatus("Error", "warn");
           resetList([{kind:"info", label:"Failed to load files"}]);
-          alert(String(e && e.message ? e.message : e));
+          reportUiStatus(String(e && e.message ? e.message : e), "warn");
         }
       }
     }, push !== false);
@@ -322,7 +322,7 @@
         if(!js||!js.ok) throw new Error((js&&js.error)||"Failed to load directory");
         const rows=(js.entries||[]).map(function(entry){ return libUnifiedSearchModel().toRow(canonicalDirectoryEntry(entry,result)); });
         resetList(rows.length?rows:[{kind:"info",label:"No items found"}]);
-      }catch(error){ resetList([{kind:"info",label:"Failed to load items"}]); alert(String(error&&error.message?error.message:error)); }
+      }catch(error){ resetList([{kind:"info",label:"Failed to load items"}]); reportUiStatus(String(error&&error.message?error.message:error), "warn"); }
     }},push);
   }
 
@@ -582,7 +582,7 @@
         }catch(e){
           libSetFileStatus("Error", "warn");
           resetList([{kind:"info", label:"Failed to load user shares"}]);
-          alert(String(e && e.message ? e.message : e));
+          reportUiStatus(String(e && e.message ? e.message : e), "warn");
         }
       }
     }, push);
@@ -614,7 +614,7 @@
           resetList(items2);
         }catch(e){
           resetList([{kind:"info", label:"Failed to load channel videos"}]);
-          alert(String(e && e.message ? e.message : e));
+          reportUiStatus(String(e && e.message ? e.message : e), "warn");
         }
       }
     }, push);

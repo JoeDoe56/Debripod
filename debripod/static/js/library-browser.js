@@ -1293,7 +1293,7 @@ if(!it) return;
         }
         await viewPlaylistAddSongs(cur.root, cur.playlistRel || "", cur.rel || "", false);
       }catch(e){
-        alert(String(e && e.message ? e.message : e));
+        reportUiStatus(String(e && e.message ? e.message : e), "warn");
       }
       return;
     }
@@ -1307,7 +1307,7 @@ if(!it) return;
         it.selected = true;
         renderList();
       }catch(e){
-        alert(String(e && e.message ? e.message : e));
+        reportUiStatus(String(e && e.message ? e.message : e), "warn");
       }
       return;
     }
@@ -1349,7 +1349,7 @@ if(!it) return;
         cur.selected = new Set();
         await viewMetaList(cur.root, "playlist_tracks", cur.playlistRel || "", cur.playlistLabel || "Playlist", false);
       }catch(e){
-        alert(String(e && e.message ? e.message : e));
+        reportUiStatus(String(e && e.message ? e.message : e), "warn");
       }
       return;
     }
@@ -1385,7 +1385,7 @@ if(!it) return;
         }catch(e){}
         renderList();
       }catch(e){
-        alert(String(e && e.message ? e.message : e));
+        reportUiStatus(String(e && e.message ? e.message : e), "warn");
       }
       return;
     }
@@ -1469,7 +1469,6 @@ if(it.kind === "libtasks_entry"){
       }
       if(it.action === "settings_import"){
         await importUserSettings();
-        await viewAccountSettings(false);
         return;
       }
       if(it.action === "logout"){
@@ -1482,7 +1481,7 @@ if(it.kind === "libtasks_entry"){
       try{
         await editSettingRow(it);
       }catch(e){
-        alert(String(e && e.message ? e.message : e));
+        reportUiStatus(String(e && e.message ? e.message : e), "warn");
       }
       return;
     }
@@ -1529,7 +1528,7 @@ if(it.kind === "libtasks_entry"){
           await goBack();
           await viewSettingsLibrary(false);
         }catch(e){
-          alert(String(e && e.message ? e.message : e));
+          reportUiStatus(String(e && e.message ? e.message : e), "warn");
         }
       }
       return;
@@ -1557,7 +1556,7 @@ if(it.kind === "libsearch_history_action"){
             throw new Error((js && js.error) ? js.error : "Failed to clear history");
           }
         }catch(e){
-          alert(String(e && e.message ? e.message : e));
+          reportUiStatus(String(e && e.message ? e.message : e), "warn");
         }
         await viewLibSearchHistory(false);
         return;
@@ -1665,7 +1664,7 @@ if(it.kind === "libsearch_history_action"){
             await startSearchStreamQueue(js.items || [], 0);
           }catch(e){
             libSetFileStatus("Error", "warn");
-            alert(String(e && e.message ? e.message : e));
+            reportUiStatus(String(e && e.message ? e.message : e), "warn");
           }
           return;
         }
@@ -1731,7 +1730,7 @@ if(it.kind === "libsearch_history_action"){
             libSearchRebuildFilesList(target.buildItems());
           }catch(e){
             libSetFileStatus("Error", "warn");
-            alert(String(e && e.message ? e.message : e));
+            reportUiStatus(String(e && e.message ? e.message : e), "warn");
           }
           return;
         }
@@ -1809,7 +1808,7 @@ if(it.kind === "libsearch_history_action"){
           libSetFileStatus("", "");
         }catch(e){
           libSetFileStatus("Error", "warn");
-          alert(String(e && e.message ? e.message : e));
+          reportUiStatus(String(e && e.message ? e.message : e), "warn");
         }
         return;
       }

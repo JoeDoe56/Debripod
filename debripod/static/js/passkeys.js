@@ -89,8 +89,8 @@
     options = options || {};
     let password = "";
     if(options.requirePassword){
-      password = prompt("Enter your DebriPod password to add a passkey", "");
-      if(password == null) return {ok:false, error:"Passkey setup cancelled."};
+      password = String(options.password || "");
+      if(!password) return {ok:false, error:"Enter your password in the account passkey page before continuing."};
     }
     const res = await root.apiClient.apiPost("/api/auth/passkey/register/options", {password:password});
     const js = res && res.json ? res.json : {};

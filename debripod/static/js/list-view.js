@@ -720,24 +720,27 @@
         continue;
       }
 
-      if(it.kind === "setup_text_input"){
+      if(it.kind === "setup_text_input" || it.kind === "settings_text_input"){
         li.className += " editing twoLine settingRow";
-        const inp = document.createElement("input");
-        inp.type = it.secret ? "password" : "text";
+        const isSettingsEditor = it.kind === "settings_text_input";
+        const inp = document.createElement(it.multiline ? "textarea" : "input");
+        if(!it.multiline) inp.type = it.secret ? "password" : "text";
         inp.className = "libInlineInput";
         inp.placeholder = it.placeholder || "";
         inp.value = String(it.value == null ? "" : it.value);
+        inp.readOnly = !!it.readOnly;
         inp.addEventListener("input", ()=>{
           try{
-            if(state.current && state.current.kind === "setup_editor") state.current.editorValue = inp.value;
+            if(state.current && (state.current.kind === "setup_editor" || (isSettingsEditor && state.current.kind === "settings_editor"))) state.current.editorValue = inp.value;
           }catch(e){}
         });
         inp.addEventListener("keydown", (ev)=>{
-          if(ev.key === "Enter"){
+          if(ev.key === "Enter" && !it.multiline){
             ev.preventDefault();
             try{
-              if(state.current && state.current.kind === "setup_editor") state.current.editorValue = inp.value;
-              if(typeof commitSetupEditor === "function") commitSetupEditor();
+              if(state.current && (state.current.kind === "setup_editor" || (isSettingsEditor && state.current.kind === "settings_editor"))) state.current.editorValue = inp.value;
+              if(isSettingsEditor && typeof commitSettingsEditor === "function") commitSettingsEditor();
+              else if(typeof commitSetupEditor === "function") commitSetupEditor();
             }catch(e){}
           }
         });
@@ -1467,8 +1470,24 @@ function vibeTick(){
   }
 
   async function startLastfmLoginFlow(){
-    let token = null;
-    let authUrl = null;
+    const pending = state.lastfmLoginAuth || null;
+    if(pending && pending.token){
+      try{
+        const r2 = await fetch("/api/lastfm/auth/finish", {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify({token: pending.token})
+        });
+        const j2 = await r2.json();
+        if(!j2 || !j2.ok) throw new Error((j2 && j2.error) ? j2.error : "Last.fm auth finish failed");
+        state.lastfmLoginAuth = null;
+        reportUiStatus("Last.fm login complete.", "ok");
+        return true;
+      }catch(e){
+        reportUiStatus("Last.fm login failed: " + (e && e.message ? e.message : String(e)), "warn");
+        return false;
+      }
+    }
 
     try{
       const r = await fetch("/api/lastfm/auth/start", {method: "GET"});
@@ -1476,44 +1495,19 @@ function vibeTick(){
       if(!j || !j.ok){
         throw new Error((j && j.error) ? j.error : "Last.fm auth start failed");
       }
-      token = j.token;
-      authUrl = j.auth_url;
+      state.lastfmLoginAuth = {token:j.token, authUrl:j.auth_url};
     }catch(e){
-      alert("Last.fm login failed: " + (e && e.message ? e.message : String(e)));
+      reportUiStatus("Last.fm login failed: " + (e && e.message ? e.message : String(e)), "warn");
       return false;
     }
 
     try{
-      if(authUrl){
-        window.open(authUrl, "_blank", "noopener");
+      if(state.lastfmLoginAuth.authUrl){
+        window.open(state.lastfmLoginAuth.authUrl, "_blank", "noopener");
       }
     }catch(e){}
-
-    let proceed = true;
-    try{
-      proceed = confirm("A Last.fm approval page was opened. After you approve DebriPod, click OK to finish login.");
-    }catch(e){}
-
-    if(!proceed){
-      return false;
-    }
-
-    try{
-      const r2 = await fetch("/api/lastfm/auth/finish", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify({token: token})
-      });
-      const j2 = await r2.json();
-      if(!j2 || !j2.ok){
-        throw new Error((j2 && j2.error) ? j2.error : "Last.fm auth finish failed");
-      }
-      alert("Last.fm login complete.");
-      return true;
-    }catch(e){
-      alert("Last.fm login failed: " + (e && e.message ? e.message : String(e)));
-      return false;
-    }
+    reportUiStatus("Approve DebriPod in the Last.fm tab, then select Finish Last.fm authorization here.", "ok");
+    return false;
   }
 
   async function forceFullscreenOn(){
@@ -1755,7 +1749,7 @@ function vibeTick(){
         if(!Number.isFinite(index) || !state.items[index]) return;
         state.sel = index;
         renderList({pointerSelection:true});
-        if(typeof selectItem === "function") Promise.resolve(selectItem(state.items[index])).catch(function(error){ alert(String(error && error.message ? error.message : error)); });
+            if(typeof selectItem === "function") Promise.resolve(selectItem(state.items[index])).catch(function(error){ reportUiStatus(String(error && error.message ? error.message : error), "warn"); });
       });
     }
     DebriPod.listDiagnostics = {

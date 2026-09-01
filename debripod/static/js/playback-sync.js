@@ -736,7 +736,7 @@
       state.playlistCreate.editValue = "";
       if(!res || !res.ok || !js.ok){
         if(js && js.error){
-          alert(String(js.error));
+          reportUiStatus(String(js.error), "warn");
         }
         renderList();
         return;
@@ -769,7 +769,7 @@
     }catch(e){
       try{ state.playlistCreate.submitting = false; }catch(e2){}
       try{ state.playlistCreate.editing = false; state.playlistCreate.editValue = ""; }catch(e2){}
-      try{ alert(String(e && e.message ? e.message : e)); }catch(e2){}
+      try{ reportUiStatus(String(e && e.message ? e.message : e), "warn"); }catch(e2){}
       try{ renderList(); }catch(e2){}
     }
   }
@@ -790,7 +790,7 @@
       state.smartPlaylistCreate.editing = false;
       state.smartPlaylistCreate.editValue = "";
       if(!res || !res.ok || !js.ok){
-        if(js && js.error) alert(String(js.error));
+        if(js && js.error) reportUiStatus(String(js.error), "warn");
         renderList();
         return;
       }
@@ -812,7 +812,7 @@
     }catch(e){
       try{ state.smartPlaylistCreate.submitting = false; }catch(e2){}
       try{ state.smartPlaylistCreate.editing = false; state.smartPlaylistCreate.editValue = ""; }catch(e2){}
-      try{ alert(String(e && e.message ? e.message : e)); }catch(e2){}
+      try{ reportUiStatus(String(e && e.message ? e.message : e), "warn"); }catch(e2){}
       try{ renderList(); }catch(e2){}
     }
   }
@@ -855,14 +855,14 @@
       const js = (res && res.json) ? res.json : {};
       state.smartPlaylistRules.saving = false;
       if(!res || !res.ok || !js.ok){
-        alert(String((js && js.error) ? js.error : "Failed to save rules"));
+        reportUiStatus(String((js && js.error) ? js.error : "Failed to save rules"), "warn");
         renderList();
         return;
       }
       await goBack();
     }catch(e){
       state.smartPlaylistRules.saving = false;
-      alert(String(e && e.message ? e.message : e));
+      reportUiStatus(String(e && e.message ? e.message : e), "warn");
       try{ renderList(); }catch(e2){}
     }
   }
@@ -901,7 +901,7 @@
       state.playlistEdit.submitting = false;
       if(!res || !res.ok || !js.ok){
         if(js && js.error){
-          alert(String(js.error));
+          reportUiStatus(String(js.error), "warn");
         }
         renderList();
         return;
@@ -927,7 +927,7 @@
       renderList();
     }catch(e){
       try{ state.playlistEdit.submitting = false; }catch(e2){}
-      try{ alert(String(e && e.message ? e.message : e)); }catch(e2){}
+      try{ reportUiStatus(String(e && e.message ? e.message : e), "warn"); }catch(e2){}
       try{ renderList(); }catch(e2){}
     }
   }
@@ -991,13 +991,13 @@
       const res = await apiPost("/api/library/playlist_delete", {root_id: cur.root.id, rel: cur.playlistRel || ""});
       const js = (res && res.json) ? res.json : {};
       if(!res || !res.ok || !js.ok){
-        alert(String((js && js.error) ? js.error : "Failed to delete playlist"));
+        reportUiStatus(String((js && js.error) ? js.error : "Failed to delete playlist"), "warn");
         return;
       }
       state.history = [];
       await viewMetaList(cur.root, "playlists", "", "Playlists", false);
     }catch(e){
-      alert(String(e && e.message ? e.message : e));
+      reportUiStatus(String(e && e.message ? e.message : e), "warn");
     }
   }
 

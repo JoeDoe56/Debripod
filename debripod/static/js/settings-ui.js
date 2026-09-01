@@ -277,6 +277,82 @@
     await setView(view, !!push);
   }
 
+  function reportUiStatus(message, tone){
+    const text = String(message || "").trim();
+    if(!text) return;
+    try{ libSetStatus(text, tone || "warn"); }catch(e){}
+    try{
+      let status = document.getElementById("debripodInlineStatus");
+      if(!status){
+        status = document.createElement("div");
+        status.id = "debripodInlineStatus";
+        status.className = "debripodInlineStatus";
+        status.setAttribute("role", "status");
+        status.setAttribute("aria-live", "polite");
+        (document.querySelector(".ipodStage") || document.body).appendChild(status);
+      }
+      status.textContent = text;
+      status.dataset.tone = tone || "warn";
+      status.hidden = false;
+      clearTimeout(reportUiStatus.timer || 0);
+      reportUiStatus.timer = setTimeout(()=>{ try{ status.hidden = true; }catch(e){} }, 5000);
+    }catch(e){}
+  }
+  try{ window.reportUiStatus = reportUiStatus; }catch(e){}
+
+  async function viewSettingsEditor(options, push){
+    const opts = options || {};
+    await setView({
+      kind:"settings_editor",
+      label:String(opts.label || "Edit setting"),
+      editorValue:String(opts.value == null ? "" : opts.value),
+      settingsEditorOptions:opts,
+      settingsEditorIncludeSecrets:!!opts.includeSecrets,
+      load: async function(){
+        libControlsHide();
+        const current = state.current || {};
+        const rows = [
+          {kind:"info", label:String(opts.label || "Edit setting"), sub_label:String(opts.description || "Edit the value, then select Save."), pills:[opts.secret ? "Secret" : "Edit"], forceTwoLine:true},
+          {kind:"settings_text_input", label:String(opts.label || "Value"), value:current.editorValue, secret:!!opts.secret, multiline:!!opts.multiline, readOnly:!!opts.readOnly, placeholder:String(opts.placeholder || ""), forceTwoLine:true}
+        ];
+        if(opts.includeSecretsOption) rows.push({kind:"libinfo_action", label:"Include service secrets", action:"settings_editor_toggle_secrets", pills:[current.settingsEditorIncludeSecrets ? "On" : "Off"]});
+        rows.push({kind:"libinfo_action", label:String(opts.saveLabel || "Save"), action:"settings_editor_save", pills:[opts.savePill || "Save"]});
+        rows.push({kind:"libinfo_action", label:"Cancel", action:"settings_editor_cancel"});
+        resetList(rows);
+      }
+    }, !!push);
+  }
+
+  async function commitSettingsEditor(){
+    const current = state.current || {};
+    if(current.kind !== "settings_editor") return false;
+    const options = current.settingsEditorOptions || {};
+    if(typeof options.onSave !== "function") return false;
+    try{
+      return (await options.onSave(String(current.editorValue == null ? "" : current.editorValue), {includeSecrets:!!current.settingsEditorIncludeSecrets})) !== false;
+    }catch(e){
+      reportUiStatus(String(e && e.message ? e.message : e), "warn");
+      return false;
+    }
+  }
+  try{ window.commitSettingsEditor = commitSettingsEditor; }catch(e){}
+
+  async function viewAccountDeleteConfirmation(password){
+    await setView({
+      kind:"account_delete_confirm",
+      label:"Delete user",
+      deleteCurrentUserPassword:String(password || ""),
+      load: async function(){
+        libControlsHide();
+        resetList([
+          {kind:"info", label:"Delete the current DebriPod user?", sub_label:"This immediately signs you out and removes this user's DebriPod data. Media files are never deleted.", pills:[{text:"Danger", tone:"warn"}], forceTwoLine:true},
+          {kind:"libinfo_action", label:"Delete current user", action:"account_delete_confirmed", pills:[{text:"Delete", tone:"warn"}]},
+          {kind:"libinfo_action", label:"Cancel", action:"account_delete_cancel"}
+        ]);
+      }
+    }, true);
+  }
+
   async function viewAccountSettings(push){
     showNowPlaying(false);
     await setView({
@@ -311,20 +387,20 @@
   }
 
   async function deleteCurrentUserFromInfo(){
-    const password = prompt("Enter your password to delete the current user.");
-    if(password == null) return;
-    if(!password){
-      alert("Password is required.");
-      return;
-    }
-    if(!confirm("Delete the current DebriPod user? This signs you out immediately.")) return;
-    const res = await apiPost("/api/auth/users/delete_current", {password: password});
-    const js = (res && res.json) ? res.json : {};
-    if(!res || !res.ok || !js.ok){
-      alert(String((js && js.error) ? js.error : "Could not delete user"));
-      return;
-    }
-    window.location.href = js.setup_required ? "/setup" : "/login";
+    await viewSettingsEditor({
+      label:"Confirm your password",
+      description:"Enter your password before the final account-deletion step.",
+      secret:true,
+      saveLabel:"Continue",
+      onSave: async function(password){
+        if(!password.trim()){
+          reportUiStatus("Password is required.", "warn");
+          return false;
+        }
+        await viewAccountDeleteConfirmation(password);
+        return true;
+      }
+    }, true);
   }
 
   function serviceStatusPill(ok, goodText, badText){
@@ -334,31 +410,48 @@
   async function exportUserSettings(){
     const js = await apiGet("/api/settings/export");
     const text = JSON.stringify(js, null, 2);
-    try{
-      if(navigator.clipboard && navigator.clipboard.writeText){
-        await navigator.clipboard.writeText(text);
-        alert("Settings export copied to clipboard.");
-        return true;
+    await viewSettingsEditor({
+      label:"Settings export",
+      description:"Copy the export below. It excludes secrets unless you deliberately add them elsewhere.",
+      value:text,
+      multiline:true,
+      readOnly:true,
+      saveLabel:"Copy export",
+      savePill:"Copy",
+      onSave: async function(value){
+        try{
+          if(navigator.clipboard && navigator.clipboard.writeText){
+            await navigator.clipboard.writeText(value);
+            reportUiStatus("Settings export copied to clipboard.", "ok");
+            return true;
+          }
+        }catch(e){}
+        reportUiStatus("Select and copy the export text from this page.", "warn");
+        return false;
       }
-    }catch(e){}
-    prompt("Settings export", text);
+    }, true);
     return true;
   }
 
   async function importUserSettings(){
-    const raw = prompt("Paste settings export JSON", "");
-    if(raw == null) return false;
-    let parsed = null;
-    try{ parsed = JSON.parse(raw); }catch(e){ alert("Invalid JSON"); return false; }
-    const includeSecrets = !!confirm("Import service secrets if this export contains them?");
-    const res = await apiPost("/api/settings/import", {settings:(parsed && parsed.settings) || parsed, include_secrets:includeSecrets});
-    const js = res && res.json ? res.json : {};
-    if(!res || !res.ok || !js.ok){
-      alert((js && js.error) ? js.error : "Settings import failed.");
-      return false;
-    }
-    await settingsLoad();
-    alert("Settings imported.");
+    await viewSettingsEditor({
+      label:"Import settings",
+      description:"Paste a DebriPod settings export. It is validated before anything is saved.",
+      multiline:true,
+      includeSecretsOption:true,
+      saveLabel:"Validate and import",
+      onSave: async function(raw, editor){
+        let parsed = null;
+        try{ parsed = JSON.parse(raw); }catch(e){ throw new Error("Invalid JSON."); }
+        const res = await apiPost("/api/settings/import", {settings:(parsed && parsed.settings) || parsed, include_secrets:!!editor.includeSecrets});
+        const js = res && res.json ? res.json : {};
+        if(!res || !res.ok || !js.ok) throw new Error((js && js.error) ? js.error : "Settings import failed.");
+        await settingsLoad();
+        reportUiStatus("Settings imported.", "ok");
+        await viewAccountSettings(false);
+        return true;
+      }
+    }, true);
     return true;
   }
 
@@ -633,8 +726,7 @@
     const res = await apiPost("/api/settings/pick_path", {kind:kind || "directory"});
     const js = (res && res.json) ? res.json : {};
     if(res && res.ok && js && js.ok && js.path) return String(js.path || "");
-    const fallback = prompt("Enter path", "");
-    return fallback ? String(fallback).trim() : "";
+    return "";
   }
 
   async function setupPickPath(kind){
@@ -717,13 +809,18 @@
       else await viewSettingsCategory(returnSettingsCategory || "advanced", false);
     };
     if(type === "mcp_token"){
-      const ok = confirm("Reset the MCP token? The new token will be shown once.");
-      if(!ok) return;
-      const res = await apiPost("/api/settings/mcp_reset_token", {});
-      const js = (res && res.json) ? res.json : {};
-      if(!res || !res.ok || !js.ok) throw new Error((js && js.error) ? js.error : "Failed to reset token");
-      alert("New MCP token:\n\n" + String(js.token || ""));
-      await refreshAfterSettingEdit();
+      await setView({
+        kind:"mcp_token_reset_confirm",
+        label:"Reset MCP token",
+        load: async function(){
+          libControlsHide();
+          resetList([
+            {kind:"info", label:"Reset the MCP token?", sub_label:"The replacement is shown once. Update any connected MCP client after copying it.", pills:[{text:"Owner", tone:"warn"}], forceTwoLine:true},
+            {kind:"libinfo_action", label:"Reset token", action:"mcp_token_reset_confirmed", pills:["Reset"]},
+            {kind:"libinfo_action", label:"Cancel", action:"mcp_token_reset_cancel"}
+          ]);
+        }
+      }, true);
       return;
     }
     if(type === "bool" || type === "startup_bool"){
@@ -749,43 +846,40 @@
       if(platform.indexOf("win") === 0){
         picked = await settingsPickPath("file");
       }else{
-        const hint = status.install_hint || "Install this tool with your package manager and keep the command on PATH.";
         const current = (row.value === "***") ? "" : String(row.value == null ? "" : row.value);
-        picked = prompt(hint + "\n\nCommand or path:", current || String(row.tool || row.key || ""));
+        await viewSettingsEditor({
+          label:row.label || key,
+          description:status.install_hint || "Enter a command or executable path.",
+          value:current || String(row.tool || row.key || ""),
+          onSave: async function(value){ await settingsSave({[key]:String(value).trim()}, {}); await refreshAfterSettingEdit(); return true; }
+        }, true);
+        return;
       }
-      if(!picked) return;
+      if(!picked){
+        await viewSettingsEditor({label:row.label || key, description:"Enter a local file path.", value:String(row.value == null || row.value === "***" ? "" : row.value), onSave:async function(value){ await settingsSave({[key]:String(value).trim()}, {}); await refreshAfterSettingEdit(); return true; }}, true);
+        return;
+      }
       await settingsSave({[key]: String(picked).trim()}, {});
       await refreshAfterSettingEdit();
       return;
     }
     if(type === "directory" || type === "file"){
       const picked = await settingsPickPath(type === "file" ? "file" : "directory");
-      if(!picked) return;
+      if(!picked){
+        await viewSettingsEditor({label:row.label || key, description:"Enter a local " + (type === "file" ? "file" : "folder") + " path.", value:String(row.value == null || row.value === "***" ? "" : row.value), onSave:async function(value){ await settingsSave({[key]:String(value).trim()}, {}); await refreshAfterSettingEdit(); return true; }}, true);
+        return;
+      }
       await settingsSave({[key]: picked}, {});
       await refreshAfterSettingEdit();
       return;
     }
     if(type === "csv_list"){
       const current = Array.isArray(row.value) ? row.value.join(", ") : String(row.value == null ? "" : row.value);
-      const raw = prompt(row.label || key, current);
-      if(raw == null) return;
-      const values = String(raw || "").split(",").map(x=>x.trim()).filter(Boolean);
-      await settingsSave({[key]: values}, {});
-      await refreshAfterSettingEdit();
+      await viewSettingsEditor({label:row.label || key, description:"Enter comma-separated values.", value:current, onSave:async function(raw){ const values=String(raw || "").split(",").map(x=>x.trim()).filter(Boolean); await settingsSave({[key]:values}, {}); await refreshAfterSettingEdit(); return true; }}, true);
       return;
     }
     if(type === "json"){
-      const raw = prompt(row.label || key, JSON.stringify(row.value == null ? {} : row.value, null, 2));
-      if(raw == null) return;
-      let value = {};
-      try{
-        value = JSON.parse(raw);
-      }catch(e){
-        alert("Invalid JSON");
-        return;
-      }
-      await settingsSave({[key]: value}, {});
-      await refreshAfterSettingEdit();
+      await viewSettingsEditor({label:row.label || key, description:"Enter valid JSON.", value:JSON.stringify(row.value == null ? {} : row.value, null, 2), multiline:true, onSave:async function(raw){ let value={}; try{ value=JSON.parse(raw); }catch(e){ throw new Error("Invalid JSON."); } await settingsSave({[key]:value}, {}); await refreshAfterSettingEdit(); return true; }}, true);
       return;
     }
     if(type === "number" || type === "startup_number"){
@@ -802,17 +896,23 @@
       }, true);
       return;
     }
-    const raw = prompt(row.label || key, (row.value === "***") ? "" : String(row.value == null ? "" : row.value));
-    if(raw == null) return;
-    let value = raw;
-    if(type === "startup_number") await settingsSave({}, {[key]: value});
-    else{
-      const updates = {[key]: value};
-      const currentDebrid = state.connectionStatus && state.connectionStatus.DEBRID;
-      if(row.provider && !(currentDebrid && currentDebrid.active_provider)) updates.DEBRID_PROVIDER = String(row.provider);
-      await settingsSave(updates, {});
-    }
-    await refreshAfterSettingEdit();
+    await viewSettingsEditor({
+      label:row.label || key,
+      description:"Edit the value, then select Save.",
+      value:(row.value === "***") ? "" : String(row.value == null ? "" : row.value),
+      secret:!!row.secret,
+      onSave:async function(value){
+        if(type === "startup_number") await settingsSave({}, {[key]:value});
+        else{
+          const updates = {[key]:value};
+          const currentDebrid = state.connectionStatus && state.connectionStatus.DEBRID;
+          if(row.provider && !(currentDebrid && currentDebrid.active_provider)) updates.DEBRID_PROVIDER = String(row.provider);
+          await settingsSave(updates, {});
+        }
+        await refreshAfterSettingEdit();
+        return true;
+      }
+    }, true);
   }
 
 
@@ -1453,7 +1553,7 @@ async function libDoSearch(engine, q){
       state.libSearch.searching = false;
       libSetStatus("Error", "warn");
       libRefreshList(true);
-      alert(String(e && e.message ? e.message : e));
+      reportUiStatus(String(e && e.message ? e.message : e), "warn");
     }
   }
 
@@ -1532,6 +1632,8 @@ async function libDoSearch(engine, q){
         items.push({kind:"libinfo_action", label:"Services", action:"settings_services"});
         items.push({kind:"libinfo_action", label:"Playback", action:"settings_playback"});
         items.push({kind:"libinfo_action", label:"Advanced", action:"settings_advanced"});
+        const lastfmPending = state.lastfmLoginAuth && state.lastfmLoginAuth.token;
+        items.push({kind:"libinfo_action", label:lastfmPending ? "Finish Last.fm authorization" : "Authorize Last.fm", sub_label:lastfmPending ? "Approve DebriPod in the opened Last.fm tab, then finish here." : "Open Last.fm approval after configuring its API credentials.", action:"lastfm_login", pills:[lastfmPending ? "Finish" : "Authorize"], forceTwoLine:true});
 
         resetList(items);
       }
@@ -2047,7 +2149,7 @@ async function libDoSearch(engine, q){
       scheduleFullReindexPoll();
       return true;
     }catch(e){
-      alert(String(e && e.message ? e.message : e));
+      reportUiStatus(String(e && e.message ? e.message : e), "warn");
       return true;
     }
   }
@@ -2078,6 +2180,49 @@ async function libDoSearch(engine, q){
   }
 
   async function handleLibInfoAction(action){
+    if(action === "settings_editor_save") return await commitSettingsEditor();
+    if(action === "settings_editor_cancel"){
+      const options = (state.current && state.current.settingsEditorOptions) || {};
+      if(typeof options.onCancel === "function") await options.onCancel();
+      else if(typeof goBack === "function") await goBack();
+      else await viewAccountSettings(false);
+      return true;
+    }
+    if(action === "settings_editor_toggle_secrets"){
+      const current = state.current || {};
+      const options = Object.assign({}, current.settingsEditorOptions || {}, {includeSecrets:!current.settingsEditorIncludeSecrets, value:current.editorValue});
+      await viewSettingsEditor(options, false);
+      return true;
+    }
+    if(action === "account_delete_confirmed"){
+      const current = state.current || {};
+      const res = await apiPost("/api/auth/users/delete_current", {password:String(current.deleteCurrentUserPassword || "")});
+      const js = (res && res.json) ? res.json : {};
+      if(!res || !res.ok || !js.ok){
+        reportUiStatus(String((js && js.error) ? js.error : "Could not delete user"), "warn");
+        return false;
+      }
+      window.location.href = js.setup_required ? "/setup" : "/login";
+      return true;
+    }
+    if(action === "account_delete_cancel"){
+      await viewAccountSettings(false);
+      return true;
+    }
+    if(action === "mcp_token_reset_confirmed"){
+      const res = await apiPost("/api/settings/mcp_reset_token", {});
+      const js = (res && res.json) ? res.json : {};
+      if(!res || !res.ok || !js.ok){
+        reportUiStatus(String((js && js.error) ? js.error : "Failed to reset token"), "warn");
+        return false;
+      }
+      await viewSettingsEditor({label:"New MCP token", description:"Copy this token now. It is not shown again.", value:String(js.token || ""), multiline:true, readOnly:true, saveLabel:"Copy token", savePill:"Copy", onSave:async function(value){ try{ if(navigator.clipboard && navigator.clipboard.writeText){ await navigator.clipboard.writeText(value); reportUiStatus("MCP token copied to clipboard.", "ok"); return true; } }catch(e){} reportUiStatus("Select and copy the token from this page.", "warn"); return false; }}, false);
+      return true;
+    }
+    if(action === "mcp_token_reset_cancel"){
+      await viewSettingsCategory("advanced", false);
+      return true;
+    }
     if(String(action || "").indexOf("setup_page:") === 0){
       await viewSetupWizardPage(String(action).split(":")[1] || "library", true);
       return true;
@@ -2132,7 +2277,7 @@ async function libDoSearch(engine, q){
         await viewAccountSettings(true);
         return true;
       case "enable_task_notifications":
-        try{ await DebriPod.pwaNotifications.enable(); }catch(e){ alert(String(e && e.message || e)); }
+        try{ await DebriPod.pwaNotifications.enable(); }catch(e){ reportUiStatus(String(e && e.message || e), "warn"); }
         await viewLibInfo(false);
         return true;
       case "disable_task_notifications":
@@ -2602,8 +2747,8 @@ async function libDoSearch(engine, q){
         if(window.DebriPod && DebriPod.uiSettings && DebriPod.uiSettings.flushUiSettings) await DebriPod.uiSettings.flushUiSettings();
         const js = await apiGet("/api/defaults/diff");
         const changes = js && js.changes ? js.changes : {};
-        prompt("Review these nonsecret source-default changes before editing settings.py and committing them", JSON.stringify(changes, null, 2));
-      }catch(e){ alert(String(e && e.message ? e.message : e)); }
+        await viewSettingsEditor({label:"Source-default diff", description:"Review these nonsecret source-default changes before editing settings.py and committing them.", value:JSON.stringify(changes, null, 2), multiline:true, readOnly:true, saveLabel:"Back", savePill:"Back", onSave:async function(){ await viewLibAdvancedSettings(false); return true; }}, true);
+      }catch(e){ reportUiStatus(String(e && e.message ? e.message : e), "warn"); }
       return true;
     };
     const setDeviceQualityNumber = async (label, current, meta, onCommit, onReturn)=>{

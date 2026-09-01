@@ -2074,3 +2074,22 @@
       align-items:center;
       justify-content:center;
     }
+    .debripodInlineStatus{
+      position:absolute;
+      z-index:50;
+      left:50%;
+      bottom:calc(env(safe-area-inset-bottom, 0px) + 12px);
+      max-width:min(88vw, 440px);
+      transform:translateX(-50%);
+      padding:8px 12px;
+      border-radius:999px;
+      color:rgba(255,255,255,.92);
+      background:rgba(24,24,28,.82);
+      box-shadow:0 4px 18px rgba(0,0,0,.24);
+      font-size:12px;
+      line-height:1.25;
+      text-align:center;
+      pointer-events:none;
+    }
+    .debripodInlineStatus[data-tone="ok"]{ background:rgba(23, 90, 62, .90); }
+    .debripodInlineStatus[data-tone="warn"]{ background:rgba(112, 59, 23, .90); }
