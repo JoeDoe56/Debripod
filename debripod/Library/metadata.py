@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import os
 import math
+import json
 import subprocess
 import struct
 import threading
@@ -10,7 +11,7 @@ import hashlib
 from collections import Counter
 from typing import Any, Dict, List, Optional, Tuple
 
-from ..paths import art_cache_dir
+from ..paths import art_cache_dir, visualizer_art_cache_dir
 from ..playback.probe import ffprobe_json, run_cmd
 from ..utils import is_audio, is_video, sha1_text
 from .library_db import load_metadata, load_palette, load_visualizer_analysis, save_metadata, save_palette, save_visualizer_analysis, file_identity
@@ -34,6 +35,9 @@ META_LOCK = threading.Lock()
 ANALYSIS_LOCK = threading.BoundedSemaphore(1)
 PALETTE_ALGORITHM_VERSION = 4
 PALETTE_COLOR_COUNT = 16
+VISUALIZER_ART_ALGORITHM_VERSION = 1
+VISUALIZER_ART_SIZE = 512
+VISUALIZER_ART_BLUR_SIGMA = 56
 DEFAULT_VISUALIZER_PALETTE: list[tuple[int, int, int]] = [
     (10, 132, 255),
     (94, 92, 230),
@@ -571,6 +575,204 @@ def warm_art_palette(abs_path: str, *, root_id: str = "", rel: str = "", art_inf
         palette["metadata"] = metadata
         save_palette(key, palette, source_kind=str(info.get("source_kind") or "art"), source_identity=str(info.get("source_identity") or os.path.abspath(art)), root_id=root_id, rel=rel)
     return palette
+
+
+# Extreme-blur artwork fields are deliberately stored as files rather than SQLite
+# records.  They are derived from album art, inexpensive to rebuild, and shared by
+# every track whose artwork hash is the same.
+_VISUALIZER_ART_LOCKS: Dict[str, threading.Lock] = {}
+_VISUALIZER_ART_LOCKS_GUARD = threading.Lock()
+
+
+def visualizer_art_cache_key(art_identity: str) -> str:
+    return sha1_text(f"visualizer-art:{str(art_identity or '')}:v{VISUALIZER_ART_ALGORITHM_VERSION}")
+
+
+def visualizer_art_cache_paths(art_identity: str) -> tuple[str, str]:
+    key = visualizer_art_cache_key(art_identity)
+    directory = visualizer_art_cache_dir()
+    return os.path.join(directory, f"{key}.jpg"), os.path.join(directory, f"{key}.json")
+
+
+def _visualizer_art_lock(key: str) -> threading.Lock:
+    with _VISUALIZER_ART_LOCKS_GUARD:
+        return _VISUALIZER_ART_LOCKS.setdefault(key, threading.Lock())
+
+
+def _clamp_unit(value: Any) -> float:
+    try:
+        return max(0.0, min(1.0, float(value)))
+    except (TypeError, ValueError):
+        return 0.0
+
+
+def normalize_visualizer_art_luma(value: Any, useful_low: Any, useful_high: Any) -> float:
+    """Normalize a sampled luma value against cached robust percentiles."""
+    low = _clamp_unit(useful_low)
+    high = max(low + 0.04, _clamp_unit(useful_high))
+    return _clamp_unit((_clamp_unit(value) - low) / (high - low))
+
+
+def _percentile(values: list[float], fraction: float) -> float:
+    if not values:
+        return 0.0
+    ordered = sorted(values)
+    position = max(0.0, min(float(len(ordered) - 1), float(fraction) * (len(ordered) - 1)))
+    lower = int(math.floor(position))
+    upper = min(len(ordered) - 1, lower + 1)
+    return ordered[lower] + (ordered[upper] - ordered[lower]) * (position - lower)
+
+
+def _robust_visualizer_luma(raw_rgb: bytes) -> Optional[dict[str, float]]:
+    raw = bytes(raw_rgb or b"")
+    if len(raw) < 3:
+        return None
+    lumas = [
+        _clamp_unit((raw[index] * 0.2126 + raw[index + 1] * 0.7152 + raw[index + 2] * 0.0722) / 255.0)
+        for index in range(0, len(raw) - 2, 3)
+    ]
+    if not lumas:
+        return None
+    low = _percentile(lumas, 0.03)
+    high = _percentile(lumas, 0.97)
+    if high < low + 0.04:
+        high = min(1.0, low + 0.04)
+        low = max(0.0, high - 0.04)
+    return {"useful_luma_low": _clamp_unit(low), "useful_luma_high": _clamp_unit(high)}
+
+
+def _sample_visualizer_art_luma(path: str) -> Optional[dict[str, float]]:
+    try:
+        proc = subprocess.run(
+            [
+                _ffmpeg_path_value(), "-v", "error", "-i", path,
+                "-vf", "scale=32:32", "-frames:v", "1",
+                "-f", "rawvideo", "-pix_fmt", "rgb24", "pipe:1",
+            ],
+            stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE,
+            timeout=30,
+            check=False,
+        )
+        if proc.returncode != 0:
+            return None
+        return _robust_visualizer_luma(proc.stdout)
+    except Exception:
+        return None
+
+
+def _build_visualizer_art_image(art_path: str, destination: str) -> bool:
+    args = [
+        _ffmpeg_path_value(), "-y", "-hide_banner", "-loglevel", "error", "-i", art_path,
+        "-vf", (
+            f"scale={VISUALIZER_ART_SIZE}:{VISUALIZER_ART_SIZE}:force_original_aspect_ratio=increase,"
+            f"crop={VISUALIZER_ART_SIZE}:{VISUALIZER_ART_SIZE},gblur=sigma={VISUALIZER_ART_BLUR_SIGMA}:steps=2"
+        ),
+        "-frames:v", "1", "-q:v", "5", destination,
+    ]
+    code, _out, _err = run_cmd(args)
+    try:
+        return code == 0 and os.path.isfile(destination) and os.path.getsize(destination) > 0
+    except OSError:
+        return False
+
+
+def _visualizer_art_metadata_from_cache(art_info: dict[str, Any]) -> Optional[dict[str, Any]]:
+    identity = str(art_info.get("art_identity") or art_info.get("cache_key") or "")
+    if not identity:
+        return None
+    image_path, metadata_path = visualizer_art_cache_paths(identity)
+    try:
+        if not os.path.isfile(image_path) or os.path.getsize(image_path) <= 0:
+            return None
+        with open(metadata_path, "r", encoding="utf-8") as handle:
+            data = json.load(handle)
+    except (OSError, ValueError, TypeError):
+        return None
+    if not isinstance(data, dict):
+        return None
+    try:
+        algorithm_version = int(data.get("algorithm_version") or 0)
+    except (TypeError, ValueError):
+        return None
+    if algorithm_version != VISUALIZER_ART_ALGORITHM_VERSION:
+        return None
+    if str(data.get("art_identity") or "") != identity:
+        return None
+    try:
+        low = _clamp_unit(data.get("useful_luma_low"))
+        high = _clamp_unit(data.get("useful_luma_high"))
+        if high < low + 0.04:
+            return None
+    except Exception:
+        return None
+    data["cache_key"] = visualizer_art_cache_key(identity)
+    data["path"] = image_path
+    return data
+
+
+def load_visualizer_art(abs_path: str, *, root_id: str = "", rel: str = "", art_info: Optional[dict[str, Any]] = None) -> Optional[dict[str, Any]]:
+    info = art_info if isinstance(art_info, dict) else art_identity_for_media(abs_path, root_id=root_id, rel=rel)
+    return _visualizer_art_metadata_from_cache(info) if info else None
+
+
+def warm_visualizer_art(abs_path: str, *, root_id: str = "", rel: str = "", art_info: Optional[dict[str, Any]] = None, linked_count: int = 0) -> Optional[dict[str, Any]]:
+    info = art_info if isinstance(art_info, dict) else art_identity_for_media(abs_path, root_id=root_id, rel=rel)
+    if not info:
+        return None
+    identity = str(info.get("art_identity") or info.get("cache_key") or "")
+    art_path = str(info.get("art_path") or "")
+    if not identity or not art_path:
+        return None
+    cached = _visualizer_art_metadata_from_cache(info)
+    if cached:
+        return cached
+    key = visualizer_art_cache_key(identity)
+    with _visualizer_art_lock(key):
+        cached = _visualizer_art_metadata_from_cache(info)
+        if cached:
+            return cached
+        image_path, metadata_path = visualizer_art_cache_paths(identity)
+        directory = os.path.dirname(image_path)
+        try:
+            os.makedirs(directory, exist_ok=True)
+        except OSError:
+            return None
+        token = f".{os.getpid()}.{threading.get_ident()}.tmp"
+        temp_image = image_path + token + ".jpg"
+        temp_metadata = metadata_path + token + ".json"
+        try:
+            if not _build_visualizer_art_image(art_path, temp_image):
+                return None
+            luma = _sample_visualizer_art_luma(temp_image)
+            if not luma:
+                return None
+            payload: dict[str, Any] = {
+                "algorithm_version": VISUALIZER_ART_ALGORITHM_VERSION,
+                "art_identity": identity,
+                "cache_key": key,
+                "source_kind": str(info.get("source_kind") or "art"),
+                "source_identity": str(info.get("source_identity") or ""),
+                "linked_track_count": int(linked_count or 0),
+                "width": VISUALIZER_ART_SIZE,
+                "height": VISUALIZER_ART_SIZE,
+                **luma,
+            }
+            with open(temp_metadata, "w", encoding="utf-8") as handle:
+                json.dump(payload, handle, separators=(",", ":"), sort_keys=True)
+            os.replace(temp_image, image_path)
+            os.replace(temp_metadata, metadata_path)
+            payload["path"] = image_path
+            return payload
+        except (OSError, TypeError, ValueError):
+            return None
+        finally:
+            for path in (temp_image, temp_metadata):
+                try:
+                    if os.path.exists(path):
+                        os.remove(path)
+                except OSError:
+                    pass
 
 
 def _analysis_key(abs_path: str) -> str:

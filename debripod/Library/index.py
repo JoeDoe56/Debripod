@@ -8,7 +8,7 @@ from contextlib import contextmanager
 from concurrent.futures import ThreadPoolExecutor
 from typing import Dict, Optional, Tuple
 
-from .metadata import art_identity_for_media, file_meta_cached, warm_art_palette, warm_audio_analysis, warm_video_audio_analysis, warm_video_frame_palette_analysis
+from .metadata import art_identity_for_media, file_meta_cached, warm_art_palette, warm_visualizer_art, warm_audio_analysis, warm_video_audio_analysis, warm_video_frame_palette_analysis
 from ..storage.tasks import metadata_for_path
 from .library_db import clear_library_cache, load_index_snapshot, load_library_facets, load_show_aliases, root_manifest, root_version, root_versions, save_folder_entries, save_index_snapshot, save_show_aliases, update_media_art_identity
 from .roots import source_origin_for_path
@@ -143,11 +143,18 @@ def _queue_palette_group(group_key: str, records: list[dict]) -> None:
                 art_info=bucket.get("info") if isinstance(bucket.get("info"), dict) else None,
                 linked_count=len(refs),
             )
-            if palette:
+            visualizer_art = warm_visualizer_art(
+                str(first.get("abs_path") or ""),
+                root_id=str(first.get("root_id") or ""),
+                rel=str(first.get("rel") or ""),
+                art_info=bucket.get("info") if isinstance(bucket.get("info"), dict) else None,
+                linked_count=len(refs),
+            )
+            if palette or visualizer_art:
                 rels = [str(r.get("rel") or "") for r in refs]
                 update_media_art_identity(str(first.get("root_id") or ""), rels, identity)
 
-    _queue_enrichment("stage3_album_cover_palette", group_key, run)
+    _queue_enrichment("stage3_album_cover_fields", group_key, run)
 
 
 def _queue_index_enrichment(data: dict) -> None:

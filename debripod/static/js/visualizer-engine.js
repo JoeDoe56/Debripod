@@ -93,6 +93,20 @@ var visualizerArtBounds = null;
 var visualizerArtBoundsLastTs = 0;
 var visualizerAnalysisNonce = 0;
 var visualizerAnalysisRetryTimer = 0;
+var visualizerArtFieldNonce = 0;
+var visualizerArtRetryTimer = 0;
+var visualizerArtField = {
+  key: "",
+  loading: false,
+  loaded: false,
+  image: null,
+  url: "",
+  artIdentity: "",
+  algorithmVersion: 0,
+  usefulLumaLow: 0,
+  usefulLumaHigh: 1,
+  source: "idle"
+};
 var visualizerVideoPaletteFrame = -1;
 var visualizerVideoPaletteKey = "";
 var visualizerAnalysisState = {
@@ -143,6 +157,108 @@ function currentVisualizerMediaElement(){
 function clamp01(n){
   var v = Number(n || 0);
   return Math.max(0, Math.min(1, Number.isFinite(v) ? v : 0));
+}
+
+function normalizeVisualizerArtLuma(value, usefulLow, usefulHigh){
+  var low = clamp01(usefulLow);
+  var high = Math.max(low + 0.04, clamp01(usefulHigh));
+  return clamp01((clamp01(value) - low) / (high - low));
+}
+
+function visualizerArtRotationOverscan(viewportWidth, viewportHeight){
+  var width = Math.max(1, Number(viewportWidth || 1));
+  var height = Math.max(1, Number(viewportHeight || 1));
+  return Math.hypot(width, height) / Math.max(width, height);
+}
+
+function rotatedVisualizerArtUv(u, v, angle, viewportWidth, viewportHeight){
+  var width = Math.max(1, Number(viewportWidth || 1));
+  var height = Math.max(1, Number(viewportHeight || 1));
+  var side = Math.hypot(width, height);
+  var radians = Number(angle || 0);
+  var x = (clamp01(u) - 0.5) * width;
+  var y = (clamp01(v) - 0.5) * height;
+  var cosine = Math.cos(radians);
+  var sine = Math.sin(radians);
+  return {
+    u: clamp01(((cosine * x) + (sine * y)) / side + 0.5),
+    v: clamp01(((-sine * x) + (cosine * y)) / side + 0.5)
+  };
+}
+
+function resetVisualizerArtField(reason){
+  visualizerArtFieldNonce += 1;
+  try{ if(visualizerArtRetryTimer) clearTimeout(visualizerArtRetryTimer); }catch(e){}
+  visualizerArtRetryTimer = 0;
+  visualizerArtField = {
+    key: "", loading: false, loaded: false, image: null, url: "", artIdentity: "", algorithmVersion: 0,
+    usefulLumaLow: 0, usefulLumaHigh: 1, source: String(reason || "idle")
+  };
+}
+
+function scheduleVisualizerArtRetry(rootId, rel, attempt){
+  try{
+    if(visualizerArtRetryTimer) return;
+    var nextAttempt = Math.max(1, Number(attempt || 0) + 1);
+    if(nextAttempt > 10) return;
+    visualizerArtRetryTimer = setTimeout(()=>{
+      visualizerArtRetryTimer = 0;
+      loadVisualizerArtFieldForTrack(rootId, rel, {retryAttempt:nextAttempt});
+    }, Math.min(15000, 1200 + nextAttempt * 900));
+  }catch(e){}
+}
+
+function loadVisualizerArtFieldForTrack(rootId, rel, options){
+  try{
+    var opts = options || {};
+    var rid = String(rootId || "");
+    var rp = String(rel || "");
+    if(!rid || !rp || typeof apiGet !== "function"){
+      resetVisualizerArtField("uncached idle");
+      return;
+    }
+    var key = rid + "\n" + rp;
+    if(visualizerArtField.key === key && (visualizerArtField.loaded || visualizerArtField.loading) && !opts.retryAttempt) return;
+    var nonce = ++visualizerArtFieldNonce;
+    visualizerArtField = {key:key, loading:true, loaded:false, image:null, url:"", artIdentity:"", algorithmVersion:0, usefulLumaLow:0, usefulLumaHigh:1, source:"loading"};
+    apiGet("/api/library/visualizer-art?root_id=" + encodeURIComponent(rid) + "&rel=" + encodeURIComponent(rp), {networkOnly:true, cache:"no-store", abortKey:"visualizer-art"})
+      .then((res)=>{
+        if(nonce !== visualizerArtFieldNonce) return;
+        var field = res && res.visualizer_art;
+        if(!field || !field.url){
+          visualizerArtField.loading = false;
+          visualizerArtField.source = "warming";
+          scheduleVisualizerArtRetry(rid, rp, opts.retryAttempt || 0);
+          return;
+        }
+        var image = new Image();
+        image.onload = ()=>{
+          if(nonce !== visualizerArtFieldNonce) return;
+          visualizerArtField = {
+            key:key, loading:false, loaded:true, image:image, url:String(field.url || ""),
+            artIdentity:String(field.art_identity || ""), algorithmVersion:Number(field.algorithm_version || 0),
+            usefulLumaLow:clamp01(field.useful_luma_low), usefulLumaHigh:Math.max(clamp01(field.useful_luma_low) + 0.04, clamp01(field.useful_luma_high)),
+            source:"art-cache"
+          };
+          scheduleVisualizerFrame(0);
+        };
+        image.onerror = ()=>{
+          if(nonce !== visualizerArtFieldNonce) return;
+          visualizerArtField.loading = false;
+          visualizerArtField.source = "unavailable";
+          scheduleVisualizerArtRetry(rid, rp, opts.retryAttempt || 0);
+        };
+        image.src = String(field.url || "");
+      })
+      .catch(()=>{
+        if(nonce !== visualizerArtFieldNonce) return;
+        visualizerArtField.loading = false;
+        visualizerArtField.source = "unavailable";
+        scheduleVisualizerArtRetry(rid, rp, opts.retryAttempt || 0);
+      });
+  }catch(e){
+    resetVisualizerArtField("art error");
+  }
 }
 
 function currentVisualizerPreset(){
@@ -226,6 +342,7 @@ function resetVisualizerAnalysis(reason){
     videoPaletteTimeline: null,
     videoPalettePending: false
   };
+  if(String(reason || "").indexOf("idle") >= 0 || String(reason || "").indexOf("error") >= 0) resetVisualizerArtField(reason);
 }
 
 function currentVisualizerMediaKind(){
@@ -327,6 +444,7 @@ function loadVisualizerAnalysisForTrack(rootId, rel, mediaKind, options){
       visualizerAnalysisState.mediaKind = media;
       return;
     }
+    loadVisualizerArtFieldForTrack(rid, rp, opts);
     const key = rid + "\n" + rp;
     if(visualizerAnalysisState.key === key && (visualizerAnalysisState.loaded || visualizerAnalysisState.loading) && !(opts.retryAttempt && visualizerAnalysisState.videoPalettePending)) return;
     const nonce = ++visualizerAnalysisNonce;
@@ -834,6 +952,12 @@ try{
     render: renderVisualizerWebGL,
     available: function(){ return !!(visualizerGl && !visualizerWebglUnavailable); }
   });
+  rootForVisualizer.visualizerArt = {
+    normalizeLuma: normalizeVisualizerArtLuma,
+    rotationOverscan: visualizerArtRotationOverscan,
+    rotatedUv: rotatedVisualizerArtUv,
+    field: function(){ return visualizerArtField; }
+  };
 }catch(e){}
 
 function currentVisualizerFrameState(ts){
@@ -853,6 +977,13 @@ function currentVisualizerFrameState(ts){
     roleWeights: roleWeightsForSelectedText(),
     selectedTextContrastMix: selectedTextContrastMix,
     analysisSource: visualizerAnalysisState && visualizerAnalysisState.loaded ? "sqlite" : (visualizerAnalysisState && visualizerAnalysisState.source ? visualizerAnalysisState.source : "live"),
+    artworkField: {
+      loaded: !!(visualizerArtField && visualizerArtField.loaded),
+      artIdentity: String(visualizerArtField && visualizerArtField.artIdentity || ""),
+      normalizedLumaLow: normalizeVisualizerArtLuma(visualizerArtField && visualizerArtField.usefulLumaLow, visualizerArtField && visualizerArtField.usefulLumaLow, visualizerArtField && visualizerArtField.usefulLumaHigh),
+      normalizedLumaHigh: normalizeVisualizerArtLuma(visualizerArtField && visualizerArtField.usefulLumaHigh, visualizerArtField && visualizerArtField.usefulLumaLow, visualizerArtField && visualizerArtField.usefulLumaHigh),
+      rotationOverscan: visualizerArtRotationOverscan(window.innerWidth || 1, window.innerHeight || 1)
+    },
     videoPaletteTimeline: visualizerAnalysisState && visualizerAnalysisState.videoPaletteTimeline ? visualizerAnalysisState.videoPaletteTimeline : null
   };
 }

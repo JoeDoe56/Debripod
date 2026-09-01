@@ -1,0 +1,72 @@
+from __future__ import annotations
+
+from debripod.Library import metadata
+
+
+def _fake_visualizer_art_builder(calls: list[str]):
+    def build(source: str, destination: str) -> bool:
+        calls.append(source)
+        with open(destination, "wb") as handle:
+            handle.write(b"fake-jpeg")
+        return True
+    return build
+
+
+def test_shared_album_art_generates_one_visualizer_field(tmp_path, monkeypatch):
+    cache = tmp_path / "cache"
+    album = tmp_path / "album"
+    album.mkdir()
+    cover = album / "cover.jpg"
+    cover.write_bytes(b"one album cover")
+    first = album / "01.mp3"
+    second = album / "02.mp3"
+    first.write_bytes(b"first")
+    second.write_bytes(b"second")
+    monkeypatch.setattr(metadata, "visualizer_art_cache_dir", lambda: str(cache))
+    calls: list[str] = []
+    monkeypatch.setattr(metadata, "_build_visualizer_art_image", _fake_visualizer_art_builder(calls))
+    monkeypatch.setattr(metadata, "_sample_visualizer_art_luma", lambda _path: {"useful_luma_low": 0.14, "useful_luma_high": 0.82})
+
+    one = metadata.warm_visualizer_art(str(first), root_id="root", rel="01.mp3", linked_count=2)
+    two = metadata.warm_visualizer_art(str(second), root_id="root", rel="02.mp3", linked_count=2)
+
+    assert one is not None and two is not None
+    assert one["art_identity"] == two["art_identity"]
+    assert one["path"] == two["path"]
+    assert len(calls) == 1
+    assert one["linked_track_count"] == 2
+
+
+def test_visualizer_art_cache_version_invalidates_previous_field(tmp_path, monkeypatch):
+    cache = tmp_path / "cache"
+    cover = tmp_path / "cover.jpg"
+    song = tmp_path / "song.mp3"
+    cover.write_bytes(b"cover")
+    song.write_bytes(b"song")
+    monkeypatch.setattr(metadata, "visualizer_art_cache_dir", lambda: str(cache))
+    monkeypatch.setattr(metadata, "art_for_media_path", lambda _path: str(cover))
+    calls: list[str] = []
+    monkeypatch.setattr(metadata, "_build_visualizer_art_image", _fake_visualizer_art_builder(calls))
+    monkeypatch.setattr(metadata, "_sample_visualizer_art_luma", lambda _path: {"useful_luma_low": 0.1, "useful_luma_high": 0.9})
+
+    first = metadata.warm_visualizer_art(str(song))
+    monkeypatch.setattr(metadata, "VISUALIZER_ART_ALGORITHM_VERSION", 2)
+    second = metadata.warm_visualizer_art(str(song))
+
+    assert first is not None and second is not None
+    assert first["cache_key"] != second["cache_key"]
+    assert len(calls) == 2
+
+
+def test_robust_luma_percentiles_normalize_dark_and_bright_fields():
+    dark = bytes([12, 12, 12] * 96 + [50, 50, 50] * 4)
+    bright = bytes([205, 205, 205] * 96 + [250, 250, 250] * 4)
+    dark_luma = metadata._robust_visualizer_luma(dark)
+    bright_luma = metadata._robust_visualizer_luma(bright)
+
+    assert dark_luma is not None and bright_luma is not None
+    assert dark_luma["useful_luma_high"] < bright_luma["useful_luma_low"]
+    assert metadata.normalize_visualizer_art_luma(dark_luma["useful_luma_low"], dark_luma["useful_luma_low"], dark_luma["useful_luma_high"]) == 0.0
+    assert metadata.normalize_visualizer_art_luma(dark_luma["useful_luma_high"], dark_luma["useful_luma_low"], dark_luma["useful_luma_high"]) == 1.0
+    assert metadata.normalize_visualizer_art_luma(bright_luma["useful_luma_low"], bright_luma["useful_luma_low"], bright_luma["useful_luma_high"]) == 0.0
+    assert metadata.normalize_visualizer_art_luma(bright_luma["useful_luma_high"], bright_luma["useful_luma_low"], bright_luma["useful_luma_high"]) == 1.0

@@ -46,7 +46,7 @@ from .Routes.notifications import register_notification_routes
 from .config import _coerce_config_value, ensure_startup_security_config, load_default_app_config_overrides, save_config, save_default_app_config_overrides
 from .Library.library_db import clear_search_history, load_folder_entries, load_palette, load_palette_for_media, load_search_history, load_visualizer_analysis_for_media, record_search_history_row, save_folder_entries, save_palette
 from .Library.index import build_index_for_root, queue_audio_analysis_warm, queue_video_analysis_warm, set_index_cache
-from .Library.metadata import file_meta_cached
+from .Library.metadata import art_identity_for_media, file_meta_cached, load_visualizer_art, warm_visualizer_art
 from .Library.video_parse import duration_text, normalize_show_key, show_keys_close
 from .Library.library_db import load_show_aliases, save_show_aliases
 from .Library.search_ranker import infer_query_intent, normalize_search_text, rank_combined_results, source_priority_for_intent
@@ -2249,6 +2249,56 @@ async def api_library_analysis(request: web.Request):
     analysis["feature_blob_b64"] = base64.b64encode(blob).decode("ascii")
     analysis["feature_blob_encoding"] = "base64-raw"
     return json_response({"ok": True, "analysis": analysis, "stale": False})
+
+
+async def _visualizer_art_for_request(request: web.Request, root_id: str, rel: str) -> tuple[str, dict | None]:
+    r = _request_root_by_id(request, root_id)
+    if not r:
+        raise web.HTTPNotFound()
+    _, _, root_abs, _mode = r
+    try:
+        abs_path = safe_path_join(root_abs, rel)
+    except ValueError:
+        raise web.HTTPBadRequest()
+    if not os.path.isfile(abs_path):
+        raise web.HTTPNotFound()
+    info = await asyncio.to_thread(art_identity_for_media, abs_path, root_id=root_id, rel=rel)
+    if not info:
+        return abs_path, None
+    cached = await asyncio.to_thread(load_visualizer_art, abs_path, root_id=root_id, rel=rel, art_info=info)
+    return abs_path, cached
+
+
+@routes.get("/api/library/visualizer-art")
+async def api_library_visualizer_art(request: web.Request):
+    root_id = (request.query.get("root_id") or "").strip()
+    rel = (request.query.get("rel") or "").strip()
+    if not root_id or not rel:
+        return json_response({"ok": False, "error": "Missing root_id or rel"}, status=400)
+    abs_path, cached = await _visualizer_art_for_request(request, root_id, rel)
+    if not cached:
+        async def warm() -> None:
+            await asyncio.to_thread(warm_visualizer_art, abs_path, root_id=root_id, rel=rel)
+        asyncio.create_task(warm())
+        return json_response({"ok": True, "visualizer_art": None, "warming": True})
+    asset_url = "/api/library/visualizer-art-file/" + quote(root_id, safe="") + "/" + quote(rel, safe="/")
+    public = {
+        key: cached[key]
+        for key in ("algorithm_version", "art_identity", "cache_key", "width", "height", "useful_luma_low", "useful_luma_high")
+        if key in cached
+    }
+    public["url"] = asset_url
+    return json_response({"ok": True, "visualizer_art": public, "warming": False})
+
+
+@routes.get("/api/library/visualizer-art-file/{root_id}/{relpath:.*}")
+async def api_library_visualizer_art_file(request: web.Request):
+    root_id = request.match_info["root_id"]
+    rel = unquote(request.match_info["relpath"])
+    _abs_path, cached = await _visualizer_art_for_request(request, root_id, rel)
+    if not cached:
+        raise web.HTTPNotFound()
+    return await range_response(request, str(cached.get("path") or ""))
 
 
 

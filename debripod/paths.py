@@ -15,6 +15,7 @@ RUNTIME_CACHE_SUBDIRS = (
     "transcode",
     "thumbnails",
     "palettes",
+    "visualizer_art",
     "incoming",
 )
 
@@ -35,6 +36,11 @@ def transcode_cache_dir() -> str:
 
 def art_cache_dir() -> str:
     return os.path.join(cache_dir(), "thumbnails")
+
+
+def visualizer_art_cache_dir() -> str:
+    """Rebuildable artwork fields used by the visualizer, never database data."""
+    return os.path.join(cache_dir(), "visualizer_art")
 
 
 def ensure_runtime_cache_dirs() -> None:
