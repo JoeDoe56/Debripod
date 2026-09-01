@@ -66,8 +66,6 @@
   try{
     state.shuffleEnabled = (localStorage.getItem("debripod_shuffle") === "1");
   }catch(e){ state.shuffleEnabled = false; }
-  applyThemeVars(defaultTheme);
-  applyVisualizerPresetPalette();
   updateVisualizerState();
 
   var playbackLastPostTs = 0;

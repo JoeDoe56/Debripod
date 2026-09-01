@@ -663,6 +663,7 @@
   function reconcileLibPillGlassTargets(reason){
     try{
       if(typeof window.liquidGL !== "function") return;
+      if(!liquidGlassReady || document.documentElement.classList.contains("liquidGlassFallback")) return;
       if(nowPlayingSurfaceVisible()){
         destroyLibPillGlassLenses(reason || "now playing visible");
         return;
@@ -710,7 +711,9 @@
       mountLiquidCanvas();
       refreshLiquidGlassVisualizerSources(reason || "lib pills", {keys:["main"]});
       invalidateLibPillGlass(reason || "lib pills");
-    }catch(e){}
+    }catch(e){
+      try{ console.error("[DebriPod LiquidGL] row-pill reconciliation failed", e); }catch(err){}
+    }
   }
 
   var listSelectionMotion = {
@@ -1086,6 +1089,7 @@
       markFrameWork({refreshSources:true, metrics:true, render:true, textContrast:true});
     }catch(e){
       liquidGlassReady = true;
+      try{ console.error("[DebriPod LiquidGL] initialization failed", e); }catch(err){}
       try{ document.documentElement.classList.add("liquidGlassFallback"); }catch(err){}
     }
   }

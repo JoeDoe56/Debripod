@@ -145,9 +145,9 @@
     gl.shaderSource(s, src.trim());
     gl.compileShader(s);
     if (!gl.getShaderParameter(s, gl.COMPILE_STATUS)) {
-      liquidGLLog("error", "Shader error", gl.getShaderInfoLog(s));
+      const detail = gl.getShaderInfoLog(s) || "unknown compiler error";
       gl.deleteShader(s);
-      return null;
+      throw new Error(`liquidGL: ${type === gl.VERTEX_SHADER ? "vertex" : "fragment"} shader failed: ${detail}`);
     }
     return s;
   }
@@ -161,8 +161,7 @@
     gl.attachShader(p, fs);
     gl.linkProgram(p);
     if (!gl.getProgramParameter(p, gl.LINK_STATUS)) {
-      liquidGLLog("error", "Program link error", gl.getProgramInfoLog(p));
-      return null;
+      throw new Error(`liquidGL: program link failed: ${gl.getProgramInfoLog(p) || "unknown linker error"}`);
     }
     return p;
   }
@@ -319,7 +318,6 @@
         preserveDrawingBuffer: false,
       };
       this.gl =
-        this.canvas.getContext("webgl2", ctxAttribs) ||
         this.canvas.getContext("webgl", ctxAttribs) ||
         this.canvas.getContext("experimental-webgl", ctxAttribs);
       if (!this.gl) throw new Error("liquidGL: WebGL unavailable");
@@ -729,17 +727,17 @@
               float radiusCss = u_frost * 2.0;
               vec4 sum = vec4(0.0);
               const int MAX_FROST_SAMPLES = 16;
-              int sampleCount = int(clamp(u_frostSamples, 1.0, 16.0));
+              float sampleCount = clamp(u_frostSamples, 1.0, 16.0);
 
               for (int i = 0; i < MAX_FROST_SAMPLES; i++) {
-                if (i >= sampleCount) break;
+                float enabled = 1.0 - step(sampleCount, float(i));
                 float angle = (float(i) + 0.5) * 0.78539816339;
                   float distCss = (0.35 + 0.65 * mod(float(i) * 0.61803398875, 1.0)) * radiusCss;
                   vec2 offsetUv = vec2(cos(angle), sin(angle)) *
                     distCss * u_sourceTexelsPerCssPixel * texel;
-                  sum += sampleLiquidSource(sampleUV + offsetUv);
+                  sum += sampleLiquidSource(sampleUV + offsetUv) * enabled;
               }
-              refrCol = sum / float(sampleCount);
+              refrCol = sum / sampleCount;
           } else {
               refrCol = sampleLiquidSource(sampleUV);
               refrCol += sampleLiquidSource(sampleUV + vec2( texel.x, 0.0));
@@ -3651,7 +3649,6 @@
     if (typeof window.__liquidGLNoWebGL__ === "undefined") {
       const testCanvas = document.createElement("canvas");
       const testCtx =
-        testCanvas.getContext("webgl2") ||
         testCanvas.getContext("webgl") ||
         testCanvas.getContext("experimental-webgl");
       window.__liquidGLNoWebGL__ = !testCtx;

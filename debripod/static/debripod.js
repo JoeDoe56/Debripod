@@ -14,6 +14,16 @@
   // start
   (async ()=>{
     let restoredFromLocal = false;
+    // Configuration also initializes LiquidGL and playback capabilities. It
+    // must run even when client sync restores a cached library view and the
+    // normal showRoots() path is skipped.
+    try{
+      await loadConfig();
+      document.documentElement.setAttribute("data-debripod-config", "ready");
+    }catch(e){
+      document.documentElement.setAttribute("data-debripod-config", "error");
+      try{ console.error("[DebriPod startup] configuration initialization failed", e); }catch(err){}
+    }
     try{
       if(window.DebriPod && DebriPod.passkeys && typeof DebriPod.passkeys.maybeOfferAfterLogin === "function"){
         await DebriPod.passkeys.maybeOfferAfterLogin();

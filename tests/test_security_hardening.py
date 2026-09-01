@@ -50,3 +50,11 @@ def test_rotating_logs_redact_credentials_and_tokens(tmp_path):
     handlers = [handler for handler in logging.getLogger().handlers if isinstance(handler, RotatingFileHandler)]
     assert path.name == "debripod.log"
     assert handlers
+
+
+def test_terminal_access_logger_is_configured(tmp_path):
+    configure_logging(tmp_path)
+    access_logger = logging.getLogger("debripod.access")
+    assert access_logger.level == logging.INFO
+    assert access_logger.handlers
+    assert access_logger.propagate is False

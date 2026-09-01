@@ -74,6 +74,16 @@ def test_ui_offers_exactly_contrast_and_transparent_text_modes():
     assert '_dpPageTransitionActive' not in list_view
     assert 'runLibraryPageTransition' not in library_browser
     assert 'runLibraryPageTransition' not in playback_sync
+    assert 'applyThemeVars(defaultTheme)' not in playback_sync
+    assert 'applyVisualizerPresetPalette()' not in playback_sync
+
+
+def test_cached_view_startup_still_initializes_server_config_and_liquid_glass():
+    startup = (REPO / "debripod" / "static" / "debripod.js").read_text(encoding="utf-8")
+    config_call = startup.index("await loadConfig();")
+    cached_restore = startup.index("DebriPod.clientSync.awaitReady")
+    roots_fallback = startup.index("await showRoots()")
+    assert config_call < cached_restore < roots_fallback
 
 
 def test_glass_settings_migrate_to_one_signed_material_value_per_target():

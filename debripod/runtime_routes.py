@@ -70,6 +70,24 @@ from .playback.state import load_playback_runtime
 # aiohttp runtime state
 # =========================
 _RECENT_API_TIMINGS: list[dict[str, Any]] = []
+_TERMINAL_REQUEST_PREFIXES = ("/api/", "/hls/", "/stream/", "/art/")
+
+
+def _log_terminal_request(request: web.Request, status: int, started_at: float) -> None:
+    path = request.path or ""
+    if not path.startswith(_TERMINAL_REQUEST_PREFIXES):
+        return
+    category = "API" if path.startswith("/api/") else "MEDIA"
+    logging.getLogger("debripod.access").info(
+        "[DebriPod %s] %s %s -> %s (%.1f ms)",
+        category,
+        request.method,
+        path,
+        int(status),
+        (time.perf_counter() - started_at) * 1000.0,
+    )
+
+
 _FULL_REINDEX_LOCK = threading.Lock()
 _FULL_REINDEX_STATUS: dict[str, Any] = {
     "running": False,
@@ -364,7 +382,7 @@ async def runtime_middleware(request: web.Request, handler):
         path = request.path or ""
         if path.startswith("/static/") and request.query.get("v"):
             response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
-        if path.startswith("/api/") or path.startswith("/hls/") or path.startswith("/stream/"):
+        if path.startswith(_TERMINAL_REQUEST_PREFIXES):
             response.headers["X-DebriPod-Request-Ms"] = f"{elapsed_ms:.1f}"
         if path.startswith("/api/"):
             _RECENT_API_TIMINGS.append({
@@ -377,8 +395,15 @@ async def runtime_middleware(request: web.Request, handler):
             del _RECENT_API_TIMINGS[:-60]
         if elapsed_ms >= 750 and path.startswith("/api/"):
             logging.info("slow endpoint %s %.1fms", path, elapsed_ms)
+        _log_terminal_request(request, int(response.status), started_at)
         return response
+    except web.HTTPException as exc:
+        _log_terminal_request(request, int(exc.status), started_at)
+        raise
     except asyncio.CancelledError:
+        raise
+    except Exception:
+        _log_terminal_request(request, 500, started_at)
         raise
 
 

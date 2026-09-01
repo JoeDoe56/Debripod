@@ -36,4 +36,5 @@ test("the glass backing scale is independent of device DPR and frost is determin
   assert.match(liquid, /depth: false/);
   assert.match(liquid, /stencil: false/);
   assert.match(liquid, /preserveDrawingBuffer: false/);
+  assert.doesNotMatch(liquid, /getContext\("webgl2"/);
 });
