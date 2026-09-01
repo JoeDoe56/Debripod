@@ -265,7 +265,7 @@
       inset: 0 !important;
       pointer-events: none !important;
     }
-    .liquidGlassCanvasDefault{ z-index: 65 !important; }
+    .liquidGlassCanvasMain{ z-index: 65 !important; }
     .visualizerBg{ z-index: 1; }
     .liquidGlassCanvasWheel{
       position: absolute !important;
@@ -275,9 +275,6 @@
       z-index: 10 !important;
       pointer-events: none !important;
     }
-    .liquidGlassCanvasLibList{ position: absolute !important; z-index: 1 !important; }
-    .liquidGlassCanvasLibSelection{ position: absolute !important; z-index: 2 !important; }
-    .liquidGlassCanvasLibPills{ position: absolute !important; z-index: 2 !important; }
 
     
     @media (max-height: 720px){
@@ -715,8 +712,7 @@
     #videoAmbientBg.active{ opacity:1; }
 
     html.isIphone .visualizerBg,
-    html.isIphone .liquidGlassCanvasDefault,
-    html.isIphone .liquidGlassCanvasLibList,
+    html.isIphone .liquidGlassCanvasMain,
     html.isIphone .liquidGlassCanvasWheel{
       border-top-left-radius: var(--screenRadius);
       border-top-right-radius: var(--screenRadius);

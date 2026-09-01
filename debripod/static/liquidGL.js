@@ -313,7 +313,10 @@
       const ctxAttribs = {
         alpha: true,
         premultipliedAlpha: true,
-        preserveDrawingBuffer: isMobileSafari,
+        antialias: false,
+        depth: false,
+        stencil: false,
+        preserveDrawingBuffer: false,
       };
       this.gl =
         this.canvas.getContext("webgl2", ctxAttribs) ||
@@ -343,6 +346,8 @@
       this._sourceTextureReady = false;
       this._sourceIsSolidFallback = false;
       this._sourceOwnsTexture = true;
+      this._reactiveArtKey = "";
+      this._reactiveArtActive = false;
       this._solidCanvas = null;
       this._albumCurrentTexture = null;
       this._albumNextTexture = null;
@@ -554,13 +559,24 @@
         uniform float u_specularSecondary;
         uniform bool  u_useAlbumTransitionSource;
         uniform bool  u_debugAlbumSourceFlat;
+        uniform bool  u_reactiveArtSource;
+        uniform vec2  u_reactiveViewport;
+        uniform float u_reactiveAngle;
+        uniform float u_reactiveLumaLow;
+        uniform float u_reactiveLumaHigh;
+        uniform float u_reactiveFade;
+        uniform float u_reactiveBrightnessCap;
+        uniform float u_reactiveEnergy;
+        uniform float u_reactiveBeat;
+        uniform float u_reactiveBands[9];
+        uniform float u_reactiveBandCenters[9];
+        uniform float u_reactiveBandWidths[9];
+        uniform vec4  u_reactiveFrequencyResponse;
+        uniform vec4  u_reactiveEnergyResponse;
+        uniform vec4  u_reactiveBeatResponse;
 
         float udRoundBox( vec2 p, vec2 b, float r ) {
           return length(max(abs(p)-b+r,0.0))-r;
-        }
-
-        float random(vec2 st) {
-          return fract(sin(dot(st.xy, vec2(12.9898,78.233))) * 43758.5453123);
         }
 
         float edgeFactor(vec2 uv, float radius_px){
@@ -615,6 +631,35 @@
         }
 
         vec4 sampleLiquidSource(vec2 uv) {
+          if (u_reactiveArtSource) {
+            vec2 screen = (uv - 0.5) * u_reactiveViewport;
+            float c = cos(u_reactiveAngle);
+            float s = sin(u_reactiveAngle);
+            vec2 rotated = vec2(c * screen.x + s * screen.y, -s * screen.x + c * screen.y);
+            vec2 artUv = clamp(rotated / max(1.0, length(u_reactiveViewport)) + 0.5, 0.0, 1.0);
+            vec4 color = texture2D(u_tex, artUv);
+            float luma = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
+            float useful = clamp((luma - u_reactiveLumaLow) / max(0.04, u_reactiveLumaHigh - u_reactiveLumaLow), 0.0, 1.0);
+            float w0 = max(0.0, 1.0 - abs(useful - u_reactiveBandCenters[0]) / max(0.0001, u_reactiveBandWidths[0]));
+            float w1 = max(0.0, 1.0 - abs(useful - u_reactiveBandCenters[1]) / max(0.0001, u_reactiveBandWidths[1]));
+            float w2 = max(0.0, 1.0 - abs(useful - u_reactiveBandCenters[2]) / max(0.0001, u_reactiveBandWidths[2]));
+            float w3 = max(0.0, 1.0 - abs(useful - u_reactiveBandCenters[3]) / max(0.0001, u_reactiveBandWidths[3]));
+            float w4 = max(0.0, 1.0 - abs(useful - u_reactiveBandCenters[4]) / max(0.0001, u_reactiveBandWidths[4]));
+            float w5 = max(0.0, 1.0 - abs(useful - u_reactiveBandCenters[5]) / max(0.0001, u_reactiveBandWidths[5]));
+            float w6 = max(0.0, 1.0 - abs(useful - u_reactiveBandCenters[6]) / max(0.0001, u_reactiveBandWidths[6]));
+            float w7 = max(0.0, 1.0 - abs(useful - u_reactiveBandCenters[7]) / max(0.0001, u_reactiveBandWidths[7]));
+            float w8 = max(0.0, 1.0 - abs(useful - u_reactiveBandCenters[8]) / max(0.0001, u_reactiveBandWidths[8]));
+            float total = max(0.0001, w0+w1+w2+w3+w4+w5+w6+w7+w8);
+            float frequency = (w0*u_reactiveBands[0]+w1*u_reactiveBands[1]+w2*u_reactiveBands[2]+w3*u_reactiveBands[3]+w4*u_reactiveBands[4]+w5*u_reactiveBands[5]+w6*u_reactiveBands[6]+w7*u_reactiveBands[7]+w8*u_reactiveBands[8]) / total;
+            float brightness = clamp(1.0 + frequency*u_reactiveFrequencyResponse.x + u_reactiveEnergy*u_reactiveEnergyResponse.x + u_reactiveBeat*u_reactiveBeatResponse.x, 0.0, 4.0);
+            float opacity = clamp(1.0 + frequency*u_reactiveFrequencyResponse.y + u_reactiveEnergy*u_reactiveEnergyResponse.y + u_reactiveBeat*u_reactiveBeatResponse.y, 0.0, 1.0);
+            float saturation = clamp(1.0 + frequency*u_reactiveFrequencyResponse.z + u_reactiveEnergy*u_reactiveEnergyResponse.z + u_reactiveBeat*u_reactiveBeatResponse.z, 0.0, 3.0);
+            float contrast = clamp(1.0 + frequency*u_reactiveFrequencyResponse.w + u_reactiveEnergy*u_reactiveEnergyResponse.w + u_reactiveBeat*u_reactiveBeatResponse.w, 0.0, 3.0);
+            color.rgb = mix(vec3(luma), color.rgb, saturation);
+            color.rgb = min(clamp((color.rgb - 0.5) * contrast + 0.5, 0.0, 1.0) * brightness, vec3(u_reactiveBrightnessCap));
+            color.a *= opacity * u_reactiveFade;
+            return color;
+          }
           if (u_useAlbumTransitionSource) {
             return sampleAlbumArtSource(uv);
           }
@@ -680,11 +725,11 @@
           if (u_frost > 0.0) {
               float radiusCss = u_frost * 2.0;
               vec4 sum = vec4(0.0);
-              const int SAMPLES = 16;
+              const int SAMPLES = 8;
 
               for (int i = 0; i < SAMPLES; i++) {
-                  float angle = random(v_uv + float(i)) * 6.283185;
-                  float distCss = sqrt(random(v_uv - float(i))) * radiusCss;
+                  float angle = (float(i) + 0.5) * 0.78539816339;
+                  float distCss = (0.35 + 0.65 * mod(float(i) * 0.61803398875, 1.0)) * radiusCss;
                   vec2 offsetUv = vec2(cos(angle), sin(angle)) *
                     distCss * u_sourceTexelsPerCssPixel * texel;
                   sum += sampleLiquidSource(sampleUV + offsetUv);
@@ -835,16 +880,33 @@
         specularSecondary: gl.getUniformLocation(this.program, "u_specularSecondary"),
         useAlbumTransitionSource: gl.getUniformLocation(this.program, "u_useAlbumTransitionSource"),
         debugAlbumSourceFlat: gl.getUniformLocation(this.program, "u_debugAlbumSourceFlat"),
+        reactiveArtSource: gl.getUniformLocation(this.program, "u_reactiveArtSource"),
+        reactiveViewport: gl.getUniformLocation(this.program, "u_reactiveViewport"),
+        reactiveAngle: gl.getUniformLocation(this.program, "u_reactiveAngle"),
+        reactiveLumaLow: gl.getUniformLocation(this.program, "u_reactiveLumaLow"),
+        reactiveLumaHigh: gl.getUniformLocation(this.program, "u_reactiveLumaHigh"),
+        reactiveFade: gl.getUniformLocation(this.program, "u_reactiveFade"),
+        reactiveBrightnessCap: gl.getUniformLocation(this.program, "u_reactiveBrightnessCap"),
+        reactiveEnergy: gl.getUniformLocation(this.program, "u_reactiveEnergy"),
+        reactiveBeat: gl.getUniformLocation(this.program, "u_reactiveBeat"),
+        reactiveBands: gl.getUniformLocation(this.program, "u_reactiveBands[0]"),
+        reactiveBandCenters: gl.getUniformLocation(this.program, "u_reactiveBandCenters[0]"),
+        reactiveBandWidths: gl.getUniformLocation(this.program, "u_reactiveBandWidths[0]"),
+        reactiveFrequencyResponse: gl.getUniformLocation(this.program, "u_reactiveFrequencyResponse"),
+        reactiveEnergyResponse: gl.getUniformLocation(this.program, "u_reactiveEnergyResponse"),
+        reactiveBeatResponse: gl.getUniformLocation(this.program, "u_reactiveBeatResponse"),
       };
     }
 
     /* ----------------------------- */
     _resizeCanvas() {
-      const isMobileSafari = /iPad|iPhone|iPod/.test(navigator.userAgent);
-      const dpr = Math.min(isMobileSafari ? 1.45 : 2, window.devicePixelRatio || 1);
-      this._dpr = dpr;
-      this.canvas.width = innerWidth * dpr;
-      this.canvas.height = innerHeight * dpr;
+      const configuredScale = window.DebriPod && window.DebriPod.uiSettings && window.DebriPod.uiSettings.settings
+        ? Number(window.DebriPod.uiSettings.settings.glassRenderScale)
+        : 1;
+      const renderScale = Math.max(0.5, Math.min(2, Number.isFinite(configuredScale) ? configuredScale : 1));
+      this._dpr = renderScale;
+      this.canvas.width = Math.max(1, Math.round(innerWidth * renderScale));
+      this.canvas.height = Math.max(1, Math.round(innerHeight * renderScale));
       this.canvas.style.width = `${innerWidth}px`;
       this.canvas.style.height = `${innerHeight}px`;
       this.gl.viewport(0, 0, this.canvas.width, this.canvas.height);
@@ -991,8 +1053,8 @@
         renderCount: this.renderCount || 0,
         visibleLensCount: (this.lenses || []).filter((lens) => this._lensVisible(lens)).length,
         sourceRefreshCount: this.sourceRefreshCount || 0,
-        frostSamples: 16,
-        renderScale: this._snapshotResolution || 1,
+        frostSamples: 8,
+        renderScale: this._dpr || 1,
         averageRenderSubmissionMs: this._renderSubmissionSamples && this._renderSubmissionSamples.length
           ? this._renderSubmissionTotalMs / this._renderSubmissionSamples.length
           : 0
@@ -1133,6 +1195,34 @@
       gl.activeTexture(gl.TEXTURE0);
     }
 
+    _bindReactiveVisualizerUniforms(frameState) {
+      const gl = this.gl;
+      const fs = frameState || {};
+      const reactive = this._reactiveArtActive === true && !!this.texture;
+      const finite = (value, fallback) => Number.isFinite(Number(value)) ? Number(value) : fallback;
+      const values = (input, fallback) => new Float32Array(Array.from({ length: 9 }, (_unused, index) => finite(input && input[index], fallback[index])));
+      const bandFallback = [0, 0, 0, 0, 0, 0, 0, 0, 0];
+      const centerFallback = [0, .125, .25, .375, .5, .625, .75, .875, 1];
+      const widthFallback = [.125, .125, .125, .125, .125, .125, .125, .125, .125];
+      const response = (kind) => ["brightness", "opacity", "saturation", "contrast"].map((channel) => finite(fs.responseSettings && fs.responseSettings[kind] && fs.responseSettings[kind][channel], 0));
+      if (this.u.reactiveArtSource) gl.uniform1i(this.u.reactiveArtSource, reactive ? 1 : 0);
+      if (!reactive) return;
+      gl.uniform2f(this.u.reactiveViewport, window.innerWidth || 1, window.innerHeight || 1);
+      gl.uniform1f(this.u.reactiveAngle, finite(fs.angleRadians, Math.PI));
+      gl.uniform1f(this.u.reactiveLumaLow, Math.max(0, Math.min(1, finite(fs.lumaLow, 0))));
+      gl.uniform1f(this.u.reactiveLumaHigh, Math.max(.04, Math.min(1, finite(fs.lumaHigh, 1))));
+      gl.uniform1f(this.u.reactiveFade, Math.max(0, Math.min(1, finite(fs.fade, fs.active ? 1 : 0))));
+      gl.uniform1f(this.u.reactiveBrightnessCap, Math.max(0, Math.min(1, finite(fs.brightnessCap, 1))));
+      gl.uniform1f(this.u.reactiveEnergy, Math.max(0, Math.min(1, finite(fs.energy, 0))));
+      gl.uniform1f(this.u.reactiveBeat, Math.max(0, Math.min(1, finite(fs.beat, 0))));
+      gl.uniform1fv(this.u.reactiveBands, values(fs.bands, bandFallback));
+      gl.uniform1fv(this.u.reactiveBandCenters, values(fs.bandCenters, centerFallback));
+      gl.uniform1fv(this.u.reactiveBandWidths, values(fs.bandWidths, widthFallback));
+      gl.uniform4fv(this.u.reactiveFrequencyResponse, new Float32Array(response("frequency")));
+      gl.uniform4fv(this.u.reactiveEnergyResponse, new Float32Array(response("energy")));
+      gl.uniform4fv(this.u.reactiveBeatResponse, new Float32Array(response("beat")));
+    }
+
     refreshSourceTexture(reason = "") {
       this.sourceRefreshCount++;
       const source = this._resolveSourceElement();
@@ -1146,6 +1236,17 @@
           typeof window.DebriPod.visualizerRenderer.sourceForLiquidGL === "function"
             ? window.DebriPod.visualizerRenderer.sourceForLiquidGL()
             : null;
+        if (adapter && adapter.ready && adapter.image) {
+          const artKey = String(adapter.artKey || adapter.sourceRevision || adapter.image.currentSrc || adapter.image.src || "reactive-art");
+          const sourceRect = adapter.sourceRect || { left: 0, top: 0, width: window.innerWidth || 1, height: window.innerHeight || 1 };
+          this._reactiveArtActive = true;
+          this._sourceCssRect = sourceRect;
+          if (artKey === this._reactiveArtKey && this.texture) return true;
+          const uploaded = this.updateTextureFromImage(adapter.image, { reason: reason || "reactive artwork", sourceRect });
+          if (uploaded) this._reactiveArtKey = artKey;
+          return uploaded;
+        }
+        this._reactiveArtActive = false;
         if (adapter && adapter.ready && adapter.texture && adapter.gl === this.gl) {
           this.texture = adapter.texture;
           this.textureWidth = adapter.width || 1;
@@ -1569,6 +1670,29 @@
       return this.lenses.filter((lens) => wanted.has(lens.el));
     }
 
+    syncLensGroup(group, elements, options) {
+      const groupKey = String(group || "default");
+      const wanted = new Set(Array.from(elements || []).filter(Boolean));
+      this.lenses = this.lenses.filter((lens) => {
+        if (!lens || !lens.el) return false;
+        if (lens._dpLensGroup !== groupKey) return lens.el.isConnected;
+        const keep = wanted.has(lens.el) && lens.el.isConnected;
+        if (!keep && lens.destroy) lens.destroy();
+        return keep;
+      });
+      wanted.forEach((el) => {
+        let existing = this.lenses.find((lens) => lens.el === el);
+        if (existing && options) existing.setOptions(options);
+        if (!existing) {
+          existing = this.addLens(el, options);
+          existing._dpLensGroup = groupKey;
+        }
+        existing._dpLensGroup = groupKey;
+      });
+      this._metricsDirty = true;
+      return this.lenses.filter((lens) => lens._dpLensGroup === groupKey && wanted.has(lens.el));
+    }
+
     requestRender() {
       if (document.hidden) return;
       const scheduler = window.DebriPod && window.DebriPod.frameScheduler;
@@ -1669,6 +1793,7 @@
       gl.bindTexture(gl.TEXTURE_2D, this.texture);
       gl.uniform1i(this.u.tex, 0);
       this._bindAlbumTransitionUniforms();
+      this._bindReactiveVisualizerUniforms(fs);
 
       const time = Number.isFinite(fs.timestamp) ? fs.timestamp / 1000 : (Date.now() - this.startTime) / 1000;
       gl.uniform1f(this.u.time, time);
