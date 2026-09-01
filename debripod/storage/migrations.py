@@ -65,13 +65,6 @@ def _v2(conn: sqlite3.Connection) -> None:
       uncompressed_bytes INTEGER NOT NULL, saved_at REAL NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_media_palettes_media ON media_palettes(root_id, rel);
-    CREATE TABLE IF NOT EXISTS video_palette_timelines (
-      analysis_key TEXT PRIMARY KEY, media_id TEXT NOT NULL DEFAULT '', root_id TEXT NOT NULL DEFAULT '',
-      rel TEXT NOT NULL DEFAULT '', abs_path TEXT NOT NULL DEFAULT '', size INTEGER NOT NULL DEFAULT 0,
-      mtime_ns INTEGER NOT NULL DEFAULT 0, encoding_version INTEGER NOT NULL, sample_rate_hz INTEGER NOT NULL,
-      sample_count INTEGER NOT NULL, payload_blob BLOB NOT NULL, compression TEXT NOT NULL DEFAULT 'raw',
-      uncompressed_bytes INTEGER NOT NULL, saved_at REAL NOT NULL
-    );
     """)
 
 

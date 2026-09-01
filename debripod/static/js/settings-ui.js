@@ -1962,7 +1962,6 @@ async function libDoSearch(engine, q){
       {key:"wheelTilt", label:"Wheel tilt animations"},
       {key:"libraryList", label:"Library list moving animation"},
       {key:"infoPill", label:"Info pill animations"},
-      {key:"albumArtTransition", label:"Album art transition animation"},
       {key:"pathPill", label:"Path pill animations"},
       {key:"rowInsertion", label:"Row insertion animations"}
     ].map((row)=>({
@@ -2018,7 +2017,7 @@ async function libDoSearch(engine, q){
       const reindexRow = {
         kind:"libui_action",
         label:"Full reindex",
-        sub_label:reindex.running ? ("Running " + String(reindex.phase || "index") + (reindex.root ? (" for " + reindex.root) : "")) : "Rebuilds all library folders, artwork palettes, audio analysis, video analysis, and client sync data",
+        sub_label:reindex.running ? ("Running " + String(reindex.phase || "index") + (reindex.root ? (" for " + reindex.root) : "")) : "Rebuilds all library folders, artwork palettes, audio analysis, and client sync data",
         action:"full_reindex",
         pills:[reindexPill],
         forceTwoLine:true,

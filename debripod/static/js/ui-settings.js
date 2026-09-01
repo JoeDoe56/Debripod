@@ -29,7 +29,6 @@
     wheelTilt: 60,
     libraryList: 60,
     infoPill: 60,
-    albumArtTransition: 60,
     pathPill: 60,
     rowInsertion: 60
   };
@@ -62,7 +61,6 @@
           "wheelTilt": 60,
           "libraryList": 60,
           "infoPill": 60,
-          "albumArtTransition": 60,
           "pathPill": 60
       },
       "performanceOverlayButton": true,

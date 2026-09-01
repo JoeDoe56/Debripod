@@ -88,3 +88,13 @@ def test_video_ambient_migration_removes_server_video_analysis_and_timeline_tabl
     assert conn.execute("SELECT COUNT(*) FROM visualizer_analysis").fetchone()[0] == 1
     assert conn.execute("SELECT metadata_json FROM visualizer_analysis").fetchone()[0] == '{"media_kind":"audio"}'
     assert conn.execute("SELECT 1 FROM sqlite_master WHERE type='table' AND name='video_palette_timelines'").fetchone() is None
+
+
+def test_server_no_longer_exposes_video_visualizer_enrichment():
+    for name in (
+        "warm_video_analysis",
+        "warm_video_audio_analysis",
+        "warm_video_frame_palette_analysis",
+        "_compute_video_analysis",
+    ):
+        assert not hasattr(metadata, name)

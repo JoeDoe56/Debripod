@@ -552,26 +552,6 @@
     }
   }
 
-  function disposeRendererLenses(renderer){
-    try{
-      if(!renderer || !renderer.lenses) return;
-      renderer.lenses.forEach((lens)=>{
-        try{ if(lens && lens.destroy) lens.destroy(); }catch(e){}
-      });
-      renderer.lenses = [];
-      renderer._metricsDirty = true;
-      renderer._snapshotRectPx = null;
-      renderer._sourceCssRect = null;
-      renderer._dpLiquidTargetIds = [];
-      if(renderer.setVisible) renderer.setVisible(false);
-      else if(renderer.clear) renderer.clear();
-      if(renderer.canvas){
-        renderer.canvas.style.visibility = "hidden";
-        renderer.canvas.style.opacity = "0";
-      }
-    }catch(e){}
-  }
-
   function destroyLibPillGlassLenses(reason){
     try{
       const renderer = liquidGlassRendererByKey("main");
