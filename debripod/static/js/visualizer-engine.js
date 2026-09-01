@@ -60,10 +60,6 @@ var visualizerLastPaletteRolesSignature = "";
 var visualizerLastVisibleRendererSignature = "";
 var visualizerLastSelectedRowSignature = "";
 var visualizerPaletteDbPromise = null;
-var visualizerAudioCtx = null;
-var visualizerAnalyser = null;
-var visualizerData = null;
-var visualizerSources = new WeakMap();
 var visualizerFrameHandle = 0;
 var visualizerFrameTimer = 0;
 var visualizerLastFrameTs = 0;
@@ -142,34 +138,6 @@ function currentVisualizerMediaElement(){
     if(activeAudio && activeAudio.src) return activeAudio;
   }catch(e){}
   return null;
-}
-
-function ensureVisualizerAudioGraphFor(el){
-  try{
-    if(!el || !(window.AudioContext || window.webkitAudioContext)) return false;
-    if(!visualizerAudioCtx){
-      const Ctx = window.AudioContext || window.webkitAudioContext;
-      visualizerAudioCtx = new Ctx();
-    }
-    if(!visualizerAnalyser){
-      visualizerAnalyser = visualizerAudioCtx.createAnalyser();
-      visualizerAnalyser.fftSize = 256;
-      visualizerAnalyser.smoothingTimeConstant = 0.62;
-      visualizerData = new Uint8Array(visualizerAnalyser.frequencyBinCount);
-    }
-    if(!visualizerSources.has(el)){
-      const srcNode = visualizerAudioCtx.createMediaElementSource(el);
-      srcNode.connect(visualizerAnalyser);
-      visualizerAnalyser.connect(visualizerAudioCtx.destination);
-      visualizerSources.set(el, srcNode);
-    }
-    if(visualizerAudioCtx.state === "suspended"){
-      try{ visualizerAudioCtx.resume(); }catch(e){}
-    }
-    return true;
-  }catch(e){
-    return false;
-  }
 }
 
 function clamp01(n){
@@ -1022,7 +990,10 @@ function visualizerFrame(ts){
     const el = currentVisualizerMediaElement();
     const cachedFeatures = visualizerEnabled && visualizerActive && !document.hidden ? sampleCachedVisualizerAnalysis(el) : null;
     const mediaKind = currentVisualizerMediaKind();
-    const canAnalyze = !!(mediaKind !== "video" && !cachedFeatures && visualizerEnabled && visualizerActive && !document.hidden && el && ensureVisualizerAudioGraphFor(el) && visualizerAnalyser && visualizerData);
+    const graph = window.DebriPod && window.DebriPod.mediaAudioGraph;
+    const shouldAnalyze = mediaKind !== "video" && !cachedFeatures && visualizerEnabled && visualizerActive && !document.hidden && el;
+    const frequencyData = shouldAnalyze && graph && graph.getFrequencyData ? graph.getFrequencyData(el) : null;
+    const canAnalyze = !!frequencyData;
     let nextBass = 0;
     let nextMid = 0;
     let nextTreble = 0;
@@ -1035,8 +1006,7 @@ function visualizerFrame(ts){
       nextEnergy = cachedFeatures.energy;
       nextBands = cachedFeatures.bands;
     }else if(canAnalyze){
-      try{ visualizerAnalyser.getByteFrequencyData(visualizerData); }catch(e){}
-      const n = visualizerData.length || 0;
+      const n = frequencyData.length || 0;
       if(n > 0){
         const bassEnd = Math.max(1, Math.floor(n * 0.16));
         const midEnd = Math.max(bassEnd + 1, Math.floor(n * 0.50));
@@ -1045,7 +1015,7 @@ function visualizerFrame(ts){
         const bandSums = [0, 0, 0, 0, 0, 0, 0];
         const bandCounts = [0, 0, 0, 0, 0, 0, 0];
         for(let i = 0; i < n; i++){
-          const v = Number(visualizerData[i] || 0) / 255;
+          const v = Number(frequencyData[i] || 0) / 255;
           allSum += v;
           if(i < bassEnd) bassSum += v;
           else if(i < midEnd) midSum += v;

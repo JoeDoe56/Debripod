@@ -84,11 +84,15 @@
         }
       }catch(e){}
       if(isVideoActive()){
+        try{ preparePlaybackMediaAudio(npVideo); }catch(e){}
+        try{ unlockPlaybackMediaAudio(); }catch(e){}
         try{ npVideo.play().catch(()=>{}); }catch(e){}
         return;
       }
       try{ if(standbyAudio && !standbyAudio.paused) standbyAudio.pause(); }catch(e){}
       try{ enforceSingleAudio(); }catch(e){}
+      try{ preparePlaybackMediaAudio(activeAudio); }catch(e){}
+      try{ unlockPlaybackMediaAudio(); }catch(e){}
       try{ activeAudio.play().catch(()=>{}); }catch(e){}
     });
     setMediaActionHandler("pause", ()=>{

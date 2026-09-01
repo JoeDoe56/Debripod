@@ -8,12 +8,55 @@
   var preloadAudioEl = null;
   var preloadRequestNonce = 0;
 
-// ===== volume (wheel controlled; native media element volume) =====
+// ===== volume (wheel controlled; device-local software gain) =====
+function volumePreferenceStorageKey(){
+  try{
+    var userId = String(window.DEBRIPOD_DEVICE_SETTINGS_USER_ID || "").trim();
+    if(userId) return "debripod_volume:v3:" + userId;
+  }catch(e){}
+  return "debripod_volume";
+}
+
 var userVol = 1.0;
 try{
-  var v = parseFloat(localStorage.getItem("debripod_volume") || "");
+  var volumeStorageKey = volumePreferenceStorageKey();
+  var savedVolume = localStorage.getItem(volumeStorageKey);
+  if(savedVolume == null && volumeStorageKey !== "debripod_volume"){
+    savedVolume = localStorage.getItem("debripod_volume");
+    if(savedVolume != null) localStorage.setItem(volumeStorageKey, savedVolume);
+  }
+  var v = parseFloat(savedVolume || "");
   if(!isNaN(v)) userVol = Math.max(0, Math.min(1, v));
 }catch(e){}
+
+function mediaAudioGraph(){
+  try{ return window.DebriPod && window.DebriPod.mediaAudioGraph; }catch(e){ return null; }
+}
+
+function activePlaybackMediaElement(){
+  try{
+    if(typeof isVideoActive === "function" && isVideoActive() && npVideo) return npVideo;
+  }catch(e){}
+  return activeAudio || null;
+}
+
+function preparePlaybackMediaAudio(element){
+  var graph = mediaAudioGraph();
+  try{
+    if(graph && graph.setActiveElement) return graph.setActiveElement(element);
+  }catch(e){}
+  return false;
+}
+
+function unlockPlaybackMediaAudio(){
+  var graph = mediaAudioGraph();
+  try{
+    if(graph && graph.unlock){
+      var pending = graph.unlock();
+      if(pending && pending.catch) pending.catch(()=>{});
+    }
+  }catch(e){}
+}
 
 function destroyHlsController(which){
   try{
@@ -60,19 +103,23 @@ function updateBufferedBarFor(el){
 
 function applyVolume(){
   var v = userVol;
+  var graph = mediaAudioGraph();
+  var target = activePlaybackMediaElement();
   try{
-    if(activeAudio){
-      activeAudio.muted = false;
-      activeAudio.volume = v;
-    }
+    if(graph && graph.setVolume) graph.setVolume(v);
+    if(target) preparePlaybackMediaAudio(target);
   }catch(e){}
+  if(!graph){
+    try{ if(activeAudio){ activeAudio.muted = false; activeAudio.volume = v; } }catch(e){}
+    try{ if(npVideo){ npVideo.muted = false; npVideo.volume = v; } }catch(e){}
+  }
   try{ if(preloadAudioEl){ preloadAudioEl.muted = true; preloadAudioEl.volume = 0; } }catch(e){}
-  try{ if(npVideo){ npVideo.muted = false; npVideo.volume = v; } }catch(e){}
   try{
     if(npVolumeFill){
       npVolumeFill.style.width = Math.round(v * 100) + "%";
     }
   }catch(e){}
+  try{ if(typeof renderInfoPillLabels === "function") renderInfoPillLabels(); }catch(e){}
 }
 
 function resetGaplessPrime(){
@@ -89,7 +136,7 @@ function resetGaplessPrime(){
 
 function enforceSingleAudio(){
   try{
-    if(activeAudio){ activeAudio.muted = false; activeAudio.volume = userVol; }
+    preparePlaybackMediaAudio(activePlaybackMediaElement());
     if(preloadAudioEl){ preloadAudioEl.muted = true; preloadAudioEl.volume = 0; }
   }catch(e){}
 }

@@ -65,7 +65,10 @@ function setPlaybackPillMetadata(meta, fallbackLabel){
     try{ if(typeof updatePathPillMaxWidth === "function") updatePathPillMaxWidth(); }catch(e){}
     if(!hasNowPlayingMetadata() && infoPill) infoPill.classList.add("infoPillHidden");
   }catch(e){}
-  try{ if(npTech) npTech.textContent = m.tech || ""; }catch(e){}
+  try{
+    if(npTech) npTech.dataset.progressText = m.tech || "";
+    renderInfoPillLabels();
+  }catch(e){}
   try{ if(nowPlaying && nowPlaying.style.display === "block") setHeader(); }catch(e){}
 }
 
@@ -85,18 +88,43 @@ async function updateNowPlayingDisplay(meta, fallbackLabel, opts){
 
 var npControlMode = "progress";
 
+function infoPillLabelValues(mode, volume, progress){
+  if(mode === "volume"){
+    return {left: "min", center: Math.round(Math.max(0, Math.min(1, Number(volume) || 0)) * 100) + "%", right: "max"};
+  }
+  var values = progress || {};
+  return {left: values.left || "0:00", center: values.center || "", right: values.right || "0:00"};
+}
+
+function renderInfoPillLabels(){
+  try{
+    var media = (typeof wheelMedia === "function") ? wheelMedia() : null;
+    var progress = {
+      left: fmtTime(media && isFinite(media.currentTime) ? Number(media.currentTime) : 0),
+      center: (npTech && npTech.dataset && npTech.dataset.progressText) || "",
+      right: fmtTime(media && isFinite(media.duration) ? Number(media.duration) : 0)
+    };
+    var labels = infoPillLabelValues(npControlMode, userVol, progress);
+    if(npCur) npCur.textContent = labels.left;
+    if(npTech) npTech.textContent = labels.center;
+    if(npDur) npDur.textContent = labels.right;
+  }catch(e){}
+}
+
 function setInfoPillControlMode(mode, reason){
   const next = mode === "volume" ? "volume" : "progress";
   if(npControlMode === next) return false;
   npControlMode = next;
   if(npProgressWrap) npProgressWrap.style.display = next === "progress" ? "block" : "none";
   if(npVolumeWrap) npVolumeWrap.style.display = next === "volume" ? "block" : "none";
+  renderInfoPillLabels();
   return true;
 }
 
 function updateVolumeFillOnly(){
   try{
     if(npVolumeFill) npVolumeFill.style.width = Math.round(userVol * 100) + "%";
+    renderInfoPillLabels();
   }catch(e){}
 }
 
@@ -379,6 +407,7 @@ function resumeVideoViaSeekInputs(targetSec){
         let diff = tgt - (seekPreview || 0);
         if(Math.abs(diff) <= (stepSec / 2)){
           try{ commitSeekMode(); }catch(e){}
+          try{ preparePlaybackMediaAudio(npVideo); }catch(e){}
           try{ npVideo.play(); }catch(e){}
           return;
         }
@@ -413,7 +442,8 @@ function resumeVideoViaSeekInputs(targetSec){
 
 function setVolume(v){
   userVol = Math.max(0, Math.min(1, v));
-  try{ localStorage.setItem("debripod_volume", String(userVol)); }catch(e){}
+  try{ localStorage.setItem(volumePreferenceStorageKey(), String(userVol)); }catch(e){}
+  unlockPlaybackMediaAudio();
   applyVolume();
 }
 

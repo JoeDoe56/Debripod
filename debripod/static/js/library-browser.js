@@ -380,6 +380,8 @@ async function goBack(){
 
   async function startVideoFromItem(item, forceShow, resumeTime){
     if(typeof forceShow !== "boolean") forceShow = true;
+    try{ preparePlaybackMediaAudio(npVideo); }catch(e){}
+    try{ unlockPlaybackMediaAudio(); }catch(e){}
     syncCanonicalPlaybackStart(item, state.videoPlaylist && state.videoPlaylist.length ? state.videoPlaylist : (state.items || []), forceShow);
     const playbackNav = captureNavContext();
     const sourceView = captureSourceViewContext(item, state.videoPlaylist && state.videoPlaylist.length ? state.videoPlaylist : (state.items || []), state.videoIndex >= 0 ? state.videoIndex : 0);
@@ -458,6 +460,7 @@ async function goBack(){
         playbackMaybePost("video", rootId, rel, meta || {}, (pos0 || 0), null, true, "start");
       }catch(e){}
 
+      try{ preparePlaybackMediaAudio(npVideo); }catch(e){}
       const p = npVideo.play();
       try{ if(rt > 0) scheduleVideoResume(rt); }catch(e){}
       if(p && p.catch) p.catch((err)=>{ warnMedia("video", "play rejected" + (err && err.name ? " (" + err.name + ")" : ""), npVideo); });
@@ -470,6 +473,8 @@ async function goBack(){
 
   async function startAudioFromItem(item, playlist, index, forceShow, resumeTime){
     if(typeof forceShow !== "boolean") forceShow = true;
+    try{ preparePlaybackMediaAudio(activeAudio); }catch(e){}
+    try{ unlockPlaybackMediaAudio(); }catch(e){}
     syncCanonicalPlaybackStart(item, playlist || state.playlist || state.items || [], forceShow);
     const playbackNav = captureNavContext();
     const sourceView = captureSourceViewContext(item, playlist || state.playlist || state.items || [], (typeof index === "number" ? index : state.playIndex));
@@ -622,6 +627,7 @@ async function goBack(){
 
     try{ ensurePlaybackAudioSession(); }catch(e){}
     try{
+      try{ preparePlaybackMediaAudio(activeAudio); }catch(e){}
       await activeAudio.play();
       if(canMediaSession()) navigator.mediaSession.playbackState = "playing";
     }catch(e){
@@ -646,6 +652,8 @@ async function goBack(){
     if(m.paused){
 
       try{
+        try{ preparePlaybackMediaAudio(m); }catch(e){}
+        try{ unlockPlaybackMediaAudio(); }catch(e){}
         const p = m.play();
         if(p && p.catch) p.catch((err)=>{ warnMedia(isVideoActive() ? "video" : "audio", "play rejected" + (err && err.name ? " (" + err.name + ")" : ""), m); });
       }catch(e){
@@ -898,8 +906,7 @@ async function goBack(){
       }
       try{ syncMediaSessionPosition(); }catch(e){}
       try{ syncMediaSessionControls(); }catch(e){}
-      npCur.textContent = fmtTime(t);
-      npDur.textContent = fmtTime(d);
+      renderInfoPillLabels();
       lastfmMaybeScrobble(false);
       try{ updateBufferedBarFor(el); }catch(e){}
       try{ enforceSingleAudio(); }catch(e){}
@@ -926,7 +933,7 @@ async function goBack(){
     });
     el.addEventListener("play", ()=>{
       if(el !== activeAudio) return;
-      try{ ensureVisualizerAudioGraphFor(el); }catch(e){}
+      try{ preparePlaybackMediaAudio(el); }catch(e){}
       updateVisualizerState();
       if(canMediaSession()) navigator.mediaSession.playbackState = "playing";
       try{ syncMediaSessionControls(); }catch(e){}
@@ -969,8 +976,7 @@ async function goBack(){
         npSeek.value = Math.floor((t / d) * 1000);
       }
       try{ updateBufferedBarFor(npVideo); }catch(e){}
-      npCur.textContent = fmtTime(t);
-      npDur.textContent = fmtTime(d);
+      renderInfoPillLabels();
       try{
         if(state.now && state.now.media === "video" && state.now.rootId && state.now.rel){
           playbackMaybePost("video", state.now.rootId, state.now.rel, state.nowMeta || {}, t, d, (!npVideo.paused), "time");
@@ -980,7 +986,7 @@ async function goBack(){
 
     npVideo.addEventListener("play", ()=>{
       if(!isVideoActive()) return;
-      try{ ensureVisualizerAudioGraphFor(npVideo); }catch(e){}
+      try{ preparePlaybackMediaAudio(npVideo); }catch(e){}
       updateVisualizerState();
       try{ syncMediaSessionControls(); }catch(e){}
       try{ syncMediaSessionPosition(); }catch(e){}
