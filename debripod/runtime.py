@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Any
 import argparse
+from pathlib import Path
 
 from aiohttp import web
 
@@ -69,7 +70,7 @@ def main() -> None:
         globals()["PORT"] = args.port
     _sync_config_overrides()
     state.ensure_dirs()
-    configure_logging(state.PACKAGE_ROOT / "data" / "logs")
+    configure_logging(Path(__file__).resolve().parent.parent / "data" / "logs")
     state.load_playback_state()
     try:
         state.configure_aioslsk_logging(bool(state.AIOSLSK_LOGGING_ENABLED))
