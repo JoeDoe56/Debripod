@@ -38,15 +38,9 @@
     const js = await apiGet("/api/settings");
     state.settingsData = js || {};
     state.appSettings = Object.assign({}, (js && js.settings) || {});
-    const localUiMigration = window.DebriPod && DebriPod.uiSettings && DebriPod.uiSettings.takeLocalUiMigration ? DebriPod.uiSettings.takeLocalUiMigration() : null;
-    if(localUiMigration){
-      const migrated = DebriPod.uiSettings.uiSettingsToAppSettings(localUiMigration);
-      await apiPost("/api/settings/save", {settings:migrated});
-      Object.assign(state.appSettings, migrated);
-    }
-    if(window.DebriPod && DebriPod.uiSettings && DebriPod.uiSettings.applyServerAppSettings){
-      DebriPod.uiSettings.applyServerAppSettings(state.appSettings);
-      uiSettings = DebriPod.uiSettings.settings;
+    if(window.DebriPod && DebriPod.uiSettings && DebriPod.uiSettings.setDeviceSettingsUserId){
+      uiSettings = DebriPod.uiSettings.setDeviceSettingsUserId(js && js.device_settings_user_id);
+      liquidGlassElements = cloneGlassElementSettings(uiSettings.liquidGlassElements);
     }
     state.startupSettings = Object.assign({}, (js && js.startup) || {});
     state.serverControlsOwner = !!(js && js.server_controls_owner);
@@ -1743,6 +1737,20 @@ async function libDoSearch(engine, q){
         });
         items.push({kind:"libui_action", label:"Visualizer Preset", action:"cycle_visualizer_preset", pills:[presetLabel]});
         items.push({kind:"libui_action", label:"FPS Lock", action:"cycle_visualizer_fps_lock", pills:[String(normalizeVisualizerFpsLock(fps)) + " FPS"]});
+        [
+          ["frequency", "Frequency response", uiSettings.visualizerFrequencyResponse],
+          ["energy", "Energy response", uiSettings.visualizerEnergyResponse],
+          ["beat", "Beat response", uiSettings.visualizerBeatResponse]
+        ].forEach((entry)=>{
+          ["brightness", "opacity", "saturation", "contrast"].forEach((channel)=>{
+            items.push({kind:"libui_action", label:entry[1] + " " + channel, sub_label:"Direct visualizer response amount", action:"set_visualizer_response:" + entry[0] + ":" + channel, pills:[String(Math.round(Number((entry[2] || {})[channel] || 0) * 100)) + "%"], forceTwoLine:true, settingRow:true});
+          });
+        });
+        const ambient = uiSettings.videoAmbient || {};
+        items.push({kind:"libui_action", label:"Video ambient lighting", action:"toggle_video_ambient", pills:[ambient.enabled ? "On" : "Off"]});
+        [["sampleFps", "Video ambient sample FPS", 1, 30, true], ["brightness", "Video ambient brightness", 0, 2], ["saturation", "Video ambient saturation", 0, 2], ["audioEnergyBrightness", "Video ambient audio brightness", 0, 2], ["smoothing", "Video ambient smoothing", 0, 0.99]].forEach((entry)=>{
+          items.push({kind:"libui_action", label:entry[1], action:"set_video_ambient:" + entry[0], pills:[entry[4] ? String(Math.round(Number(ambient[entry[0]] || 0))) + " FPS" : String(Math.round(Number(ambient[entry[0]] || 0) * 100)) + "%"], forceTwoLine:true, settingRow:true});
+        });
         items.push({kind:"info", label:"Estimated Tempo", pills:[String(Math.round(bpm || 120)) + " BPM"]});
         resetList(items);
       }
@@ -1893,6 +1901,10 @@ async function libDoSearch(engine, q){
       GLASS_ELEMENT_KEYS.forEach((key)=>{
         items.push({kind:"libui_action", label:glassElementLabel(key), sub_label:"Dark ↔ transparent ↔ light", action:"set_glass_value:" + key + ":material", pills:glassElementSummary(key), forceTwoLine:true, settingRow:true});
       });
+      items.push({kind:"libui_action", label:"Render scale", sub_label:"Glass backing-resolution scale", action:"set_glass_quality:glassRenderScale", pills:[String(Number(uiSettings.glassRenderScale || 1).toFixed(2)) + "x"], forceTwoLine:true, settingRow:true});
+      items.push({kind:"libui_action", label:"Frost samples", sub_label:"Deterministic frost kernel samples", action:"set_glass_quality:glassFrostSamples", pills:[String(Math.round(Number(uiSettings.glassFrostSamples || 8)))], forceTwoLine:true, settingRow:true});
+      items.push({kind:"libui_action", label:"Idle glass FPS", action:"set_glass_quality:glassIdleFps", pills:[String(normalizeAnimationFps(uiSettings.glassIdleFps)) + " FPS"], forceTwoLine:true, settingRow:true});
+      items.push({kind:"libui_action", label:"Interaction glass FPS", action:"set_glass_quality:glassInteractionFps", pills:[String(normalizeAnimationFps(uiSettings.glassInteractionFps)) + " FPS"], forceTwoLine:true, settingRow:true});
       return items;
     }
     if(cat === "ui"){
@@ -2594,6 +2606,21 @@ async function libDoSearch(engine, q){
       }catch(e){ alert(String(e && e.message ? e.message : e)); }
       return true;
     };
+    const setDeviceQualityNumber = async (label, current, meta, onCommit, onReturn)=>{
+      await viewRangeEditor({
+        label:label,
+        current:current,
+        meta:meta,
+        onCommit: async function(value){
+          await onCommit(value);
+          saveUiSettings();
+          try{ if(typeof scheduleVisualizerFrame === "function") scheduleVisualizerFrame(0); }catch(e){}
+          try{ if(typeof scheduleLiquidGlassRender === "function") scheduleLiquidGlassRender(); }catch(e){}
+        },
+        onReturn:onReturn
+      }, true);
+      return true;
+    };
     const returnAdvancedCategory = async (category)=>{
       try{
         saveUiSettings();
@@ -2636,6 +2663,29 @@ async function libDoSearch(engine, q){
         if(String(action || "").indexOf("set_glass_value:") === 0){
           const parts = String(action).split(":");
           return await setGlassNumber(parts[1] || "", parts[2] || "");
+        }
+        if(String(action || "").indexOf("set_visualizer_response:") === 0){
+          const parts = String(action).split(":");
+          const responseKey = {frequency:"visualizerFrequencyResponse", energy:"visualizerEnergyResponse", beat:"visualizerBeatResponse"}[parts[1]];
+          const channel = parts[2];
+          if(!responseKey || !["brightness", "opacity", "saturation", "contrast"].includes(channel)) return false;
+          const response = Object.assign({}, uiSettings[responseKey] || {});
+          const min = channel === "saturation" || channel === "contrast" ? -1 : 0;
+          const max = channel === "brightness" ? 2 : 1;
+          return await setDeviceQualityNumber("Visualizer " + parts[1] + " " + channel, Number(response[channel] || 0), {min:min, max:max, step:0.01}, async function(value){ response[channel] = Number(value); uiSettings[responseKey] = cloneVisualizerResponse(response, uiSettings[responseKey]); }, async function(){ await viewLibUiSettings(false); });
+        }
+        if(String(action || "").indexOf("set_video_ambient:") === 0){
+          const key = String(action).split(":")[1] || "";
+          const spec = {sampleFps:[1,30,1,true], brightness:[0,2,0.01], saturation:[0,2,0.01], audioEnergyBrightness:[0,2,0.01], smoothing:[0,0.99,0.01]}[key];
+          if(!spec) return false;
+          const ambient = Object.assign({}, uiSettings.videoAmbient || {});
+          return await setDeviceQualityNumber("Video ambient " + key, Number(ambient[key] || 0), {min:spec[0], max:spec[1], step:spec[2], integer:!!spec[3]}, async function(value){ ambient[key] = Number(value); uiSettings.videoAmbient = cloneVideoAmbientSettings(ambient); }, async function(){ await viewLibUiSettings(false); });
+        }
+        if(String(action || "").indexOf("set_glass_quality:") === 0){
+          const key = String(action).split(":")[1] || "";
+          const spec = {glassRenderScale:[0.5,2,0.01], glassFrostSamples:[0,16,1,true], glassIdleFps:[30,120,30,true], glassInteractionFps:[30,120,30,true]}[key];
+          if(!spec) return false;
+          return await setDeviceQualityNumber(key === "glassRenderScale" ? "Glass render scale" : key, Number(uiSettings[key] || 0), {min:spec[0], max:spec[1], step:spec[2], integer:!!spec[3]}, async function(value){ uiSettings[key] = Number(value); }, async function(){ await viewLibAdvancedCategory("glass", false); });
         }
         return false;
       case "range_editor_apply":
@@ -2682,6 +2732,11 @@ async function libDoSearch(engine, q){
         return await startFullReindex();
       case "database_backups":
         await viewLibDatabaseBackups(true);
+        return true;
+      case "toggle_video_ambient":
+        uiSettings.videoAmbient = cloneVideoAmbientSettings(Object.assign({}, uiSettings.videoAmbient || {}, {enabled:!(uiSettings.videoAmbient && uiSettings.videoAmbient.enabled)}));
+        saveUiSettings();
+        await viewLibUiSettings(false);
         return true;
       case "database_backup_create":
         try{ await apiPost("/api/system/backups/create", {}); }catch(e){}

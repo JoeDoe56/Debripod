@@ -20,18 +20,23 @@ REMOTE_TORRENT_SOURCE_IDS = ("knaben", "bitsearch", "magnetz", "torlock", "bt4g"
 
 DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "visualizer": True, "visualizerMaxBrightnessPct": 60, "visualizerPreset": "album", "visualizerFpsLock": 30,
+    "visualizerFrequencyResponse": {"brightness": 1.0, "opacity": 0.0, "saturation": 0.15, "contrast": 0.10},
+    "visualizerEnergyResponse": {"brightness": 0.12, "opacity": 0.0, "saturation": 0.05, "contrast": 0.05},
+    "visualizerBeatResponse": {"brightness": 0.10, "opacity": 0.0, "saturation": 0.0, "contrast": 0.05},
+    "videoAmbient": {"enabled": True, "sampleFps": 8, "brightness": 1.0, "saturation": 1.0, "audioEnergyBrightness": 0.12, "smoothing": 0.82},
     "textModes": {"wheelLabels": "transparent", "pathPill": "transparent", "infoPill": "transparent", "rows": "transparent", "rowPills": "transparent", "selectedRow": "contrast", "selectedRowPills": "contrast"},
     "textTransparency": 0.68,
     "animationFps": {"selectedRow": 60, "wheelTilt": 60, "libraryList": 60, "infoPill": 60, "albumArtTransition": 60, "pathPill": 60, "rowInsertion": 60},
     "performanceOverlayButton": True, "performanceOverlayText": False,
     "liquidGlassElements": {
-        "libraryList": {"material": 0.0},
-        "wheel": {"material": 0.0},
-        "pathPill": {"material": 0.0},
-        "infoPill": {"material": 0.0},
+        "libraryList": {"material": -0.20},
+        "wheel": {"material": -0.20},
+        "pathPill": {"material": -0.20},
+        "infoPill": {"material": -0.20},
         "listPills": {"material": 0.0},
-        "selectedRow": {"material": 0.0},
+        "selectedRow": {"material": -0.50},
     },
+    "glassRenderScale": 1.0, "glassFrostSamples": 8, "glassIdleFps": 30, "glassInteractionFps": 60,
     "centerBounceAmount": 0.075, "centerBounceDuration": 240.0, "centerBounceOvershoot": 0.9,
     "wheelClickTiltAmount": 0.5, "wheelTiltRampDuration": 90.0, "wheelTiltReleaseDuration": 360.0,
     "infoPillDarkMultiplier": 1.0, "infoPillLightMultiplier": 1.0,
@@ -39,10 +44,12 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
 
 DEFAULT_UI_APP_SETTINGS: dict[str, Any] = {
     "UI_VISUALIZER": True, "UI_VISUALIZER_MAX_BRIGHTNESS_PCT": 60, "UI_VISUALIZER_PRESET": "album", "UI_VISUALIZER_FPS_LOCK": 30,
+    "UI_VISUALIZER_FREQUENCY_RESPONSE": DEFAULT_UI_SETTINGS["visualizerFrequencyResponse"], "UI_VISUALIZER_ENERGY_RESPONSE": DEFAULT_UI_SETTINGS["visualizerEnergyResponse"], "UI_VISUALIZER_BEAT_RESPONSE": DEFAULT_UI_SETTINGS["visualizerBeatResponse"], "UI_VIDEO_AMBIENT": DEFAULT_UI_SETTINGS["videoAmbient"],
     "UI_TEXT_WHEEL_LABELS": "transparent", "UI_TEXT_PATH_PILL": "transparent", "UI_TEXT_INFO_PILL": "transparent", "UI_TEXT_ROWS": "transparent", "UI_TEXT_ROW_PILLS": "transparent", "UI_TEXT_SELECTED_ROW": "contrast", "UI_TEXT_SELECTED_ROW_PILLS": "contrast", "UI_TEXT_TRANSPARENCY": 0.68,
     "UI_ANIMATION_SELECTED_ROW_FPS": 60, "UI_ANIMATION_WHEEL_TILT_FPS": 60, "UI_ANIMATION_LIBRARY_LIST_FPS": 60, "UI_ANIMATION_INFO_PILL_FPS": 60, "UI_ANIMATION_ALBUM_ART_TRANSITION_FPS": 60, "UI_ANIMATION_PATH_PILL_FPS": 60, "UI_ANIMATION_ROW_INSERTION_FPS": 60,
     "UI_PERFORMANCE_OVERLAY_BUTTON": True, "UI_PERFORMANCE_OVERLAY_TEXT": False,
     "UI_GLASS_LIBRARY_LIST": DEFAULT_UI_SETTINGS["liquidGlassElements"]["libraryList"], "UI_GLASS_WHEEL": DEFAULT_UI_SETTINGS["liquidGlassElements"]["wheel"], "UI_GLASS_PATH_PILL": DEFAULT_UI_SETTINGS["liquidGlassElements"]["pathPill"], "UI_GLASS_INFO_PILL": DEFAULT_UI_SETTINGS["liquidGlassElements"]["infoPill"], "UI_GLASS_LIST_PILLS": DEFAULT_UI_SETTINGS["liquidGlassElements"]["listPills"], "UI_GLASS_SELECTED_ROW": DEFAULT_UI_SETTINGS["liquidGlassElements"]["selectedRow"],
+    "UI_GLASS_RENDER_SCALE": 1.0, "UI_GLASS_FROST_SAMPLES": 8, "UI_GLASS_IDLE_FPS": 30, "UI_GLASS_INTERACTION_FPS": 60,
     "UI_CENTER_BOUNCE_AMOUNT": 0.075, "UI_CENTER_BOUNCE_DURATION": 240.0, "UI_CENTER_BOUNCE_OVERSHOOT": 0.9, "UI_WHEEL_CLICK_TILT_AMOUNT": 0.5, "UI_WHEEL_TILT_RAMP_DURATION": 90.0, "UI_WHEEL_TILT_RELEASE_DURATION": 360.0, "UI_INFO_PILL_DARK_MULTIPLIER": 1.0, "UI_INFO_PILL_LIGHT_MULTIPLIER": 1.0,
 }
 
@@ -127,8 +134,7 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {'APP_NAME': 'DebriPod',
  'LASTFM_REQUEST_TIMEOUT_SECONDS': 12,
  'LIBRARY_FOLDERS': [],
  'SETUP_WIZARD_COMPLETE': False,
- 'SETUP_SKIPPED_SERVICES': {},
- **DEFAULT_UI_APP_SETTINGS}
+ 'SETUP_SKIPPED_SERVICES': {}}
 
 APP_SETTING_KEYS = set(DEFAULT_APP_SETTINGS)
 NON_PERSISTED_APP_SETTING_KEYS: set[str] = set()
@@ -143,6 +149,32 @@ SECRET_SETTING_KEYS = {
     "LASTFM_API_SECRET",
     "LASTFM_SESSION_KEY",
 }
+
+# Settings are deliberately classified at the boundary.  Device values never
+# enter SQLite; server values are shared machine configuration controlled by
+# the owner; all other known application settings are per-user.
+SERVER_SETTING_KEYS = frozenset({
+    "RD_BASE", "ALLDEBRID_BASE", "PREMIUMIZE_BASE", "TORBOX_BASE",
+    "YOUTUBE_WEB_BASE", "LASTFM_API_ROOT", "LASTFM_CALLBACK_URL",
+    "FFMPEG_PATH", "FFPROBE_PATH", "YTDLP_CMD",
+    "LOCAL_INDEX_ENABLED", "LOCAL_INDEX_UPDATE_INTERVAL_SECONDS",
+})
+DEVICE_SETTING_KEYS = frozenset(DEFAULT_UI_APP_SETTINGS)
+USER_SETTING_KEYS = frozenset(APP_SETTING_KEYS.difference(SERVER_SETTING_KEYS))
+SETTING_DESCRIPTORS: dict[str, dict[str, str]] = {
+    **{key: {"scope": "server"} for key in SERVER_SETTING_KEYS},
+    **{key: {"scope": "user"} for key in USER_SETTING_KEYS},
+    **{key: {"scope": "device"} for key in DEVICE_SETTING_KEYS},
+    "PORT": {"scope": "server"},
+    "ENABLE_MCP": {"scope": "server"},
+    "MCP_TOKEN": {"scope": "server"},
+}
+
+
+def setting_scope(key: str) -> str | None:
+    """Return the explicit persistence scope for a known setting key."""
+    descriptor = SETTING_DESCRIPTORS.get(str(key or "").upper())
+    return str(descriptor.get("scope")) if descriptor else None
 
 def _user_settings_path(username: str) -> Path:
     raw = str(username or "").strip().lower()
@@ -159,6 +191,67 @@ def default_app_settings(user_id: str | None = None, defaults_overrides: dict[st
     if str(user_id or "").strip():
         out["LIBRARY_FOLDERS"] = []
     return out
+
+
+def load_server_settings(defaults_overrides: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Load machine-scoped settings without inheriting legacy user values."""
+    out = {
+        key: _coerce_setting(key, DEFAULT_APP_SETTINGS[key])
+        for key in SERVER_SETTING_KEYS
+    }
+    for key, value in (defaults_overrides or {}).items():
+        key_upper = str(key).upper()
+        if key_upper in SERVER_SETTING_KEYS:
+            out[key_upper] = _coerce_setting(key_upper, value)
+    for key, value in settings_repository.load("").items():
+        key_upper = str(key).upper()
+        if key_upper in SERVER_SETTING_KEYS:
+            out[key_upper] = _coerce_setting(key_upper, value)
+    return out
+
+
+def save_server_settings(
+    updates: dict[str, Any],
+    defaults_overrides: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """Persist only the server-scoped subset in the shared SQLite row set."""
+    raw = settings_repository.load("")
+    for key, value in (updates or {}).items():
+        key_upper = str(key).upper()
+        if key_upper in SERVER_SETTING_KEYS:
+            raw[key_upper] = _coerce_setting(key_upper, value)
+    settings_repository.save(raw, "")
+    return load_server_settings(defaults_overrides)
+
+
+def migrate_owner_server_settings(
+    user_id: str,
+    defaults_overrides: dict[str, Any] | None = None,
+) -> bool:
+    """Move meaningful pre-scope owner settings into shared server storage.
+
+    Earlier releases stored these machine-wide values with the owner account.
+    Only non-default legacy values can win over an untouched shared default,
+    which prevents a normal per-user default from replacing owner intent.
+    """
+    legacy = settings_repository.load(str(user_id or ""))
+    shared_raw = settings_repository.load("")
+    shared = load_server_settings(defaults_overrides)
+    defaults = {
+        key: _coerce_setting(key, (defaults_overrides or {}).get(key, DEFAULT_APP_SETTINGS[key]))
+        for key in SERVER_SETTING_KEYS
+    }
+    changed = False
+    for key in SERVER_SETTING_KEYS:
+        if key not in legacy:
+            continue
+        candidate = _coerce_setting(key, legacy[key])
+        if candidate != defaults[key] and shared.get(key) == defaults[key]:
+            shared_raw[key] = candidate
+            changed = True
+    if changed:
+        settings_repository.save(shared_raw, "")
+    return changed
 
 
 def ui_setting_updates(value: Any) -> dict[str, Any]:
@@ -259,7 +352,12 @@ def normalize_settings(data: dict[str, Any], user_id: str | None = None, default
 
 
 def _persistable_settings(data: dict[str, Any]) -> dict[str, Any]:
-    return {key: value for key, value in data.items() if key not in NON_PERSISTED_APP_SETTING_KEYS and key not in SECRET_SETTING_KEYS}
+    return {
+        key: value for key, value in data.items()
+        if key in USER_SETTING_KEYS
+        and key not in NON_PERSISTED_APP_SETTING_KEYS
+        and key not in SECRET_SETTING_KEYS
+    }
 
 
 def _secret_service(key: str, values: dict[str, Any]) -> str:
@@ -345,11 +443,9 @@ def ensure_app_settings(
         changed = True
     old_ui_defaults = raw.pop("ADVANCED_UI_SETTINGS_DEFAULTS", None)
     old_ui_settings = raw.pop("UI_SETTINGS", None)
-    if isinstance(old_ui_settings, dict):
-        raw.update(ui_setting_updates(old_ui_settings))
-        changed = True
-    elif isinstance(old_ui_defaults, dict):
-        raw.update(ui_setting_updates(old_ui_defaults))
+    # UI visual and performance preferences are device-local now.  Retire
+    # legacy server payloads rather than copying them into app_settings.
+    if isinstance(old_ui_settings, dict) or isinstance(old_ui_defaults, dict):
         changed = True
     merged = dict(raw)
     if not scope:
@@ -366,7 +462,12 @@ def ensure_app_settings(
         if str(normalized.get("REAL_DEBRID_API_KEY") or "").strip():
             normalized["DEBRID_PROVIDER"] = "real_debrid"
             changed = True
-    persisted = _persistable_settings(normalized)
+    if scope:
+        normalized.update(load_server_settings(defaults_overrides))
+    persisted = _persistable_settings(normalized) if scope else {
+        key: value for key, value in normalized.items()
+        if key not in NON_PERSISTED_APP_SETTING_KEYS and key not in SECRET_SETTING_KEYS and key not in DEVICE_SETTING_KEYS
+    }
     if changed or persisted != raw:
         settings_repository.save(persisted, scope)
     if legacy and legacy_path.is_file():
@@ -392,7 +493,7 @@ def save_app_settings(
     _save_secret_updates(updates, current, scope)
     for key, value in (updates or {}).items():
         key_upper = str(key).upper()
-        if key_upper in APP_SETTING_KEYS and key_upper not in NON_PERSISTED_APP_SETTING_KEYS and key_upper not in SECRET_SETTING_KEYS:
+        if key_upper in USER_SETTING_KEYS and key_upper not in NON_PERSISTED_APP_SETTING_KEYS and key_upper not in SECRET_SETTING_KEYS:
             current[key_upper] = _coerce_setting(key_upper, value)
     current = normalize_settings(current, user_id=scope, defaults_overrides=defaults_overrides)
     settings_repository.save(_persistable_settings(current), scope)

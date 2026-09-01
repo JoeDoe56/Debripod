@@ -3,16 +3,18 @@
 
   // GLASS_DEFAULTS_BEGIN
   const DEFAULT_LIQUID_GLASS_ELEMENT_SETTINGS = {
-    "libraryList": {"label": "Library list", "material": 0.0},
-    "wheel": {"label": "Wheel", "material": 0.0},
-    "pathPill": {"label": "Path pill", "material": 0.0},
-    "infoPill": {"label": "Info pill", "material": 0.0},
+    "libraryList": {"label": "Library list", "material": -0.20},
+    "wheel": {"label": "Wheel", "material": -0.20},
+    "pathPill": {"label": "Path pill", "material": -0.20},
+    "infoPill": {"label": "Info pill", "material": -0.20},
     "listPills": {"label": "List pills", "material": 0.0},
-    "selectedRow": {"label": "Selected row", "material": 0.0}
+    "selectedRow": {"label": "Selected row", "material": -0.50}
   };
   // GLASS_DEFAULTS_END
   const GLASS_ELEMENT_KEYS = ["libraryList", "wheel", "pathPill", "infoPill", "listPills", "selectedRow"];
-  const UI_SETTINGS_KEY = "debripod_ui_settings";
+  const UI_SETTINGS_KEY = "debripod_device_ui_settings:v3";
+  const LEGACY_UI_SETTINGS_KEY = "debripod_ui_settings";
+  const LEGACY_UI_MIGRATION_KEY = "debripod_device_ui_settings:v3:migrated";
   const DEFAULT_TEXT_MODES = {
     wheelLabels: "transparent",
     pathPill: "transparent",
@@ -46,12 +48,16 @@
     lattice: {label: "Lattice", style: "lattice", motion: 0.88, layers: 10, flow: 0.72, bassResponse: 0.82, midResponse: 1.02, trebleResponse: 1.18, beatResponse: 0.74}
   };
   const VISUALIZER_BAND_LABELS = ["low low", "low high", "low mids", "mids", "upper mids", "high low", "high high"];
-  let serverUiSettings = null;
+  let deviceSettingsUserId = String(window.DEBRIPOD_DEVICE_SETTINGS_USER_ID || "").trim();
   const DEFAULT_UI_SETTINGS = {
       "visualizer": true,
       "visualizerMaxBrightnessPct": 60,
       "visualizerPreset": "album",
       "visualizerFpsLock": 30,
+      "visualizerFrequencyResponse": {"brightness": 1.0, "opacity": 0.0, "saturation": 0.15, "contrast": 0.10},
+      "visualizerEnergyResponse": {"brightness": 0.12, "opacity": 0.0, "saturation": 0.05, "contrast": 0.05},
+      "visualizerBeatResponse": {"brightness": 0.10, "opacity": 0.0, "saturation": 0.0, "contrast": 0.05},
+      "videoAmbient": {"enabled": true, "sampleFps": 8, "brightness": 1.0, "saturation": 1.0, "audioEnergyBrightness": 0.12, "smoothing": 0.82},
       "textModes": {
           "wheelLabels": "transparent",
           "pathPill": "transparent",
@@ -73,6 +79,10 @@
       "performanceOverlayButton": true,
       "performanceOverlayText": false,
       "liquidGlassElements": cloneGlassElementSettings(DEFAULT_LIQUID_GLASS_ELEMENT_SETTINGS),
+      "glassRenderScale": 1.0,
+      "glassFrostSamples": 8,
+      "glassIdleFps": 30,
+      "glassInteractionFps": 60,
       "centerBounceAmount": 0.075,
       "centerBounceDuration": 240.0,
       "centerBounceOvershoot": 0.9,
@@ -200,12 +210,20 @@
     else if(saved.visualizerStrength != null) out.visualizerMaxBrightnessPct = legacyVisualizerBrightnessPct(saved.visualizerStrength);
     if(saved.visualizerPreset != null) out.visualizerPreset = normalizeVisualizerPreset(saved.visualizerPreset);
     if(saved.visualizerFpsLock != null) out.visualizerFpsLock = normalizeVisualizerFpsLock(saved.visualizerFpsLock);
+    if(saved.visualizerFrequencyResponse != null) out.visualizerFrequencyResponse = cloneVisualizerResponse(saved.visualizerFrequencyResponse, out.visualizerFrequencyResponse);
+    if(saved.visualizerEnergyResponse != null) out.visualizerEnergyResponse = cloneVisualizerResponse(saved.visualizerEnergyResponse, out.visualizerEnergyResponse);
+    if(saved.visualizerBeatResponse != null) out.visualizerBeatResponse = cloneVisualizerResponse(saved.visualizerBeatResponse, out.visualizerBeatResponse);
+    if(saved.videoAmbient != null) out.videoAmbient = cloneVideoAmbientSettings(saved.videoAmbient);
     if(saved.textModes != null) out.textModes = cloneTextModes(saved.textModes);
     if(saved.textTransparency != null) out.textTransparency = normalizeTextTransparency(saved.textTransparency);
     if(saved.animationFps != null) out.animationFps = cloneAnimationFps(saved.animationFps);
     if(saved.performanceOverlayButton != null) out.performanceOverlayButton = !!saved.performanceOverlayButton;
     if(saved.performanceOverlayText != null) out.performanceOverlayText = !!saved.performanceOverlayText;
     if(saved.liquidGlassElements != null) out.liquidGlassElements = cloneGlassElementSettings(saved.liquidGlassElements);
+    if(saved.glassRenderScale != null) out.glassRenderScale = clampNumber(saved.glassRenderScale, out.glassRenderScale, 0.5, 2);
+    if(saved.glassFrostSamples != null) out.glassFrostSamples = Math.round(clampNumber(saved.glassFrostSamples, out.glassFrostSamples, 0, 16));
+    if(saved.glassIdleFps != null) out.glassIdleFps = normalizeAnimationFps(saved.glassIdleFps);
+    if(saved.glassInteractionFps != null) out.glassInteractionFps = normalizeAnimationFps(saved.glassInteractionFps);
     if(saved.centerBounceAmount != null) out.centerBounceAmount = clampNumber(saved.centerBounceAmount, out.centerBounceAmount, 0, 0.3);
     if(saved.centerBounceDuration != null) out.centerBounceDuration = clampNumber(saved.centerBounceDuration, out.centerBounceDuration, 0, 1000);
     if(saved.centerBounceOvershoot != null) out.centerBounceOvershoot = clampNumber(saved.centerBounceOvershoot, out.centerBounceOvershoot, 0, 1.4);
@@ -217,102 +235,124 @@
     return out;
   }
 
+  function deviceSettingsKey(userId){
+    const id = String(userId == null ? deviceSettingsUserId : userId).trim();
+    return id ? (UI_SETTINGS_KEY + ":" + id) : "";
+  }
+
+  function normalizeUiSettings(out){
+    out.textModes = cloneTextModes(out.textModes);
+    out.textTransparency = normalizeTextTransparency(out.textTransparency);
+    out.animationFps = cloneAnimationFps(out.animationFps);
+    out.visualizerMaxBrightnessPct = normalizeVisualizerMaxBrightnessPct(out.visualizerMaxBrightnessPct);
+    out.visualizerFrequencyResponse = cloneVisualizerResponse(out.visualizerFrequencyResponse, DEFAULT_UI_SETTINGS.visualizerFrequencyResponse);
+    out.visualizerEnergyResponse = cloneVisualizerResponse(out.visualizerEnergyResponse, DEFAULT_UI_SETTINGS.visualizerEnergyResponse);
+    out.visualizerBeatResponse = cloneVisualizerResponse(out.visualizerBeatResponse, DEFAULT_UI_SETTINGS.visualizerBeatResponse);
+    out.videoAmbient = cloneVideoAmbientSettings(out.videoAmbient);
+    out.performanceOverlayButton = !!out.performanceOverlayButton;
+    out.performanceOverlayText = !!out.performanceOverlayText;
+    out.liquidGlassElements = cloneGlassElementSettings(out.liquidGlassElements);
+    out.glassRenderScale = clampNumber(out.glassRenderScale, 1, 0.5, 2);
+    out.glassFrostSamples = Math.round(clampNumber(out.glassFrostSamples, 8, 0, 16));
+    out.glassIdleFps = normalizeAnimationFps(out.glassIdleFps);
+    out.glassInteractionFps = normalizeAnimationFps(out.glassInteractionFps);
+    return out;
+  }
+
+  function legacyDeviceSettings(){
+    const legacy = {};
+    try{
+      const raw = localStorage.getItem(LEGACY_UI_SETTINGS_KEY) || "";
+      if(raw){
+        const parsed = JSON.parse(raw);
+        if(parsed && typeof parsed === "object") Object.assign(legacy, parsed);
+      }
+      const visualizer = localStorage.getItem("debripod_visualizer");
+      if(visualizer !== null) legacy.visualizer = visualizer === "1";
+      const strength = localStorage.getItem("debripod_visualizer_strength");
+      if(strength !== null) legacy.visualizerMaxBrightnessPct = legacyVisualizerBrightnessPct(strength);
+      const preset = localStorage.getItem("debripod_visualizer_preset");
+      if(preset !== null) legacy.visualizerPreset = preset;
+      const fps = localStorage.getItem("debripod_visualizer_fps_lock");
+      if(fps !== null) legacy.visualizerFpsLock = fps;
+      const mode = String(localStorage.getItem("debripod_liquid_gl_mode") || "").trim().toLowerCase();
+      if(mode === "dark" || mode === "light"){
+        legacy.liquidGlassElements = legacy.liquidGlassElements || {};
+        GLASS_ELEMENT_KEYS.forEach((key)=>{ legacy.liquidGlassElements[key] = {material:mode === "dark" ? -0.52 : 0.52}; });
+      }
+    }catch(e){}
+    return legacy;
+  }
+
+  function setDeviceSettingsUserId(userId){
+    const next = String(userId || "").trim();
+    if(!next) return root.uiSettings ? root.uiSettings.settings : loadUiSettings();
+    deviceSettingsUserId = next;
+    const targetKey = deviceSettingsKey(next);
+    try{
+      if(!localStorage.getItem(targetKey) && localStorage.getItem(LEGACY_UI_MIGRATION_KEY) !== "1"){
+        const migrated = normalizeUiSettings(applyUiSettingsObject(Object.assign({}, DEFAULT_UI_SETTINGS), legacyDeviceSettings()));
+        localStorage.setItem(targetKey, JSON.stringify(migrated));
+        localStorage.setItem(LEGACY_UI_MIGRATION_KEY, "1");
+      }
+    }catch(e){}
+    const loaded = loadUiSettings();
+    if(root.uiSettings) root.uiSettings.settings = loaded;
+    return loaded;
+  }
+
   function loadUiSettings(){
     const out = Object.assign({}, DEFAULT_UI_SETTINGS);
-    if(serverUiSettings) applyUiSettingsObject(out, serverUiSettings);
-    if(!serverUiSettings) try{
-      const raw = localStorage.getItem(UI_SETTINGS_KEY) || "";
+    const key = deviceSettingsKey();
+    if(key) try{
+      const raw = localStorage.getItem(key) || "";
       if(raw){
         const saved = JSON.parse(raw);
         if(saved && typeof saved === "object") applyUiSettingsObject(out, saved);
       }
     }catch(e){}
-    try{
-      const legacyVisualizer = localStorage.getItem("debripod_visualizer");
-      if(legacyVisualizer !== null) out.visualizer = legacyVisualizer === "1";
-    }catch(e){}
-    try{
-      const legacyStrength = localStorage.getItem("debripod_visualizer_strength");
-      if(legacyStrength !== null) out.visualizerMaxBrightnessPct = legacyVisualizerBrightnessPct(legacyStrength);
-      out.visualizerMaxBrightnessPct = normalizeVisualizerMaxBrightnessPct(out.visualizerMaxBrightnessPct);
-    }catch(e){}
-    try{ out.visualizerPreset = normalizeVisualizerPreset(localStorage.getItem("debripod_visualizer_preset") || out.visualizerPreset); }catch(e){}
-    try{ out.visualizerFpsLock = normalizeVisualizerFpsLock(localStorage.getItem("debripod_visualizer_fps_lock") || out.visualizerFpsLock); }catch(e){}
-    out.textModes = cloneTextModes(out.textModes);
-    out.textTransparency = normalizeTextTransparency(out.textTransparency);
-    out.animationFps = cloneAnimationFps(out.animationFps);
-    try{
-      const legacyMode = String(localStorage.getItem("debripod_liquid_gl_mode") || "").trim().toLowerCase();
-      if(legacyMode === "dark" || legacyMode === "light") {
-        out.liquidGlassElements = cloneGlassElementSettings(out.liquidGlassElements);
-        GLASS_ELEMENT_KEYS.forEach((key)=>{
-          out.liquidGlassElements[key].material = legacyMode === "dark" ? -0.52 : 0.52;
-        });
-      }
-    }catch(e){}
-    return out;
+    return normalizeUiSettings(out);
   }
 
   function saveUiSettings(settings){
-    const uiSettings = settings || root.uiSettings.settings || DEFAULT_UI_SETTINGS;
-    try{ localStorage.setItem(UI_SETTINGS_KEY, JSON.stringify(uiSettings)); }catch(e){}
-    try{ localStorage.setItem("debripod_visualizer", uiSettings.visualizer ? "1" : "0"); }catch(e){}
-    try{ localStorage.setItem("debripod_visualizer_preset", uiSettings.visualizerPreset); }catch(e){}
-    try{ localStorage.setItem("debripod_visualizer_fps_lock", String(normalizeVisualizerFpsLock(uiSettings.visualizerFpsLock))); }catch(e){}
-    try{ uiSettings.textModes = cloneTextModes(uiSettings.textModes); }catch(e){}
-    try{ uiSettings.textTransparency = normalizeTextTransparency(uiSettings.textTransparency); }catch(e){}
-    try{ uiSettings.animationFps = cloneAnimationFps(uiSettings.animationFps); }catch(e){}
-    try{ uiSettings.visualizerMaxBrightnessPct = normalizeVisualizerMaxBrightnessPct(uiSettings.visualizerMaxBrightnessPct); }catch(e){}
-    uiSettings.performanceOverlayButton = !!uiSettings.performanceOverlayButton;
-    uiSettings.performanceOverlayText = !!uiSettings.performanceOverlayText;
-    try{ uiSettings.liquidGlassElements = cloneGlassElementSettings(uiSettings.liquidGlassElements); }catch(e){}
-    try{
-      clearTimeout(root.uiSettings._saveTimer || 0);
-      root.uiSettings._saveTimer = setTimeout(function(){
-        if(typeof apiPost === "function") apiPost("/api/settings/save", {settings:uiSettingsToAppSettings(uiSettings)}).catch(function(){});
-      }, 350);
-    }catch(e){}
+    const saved = normalizeUiSettings(settings || root.uiSettings.settings || Object.assign({}, DEFAULT_UI_SETTINGS));
+    const key = deviceSettingsKey();
+    if(key) try{ localStorage.setItem(key, JSON.stringify(saved)); }catch(e){}
+    if(root.uiSettings) root.uiSettings.settings = saved;
+    return saved;
   }
 
   async function flushUiSettings(){
-    try{
-      clearTimeout(root.uiSettings._saveTimer || 0);
-      if(typeof apiPost === "function") await apiPost("/api/settings/save", {settings:uiSettingsToAppSettings(uiSettings)});
-    }catch(e){}
+    return saveUiSettings(root.uiSettings && root.uiSettings.settings);
   }
 
-  function appSettingsToUiSettings(settings){
-    const s = settings && typeof settings === "object" ? settings : {};
-    const out = {visualizer:s.UI_VISUALIZER, visualizerMaxBrightnessPct:s.UI_VISUALIZER_MAX_BRIGHTNESS_PCT, visualizerPreset:s.UI_VISUALIZER_PRESET, visualizerFpsLock:s.UI_VISUALIZER_FPS_LOCK, textTransparency:s.UI_TEXT_TRANSPARENCY, performanceOverlayButton:s.UI_PERFORMANCE_OVERLAY_BUTTON, performanceOverlayText:s.UI_PERFORMANCE_OVERLAY_TEXT, centerBounceAmount:s.UI_CENTER_BOUNCE_AMOUNT, centerBounceDuration:s.UI_CENTER_BOUNCE_DURATION, centerBounceOvershoot:s.UI_CENTER_BOUNCE_OVERSHOOT, wheelClickTiltAmount:s.UI_WHEEL_CLICK_TILT_AMOUNT, wheelTiltRampDuration:s.UI_WHEEL_TILT_RAMP_DURATION, wheelTiltReleaseDuration:s.UI_WHEEL_TILT_RELEASE_DURATION, infoPillDarkMultiplier:s.UI_INFO_PILL_DARK_MULTIPLIER, infoPillLightMultiplier:s.UI_INFO_PILL_LIGHT_MULTIPLIER,
-      textModes:{wheelLabels:s.UI_TEXT_WHEEL_LABELS,pathPill:s.UI_TEXT_PATH_PILL,infoPill:s.UI_TEXT_INFO_PILL,rows:s.UI_TEXT_ROWS,rowPills:s.UI_TEXT_ROW_PILLS,selectedRow:s.UI_TEXT_SELECTED_ROW,selectedRowPills:s.UI_TEXT_SELECTED_ROW_PILLS}, animationFps:{selectedRow:s.UI_ANIMATION_SELECTED_ROW_FPS,wheelTilt:s.UI_ANIMATION_WHEEL_TILT_FPS,libraryList:s.UI_ANIMATION_LIBRARY_LIST_FPS,infoPill:s.UI_ANIMATION_INFO_PILL_FPS,albumArtTransition:s.UI_ANIMATION_ALBUM_ART_TRANSITION_FPS,pathPill:s.UI_ANIMATION_PATH_PILL_FPS,rowInsertion:s.UI_ANIMATION_ROW_INSERTION_FPS}, liquidGlassElements:{libraryList:s.UI_GLASS_LIBRARY_LIST,wheel:s.UI_GLASS_WHEEL,pathPill:s.UI_GLASS_PATH_PILL,infoPill:s.UI_GLASS_INFO_PILL,listPills:s.UI_GLASS_LIST_PILLS,selectedRow:s.UI_GLASS_SELECTED_ROW}};
-    return out;
+  function cloneVisualizerResponse(value, fallback){
+    const src = value && typeof value === "object" ? value : {};
+    const def = fallback && typeof fallback === "object" ? fallback : {};
+    return {
+      brightness: clampNumber(src.brightness, Number(def.brightness || 0), 0, 2),
+      opacity: clampNumber(src.opacity, Number(def.opacity || 0), 0, 1),
+      saturation: clampNumber(src.saturation, Number(def.saturation || 0), -1, 1),
+      contrast: clampNumber(src.contrast, Number(def.contrast || 0), -1, 1)
+    };
   }
 
-  function uiSettingsToAppSettings(s){
-    const u=s||{}; const text=u.textModes||{}, fps=u.animationFps||{}, glass=u.liquidGlassElements||{};
-    return {UI_VISUALIZER:u.visualizer,UI_VISUALIZER_MAX_BRIGHTNESS_PCT:u.visualizerMaxBrightnessPct,UI_VISUALIZER_PRESET:u.visualizerPreset,UI_VISUALIZER_FPS_LOCK:u.visualizerFpsLock,UI_TEXT_TRANSPARENCY:u.textTransparency,UI_PERFORMANCE_OVERLAY_BUTTON:u.performanceOverlayButton,UI_PERFORMANCE_OVERLAY_TEXT:u.performanceOverlayText,UI_CENTER_BOUNCE_AMOUNT:u.centerBounceAmount,UI_CENTER_BOUNCE_DURATION:u.centerBounceDuration,UI_CENTER_BOUNCE_OVERSHOOT:u.centerBounceOvershoot,UI_WHEEL_CLICK_TILT_AMOUNT:u.wheelClickTiltAmount,UI_WHEEL_TILT_RAMP_DURATION:u.wheelTiltRampDuration,UI_WHEEL_TILT_RELEASE_DURATION:u.wheelTiltReleaseDuration,UI_INFO_PILL_DARK_MULTIPLIER:u.infoPillDarkMultiplier,UI_INFO_PILL_LIGHT_MULTIPLIER:u.infoPillLightMultiplier,UI_TEXT_WHEEL_LABELS:text.wheelLabels,UI_TEXT_PATH_PILL:text.pathPill,UI_TEXT_INFO_PILL:text.infoPill,UI_TEXT_ROWS:text.rows,UI_TEXT_ROW_PILLS:text.rowPills,UI_TEXT_SELECTED_ROW:text.selectedRow,UI_TEXT_SELECTED_ROW_PILLS:text.selectedRowPills,UI_ANIMATION_SELECTED_ROW_FPS:fps.selectedRow,UI_ANIMATION_WHEEL_TILT_FPS:fps.wheelTilt,UI_ANIMATION_LIBRARY_LIST_FPS:fps.libraryList,UI_ANIMATION_INFO_PILL_FPS:fps.infoPill,UI_ANIMATION_ALBUM_ART_TRANSITION_FPS:fps.albumArtTransition,UI_ANIMATION_PATH_PILL_FPS:fps.pathPill,UI_ANIMATION_ROW_INSERTION_FPS:fps.rowInsertion,UI_GLASS_LIBRARY_LIST:glass.libraryList,UI_GLASS_WHEEL:glass.wheel,UI_GLASS_PATH_PILL:glass.pathPill,UI_GLASS_INFO_PILL:glass.infoPill,UI_GLASS_LIST_PILLS:glass.listPills,UI_GLASS_SELECTED_ROW:glass.selectedRow};
+  function cloneVideoAmbientSettings(value){
+    const src = value && typeof value === "object" ? value : {};
+    const def = (DEFAULT_UI_SETTINGS && DEFAULT_UI_SETTINGS.videoAmbient) || {};
+    return {
+      enabled: src.enabled == null ? !!def.enabled : !!src.enabled,
+      sampleFps: clampNumber(src.sampleFps, Number(def.sampleFps || 8), 1, 30),
+      brightness: clampNumber(src.brightness, Number(def.brightness || 1), 0, 2),
+      saturation: clampNumber(src.saturation, Number(def.saturation || 1), 0, 2),
+      audioEnergyBrightness: clampNumber(src.audioEnergyBrightness, Number(def.audioEnergyBrightness || 0), 0, 2),
+      smoothing: clampNumber(src.smoothing, Number(def.smoothing || 0.82), 0, 0.99)
+    };
   }
 
-  function applyServerAppSettings(settings){
-    serverUiSettings = appSettingsToUiSettings(settings);
-    if(root.uiSettings){
-      root.uiSettings.serverUiSettings = serverUiSettings;
-      root.uiSettings.settings = loadUiSettings();
-    }
-    return root.uiSettings ? root.uiSettings.settings : loadUiSettings();
-  }
-
-  function takeLocalUiMigration(){
-    try{
-      if(localStorage.getItem("debripod_ui_settings_sqlite_v1") === "1") return null;
-      const raw = localStorage.getItem(UI_SETTINGS_KEY) || "";
-      if(!raw) return null;
-      const value = JSON.parse(raw);
-      if(!value || typeof value !== "object") return null;
-      localStorage.setItem("debripod_ui_settings_sqlite_v1", "1");
-      return value;
-    }catch(e){ return null; }
-  }
+  // Bootstrap already knows the authenticated immutable user ID, so migrate
+  // an old browser-local payload before the first visual frame is rendered.
+  if(deviceSettingsUserId) setDeviceSettingsUserId(deviceSettingsUserId);
 
   root.uiSettings = {
     DEFAULT_UI_SETTINGS,
@@ -336,11 +376,11 @@
     normalizeLiquidGlassMaterial,
     migrateLegacyGlassMaterial,
     cloneGlassElementSettings,
+    cloneVisualizerResponse,
+    cloneVideoAmbientSettings,
     applyUiSettingsObject,
-    applyServerAppSettings,
-    uiSettingsToAppSettings,
-    takeLocalUiMigration,
-    serverUiSettings,
+    deviceSettingsKey,
+    setDeviceSettingsUserId,
     loadUiSettings,
     saveUiSettings,
     flushUiSettings,

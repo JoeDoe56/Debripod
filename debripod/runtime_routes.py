@@ -64,7 +64,7 @@ from .Tasks.manager import task_belongs_to_user
 from .user_runtime import USER_RUNTIME_KEY, UserRuntime, UserRuntimeRegistry, user_runtime_for
 from .runtime_state import *
 from .runtime_downloads import *
-from .settings import APP_SETTING_KEYS, DEFAULT_APP_SETTINGS, DEFAULT_UI_SETTINGS, SECRET_SETTING_KEYS, default_app_settings, executable_status, ensure_app_settings, masked_settings, migrate_user_secrets, pick_system_path, save_app_settings, settings_fingerprint
+from .settings import APP_SETTING_KEYS, DEFAULT_APP_SETTINGS, DEFAULT_UI_SETTINGS, DEVICE_SETTING_KEYS, SECRET_SETTING_KEYS, SERVER_SETTING_KEYS, SETTING_DESCRIPTORS, default_app_settings, executable_status, ensure_app_settings, masked_settings, migrate_owner_server_settings, migrate_user_secrets, pick_system_path, save_app_settings, save_server_settings, settings_fingerprint
 from .playback.state import load_playback_runtime
 
 # =========================
@@ -87,10 +87,7 @@ _HLS_ACCESS_LOCK = threading.RLock()
 _HLS_ACCESS: dict[str, tuple[str, str, str, float]] = {}
 _HLS_ACCESS_TTL_SECONDS = 15 * 60
 routes = web.RouteTableDef()
-_OWNER_ONLY_SETTING_KEYS = {
-    "RD_BASE", "ALLDEBRID_BASE", "PREMIUMIZE_BASE", "TORBOX_BASE",
-    "YOUTUBE_WEB_BASE", "LASTFM_API_ROOT", "LASTFM_CALLBACK_URL",
-}
+_OWNER_ONLY_SETTING_KEYS = SERVER_SETTING_KEYS
 
 
 from .runtime_route_state import *
@@ -226,6 +223,8 @@ async def _create_user_runtime(services: AppServices, user: Any) -> UserRuntime:
     user_id = str(getattr(user, "user_id", "") or "").strip()
     username = str(getattr(user, "username", "") or "").strip()
     migrate_user_secrets(username, user_id)
+    if str(getattr(user, "role", "") or "") == "owner":
+        migrate_owner_server_settings(user_id, _default_app_overrides())
     settings = ensure_app_settings(
         user_id=user_id,
         legacy_username=username,
@@ -267,6 +266,14 @@ async def _reload_request_runtime(request: web.Request) -> UserRuntime:
     runtime = await registry.get_user_runtime(user)
     request[USER_RUNTIME_KEY] = runtime
     return runtime
+
+
+async def _invalidate_user_runtimes_for_server_settings(request: web.Request) -> None:
+    """Force each per-user client to pick up a changed machine setting."""
+    services = request.app.get(SERVICES_KEY) if request.app is not None else None
+    registry = getattr(services, "user_runtimes", None)
+    if registry is not None:
+        await registry.close_all()
 
 
 class _UnifiedSearchDiskCache:
@@ -388,6 +395,7 @@ async def render_shell(request: web.Request, autorefresh: int = 0, **ctx) -> web
 async def api_bootstrap(request: web.Request) -> web.Response:
     version_info = dict(VERSION_INFO)
     version_info.update({"version": VERSION, "host": HOST, "port": PORT})
+    user = current_user(request)
     return json_response(
         ok=True,
         app_info=version_info,
@@ -396,6 +404,7 @@ async def api_bootstrap(request: web.Request) -> web.Response:
         icon_version=ICON_VERSION,
         asset_version=ASSET_VERSION,
         csrf_token=_csrf_token(request),
+        device_settings_user_id=str(getattr(user, "user_id", "") or ""),
     )
 
 
@@ -1394,6 +1403,10 @@ async def api_settings_get(request: web.Request):
     server_controls_owner = is_owner(current_user(request))
     username = runtime.username
     settings = dict(runtime.settings)
+    visible_settings = {
+        key: value for key, value in settings.items()
+        if server_controls_owner or key not in SERVER_SETTING_KEYS
+    }
     soulseek_service = runtime.soulseek_service
     soulseek_status = soulseek_service.startup_status() if soulseek_service and hasattr(soulseek_service, "startup_status") else {}
     connections = {
@@ -1425,7 +1438,9 @@ async def api_settings_get(request: web.Request):
             "MCP_TOKEN_SET": bool(str(cfg.get("MCP_TOKEN") or "").strip()) if server_controls_owner else None,
         },
         "server_controls_owner": server_controls_owner,
-        "settings": masked_settings(settings),
+        "settings": masked_settings(visible_settings),
+        "setting_scopes": SETTING_DESCRIPTORS,
+        "device_settings_user_id": runtime.user_id,
         "tools": {
             "ffmpeg": executable_status(str(settings.get("FFMPEG_PATH") or "ffmpeg")),
             "ffprobe": executable_status(str(settings.get("FFPROBE_PATH") or "ffprobe")),
@@ -1635,12 +1650,15 @@ async def api_services_status(request: web.Request):
 async def api_settings_export(request: web.Request):
     runtime = user_runtime_for(request)
     settings = _runtime_settings(request)
+    server_controls_owner = is_owner(current_user(request))
     payload = {}
     for key in sorted(APP_SETTING_KEYS):
         if key in {"SETUP_SKIPPED_SERVICES", "SETUP_WIZARD_COMPLETE"}:
             payload[key] = settings.get(key)
             continue
         if key in SECRET_SETTING_KEYS:
+            continue
+        if key in SERVER_SETTING_KEYS and not server_controls_owner:
             continue
         payload[key] = settings.get(key)
     return json_response({"ok": True, "version": 1, "username": runtime.username, "include_secrets": False, "settings": payload})
@@ -1655,22 +1673,31 @@ async def api_settings_import(request: web.Request):
     include_secrets = bool(data.get("include_secrets"))
     server_controls_owner = is_owner(current_user(request))
     clean = {}
+    server_clean = {}
     for key, value in raw_settings.items():
         key_upper = str(key).upper()
+        if key_upper in DEVICE_SETTING_KEYS:
+            return json_response({"ok": False, "error": "Device settings stay in this browser and cannot be imported to the server."}, status=400)
         if key_upper not in APP_SETTING_KEYS:
             continue
         if key_upper in SECRET_SETTING_KEYS and not include_secrets:
             continue
         if key_upper in _OWNER_ONLY_SETTING_KEYS and not server_controls_owner:
             return json_response({"ok": False, "error": "Only the owner can import server endpoint settings."}, status=403)
-        clean[key_upper] = value
+        if key_upper in SERVER_SETTING_KEYS:
+            server_clean[key_upper] = value
+        else:
+            clean[key_upper] = value
     user_id = _settings_scope(request)
+    if server_clean:
+        save_server_settings(server_clean, defaults_overrides=_default_app_overrides())
+        await _invalidate_user_runtimes_for_server_settings(request)
     saved = save_app_settings(clean, user_id=user_id, defaults_overrides=_default_app_overrides())
     if user_id:
         await _reload_request_runtime(request)
     if "LIBRARY_FOLDERS" in clean:
         _kick_library_indexes_from_settings(user_id, saved)
-    return json_response({"ok": True, "settings": masked_settings(saved), "imported_keys": sorted(clean.keys())})
+    return json_response({"ok": True, "settings": masked_settings(saved), "imported_keys": sorted([*clean, *server_clean])})
 
 
 @routes.post("/api/settings/save")
@@ -1683,14 +1710,25 @@ async def api_settings_save(request: web.Request):
         return json_response({"ok": False, "error": "Only the owner can change server settings."}, status=403)
 
     clean_settings = {}
+    server_settings = {}
     for key, value in settings_updates.items():
         key_upper = str(key).upper()
         if value == "***":
             continue
+        if key_upper in DEVICE_SETTING_KEYS:
+            return json_response({"ok": False, "error": "Device settings stay in this browser and cannot be saved to the server."}, status=400)
         if key_upper in _OWNER_ONLY_SETTING_KEYS and not server_controls_owner:
             return json_response({"ok": False, "error": "Only the owner can change server endpoint settings."}, status=403)
-        clean_settings[key_upper] = value
+        if key_upper not in APP_SETTING_KEYS:
+            continue
+        if key_upper in SERVER_SETTING_KEYS:
+            server_settings[key_upper] = value
+        else:
+            clean_settings[key_upper] = value
     user_id = _settings_scope(request)
+    if server_settings:
+        save_server_settings(server_settings, defaults_overrides=_default_app_overrides())
+        await _invalidate_user_runtimes_for_server_settings(request)
     saved = save_app_settings(clean_settings, user_id=user_id, defaults_overrides=_default_app_overrides())
 
     cfg = ensure_startup_security_config()

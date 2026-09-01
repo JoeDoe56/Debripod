@@ -55,6 +55,7 @@
     if(!response.ok || !payload.ok) throw new Error(payload.error || "Could not load DebriPod bootstrap data");
     window.DEBRIPOD_APP_INFO = payload.app_info || {};
     window.DEBRIPOD_UI_DEFAULTS = payload.ui_defaults || {};
+    window.DEBRIPOD_DEVICE_SETTINGS_USER_ID = String(payload.device_settings_user_id || "");
     window.DEBRIPOD_ASSET_VERSION = String(payload.asset_version || "");
     window.DEBRIPOD_ICON_VERSION = String(payload.icon_version || "");
     window.DEBRIPOD_TASKS_POLL_MS = Number(payload.tasks_poll_ms || 1200);

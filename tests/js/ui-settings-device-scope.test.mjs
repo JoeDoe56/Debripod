@@ -1,0 +1,70 @@
+import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
+import test from "node:test";
+import vm from "node:vm";
+import {fileURLToPath} from "node:url";
+
+const here = path.dirname(fileURLToPath(import.meta.url));
+const sourcePath = path.resolve(here, "../../debripod/static/js/ui-settings.js");
+const source = fs.readFileSync(sourcePath, "utf8");
+
+function makeStorage(initial = {}) {
+  const values = new Map(Object.entries(initial));
+  return {
+    getItem(key) { return values.has(key) ? values.get(key) : null; },
+    setItem(key, value) { values.set(key, String(value)); },
+    removeItem(key) { values.delete(key); },
+  };
+}
+
+function loadUiSettings(storage) {
+  const context = {window: {}, localStorage: storage, setTimeout, clearTimeout};
+  vm.createContext(context);
+  vm.runInContext(source, context, {filename: sourcePath});
+  return context.window.DebriPod.uiSettings;
+}
+
+test("legacy local values migrate once into the first immutable user namespace", () => {
+  const storage = makeStorage({
+    debripod_ui_settings: JSON.stringify({liquidGlassElements: {wheel: {material: 0.73}}}),
+  });
+  const settings = loadUiSettings(storage);
+  const alice = settings.setDeviceSettingsUserId("user-alice");
+  assert.equal(alice.liquidGlassElements.wheel.material, 0.73);
+  assert.ok(storage.getItem("debripod_device_ui_settings:v3:user-alice"));
+
+  const bob = settings.setDeviceSettingsUserId("user-bob");
+  assert.equal(bob.liquidGlassElements.wheel.material, -0.2);
+  assert.equal(bob.liquidGlassElements.selectedRow.material, -0.5);
+});
+
+test("two users on one browser retain separate device settings", () => {
+  const storage = makeStorage();
+  const settings = loadUiSettings(storage);
+  let alice = settings.setDeviceSettingsUserId("user-alice");
+  alice.glassRenderScale = 1.75;
+  settings.saveUiSettings(alice);
+
+  let bob = settings.setDeviceSettingsUserId("user-bob");
+  bob.glassRenderScale = 0.75;
+  settings.saveUiSettings(bob);
+
+  alice = settings.setDeviceSettingsUserId("user-alice");
+  assert.equal(alice.glassRenderScale, 1.75);
+  bob = settings.setDeviceSettingsUserId("user-bob");
+  assert.equal(bob.glassRenderScale, 0.75);
+});
+
+test("fresh device has the release visual-quality defaults and no server write path", () => {
+  const settings = loadUiSettings(makeStorage());
+  const fresh = settings.setDeviceSettingsUserId("fresh-user");
+  assert.equal(fresh.glassRenderScale, 1);
+  assert.equal(fresh.glassFrostSamples, 8);
+  assert.equal(fresh.glassIdleFps, 30);
+  assert.equal(fresh.glassInteractionFps, 60);
+  assert.deepEqual({...fresh.visualizerFrequencyResponse}, {brightness: 1, opacity: 0, saturation: 0.15, contrast: 0.1});
+  assert.deepEqual({...fresh.visualizerEnergyResponse}, {brightness: 0.12, opacity: 0, saturation: 0.05, contrast: 0.05});
+  assert.deepEqual({...fresh.visualizerBeatResponse}, {brightness: 0.1, opacity: 0, saturation: 0, contrast: 0.05});
+  assert.doesNotMatch(source, /apiPost\s*\(/);
+});

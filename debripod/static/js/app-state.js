@@ -20,6 +20,8 @@ var normalizeAnimationFps = DebriPod.uiSettings.normalizeAnimationFps;
 var cloneAnimationFps = DebriPod.uiSettings.cloneAnimationFps;
 var normalizeLiquidGlassMaterial = DebriPod.uiSettings.normalizeLiquidGlassMaterial;
 var cloneGlassElementSettings = DebriPod.uiSettings.cloneGlassElementSettings;
+var cloneVisualizerResponse = DebriPod.uiSettings.cloneVisualizerResponse;
+var cloneVideoAmbientSettings = DebriPod.uiSettings.cloneVideoAmbientSettings;
 var loadUiSettings = DebriPod.uiSettings.loadUiSettings;
 function saveUiSettings(){ DebriPod.uiSettings.saveUiSettings(uiSettings); }
 var uiSettings = DebriPod.uiSettings.settings;

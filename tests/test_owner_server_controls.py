@@ -30,6 +30,11 @@ def test_normal_user_cannot_change_server_endpoint_or_startup_settings(monkeypat
         endpoint_response = await runtime_routes.api_settings_save(endpoint_request)
         assert endpoint_response.status == 403
 
+        device_request = _Request({"settings": {"UI_GLASS_RENDER_SCALE": 2}})
+        device_request[USER_RUNTIME_KEY] = SimpleNamespace(user_id="user-bob")
+        device_response = await runtime_routes.api_settings_save(device_request)
+        assert device_response.status == 400
+
         startup_request = _Request({"startup": {"ENABLE_MCP": True}})
         startup_request[USER_RUNTIME_KEY] = SimpleNamespace(user_id="user-bob")
         startup_response = await runtime_routes.api_settings_save(startup_request)

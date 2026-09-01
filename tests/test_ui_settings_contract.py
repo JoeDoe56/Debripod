@@ -1,13 +1,14 @@
 from pathlib import Path
 
 from debripod.runtime_routes import _coerce_advanced_ui_defaults, _coerce_glass_defaults
-from debripod.settings import DEFAULT_UI_SETTINGS, normalize_settings, ui_setting_updates
+from debripod import settings as settings_module
+from debripod.settings import DEVICE_SETTING_KEYS, SETTING_DESCRIPTORS, DEFAULT_UI_SETTINGS, migrate_owner_server_settings, normalize_settings, ui_setting_updates
 
 
 REPO = Path(__file__).resolve().parents[1]
 
 
-def test_legacy_text_modes_migrate_to_contrast_and_unknown_values_use_defaults():
+def test_device_ui_settings_have_explicit_descriptors_and_never_normalize_as_server_values():
     settings = normalize_settings(
         {
             "UI_TEXT_WHEEL_LABELS": "black",
@@ -16,10 +17,11 @@ def test_legacy_text_modes_migrate_to_contrast_and_unknown_values_use_defaults()
             "UI_TEXT_ROWS": "not-a-mode",
         }
     )
-    assert settings["UI_TEXT_WHEEL_LABELS"] == "contrast"
-    assert settings["UI_TEXT_PATH_PILL"] == "contrast"
-    assert settings["UI_TEXT_INFO_PILL"] == "contrast"
-    assert settings["UI_TEXT_ROWS"] == "transparent"
+    assert all(SETTING_DESCRIPTORS[key]["scope"] == "device" for key in DEVICE_SETTING_KEYS)
+    assert "UI_TEXT_WHEEL_LABELS" not in settings
+    assert "UI_TEXT_PATH_PILL" not in settings
+    assert "UI_TEXT_INFO_PILL" not in settings
+    assert "UI_TEXT_ROWS" not in settings
 
     defaults = _coerce_advanced_ui_defaults(
         {"textModes": {"wheelLabels": "black", "pathPill": "white", "rows": "engraved"}},
@@ -43,6 +45,19 @@ def test_remote_torrent_setting_accepts_only_the_seven_fixed_adapters():
         {"TORRENT_SEARCH_ENABLED_SOURCES": ["Knaben", "TorAPI", "cardigann", "torrents_csv", "unknown"]}
     )
     assert settings["TORRENT_SEARCH_ENABLED_SOURCES"] == ["knaben", "torapi"]
+
+
+def test_owner_server_setting_migration_keeps_meaningful_legacy_value(monkeypatch):
+    rows = {
+        "owner-id": {"YTDLP_CMD": "D:/tools/yt-dlp.exe", "DOWNLOAD_DIR": "D:/owner"},
+        "": {},
+    }
+    writes = []
+    monkeypatch.setattr(settings_module.settings_repository, "load", lambda scope="": dict(rows.get(scope, {})))
+    monkeypatch.setattr(settings_module.settings_repository, "save", lambda values, scope="": writes.append((dict(values), scope)))
+
+    assert migrate_owner_server_settings("owner-id") is True
+    assert writes == [({"YTDLP_CMD": "D:/tools/yt-dlp.exe"}, "")]
 
 
 def test_ui_offers_exactly_contrast_and_transparent_text_modes():
@@ -79,7 +94,14 @@ def test_glass_settings_migrate_to_one_signed_material_value_per_target():
     assert migrated["listPills"]["material"] == -0.52
     assert migrated["selectedRow"]["material"] == 0.13
     assert all(set(value) == {"label", "material"} for value in migrated.values())
-    assert all(set(value) == {"material"} for value in DEFAULT_UI_SETTINGS["liquidGlassElements"].values())
+    assert DEFAULT_UI_SETTINGS["liquidGlassElements"] == {
+        "libraryList": {"material": -0.20},
+        "wheel": {"material": -0.20},
+        "pathPill": {"material": -0.20},
+        "infoPill": {"material": -0.20},
+        "listPills": {"material": 0.0},
+        "selectedRow": {"material": -0.50},
+    }
 
 
 def test_glass_ui_exposes_only_material_and_previews_without_snapshot_recapture():
