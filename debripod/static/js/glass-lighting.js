@@ -9,6 +9,7 @@
   let orientationAttached = false;
   let orientationActive = false;
   let permissionRequested = false;
+  let orientationOrigin = null;
 
   function clamp(value, low, high){ return Math.max(low, Math.min(high, Number(value) || 0)); }
   function deviceUserId(){ return String(window.DEBRIPOD_DEVICE_SETTINGS_USER_ID || "anonymous").trim() || "anonymous"; }
@@ -59,16 +60,21 @@
     light.y += (target.y - light.y) * smoothing;
     light.intensity += (target.intensity - light.intensity) * smoothing;
     light.source = target.source;
+    // Only the wheel has geometric tilt; other lenses receive lighting alone.
+    if(light.source === "orientation" && typeof setWheelTiltTarget === "function"){
+      const degrees = typeof wheelRotationMaxDegrees === "number" ? wheelRotationMaxDegrees : 5;
+      setWheelTiltTarget(-light.y * degrees, light.x * degrees, 90);
+    }
     const moving = Math.abs(target.x - light.x) > 0.002 || Math.abs(target.y - light.y) > 0.002 || Math.abs(target.intensity - light.intensity) > 0.002;
     markGlassFrame();
     if(moving) schedule();
     return moving;
   }
   function resetPointerLight(){
-    if(storedPermission() !== "granted" && !orientationActive) setTarget(neutral.x, neutral.y, neutral.intensity, "default");
+    if(!orientationActive) setTarget(neutral.x, neutral.y, neutral.intensity, "default");
   }
   function pointerMove(event){
-    if(storedPermission() === "granted" || orientationActive) return;
+    if(orientationActive) return;
     const width = Math.max(1, window.innerWidth || 1);
     const height = Math.max(1, window.innerHeight || 1);
     const x = clamp(((Number(event.clientX) || width / 2) / width - .5) * 0.90, -0.45, 0.45);
@@ -78,18 +84,24 @@
     pointerIdleTimer = setTimeout(resetPointerLight, 900);
   }
   function orientationChange(event){
+    if(!event || event.beta == null || event.gamma == null) return;
     const beta = Number(event && event.beta);
     const gamma = Number(event && event.gamma);
-    if(!Number.isFinite(beta) && !Number.isFinite(gamma)) return;
+    if(!Number.isFinite(beta) || !Number.isFinite(gamma)) return;
+    if(!orientationOrigin) orientationOrigin = {beta, gamma};
+    const angle = Number(window.screen && window.screen.orientation && window.screen.orientation.angle || window.orientation || 0) * Math.PI / 180;
+    const dx = (gamma - orientationOrigin.gamma) / 45;
+    const dy = (beta - orientationOrigin.beta) / 45;
     orientationActive = true;
-    setTarget(clamp(gamma / 52, -0.46, 0.46), clamp(beta / 68, -0.38, 0.38), 0.46, "orientation");
+    setTarget(neutral.x + dx * Math.cos(angle) + dy * Math.sin(angle), neutral.y + dy * Math.cos(angle) - dx * Math.sin(angle), 0.46, "orientation");
   }
   function attachOrientation(){
     if(orientationAttached || !window.addEventListener) return;
     orientationAttached = true;
     window.addEventListener("deviceorientation", orientationChange, {passive:true});
   }
-  function requestOrientationPermission(){
+  function requestOrientationPermission(retry){
+    if(retry === true){ permissionRequested = false; savePermission("unknown"); }
     const eventType = window.DeviceOrientationEvent;
     if(!eventType || typeof eventType.requestPermission !== "function"){
       attachOrientation();
@@ -99,14 +111,18 @@
     if(stored === "denied") return Promise.resolve("denied");
     if(permissionRequested) return Promise.resolve(stored);
     permissionRequested = true;
-    return Promise.resolve(eventType.requestPermission()).then((result)=>{
+    let request;
+    try{ request = eventType.requestPermission(); }
+    catch(e){ permissionRequested = false; return Promise.resolve("unknown"); }
+    return Promise.resolve(request).then((result)=>{
       const value = result === "granted" ? "granted" : "denied";
       savePermission(value);
       if(value === "granted") attachOrientation();
       return value;
     }).catch(()=>{
-      savePermission("denied");
-      return "denied";
+      // A missing user activation is not a user denial. Retry on a valid gesture.
+      permissionRequested = false;
+      return "unknown";
     });
   }
   function armOrientationPermission(){
@@ -116,17 +132,15 @@
       attachOrientation();
       return;
     }
-    if(storedPermission() === "denied" || storedPermission() === "granted"){
-      if(storedPermission() === "granted") attachOrientation();
-      return;
-    }
+    if(storedPermission() === "denied") return;
+    if(storedPermission() === "granted") attachOrientation();
     const requestOnce = ()=>{
-      requestOrientationPermission();
-      document.removeEventListener("pointerdown", requestOnce, true);
-      document.removeEventListener("keydown", requestOnce, true);
+      requestOrientationPermission().then(result=>{
+        if(result === "unknown") return;
+        ["click", "touchend", "keydown"].forEach(name=>document.removeEventListener(name, requestOnce, true));
+      });
     };
-    document.addEventListener("pointerdown", requestOnce, {capture:true, passive:true, once:true});
-    document.addEventListener("keydown", requestOnce, {capture:true, once:true});
+    ["click", "touchend", "keydown"].forEach(name=>document.addEventListener(name, requestOnce, {capture:true, passive:true}));
   }
   function init(){
     armOrientationPermission();
@@ -139,6 +153,7 @@
 
   root.glassLighting = {
     state: ()=>({x:light.x, y:light.y, intensity:light.intensity, source:light.source}),
+    status: ()=> orientationActive ? "Active" : storedPermission() === "denied" ? "Denied" : "Waiting for motion",
     requestOrientationPermission,
     testing: {permissionKey, storedPermission, setTarget, pointerMove, orientationChange, step, isAnimating:()=>!!frame, reset:()=>{ target=Object.assign({}, neutral); Object.assign(light, neutral); frame=0; lastFrameAt=0; orientationActive=false; }}
   };

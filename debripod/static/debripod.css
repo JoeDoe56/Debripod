@@ -507,12 +507,14 @@
       overflow:hidden;
       white-space: nowrap;
       user-select:none;
+      clip-path: inset(0 round 999px);
       opacity: 1;
       transform: translateY(0);
       transition: opacity var(--playbackPillFadeMs) ease, transform var(--playbackPillFadeMs) ease;
       will-change: opacity, transform, width;
     }
     .pathPill.pathPillExpanded{
+      clip-path: inset(0 round var(--playbackPillRadius));
       width:var(--pathPillRenderedWidth);
       border-radius:var(--playbackPillRadius);
       padding:var(--playbackPillPadY) var(--playbackPillPadX);
@@ -685,6 +687,30 @@
       background: transparent;
       border: 0;
       box-shadow: none;
+    }
+
+    /* Fade and soften scrolling text inside the glass boundary on touch too. */
+    .ipodScreenContent::before,
+    .ipodScreenContent::after{
+      content:"";
+      position:absolute;
+      left:0;
+      right:0;
+      height:24px;
+      z-index:90;
+      pointer-events:none;
+      -webkit-backdrop-filter:blur(3px);
+      backdrop-filter:blur(3px);
+    }
+    .ipodScreenContent::before{
+      top:0;
+      -webkit-mask-image:linear-gradient(#000, transparent);
+      mask-image:linear-gradient(#000, transparent);
+    }
+    .ipodScreenContent::after{
+      bottom:0;
+      -webkit-mask-image:linear-gradient(transparent, #000);
+      mask-image:linear-gradient(transparent, #000);
     }
 
     .visualizerBg{
@@ -1122,7 +1148,7 @@
       touch-action: pan-y;
       -webkit-overflow-scrolling: touch;
       border-radius: var(--screenRadius);
-      clip-path: none;
+      clip-path: inset(0 round var(--screenRadius));
       border: 0;
       background: transparent;
       pointer-events:auto;
@@ -1285,11 +1311,8 @@
       cursor:default;
     }
     @media (hover: none) and (pointer: coarse){
-      /* WebKit can treat a masked scrolling element as an inert hit target.
-         Keep the fade effect off the actual scroller so a finger can pan it. */
+      /* Lens decoration preserves the scroller's pointer events. */
       .ipodList{
-        -webkit-mask-image:none;
-        mask-image:none;
         touch-action:pan-y pinch-zoom;
         overscroll-behavior-y:contain;
       }

@@ -1102,7 +1102,9 @@ def clear_library_cache() -> None:
         conn.execute("DELETE FROM folder_entries")
         conn.execute("DELETE FROM library_facets")
         conn.execute("DELETE FROM library_items")
-        conn.execute("DELETE FROM library_roots")
+        # Root identity is configuration referenced by user memberships, not
+        # disposable index data. Keep it discoverable throughout reindexing.
+        conn.execute("UPDATE library_roots SET version=version+1,last_scan_started_at=NULL,last_scan_finished_at=NULL")
         conn.execute("DELETE FROM art_palette_cache")
         conn.execute("DELETE FROM media_palettes")
         conn.execute("DELETE FROM visualizer_analysis")

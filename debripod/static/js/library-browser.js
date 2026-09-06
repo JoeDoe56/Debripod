@@ -8,7 +8,7 @@
         const url = "/api/library/browse?root_id=" + encodeURIComponent(root.id) + "&rel=" + encodeURIComponent(this.rel);
         let js = null;
         try{
-          js = await apiGet(url);
+          js = await apiGet(url, {localFirst:false});
         }catch(e){
           if(await restoreCachedLibraryView({kind:"folder", root:root, rel:this.rel, label:this.label})) return;
           throw e;
@@ -1128,7 +1128,7 @@ async function goBack(){
         const url = "/api/library/metadata?root_id=" + encodeURIComponent(root.id) + "&level=" + encodeURIComponent(this.level) + (this.value ? "&value=" + encodeURIComponent(this.value) : "");
         let js = null;
         try{
-          js = await apiGet(url);
+          js = await apiGet(url, {localFirst:false});
         }catch(e){
           if(await restoreCachedLibraryView({kind:"metalist", root:root, level:this.level, value:this.value, label:this.label})) return;
           throw e;

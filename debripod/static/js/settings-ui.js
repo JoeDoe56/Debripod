@@ -1994,6 +1994,7 @@ async function libDoSearch(engine, q){
     const cat = String(category || "system");
     if(cat === "glass"){
       const items = [];
+      items.push({kind:"libui_action", label:"Enable device motion", sub_label:"Allow tilt lighting and wheel motion; tap to retry permission", action:"enable_glass_motion", pills:[window.DebriPod && DebriPod.glassLighting ? DebriPod.glassLighting.status() : "Unavailable"], forceTwoLine:true, settingRow:true});
       GLASS_ELEMENT_KEYS.forEach((key)=>{
         items.push({kind:"libui_action", label:glassElementLabel(key), sub_label:"Dark ↔ transparent ↔ light", action:"set_glass_value:" + key + ":material", pills:glassElementSummary(key), forceTwoLine:true, settingRow:true});
       });
@@ -2773,6 +2774,11 @@ async function libDoSearch(engine, q){
       return true;
     };
     switch(action){
+      case "enable_glass_motion": {
+        const lighting = window.DebriPod && DebriPod.glassLighting;
+        if(lighting) await lighting.requestOrientationPermission(true);
+        return await returnAdvancedCategory("glass");
+      }
       default:
         if(String(action || "").indexOf("cycle_text_mode:") === 0){
           const key = String(action).split(":")[1] || "";

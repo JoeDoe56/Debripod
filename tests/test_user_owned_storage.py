@@ -239,6 +239,26 @@ def test_library_roots_are_user_scoped_and_shared_physical_roots_are_not_duplica
     assert any(row["root_id"] == shared_id for row in associated_library_roots())
 
 
+def test_full_cache_clear_preserves_user_root_discovery_and_index_save(tmp_path, monkeypatch):
+    from debripod.Library.library_db import clear_library_cache, save_index_snapshot
+    monkeypatch.setenv("DEBRIPOD_DATABASE", str(tmp_path / "reindex.sqlite3"))
+    database.initialize_database()
+    alice = users.create_user("alice", "hash", role="owner")
+    bob = users.create_user("bob", "hash", role="user")
+    folder = tmp_path / "media"
+    folder.mkdir()
+    sync_user_roots(alice["user_id"], {"LIBRARY_FOLDERS": [{"path": str(folder)}]})
+    root = user_library_roots(alice["user_id"])[0]
+    data = {"tracks": [{"rel": "song.flac", "title": "Song", "artist": "Artist", "album": "Album"}], "videos": [], "movies": [], "shows": []}
+    before = save_index_snapshot(root["root_id"], str(folder), data, mode="metadata")
+    clear_library_cache()
+    assert root_by_id(root["root_id"], alice["user_id"])
+    assert not root_by_id(root["root_id"], bob["user_id"])
+    version = save_index_snapshot(root["root_id"], str(folder), data, mode="metadata")
+    assert version > before
+    assert user_library_roots(alice["user_id"])[0]["version"] == version
+
+
 def test_stream_route_rejects_a_root_not_associated_with_the_user(tmp_path, monkeypatch):
     monkeypatch.setenv("DEBRIPOD_DATABASE", str(tmp_path / "hls-roots.sqlite3"))
     database.initialize_database()
