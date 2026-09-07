@@ -99,7 +99,14 @@
       streamed: !!it.streamed,
       source: String(it.source || ""),
       ext: String(it.ext || ""),
-      quality: String(it.quality || "")
+      quality: String(it.quality || ""),
+      title: String(it.title || ""),
+      artist: String(it.artist || ""),
+      album: String(it.album || ""),
+      genre: String(it.genre || ""),
+      duration: isFinite(it.duration) ? Number(it.duration) : null,
+      tech: String(it.tech || ""),
+      art: String(it.art || it.thumbnail || it.poster || "")
     };
   }
 
@@ -201,7 +208,11 @@
     sess.now = nextNow || null;
     if(nextNow){
       state.now = {rootId: nextNow.rootId || nextNow.root_id || "", rel: nextNow.rel || "", media: nextNow.media || "", streamed: !!nextNow.streamed, nav: nextNow.nav || null};
-      if(nextNow.meta) state.nowMeta = nextNow.meta;
+      if(nextNow.meta){
+        state.nowMeta = typeof normalizePlaybackMetadata === "function"
+          ? normalizePlaybackMetadata(nextNow.meta, nextNow, nextNow.label || nextNow.title)
+          : nextNow.meta;
+      }
       if(nextNow.nav) state.nowNavContext = nextNow.nav;
     }else if(reason === "explicit-clear"){
       state.now = null;
@@ -251,6 +262,9 @@
         title: sn.title || "",
         artist: sn.artist || "",
         album: sn.album || "",
+        genre: sn.genre || "",
+        duration: sn.duration,
+        tech: sn.tech || "",
         art: sn.art || "",
         streamed: !!sn.streamed,
         source: sn.source || "",
@@ -312,7 +326,14 @@
           streamed: !!it.streamed,
           source: it.source || "",
           ext: it.ext || "",
-          quality: it.quality || ""
+          quality: it.quality || "",
+          title: it.title || "",
+          artist: it.artist || "",
+          album: it.album || "",
+          genre: it.genre || "",
+          duration: it.duration,
+          tech: it.tech || "",
+          art: it.art || it.thumbnail || it.poster || ""
         })).filter(x=>x.root_id && x.rel);
         playlistCtx = {items: items, index: (srcIndex >= 0 ? srcIndex : 0)};
       }
@@ -347,6 +368,7 @@
       title: m.title || "",
       artist: m.artist || "",
       album: m.album || "",
+      genre: m.genre || "",
       art: m.art || "",
       position: p,
       duration: (dur && isFinite(dur)) ? Number(dur) : null,
@@ -357,6 +379,7 @@
       streamed: !!m.streamed,
       source: m.source || "",
       ext: m.ext || "",
+      tech: m.tech || "",
       quality: m.quality || ""
     });
   }

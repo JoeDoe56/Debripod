@@ -117,17 +117,10 @@
 
   function persistedNowMeta(entry){
     const meta = (entry && entry.meta && typeof entry.meta === "object") ? entry.meta : {};
-    return Object.assign({}, meta, {
-      label: entry && entry.label ? String(entry.label || "") : (meta.label || ""),
-      title: entry && entry.title ? String(entry.title || "") : (meta.title || ""),
-      artist: entry && entry.artist ? String(entry.artist || "") : (meta.artist || ""),
-      album: entry && entry.album ? String(entry.album || "") : (meta.album || ""),
-      art: entry && entry.art ? String(entry.art || "") : (meta.art || ""),
-      streamed: !!(entry && entry.streamed),
-      source: String((entry && entry.source) || meta.source || ""),
-      ext: String((entry && entry.ext) || meta.ext || ""),
-      quality: String((entry && entry.quality) || meta.quality || "")
-    });
+    const merged = Object.assign({}, entry || {}, meta);
+    return typeof normalizePlaybackMetadata === "function"
+      ? normalizePlaybackMetadata(merged, entry, entry && entry.label)
+      : merged;
   }
 
   function serverNowMatches(rootId, rel, media){
@@ -161,7 +154,14 @@
       streamed: !!meta.streamed,
       source: meta.source || "",
       ext: meta.ext || "",
-      quality: meta.quality || ""
+      quality: meta.quality || "",
+      title: meta.title || "",
+      artist: meta.artist || "",
+      album: meta.album || "",
+      genre: meta.genre || "",
+      duration: meta.duration,
+      tech: meta.tech || "",
+      art: meta.art || ""
     };
   }
 
@@ -192,7 +192,14 @@
       streamed:!!it.streamed,
       source:it.source || "",
       ext:it.ext || "",
-      quality:it.quality || ""
+      quality:it.quality || "",
+      title:it.title || "",
+      artist:it.artist || "",
+      album:it.album || "",
+      genre:it.genre || "",
+      duration:it.duration,
+      tech:it.tech || "",
+      art:it.art || ""
     })).filter(x=>x.root.id && x.rel);
     if(!items.length && fallbackItem) items = [fallbackItem];
     if(items.length){
@@ -324,7 +331,8 @@ async function goBack(){
     const rel = item.rel;
 
     try{
-      const meta = Object.assign({}, await apiGet("/api/library/filemeta?root_id=" + encodeURIComponent(rootId) + "&rel=" + encodeURIComponent(rel)), {streamed: !!item.streamed, source: item.source || "", ext: item.ext || "", quality: item.quality || ""});
+      const raw = await apiGet("/api/library/filemeta?root_id=" + encodeURIComponent(rootId) + "&rel=" + encodeURIComponent(rel));
+      const meta = normalizePlaybackMetadata(raw, item, item.label || "Track");
       state.now = {rootId: rootId, rel: rel, media: "audio", streamed: !!item.streamed};
       state.nowMeta = meta;
       try{ loadVisualizerAnalysisForTrack(rootId, rel, "audio", {streamed: !!item.streamed}); }catch(err){}
@@ -415,15 +423,27 @@ async function goBack(){
       }
     }catch(e){}
 
-    let meta = {};
+    const metaPromise = apiGet("/api/library/filemeta?root_id=" + encodeURIComponent(rootId) + "&rel=" + encodeURIComponent(rel))
+      .then((raw)=>normalizePlaybackMetadata(raw, item, item.label || "Video"))
+      .catch(()=>normalizePlaybackMetadata({}, item, item.label || "Video"));
+    let loadRequest;
     try{
-      meta = Object.assign({}, await apiGet("/api/library/filemeta?root_id=" + encodeURIComponent(rootId) + "&rel=" + encodeURIComponent(rel)), {streamed: !!item.streamed, source: item.source || "", ext: item.ext || "", quality: item.quality || ""});
-    }catch(e){ meta = {}; }
-    try{
-      if(!meta.art){
-        meta.art = String(item.art || item.thumbnail || item.poster || "");
-      }
-    }catch(e){}
+      try{ npVideo.pause(); }catch(e){}
+      destroyHlsController("video");
+      npVideo.removeAttribute("src");
+      try{ npVideo.load(); }catch(e){}
+      applyVolume();
+      loadRequest = beginPlaybackLoad(npVideo, rootId, rel, "video");
+      try{ ensurePlaybackAudioSession(); }catch(e){}
+      preparePlaybackMediaAudio(npVideo);
+      unlockPlaybackMediaAudio();
+      const p = npVideo.play();
+      if(p && p.catch) p.catch((err)=>{ warnMedia("video", "play rejected" + (err && err.name ? " (" + err.name + ")" : ""), npVideo); });
+    }catch(e){
+      warnMedia("video", "start failed" + (e && e.name ? " (" + e.name + ")" : ""), npVideo);
+      return;
+    }
+    const [meta] = await Promise.all([metaPromise, loadRequest.ready]);
 
     state.now = {rootId: rootId, rel: rel, media: "video", streamed: !!item.streamed, nav: playbackNav};
     state.nowNavContext = playbackNav;
@@ -443,27 +463,17 @@ async function goBack(){
     try{ syncMediaSessionControls(); }catch(e){}
 
     try{
-      try{ npVideo.pause(); }catch(e){}
-      destroyHlsController("video");
-      npVideo.removeAttribute("src");
-      try{ npVideo.load(); }catch(e){}
       try{
         if(meta && meta.art) npVideo.poster = meta.art;
         else npVideo.removeAttribute("poster");
       }catch(e){}
-      applyVolume();
-      await loadPlaybackIntoElement(npVideo, rootId, rel, "video");
-
       const rt = (resumeTime && isFinite(resumeTime)) ? Number(resumeTime) : 0;
       try{
         const pos0 = (rt > 0) ? rt : ((npVideo && isFinite(npVideo.currentTime)) ? Number(npVideo.currentTime) : 0);
         playbackMaybePost("video", rootId, rel, meta || {}, (pos0 || 0), null, true, "start");
       }catch(e){}
 
-      try{ preparePlaybackMediaAudio(npVideo); }catch(e){}
-      const p = npVideo.play();
       try{ if(rt > 0) scheduleVideoResume(rt); }catch(e){}
-      if(p && p.catch) p.catch((err)=>{ warnMedia("video", "play rejected" + (err && err.name ? " (" + err.name + ")" : ""), npVideo); });
     }catch(e){
       warnMedia("video", "start failed" + (e && e.name ? " (" + e.name + ")" : ""), npVideo);
     }
@@ -496,7 +506,18 @@ async function goBack(){
       }else{
       if(forceShow) openNowPlayingExplicit();
 
-      const meta = Object.assign({}, state.nowMeta || {}, {streamed: !!item.streamed, source: item.source || "", ext: item.ext || "", quality: item.quality || ""});
+      const meta = normalizePlaybackMetadata(state.nowMeta || {}, item, item.label || "Track");
+      // Keep the call in the original user/ended-event stack. Awaiting the
+      // display update first can make an explicit restart look like autoplay.
+      try{
+        if(activeAudio.paused){
+          try{ ensurePlaybackAudioSession(); }catch(e){}
+          preparePlaybackMediaAudio(activeAudio);
+          unlockPlaybackMediaAudio();
+          const p = activeAudio.play();
+          if(p && p.catch) p.catch((err)=>{ warnMedia("audio", "play rejected" + (err && err.name ? " (" + err.name + ")" : ""), activeAudio); });
+        }
+      }catch(e){ warnMedia("audio", "play failed" + (e && e.name ? " (" + e.name + ")" : ""), activeAudio); }
       try{ loadVisualizerAnalysisForTrack(rootId, rel, "audio", {streamed: !!item.streamed}); }catch(err){}
       await updateNowPlayingDisplay(meta, item.label || "Track", {animateArt: false, animatePill: false});
       if(forceShow) openNowPlayingExplicit();
@@ -529,12 +550,15 @@ async function goBack(){
         title: meta.title || "",
         artist: meta.artist || "",
         album: meta.album || "",
+        genre: meta.genre || "",
         art: meta.art || "",
         position: (activeAudio && isFinite(activeAudio.currentTime)) ? activeAudio.currentTime : 0,
         duration: (activeAudio && activeAudio.duration && isFinite(activeAudio.duration)) ? activeAudio.duration : null,
         playing: (activeAudio && !activeAudio.paused),
         nav: playbackNav,
         source_view: sourceView,
+        tech: meta.tech || "",
+        quality: meta.quality || "",
         event: "time"
       });
 
@@ -545,8 +569,6 @@ async function goBack(){
 
     if(forceShow) openNowPlayingExplicit();
 
-    const meta = await apiGet("/api/library/filemeta?root_id=" + encodeURIComponent(rootId) + "&rel=" + encodeURIComponent(rel));
-
     try{ if(activeAudio) activeAudio.pause(); }catch(e){}
     destroyHlsController("audio");
     resetGaplessPrime();
@@ -555,7 +577,25 @@ async function goBack(){
     try{ applyVolume(); }catch(e){}
     try{ enforceSingleAudio(); }catch(e){}
 
-    await loadPlaybackIntoElement(activeAudio, rootId, rel, "audio");
+    // Start loading and call play before the first await. Browsers associate
+    // this call with the user's click (or the ended event) and otherwise may
+    // reject it after metadata/readiness awaits complete.
+    const metaPromise = apiGet("/api/library/filemeta?root_id=" + encodeURIComponent(rootId) + "&rel=" + encodeURIComponent(rel))
+      .then((raw)=>normalizePlaybackMetadata(raw, item, item.label || "Track"))
+      .catch(()=>normalizePlaybackMetadata({}, item, item.label || "Track"));
+    let loadRequest;
+    try{
+      loadRequest = beginPlaybackLoad(activeAudio, rootId, rel, "audio");
+      try{ ensurePlaybackAudioSession(); }catch(e){}
+      preparePlaybackMediaAudio(activeAudio);
+      unlockPlaybackMediaAudio();
+      const p = activeAudio.play();
+      if(p && p.catch) p.catch((err)=>{ warnMedia("audio", "play rejected" + (err && err.name ? " (" + err.name + ")" : ""), activeAudio); });
+    }catch(e){
+      warnMedia("audio", "start failed" + (e && e.name ? " (" + e.name + ")" : ""), activeAudio);
+      throw e;
+    }
+    const [meta] = await Promise.all([metaPromise, loadRequest.ready]);
 
     const rt = (resumeTime && isFinite(resumeTime)) ? Number(resumeTime) : 0;
     if(rt > 0){
@@ -610,12 +650,15 @@ async function goBack(){
       title: meta.title || "",
       artist: meta.artist || "",
       album: meta.album || "",
+      genre: meta.genre || "",
       art: meta.art || "",
       position: (rt && isFinite(rt)) ? rt : 0,
       duration: (activeAudio && activeAudio.duration && isFinite(activeAudio.duration)) ? activeAudio.duration : (meta && meta.duration ? meta.duration : null),
       playing: true,
       nav: playbackNav,
       source_view: sourceView,
+      tech: meta.tech || "",
+      quality: meta.quality || "",
       event: "start"
     });
 
@@ -626,14 +669,7 @@ async function goBack(){
     lastfmOnTrack(meta);
 
     try{ ensurePlaybackAudioSession(); }catch(e){}
-    try{
-      try{ preparePlaybackMediaAudio(activeAudio); }catch(e){}
-      await activeAudio.play();
-      if(canMediaSession()) navigator.mediaSession.playbackState = "playing";
-    }catch(e){
-      warnMedia("audio", "play rejected" + (e && e.name ? " (" + e.name + ")" : ""), activeAudio);
-      if(canMediaSession()) navigator.mediaSession.playbackState = "paused";
-    }
+    if(canMediaSession()) navigator.mediaSession.playbackState = activeAudio.paused ? "paused" : "playing";
 
     setTimeout(()=>{ try{ preloadNextAudio(); }catch(e){} }, 250);
   }

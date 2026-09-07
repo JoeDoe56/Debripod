@@ -8,6 +8,69 @@
   var preloadAudioEl = null;
   var preloadRequestNonce = 0;
 
+function playbackText(value){
+  return value == null ? "" : String(value).trim();
+}
+
+function playbackArtworkValue(value){
+  if(value && typeof value === "object"){
+    return playbackText(value.url || value.src || value.href);
+  }
+  return playbackText(value);
+}
+
+function playbackMetadataSource(raw){
+  if(!raw || typeof raw !== "object") return {};
+  // filemeta is intentionally a flat response. Keep these tolerant fallbacks
+  // for cached sessions created by older clients without changing that API.
+  if(raw.metadata && typeof raw.metadata === "object") return raw.metadata;
+  if(raw.result && typeof raw.result === "object") return raw.result;
+  if(raw.data && typeof raw.data === "object" && !Array.isArray(raw.data)) return raw.data;
+  return raw;
+}
+
+function normalizePlaybackMetadata(raw, item, fallbackLabel){
+  const source = playbackMetadataSource(raw);
+  const entry = item && typeof item === "object" ? item : {};
+  const rel = playbackText(entry.rel);
+  const fileLabel = rel ? rel.split("/").pop() : "";
+  const label = playbackText(source.label || entry.label || fallbackLabel || fileLabel || "Track");
+  const title = playbackText(source.title || entry.title || label);
+  const tech = playbackText(source.tech || source.quality || entry.tech || entry.quality || entry.ext);
+  const rawDuration = source.duration != null ? source.duration : entry.duration;
+  const durationNumber = Number(rawDuration);
+  return Object.assign({}, source, {
+    label: label,
+    title: title,
+    artist: playbackText(source.artist || entry.artist),
+    album: playbackText(source.album || entry.album),
+    genre: playbackText(source.genre || entry.genre),
+    duration: Number.isFinite(durationNumber) ? durationNumber : null,
+    tech: tech,
+    art: [source.art, entry.art, entry.thumbnail, entry.poster]
+      .map(playbackArtworkValue)
+      .find((value)=>!!value) || "",
+    streamed: !!(source.streamed != null ? source.streamed : entry.streamed),
+    source: playbackText(source.source || entry.source),
+    ext: playbackText(source.ext || entry.ext),
+    quality: playbackText(source.quality || entry.quality || tech)
+  });
+}
+
+function playbackArtworkUrl(value){
+  const src = playbackText(value);
+  if(!src) return "";
+  try{ return new URL(src, window.location.href).href; }catch(e){ return src; }
+}
+
+try{
+  window.DebriPod = window.DebriPod || {};
+  window.DebriPod.playbackMetadata = {
+    normalize: normalizePlaybackMetadata,
+    artworkUrl: playbackArtworkUrl
+  };
+}catch(e){}
+
 // ===== volume (wheel controlled; device-local software gain) =====
 function volumePreferenceStorageKey(){
   try{
@@ -216,7 +279,7 @@ function waitForMediaReady(el, timeoutMs){
   });
 }
 
-async function loadPlaybackIntoElement(el, rootId, rel, kind){
+function beginPlaybackLoad(el, rootId, rel, kind){
   try{
     if(window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.isServerUnavailable && DebriPod.clientSync.isServerUnavailable()){
       throw new Error(DebriPod.clientSync.serverRequiredMessage ? DebriPod.clientSync.serverRequiredMessage("Playback") : "Playback requires the local DebriPod server.");
@@ -226,15 +289,23 @@ async function loadPlaybackIntoElement(el, rootId, rel, kind){
   }
   var src = playbackSourceUrl(rootId, rel);
   if(playbackUsesHls()){
-    await loadHlsIntoElement(el, src, kind);
-    return src;
+    return {src:src, ready:loadHlsIntoElement(el, src, kind)};
   }
   if(kind === "audio") destroyHlsController("audio");
   else if(kind === "video") destroyHlsController("video");
   else if(kind === "preload") destroyHlsController("preload");
   try{ el.src = src; el.load(); }catch(e){}
-  try{ await waitForMediaReady(el, kind === "preload" ? 1200 : 5000); }catch(e){ warnMedia(kind, "load failed", el); throw e; }
-  return src;
+  const ready = waitForMediaReady(el, kind === "preload" ? 1200 : 5000).catch((e)=>{
+    warnMedia(kind, "load failed", el);
+    throw e;
+  });
+  return {src:src, ready:ready};
+}
+
+async function loadPlaybackIntoElement(el, rootId, rel, kind){
+  const request = beginPlaybackLoad(el, rootId, rel, kind);
+  await request.ready;
+  return request.src;
 }
 
 function canUseHlsJs(){

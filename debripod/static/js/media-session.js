@@ -4,7 +4,7 @@
   }
 
   function canMediaSession(){
-    return !!(navigator.mediaSession && window.MediaMetadata);
+    return !!(navigator.mediaSession && typeof MediaMetadata === "function");
   }
 
   function ensurePlaybackAudioSession(){
@@ -50,12 +50,19 @@
 
   function updateMediaSession(meta){
     if(!canMediaSession()) return;
+    const normalized = typeof normalizePlaybackMetadata === "function"
+      ? normalizePlaybackMetadata(meta || {}, meta || {}, meta && meta.label)
+      : (meta || {});
     try{
+      const artwork = normalized.art ? [{
+        src: typeof playbackArtworkUrl === "function" ? playbackArtworkUrl(normalized.art) : normalized.art,
+        sizes: "512x512"
+      }] : [];
       navigator.mediaSession.metadata = new MediaMetadata({
-        title: meta.title || "",
-        artist: meta.artist || "",
-        album: meta.album || "",
-        artwork: meta.art ? [{src: meta.art, sizes: "400x400", type: "image/jpeg"}] : []
+        title: normalized.title || normalized.label || "Track",
+        artist: normalized.artist || "",
+        album: normalized.album || "",
+        artwork: artwork
       });
     }catch(e){}
     try{ syncMediaSessionControls(); }catch(e){}

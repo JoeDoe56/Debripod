@@ -39,3 +39,17 @@ test("serialization preserves canonical index and shuffle fields", () => {
   assert.equal(saved.queueIndex, 1);
   assert.equal(saved.queue[1].media, "video");
 });
+
+test("queue projections retain filemeta fields used by now playing", () => {
+  const item = normalizeQueueItem({
+    media: "audio", root_id: "music", rel: "album/song.flac", label: "filename.flac",
+    title: "Song", artist: "Artist", album: "Album", genre: "Rock",
+    duration: 123, tech: "FLAC 24-bit", art: "/art/music/album/song.flac?v=7"
+  });
+  assert.equal(item.title, "Song");
+  assert.equal(item.album, "Album");
+  assert.equal(item.genre, "Rock");
+  assert.equal(item.duration, 123);
+  assert.equal(item.tech, "FLAC 24-bit");
+  assert.equal(item.art, "/art/music/album/song.flac?v=7");
+});
