@@ -7,6 +7,11 @@
     if(value && typeof value === "object") return {r:clamp(value.r), g:clamp(value.g), b:clamp(value.b)};
     let text = String(value || "").replace(/^#/, "");
     if(text.length === 3) text = text.split("").map(ch => ch + ch).join("");
+    const functional = String(value || "").match(/^rgba?\(\s*([\d.]+)\s*[, ]\s*([\d.]+)\s*[, ]\s*([\d.]+)(?:\s*[,/]\s*([\d.]+))?\s*\)$/i);
+    if(functional){
+      const alpha = functional[4] == null ? 1 : Math.max(0, Math.min(1, Number(functional[4])));
+      return {r:clamp(Number(functional[1]) * alpha), g:clamp(Number(functional[2]) * alpha), b:clamp(Number(functional[3]) * alpha)};
+    }
     const number = /^[0-9a-f]{6}$/i.test(text) ? parseInt(text, 16) : 0xffffff;
     return {r:(number >> 16) & 255, g:(number >> 8) & 255, b:number & 255};
   };
@@ -25,6 +30,19 @@
       if(contrast(background,solid)>ratio){ chosen=solid; ratio=contrast(background,solid); fallback=true; }
     }
     return {rgb:chosen || {r:255,g:255,b:255}, contrast:ratio, fallback:fallback};
+  };
+  const sampleContrastText = (values, preferred) => {
+    const samples = (Array.isArray(values) ? values : [values]).map(rgb).filter(Boolean);
+    const candidates = [{r:0,g:0,b:0}, {r:255,g:255,b:255}];
+    const preferredColor = preferred == null ? null : rgb(preferred);
+    const preferredIndex = preferredColor && distance(preferredColor, candidates[0]) <= distance(preferredColor, candidates[1]) ? 0 : (preferredColor ? 1 : -1);
+    if(!samples.length) return preferredIndex >= 0 ? hex(candidates[preferredIndex]) : "#ffffff";
+    const score = candidate => Math.min(...samples.map(sample => contrast(sample, candidate)));
+    const scores = candidates.map(score);
+    const winner = scores[0] === scores[1] && preferredIndex >= 0
+      ? preferredIndex
+      : (scores[0] >= scores[1] ? 0 : 1);
+    return hex(candidates[winner]);
   };
   function derive(values){
     const colors = (Array.isArray(values) ? values : []).map(rgb).slice(0,16);
@@ -55,5 +73,5 @@
     for(let i=0;i<count;i++){ const x=rgb(a[i%a.length]||b[i%b.length]), y=rgb(b[i%b.length]||a[i%a.length]); out.push({r:clamp(x.r+(y.r-x.r)*mix),g:clamp(x.g+(y.g-x.g)*mix),b:clamp(x.b+(y.b-x.b)*mix)}); }
     return out;
   }
-  global.DebriPodPalette={derive:derive,interpolate:interpolate,rgb:rgb,hex:hex,luminance:luminance,contrast:contrast};
+  global.DebriPodPalette={derive:derive,interpolate:interpolate,rgb:rgb,hex:hex,luminance:luminance,contrast:contrast,sampleContrastText:sampleContrastText};
 })(window);

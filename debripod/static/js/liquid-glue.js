@@ -166,7 +166,7 @@
       return renderer.lenses.some((lens)=>{
         if(!lens || !lens.el || !lens.el.isConnected) return false;
         const style = window.getComputedStyle ? window.getComputedStyle(lens.el) : null;
-        if(style && (style.display === "none" || style.visibility === "hidden")) return false;
+        if(style && (style.display === "none" || style.visibility === "hidden" || Number(style.opacity || 1) <= 0.01)) return false;
         let node = lens.el.parentElement;
         while(node && node !== document.body){
           const parentStyle = window.getComputedStyle ? window.getComputedStyle(node) : null;
@@ -893,7 +893,7 @@
       const el = document.getElementById("libListSelectedGlass");
       const list = document.getElementById("libList");
       if(!el || !list) return;
-      if(list.hasAttribute("aria-hidden")){
+      if(list.hasAttribute("aria-hidden") || nowPlayingSurfaceVisible()){
         destroyLibSelectionGlass(reason || "now playing visible");
         return;
       }

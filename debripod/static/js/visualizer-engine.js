@@ -22,6 +22,9 @@ var visualizerBandCenters = new Float32Array(9);
 var visualizerBandWidths = new Float32Array(9);
 var visualizerCanvasW = 0;
 var visualizerCanvasH = 0;
+var visualizerCanvasCssW = 0;
+var visualizerCanvasCssH = 0;
+var visualizerCanvasDpr = 1;
 var visualizerGl = null;
 var visualizerProgram = null;
 var visualizerBuffer = null;
@@ -33,6 +36,7 @@ var visualizerArtUploadCount = 0;
 var visualizerFade = 0;
 var visualizerFadeTarget = 0;
 var visualizerNeedsBlackFrame = true;
+var visualizerContrastState = "";
 var visualizerAnalysisNonce = 0;
 var visualizerAnalysisRetryTimer = 0;
 var visualizerArtFieldNonce = 0;
@@ -75,6 +79,28 @@ function visualizerArtRotationOverscan(viewportWidth, viewportHeight){
   var width = Math.max(1, Number(viewportWidth || 1));
   var height = Math.max(1, Number(viewportHeight || 1));
   return Math.hypot(width, height) / Math.max(width, height);
+}
+
+function visualizerBackingSize(viewportWidth, viewportHeight, devicePixelRatio){
+  var cssWidth = Math.max(1, Math.round(Number(viewportWidth || 1)));
+  var cssHeight = Math.max(1, Math.round(Number(viewportHeight || 1)));
+  var dpr = Math.max(1, Math.min(2, Number(devicePixelRatio || 1)));
+  return {cssWidth:cssWidth, cssHeight:cssHeight, width:Math.max(1, Math.round(cssWidth * dpr)), height:Math.max(1, Math.round(cssHeight * dpr)), dpr:dpr};
+}
+
+function visualizerArtUrlWithCacheBust(url, field){
+  var source = String(url || "");
+  if(!source) return "";
+  var meta = field || {};
+  var version = [meta.cache_key, meta.art_identity, meta.algorithm_version, meta.width, meta.height]
+    .map(value=>String(value == null ? "" : value).trim())
+    .filter(Boolean)
+    .join(":");
+  if(!version) return source;
+  var hashIndex = source.indexOf("#");
+  var base = hashIndex >= 0 ? source.slice(0, hashIndex) : source;
+  var hash = hashIndex >= 0 ? source.slice(hashIndex) : "";
+  return base + (base.indexOf("?") >= 0 ? "&" : "?") + "dp_art=" + encodeURIComponent(version) + hash;
 }
 
 function rotatedVisualizerArtUv(u, v, angle, viewportWidth, viewportHeight){
@@ -216,7 +242,11 @@ function loadVisualizerArtFieldForTrack(rootId, rel, options){
       return;
     }
     var key = rid + "\n" + rp;
-    if(visualizerArtField.key === key && (visualizerArtField.loaded || visualizerArtField.loading) && !opts.retryAttempt) return;
+    if(visualizerArtField.key && visualizerArtField.key !== key && visualizerArtRetryTimer){
+      try{ clearTimeout(visualizerArtRetryTimer); }catch(e){}
+      visualizerArtRetryTimer = 0;
+    }
+    if(visualizerArtField.key === key && (visualizerArtField.loaded || visualizerArtField.loading || visualizerArtRetryTimer) && !opts.retryAttempt) return;
     var nonce = ++visualizerArtFieldNonce;
     visualizerArtField = {key:key, loading:true, loaded:false, image:null, url:"", artIdentity:"", algorithmVersion:0, usefulLumaLow:0, usefulLumaHigh:1, source:"loading"};
     apiGet("/api/library/visualizer-art?root_id=" + encodeURIComponent(rid) + "&rel=" + encodeURIComponent(rp), {networkOnly:true, cache:"no-store", abortKey:"visualizer-art"})
@@ -233,7 +263,7 @@ function loadVisualizerArtFieldForTrack(rootId, rel, options){
         image.onload = ()=>{
           if(nonce !== visualizerArtFieldNonce) return;
           visualizerArtField = {
-            key:key, loading:false, loaded:true, image:image, url:String(field.url || ""), artIdentity:String(field.art_identity || ""),
+            key:key, loading:false, loaded:true, image:image, url:visualizerArtUrlWithCacheBust(field.url, field), artIdentity:String(field.art_identity || field.cache_key || ""),
             algorithmVersion:Number(field.algorithm_version || 0), usefulLumaLow:clamp01(field.useful_luma_low),
             usefulLumaHigh:Math.max(clamp01(field.useful_luma_low) + 0.04, clamp01(field.useful_luma_high)), source:"art-cache"
           };
@@ -247,7 +277,7 @@ function loadVisualizerArtFieldForTrack(rootId, rel, options){
           visualizerArtField.source = "unavailable";
           scheduleVisualizerArtRetry(rid, rp, opts.retryAttempt || 0);
         };
-        image.src = String(field.url || "");
+        image.src = visualizerArtUrlWithCacheBust(field.url, field);
       })
       .catch(()=>{
         if(nonce !== visualizerArtFieldNonce) return;
@@ -435,7 +465,7 @@ function ensureVisualizerWebGL(){
       "float bandWeight(float l,float center,float width){return max(0.0,1.0-abs(l-center)/max(0.0001,width));}",
       "void main(){", "vec2 screen=(uv-0.5)*canvasSize;", "float c=cos(angle);float s=sin(angle);", "vec2 rotated=vec2(c*screen.x+s*screen.y,-s*screen.x+c*screen.y);", "vec2 artUv=rotated/max(1.0,length(canvasSize))+0.5;", "vec3 rgb=texture2D(artTex,clamp(artUv,0.0,1.0)).rgb;", "float luma=dot(rgb,vec3(0.2126,0.7152,0.0722));", "float useful=clamp((luma-lumaLow)/max(0.04,lumaHigh-lumaLow),0.0,1.0);",
       "float w0=bandWeight(useful,bandCenters[0],bandWidths[0]);float w1=bandWeight(useful,bandCenters[1],bandWidths[1]);float w2=bandWeight(useful,bandCenters[2],bandWidths[2]);", "float w3=bandWeight(useful,bandCenters[3],bandWidths[3]);float w4=bandWeight(useful,bandCenters[4],bandWidths[4]);float w5=bandWeight(useful,bandCenters[5],bandWidths[5]);", "float w6=bandWeight(useful,bandCenters[6],bandWidths[6]);float w7=bandWeight(useful,bandCenters[7],bandWidths[7]);float w8=bandWeight(useful,bandCenters[8],bandWidths[8]);", "float total=max(0.0001,w0+w1+w2+w3+w4+w5+w6+w7+w8);", "float frequency=(w0*bands[0]+w1*bands[1]+w2*bands[2]+w3*bands[3]+w4*bands[4]+w5*bands[5]+w6*bands[6]+w7*bands[7]+w8*bands[8])/total;",
-      "float brightness=clamp(1.0+frequency*frequencyResponse.x+energy*energyResponse.x+beat*beatResponse.x,0.0,4.0);", "float opacity=clamp(1.0+frequency*frequencyResponse.y+energy*energyResponse.y+beat*beatResponse.y,0.0,1.0);", "float saturation=clamp(1.0+frequency*frequencyResponse.z+energy*energyResponse.z+beat*beatResponse.z,0.0,3.0);", "float contrast=clamp(1.0+frequency*frequencyResponse.w+energy*energyResponse.w+beat*beatResponse.w,0.0,3.0);", "rgb=mix(vec3(luma),rgb,saturation);rgb=(rgb-0.5)*contrast+0.5;rgb=min(clamp(rgb*brightness,0.0,1.0),vec3(brightnessCap));", "gl_FragColor=vec4(rgb*fade,opacity*fade);", "}"
+      "float brightness=clamp(1.0+frequency*frequencyResponse.x+energy*energyResponse.x+beat*beatResponse.x,0.0,4.0);", "float opacity=clamp(1.0+frequency*frequencyResponse.y+energy*energyResponse.y+beat*beatResponse.y,0.0,1.0);", "float saturation=clamp(1.0+frequency*frequencyResponse.z+energy*energyResponse.z+beat*beatResponse.z,0.0,3.0);", "float contrast=clamp(1.0+frequency*frequencyResponse.w+energy*energyResponse.w+beat*beatResponse.w,0.0,3.0);", "rgb=mix(vec3(luma),rgb,saturation);rgb=(rgb-0.5)*contrast+0.5;rgb=min(clamp(rgb*brightness,0.0,1.0),vec3(brightnessCap));", "float alpha=opacity*fade;gl_FragColor=vec4(rgb*alpha,alpha);", "}"
     ].join("\n");
     visualizerProgram = linkVisualizerProgram(visualizerGl, vertex, fragment);
     if(!visualizerProgram){ visualizerWebglUnavailable = true; return false; }
@@ -460,14 +490,16 @@ function ensureVisualizerWebGL(){
 function resizeVisualizerSurface(){
   try{
     if(!ensureVisualizerWebGL()) return false;
-    var width = Math.max(1, Math.round(window.innerWidth || 1));
-    var height = Math.max(1, Math.round(window.innerHeight || 1));
-    if(width === visualizerCanvasW && height === visualizerCanvasH) return true;
-    visualizerCanvasW = width;
-    visualizerCanvasH = height;
-    visualizerBg.width = width;
-    visualizerBg.height = height;
-    visualizerGl.viewport(0, 0, width, height);
+    var backing = visualizerBackingSize(window.innerWidth || 1, window.innerHeight || 1, window.devicePixelRatio || 1);
+    if(backing.width === visualizerCanvasW && backing.height === visualizerCanvasH && backing.cssWidth === visualizerCanvasCssW && backing.cssHeight === visualizerCanvasCssH) return true;
+    visualizerCanvasW = backing.width;
+    visualizerCanvasH = backing.height;
+    visualizerCanvasCssW = backing.cssWidth;
+    visualizerCanvasCssH = backing.cssHeight;
+    visualizerCanvasDpr = backing.dpr;
+    visualizerBg.width = backing.width;
+    visualizerBg.height = backing.height;
+    visualizerGl.viewport(0, 0, backing.width, backing.height);
     return true;
   }catch(e){ return false; }
 }
@@ -505,7 +537,7 @@ function renderVisualizerWebGL(){
     gl.activeTexture(gl.TEXTURE0);
     gl.bindTexture(gl.TEXTURE_2D, visualizerArtTexture);
     gl.uniform1i(u.artTex, 0);
-    gl.uniform2f(u.canvasSize, visualizerCanvasW, visualizerCanvasH);
+    gl.uniform2f(u.canvasSize, visualizerCanvasCssW || visualizerCanvasW, visualizerCanvasCssH || visualizerCanvasH);
     gl.uniform1f(u.angle, currentVisualizerAngle());
     gl.uniform1f(u.lumaLow, visualizerArtField.usefulLumaLow);
     gl.uniform1f(u.lumaHigh, visualizerArtField.usefulLumaHigh);
@@ -538,11 +570,28 @@ function currentVisualizerFrameState(ts){
 function applySelectedTextContrast(){
   try{
     var root = document.documentElement;
-    root.style.setProperty("--lib-selected-contrast", "#ffffff");
-    root.style.setProperty("--lib-selected-pill-contrast", "#ffffff");
-    root.style.setProperty("--lib-selected-render-contrast", "#ffffff");
-    root.style.setProperty("--lib-selected-pill-render-contrast", "#ffffff");
-    root.style.setProperty("--lib-selected-pill-edge", "rgba(255,255,255,.65)");
+    var style = window.getComputedStyle ? window.getComputedStyle(root) : null;
+    var selectedEl = document.getElementById("libListSelectedGlass");
+    var selectedStyle = selectedEl && window.getComputedStyle ? window.getComputedStyle(selectedEl) : null;
+    var materialText = selectedStyle ? String(selectedStyle.getPropertyValue("--dp-glass-selected-text") || "").trim() : "";
+    if(!materialText && style) materialText = String(style.getPropertyValue("--dp-glass-selected-text") || "").trim();
+    var samples = style ? [
+      style.getPropertyValue("--theme-visualizer-a"),
+      style.getPropertyValue("--theme-visualizer-b"),
+      style.getPropertyValue("--theme-visualizer-c"),
+      style.getPropertyValue("--theme-accent")
+    ].map(value=>String(value || "").trim()).filter(Boolean) : [];
+    var activeSamples = visualizerFade > 0.002 ? samples : [];
+    var sampler = window.DebriPodPalette && window.DebriPodPalette.sampleContrastText;
+    var selected = typeof sampler === "function" ? sampler(activeSamples, materialText) : materialText;
+    if(!selected) selected = materialText;
+    if(!selected) selected = "#000000";
+    var edge = selected.toLowerCase() === "#000000" ? "rgba(0,0,0,.65)" : "rgba(255,255,255,.65)";
+    root.style.setProperty("--lib-selected-contrast", selected);
+    root.style.setProperty("--lib-selected-pill-contrast", selected);
+    root.style.setProperty("--lib-selected-render-contrast", selected);
+    root.style.setProperty("--lib-selected-pill-render-contrast", selected);
+    root.style.setProperty("--lib-selected-pill-edge", edge);
     return true;
   }catch(e){ return false; }
 }
@@ -611,6 +660,12 @@ function visualizerFrame(ts){
     var media = currentVisualizerMediaElement();
     var features = visualizerActive && media && !document.hidden ? (sampleCachedVisualizerAnalysis(media) || liveVisualizerFeatures(media)) : null;
     updateVisualizerSignal(features);
+    var contrastState = visualizerFade > 0.002 ? "active" : "paused";
+    if(contrastState !== visualizerContrastState){
+      visualizerContrastState = contrastState;
+      applySelectedTextContrast();
+    }
+    var needsBlackGlassFrame = visualizerNeedsBlackFrame;
     if(visualizerFade > 0.002 || visualizerNeedsBlackFrame){
       renderVisualizerWebGL();
       visualizerNeedsBlackFrame = false;
@@ -619,10 +674,18 @@ function visualizerFrame(ts){
       var showing = visualizerFade > 0.002;
       visualizerBg.classList.toggle("active", showing);
       visualizerBg.classList.toggle("off", !showing);
+      if(showing){
+        visualizerBg.style.removeProperty("opacity");
+        visualizerBg.style.removeProperty("transition");
+      }else{
+        visualizerBg.style.setProperty("transition", "none");
+        visualizerBg.style.setProperty("opacity", "0");
+      }
     }
     try{
       if(typeof refreshLiquidGlassVisualizerSources === "function" && visualizerFade > 0.002) refreshLiquidGlassVisualizerSources("reactive artwork visualizer");
       if(typeof renderLiquidGlassVisualizerSourceNow === "function" && visualizerFade > 0.002) renderLiquidGlassVisualizerSourceNow(currentVisualizerFrameState(now), {activeAnimating:true});
+      if(typeof renderLiquidGlassVisualizerSourceNow === "function" && visualizerFade <= 0.002 && (fadeWasVisible || needsBlackGlassFrame)) renderLiquidGlassVisualizerSourceNow(currentVisualizerFrameState(now), {activeAnimating:false});
     }catch(e){}
   }catch(e){}
   if(visualizerShouldSchedule(visualizerFade, visualizerFadeTarget, visualizerNeedsBlackFrame)) scheduleVisualizerFrame(0);

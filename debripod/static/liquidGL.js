@@ -633,7 +633,10 @@
 
         vec4 sampleLiquidSource(vec2 uv) {
           if (u_reactiveArtSource) {
-            vec2 screen = (uv - 0.5) * u_reactiveViewport;
+            // Lens bounds are CSS top-left UVs; the visualizer background is
+            // rendered with bottom-left WebGL UVs. Keep both paths identical.
+            vec2 backgroundUv = vec2(clamp(uv.x, 0.0, 1.0), 1.0 - clamp(uv.y, 0.0, 1.0));
+            vec2 screen = (backgroundUv - 0.5) * u_reactiveViewport;
             float c = cos(u_reactiveAngle);
             float s = sin(u_reactiveAngle);
             vec2 rotated = vec2(c * screen.x + s * screen.y, -s * screen.x + c * screen.y);
@@ -664,7 +667,7 @@
           if (u_useAlbumTransitionSource) {
             return sampleAlbumArtSource(uv);
           }
-          return texture2D(u_tex, uv);
+          return texture2D(u_tex, clamp(uv, vec2(0.0), vec2(1.0)));
         }
 
         void main(){
@@ -817,10 +820,13 @@
           }
 
           if (u_revealType == 1) {
-              final.rgb *= u_revealProgress;
+              // Reveal is applied to alpha; RGB is premultiplied once below.
               final.a  *= u_revealProgress;
           }
 
+          // The renderer is created with premultipliedAlpha:true. Without
+          // this multiplication fade/AA pixels can retain dark opaque edges.
+          final.rgb *= final.a;
           final.rgb *= inShape;
           final.a   *= inShape;
 
@@ -1815,10 +1821,12 @@
       }
       if (!this.texture) {
         this._debugRenderSkip("render skipped: missing texture");
+        this.clear();
         return;
       }
       if (this.sourceType === "albumArtTransition" && !this._albumCurrentTexture && !this._forceGlassCanary()) {
         this._debugRenderSkip("render skipped: albumArtTransition missing current texture");
+        this.clear();
         return;
       }
       if (frameState) this._externalFrameState = frameState;
@@ -1880,7 +1888,7 @@
       try {
         if (!lens || !lens.el || !lens.el.isConnected) return false;
         const style = window.getComputedStyle(lens.el);
-        if (style.display === "none" || style.visibility === "hidden") return false;
+        if (style.display === "none" || style.visibility === "hidden" || Number(style.opacity || 1) <= 0.01) return false;
         let node = lens.el.parentElement;
         while (node && node !== document.body) {
           const parentStyle = window.getComputedStyle(node);

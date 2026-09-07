@@ -67,7 +67,11 @@
   function activeVideo(){
     var video = document.getElementById("npVideo");
     var overlay = document.getElementById("npVideoOverlay");
-    return video && overlay && overlay.style.display !== "none" && video.readyState >= 2 && !!video.src ? video : null;
+    return canSampleVideoAmbient(video, !!(overlay && overlay.style.display !== "none")) ? video : null;
+  }
+
+  function canSampleVideoAmbient(video, overlayVisible){
+    return !!(video && overlayVisible && !video.paused && !video.ended && video.readyState >= 2 && !!video.src);
   }
 
   function ensureSurface(){
@@ -152,7 +156,10 @@
     ambient.timer = 0;
     ambient.colors = null;
     var surface = document.getElementById("videoAmbientBg");
-    if(surface) surface.classList.remove("active");
+    if(surface){
+      surface.classList.remove("active");
+      surface.style.background = "#000";
+    }
   }
 
   function sync(){ activeVideo() && settings().enabled ? start() : stop(); }
