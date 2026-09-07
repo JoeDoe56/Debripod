@@ -1,3 +1,14 @@
+function nowPlayingArtSrcValue(value){
+  if(value && typeof value === "object"){
+    value = value.url || value.src || value.href || "";
+  }
+  return String(value == null ? "" : value).trim();
+}
+
+function nowPlayingArtCompareKey(value){
+  return nowPlayingArtSrcValue(value);
+}
+
 function currentNowPlayingArtSrc(){
   try{
     if(typeof currentNowPlayingArtTextureSrc === "function") return currentNowPlayingArtTextureSrc();
@@ -57,6 +68,8 @@ function setPlaybackPillMetadata(meta, fallbackLabel){
       requestAnimationFrame(()=>{
         try{
           pathPillNowText.classList.toggle("pathPillNowTextSmall", pathPillNowText.scrollWidth > pathPillNowText.clientWidth + 1);
+          if(typeof updatePathPillMaxWidth === "function") updatePathPillMaxWidth();
+          if(typeof updatePathPillScrollingMasks === "function") updatePathPillScrollingMasks();
         }catch(e){}
       });
     }
@@ -66,7 +79,7 @@ function setPlaybackPillMetadata(meta, fallbackLabel){
     if(!hasNowPlayingMetadata() && infoPill) infoPill.classList.add("infoPillHidden");
   }catch(e){}
   try{
-    if(npTech) npTech.dataset.progressText = m.tech || "";
+    if(npTech) npTech.dataset.progressText = String(m.quality || m.tech || m.ext || "").trim();
     renderInfoPillLabels();
   }catch(e){}
   try{ if(nowPlaying && nowPlaying.style.display === "block") setHeader(); }catch(e){}

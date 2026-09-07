@@ -216,6 +216,7 @@
   var npPageFadeToken = 0;
   var nowPlaying = document.getElementById("nowPlaying");
   var npArt = document.getElementById("npArt");
+  var npArtStill = document.getElementById("npArtStill");
   var pathPillNowRow = document.getElementById("pathPillNowRow");
   var pathPillNowText = document.getElementById("pathPillNowText");
   var infoPill = document.getElementById("infoPill");
@@ -354,7 +355,16 @@
       const rootStyle = getComputedStyle(root);
       const screenFrame = Math.max(0, parseFloat(rootStyle.getPropertyValue("--screenFrame")) || 0);
       const infoWidth = Math.max(1, Math.floor(fallbackWidth - (screenFrame * 2)));
-      const coverRect = npArt && npArt.getBoundingClientRect ? npArt.getBoundingClientRect() : null;
+      const artCandidates = [npArt, npArtStill].filter(Boolean);
+      const coverRect = artCandidates
+        .map((el)=>{
+          try{
+            const style = window.getComputedStyle ? getComputedStyle(el) : null;
+            const rect = el.getBoundingClientRect ? el.getBoundingClientRect() : null;
+            return style && style.display === "none" ? null : rect;
+          }catch(e){ return null; }
+        })
+        .find((rect)=>rect && rect.width > 1) || null;
       const coverWidth = coverRect && coverRect.width > 1 ? coverRect.width : fallbackWidth;
       const maxWidth = constrainPathPillWidth(infoWidth, coverWidth, fallbackWidth);
       root.style.setProperty("--pathPillMaxWidth", maxWidth + "px");
@@ -379,9 +389,10 @@
   try{
     if("ResizeObserver" in window){
       const pathPillGeometryObserver = new ResizeObserver(()=>updatePathPillMaxWidth());
-      [npArt, document.querySelector(".ipodScreenContent"), infoPill].filter(Boolean).forEach((el)=>pathPillGeometryObserver.observe(el));
+      [npArt, npArtStill, document.querySelector(".ipodScreenContent"), infoPill].filter(Boolean).forEach((el)=>pathPillGeometryObserver.observe(el));
     }
   }catch(e){}
+  try{ if(npArtStill) npArtStill.addEventListener("load", ()=>updatePathPillMaxWidth(), {passive:true}); }catch(e){}
 
   function refreshPlaybackPillTextLayer(reason, force){
     try{
@@ -412,7 +423,7 @@
             lens.rectPx = null;
             if(lens.updateMetrics) lens.updateMetrics();
             lens.revealTypeIndex = 1;
-            lens._revealProgress = isPathPillVisible() ? pathPillRenderOpacity() : 0;
+            lens._revealProgress = pathPillRenderOpacity();
           }catch(e){}
         });
       }
@@ -550,7 +561,7 @@
             lens.rectPx = null;
             if(lens.updateMetrics) lens.updateMetrics();
             lens.revealTypeIndex = 1;
-            lens._revealProgress = isInfoPillVisible() ? infoPillRenderOpacity() : 0;
+            lens._revealProgress = infoPillRenderOpacity();
           }catch(e){}
         });
       }
@@ -749,6 +760,41 @@
     if(playbackPillsPinned) hidePlaybackPillsImmediate("art unpin", false);
     else setPlaybackPillsPinned(true);
   }
+  function bindPlaybackPillCoverToggle(el){
+    try{
+      if(!el || el._dpPlaybackPillToggleBound) return;
+      el._dpPlaybackPillToggleBound = true;
+      const singleClickDelayMs = 320;
+      const gestureSuppressMs = 520;
+      const commit = ()=>{
+        bindPlaybackPillCoverToggle.timer = null;
+        const now = performance.now();
+        if(bindPlaybackPillCoverToggle.lastGestureAt && now - bindPlaybackPillCoverToggle.lastGestureAt < gestureSuppressMs) return;
+        bindPlaybackPillCoverToggle.lastGestureAt = now;
+        togglePlaybackPillsFromArt();
+      };
+      const run = ()=>{
+        if(bindPlaybackPillCoverToggle.timer) clearTimeout(bindPlaybackPillCoverToggle.timer);
+        bindPlaybackPillCoverToggle.timer = setTimeout(()=>{
+          commit();
+        }, singleClickDelayMs);
+      };
+      el.addEventListener("click", (ev)=>{
+        try{ ev.preventDefault(); ev.stopPropagation(); }catch(e){}
+        if(Number(ev.detail || 0) >= 2){
+          if(bindPlaybackPillCoverToggle.timer) clearTimeout(bindPlaybackPillCoverToggle.timer);
+          commit();
+        }else run();
+      }, {passive:false});
+      el.addEventListener("dblclick", (ev)=>{
+        try{ ev.preventDefault(); ev.stopPropagation(); }catch(e){}
+        if(bindPlaybackPillCoverToggle.timer) clearTimeout(bindPlaybackPillCoverToggle.timer);
+        bindPlaybackPillCoverToggle.timer = null;
+      }, {passive:false});
+    }catch(e){}
+  }
+  bindPlaybackPillCoverToggle(npArt);
+  bindPlaybackPillCoverToggle(npArtStill);
   window.addEventListener("resize", ()=>{
     wheelGlassTiltRect = null;
     visualizerArtBounds = null;

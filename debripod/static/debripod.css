@@ -1648,7 +1648,9 @@
   object-fit:contain;
   object-position:center;
   display:block;
-  pointer-events:none;
+  cursor:pointer;
+  pointer-events:auto;
+  touch-action:manipulation;
 }
 .npArt{
   aspect-ratio:1 / 1;
@@ -1795,6 +1797,25 @@
     input[type="range"].npSeek:focus-visible{
       outline:0;
     }
+    input[type="range"].npSeek::-webkit-slider-thumb{
+      width:0;
+      height:0;
+      border:0;
+      background:transparent;
+      -webkit-appearance:none;
+      appearance:none;
+    }
+    input[type="range"].npSeek::-moz-range-thumb{
+      width:0;
+      height:0;
+      border:0;
+      background:transparent;
+    }
+    input[type="range"].npSeek::-webkit-slider-runnable-track,
+    input[type="range"].npSeek::-moz-range-track{
+      background:transparent;
+      border:0;
+    }
     .npProgressWrap:focus-within .npMeterTrack{
       outline:2px solid var(--lib-selected-render-contrast);
       outline-offset:2px;
@@ -1828,7 +1849,7 @@
       width:0%;
       min-width:0;
       border-radius:999px;
-      background:var(--lib-selected-render-contrast);
+      background:var(--theme-accent-bar);
       transition:width .12s linear;
     }
     .npSeekIndicator{
@@ -1863,7 +1884,7 @@
       top:4px;
       bottom:4px;
       width:2px;
-      background:var(--lib-selected-render-contrast);
+      background:var(--theme-accent-bar);
     }
     .infoPill .npTime{
       margin-top:2px;
@@ -1876,6 +1897,8 @@
     .infoPill .npTime #npDur{
       min-width:44px;
     }
+    .infoPill .npTime #npCur{text-align:left;}
+    .infoPill .npTime #npDur{text-align:right;}
     .infoPill .npTime .npTechInline{
       flex:1;
       text-align:center;
