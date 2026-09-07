@@ -70,6 +70,7 @@
       "glassFrostSamples": 8,
       "glassIdleFps": 30,
       "glassInteractionFps": 60,
+      "glassMotionEffectMultiplier": 1.0,
       "centerBounceAmount": 0.075,
       "centerBounceDuration": 240.0,
       "centerBounceOvershoot": 0.9,
@@ -153,6 +154,10 @@
     return clampNumber(value, fallback == null ? 0 : fallback, -1, 1);
   }
 
+  function normalizeGlassMotionEffectMultiplier(value){
+    return clampNumber(value, 1, 0, 2);
+  }
+
   function migrateLegacyGlassMaterial(src, fallback){
     if(src && Number.isFinite(Number(src.material))){
       return normalizeLiquidGlassMaterial(src.material, fallback);
@@ -205,6 +210,7 @@
     if(saved.glassFrostSamples != null) out.glassFrostSamples = Math.round(clampNumber(saved.glassFrostSamples, out.glassFrostSamples, 0, 16));
     if(saved.glassIdleFps != null) out.glassIdleFps = normalizeAnimationFps(saved.glassIdleFps);
     if(saved.glassInteractionFps != null) out.glassInteractionFps = normalizeAnimationFps(saved.glassInteractionFps);
+    if(saved.glassMotionEffectMultiplier != null) out.glassMotionEffectMultiplier = normalizeGlassMotionEffectMultiplier(saved.glassMotionEffectMultiplier);
     if(saved.centerBounceAmount != null) out.centerBounceAmount = clampNumber(saved.centerBounceAmount, out.centerBounceAmount, 0, 0.3);
     if(saved.centerBounceDuration != null) out.centerBounceDuration = clampNumber(saved.centerBounceDuration, out.centerBounceDuration, 0, 1000);
     if(saved.centerBounceOvershoot != null) out.centerBounceOvershoot = clampNumber(saved.centerBounceOvershoot, out.centerBounceOvershoot, 0, 1.4);
@@ -237,6 +243,7 @@
     out.glassFrostSamples = Math.round(clampNumber(out.glassFrostSamples, 8, 0, 16));
     out.glassIdleFps = normalizeAnimationFps(out.glassIdleFps);
     out.glassInteractionFps = normalizeAnimationFps(out.glassInteractionFps);
+    out.glassMotionEffectMultiplier = normalizeGlassMotionEffectMultiplier(out.glassMotionEffectMultiplier);
     return out;
   }
 
@@ -351,6 +358,7 @@
     normalizeAnimationFps,
     cloneAnimationFps,
     normalizeLiquidGlassMaterial,
+    normalizeGlassMotionEffectMultiplier,
     migrateLegacyGlassMaterial,
     cloneGlassElementSettings,
     cloneVisualizerResponse,

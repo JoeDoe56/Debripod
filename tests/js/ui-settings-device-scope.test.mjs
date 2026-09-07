@@ -8,6 +8,7 @@ import {fileURLToPath} from "node:url";
 const here = path.dirname(fileURLToPath(import.meta.url));
 const sourcePath = path.resolve(here, "../../debripod/static/js/ui-settings.js");
 const source = fs.readFileSync(sourcePath, "utf8");
+const settingsUiSource = fs.readFileSync(path.resolve(here, "../../debripod/static/js/settings-ui.js"), "utf8");
 
 function makeStorage(initial = {}) {
   const values = new Map(Object.entries(initial));
@@ -63,8 +64,26 @@ test("fresh device has the release visual-quality defaults and no server write p
   assert.equal(fresh.glassFrostSamples, 8);
   assert.equal(fresh.glassIdleFps, 30);
   assert.equal(fresh.glassInteractionFps, 60);
+  assert.equal(fresh.glassMotionEffectMultiplier, 1);
   assert.deepEqual({...fresh.visualizerFrequencyResponse}, {brightness: 1, opacity: 0, saturation: 0.15, contrast: 0.1});
   assert.deepEqual({...fresh.visualizerEnergyResponse}, {brightness: 0.12, opacity: 0, saturation: 0.05, contrast: 0.05});
   assert.deepEqual({...fresh.visualizerBeatResponse}, {brightness: 0.1, opacity: 0, saturation: 0, contrast: 0.05});
   assert.doesNotMatch(source, /apiPost\s*\(/);
+});
+
+test("motion-effect strength is bounded and retained per device user", () => {
+  const settings = loadUiSettings(makeStorage());
+  const alice = settings.setDeviceSettingsUserId("user-alice");
+  alice.glassMotionEffectMultiplier = 1.75;
+  settings.saveUiSettings(alice);
+  const bob = settings.setDeviceSettingsUserId("user-bob");
+  assert.equal(bob.glassMotionEffectMultiplier, 1);
+  bob.glassMotionEffectMultiplier = 99;
+  settings.saveUiSettings(bob);
+  assert.equal(settings.setDeviceSettingsUserId("user-bob").glassMotionEffectMultiplier, 2);
+  assert.equal(settings.setDeviceSettingsUserId("user-alice").glassMotionEffectMultiplier, 1.75);
+});
+
+test("motion-effect range editor keeps a friendly label", () => {
+  assert.match(settingsUiSource, /glassMotionEffectMultiplier:\"Motion effect\"/);
 });

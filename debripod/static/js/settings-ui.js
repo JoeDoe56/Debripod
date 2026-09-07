@@ -1995,6 +1995,7 @@ async function libDoSearch(engine, q){
     if(cat === "glass"){
       const items = [];
       items.push({kind:"libui_action", label:"Enable device motion", sub_label:"Allow tilt lighting and wheel motion; tap to retry permission", action:"enable_glass_motion", pills:[window.DebriPod && DebriPod.glassLighting ? DebriPod.glassLighting.status() : "Unavailable"], forceTwoLine:true, settingRow:true});
+      items.push({kind:"libui_action", label:"Motion effect", sub_label:"Device-motion lighting and wheel strength", action:"set_glass_quality:glassMotionEffectMultiplier", pills:[String(Number(uiSettings.glassMotionEffectMultiplier == null ? 1 : uiSettings.glassMotionEffectMultiplier).toFixed(2)) + "x"], forceTwoLine:true, settingRow:true});
       GLASS_ELEMENT_KEYS.forEach((key)=>{
         items.push({kind:"libui_action", label:glassElementLabel(key), sub_label:"Dark ↔ transparent ↔ light", action:"set_glass_value:" + key + ":material", pills:glassElementSummary(key), forceTwoLine:true, settingRow:true});
       });
@@ -2828,9 +2829,10 @@ async function libDoSearch(engine, q){
         }
         if(String(action || "").indexOf("set_glass_quality:") === 0){
           const key = String(action).split(":")[1] || "";
-          const spec = {glassRenderScale:[0.5,2,0.01], glassFrostSamples:[0,16,1,true], glassIdleFps:[30,120,30,true], glassInteractionFps:[30,120,30,true]}[key];
+          const spec = {glassRenderScale:[0.5,2,0.01], glassFrostSamples:[0,16,1,true], glassIdleFps:[30,120,30,true], glassInteractionFps:[30,120,30,true], glassMotionEffectMultiplier:[0,2,0.01]}[key];
           if(!spec) return false;
-          return await setDeviceQualityNumber(key === "glassRenderScale" ? "Glass render scale" : key, Number(uiSettings[key] || 0), {min:spec[0], max:spec[1], step:spec[2], integer:!!spec[3]}, async function(value){ uiSettings[key] = Number(value); }, async function(){ await viewLibAdvancedCategory("glass", false); });
+          const labels = {glassRenderScale:"Glass render scale", glassFrostSamples:"Frost samples", glassIdleFps:"Idle glass FPS", glassInteractionFps:"Interaction glass FPS", glassMotionEffectMultiplier:"Motion effect"};
+          return await setDeviceQualityNumber(labels[key] || key, Number(uiSettings[key] || 0), {min:spec[0], max:spec[1], step:spec[2], integer:!!spec[3]}, async function(value){ uiSettings[key] = Number(value); }, async function(){ await viewLibAdvancedCategory("glass", false); });
         }
         return false;
       case "range_editor_apply":
