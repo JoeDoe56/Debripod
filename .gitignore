@@ -57,6 +57,7 @@ lastfm_loved.json
 *.db-shm
 *.migrated.local
 *.json
+!debripod/static/icons/app-icon-assets.json
 .env
 .env.*
 

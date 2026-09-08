@@ -1,0 +1,12 @@
+{
+  "source": "icons/debripod-app-icon.svg",
+  "sha256": "4eb3adfee078d9ea70f27f7200da9b0f249c725080950c6ae25e317b61b075d2",
+  "assets": {
+    "icon-16.png": "aadafd0dccf71ccd0b66922bf664fd07bcc765acadb70628449b8483d1c381fc",
+    "icon-32.png": "04e3660feb1186e0e2e8896a5bfd06f83d1d34304a84f2db119f043582c4abd4",
+    "icon-180.png": "17726f61f621f810e5c61b9fd734a88c252ae0eab4652aafa17a3ae8bbceabdc",
+    "icon-192.png": "07420e4b41b094a6bd08a9d0258839eb8c493b9b62619e4655c4cd71f3be03b1",
+    "icon-512.png": "f4025802e26d716ccb6fecbfe9bc5b0e4519239b988ba5a77e7c89efe95953ac",
+    "favicon.ico": "ad654961d30e633aa5528ff6f49e55c119776b5b1bcad4813ed05774baefb70d"
+  }
+}
