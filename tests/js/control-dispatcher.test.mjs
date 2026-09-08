@@ -3,7 +3,7 @@ import {createRequire} from "node:module";
 import test from "node:test";
 
 const require = createRequire(import.meta.url);
-const {createBrowserControlDispatcher, resolveControlCommand} = require("../../debripod/static/js/control-dispatcher.js");
+const {createBrowserControlDispatcher, resolveControlCommand, clampSelectionIndex} = require("../../debripod/static/js/control-dispatcher.js");
 const {contextMenuRows, normalizeMediaTarget} = require("../../debripod/static/js/media-actions.js");
 
 test("Q and E map through the same command table in all contexts", () => {
@@ -56,4 +56,11 @@ test("range editor consumes center tap, center hold, and Menu before ordinary co
   await dispatcher.dispatch("hold", "center");
   await dispatcher.dispatch("tap", "top");
   assert.deepEqual(calls, ["commit", "keyboard", "cancel"]);
+});
+
+test("selection wheel clamps at both terminal rows instead of looping", () => {
+  assert.equal(clampSelectionIndex(0, -1, 2100), 0);
+  assert.equal(clampSelectionIndex(2099, 1, 2100), 2099);
+  assert.equal(clampSelectionIndex(2099, -1, 2100), 2098);
+  assert.equal(clampSelectionIndex(0, 1, 0), 0);
 });

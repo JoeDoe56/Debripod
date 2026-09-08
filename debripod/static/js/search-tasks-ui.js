@@ -726,17 +726,21 @@ async function viewHistory(push, options){
     try{
       const queue = window.DebriPod && DebriPod.playbackQueue;
       if(!queue) return items;
-      queue.state.items.forEach((item, index)=>{
+      const entries = typeof queue.orderedEntries === "function"
+        ? queue.orderedEntries()
+        : queue.state.items.map((item, canonicalIndex)=>({item:item, canonicalIndex:canonicalIndex, orderIndex:canonicalIndex}));
+      entries.forEach((entry)=>{
+        const item = entry.item;
         const pills = [item.media];
-        if(index === queue.state.index) pills.unshift("Now");
-        if(queue.state.shuffle) pills.push("Shuffle");
+        if(entry.canonicalIndex === queue.state.index) pills.unshift("Now");
         if(item.quality) pills.push(String(item.quality));
         items.push({
           kind:"queue_item",
-          label:queueItemLabel(item, index),
+          label:queueItemLabel(item, entry.orderIndex),
           pills:pills,
           queueKind:"canonical",
-          queueIndex:index,
+          queueIndex:entry.canonicalIndex,
+          queueOrderPos:entry.orderIndex,
           media:item.media,
           queueItem:item
         });

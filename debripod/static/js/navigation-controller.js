@@ -42,6 +42,23 @@
     return result;
   }
 
+  // Ordinary view objects contain live load functions. Preserve those
+  // references while cloning the serializable navigation snapshot.
+  function immutableOriginClone(origin){
+    const source = origin && typeof origin === "object" ? origin : {};
+    const result = cloneValue(source) || {};
+    try{
+      if(source.currentRef) result.currentRef = source.currentRef;
+      if(source.rootRef) result.rootRef = source.rootRef;
+      if(Array.isArray(source.historyRefs)) result.historyRefs = source.historyRefs.slice();
+      if(source.current) result.current = cloneValue(source.current);
+      if(source.root) result.root = cloneValue(source.root);
+      if(Array.isArray(source.history)) result.history = source.history.map(cloneValue);
+      Object.freeze(result);
+    }catch(_error){}
+    return result;
+  }
+
   function createSpecialNavigationModel(initial){
     const source = initial && typeof initial === "object" ? initial : {};
     const model = {
@@ -66,7 +83,7 @@
       const opts = options || {};
       if(!model.stack.length){
         if(!ordinaryOrigin && !model.origin) throw new Error("A special page requires an ordinary origin");
-        if(ordinaryOrigin) model.origin = immutableClone(ordinaryOrigin);
+        if(ordinaryOrigin) model.origin = immutableOriginClone(ordinaryOrigin);
         model.startedFromDeepLink = !!opts.startedFromDeepLink;
       }
       const active = model.stack.length ? model.stack[model.stack.length - 1] : null;

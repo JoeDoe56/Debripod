@@ -66,6 +66,16 @@
     return normalized;
   }
 
+  function randomEligibleIndexes(items){
+    const excluded = new Set(["info", "up", "random", "liked_category", "playlist_create", "smart_playlist_create", "playlist_edit_entry"]);
+    const indexes = [];
+    (Array.isArray(items) ? items : []).forEach((item, index)=>{
+      const kind = text(item && item.kind);
+      if(kind && !excluded.has(kind)) indexes.push(index);
+    });
+    return indexes;
+  }
+
   function defaultState(source){
     const state = source && typeof source === "object" ? source : {};
     if(!Array.isArray(state.items)) state.items = [];
@@ -175,6 +185,26 @@
       return state.shuffle && state.shuffleOrder.length ? state.shuffleOrder.slice() : state.items.map((_item, index) => index);
     }
 
+    function orderedItems(){
+      return orderedIndexes().map((index)=>state.items[index]).filter(Boolean);
+    }
+
+    function orderedEntries(){
+      return orderedIndexes().map((canonicalIndex, orderIndex)=>({
+        item: state.items[canonicalIndex],
+        canonicalIndex,
+        orderIndex,
+      })).filter((entry)=>entry.item);
+    }
+
+    function isPermutation(order, length){
+      if(!Array.isArray(order) || order.length !== length) return false;
+      const seen = new Set(order);
+      if(seen.size !== length) return false;
+      for(let index = 0; index < length; index += 1) if(!seen.has(index)) return false;
+      return true;
+    }
+
     async function playIndex(index, options){
       const target = Number(index);
       if(!Number.isInteger(target) || target < 0 || target >= state.items.length) return false;
@@ -234,7 +264,7 @@
       state.shuffleOrder = Array.isArray(source.shuffleOrder)
         ? source.shuffleOrder.filter((index) => Number.isInteger(index) && index >= 0 && index < state.items.length)
         : [];
-      if(state.shuffle && state.shuffleOrder.length !== state.items.length){
+      if(state.shuffle && !isPermutation(state.shuffleOrder, state.items.length)){
         state.shuffleOrder = makeShuffleOrder(state.items.length, state.index);
       }
       notify("restore");
@@ -256,6 +286,9 @@
       playIndex,
       remove,
       setShuffle,
+      orderedIndexes,
+      orderedItems,
+      orderedEntries,
       serializeForPlaybackSession,
       restoreFromPlaybackSession,
     };
@@ -350,6 +383,7 @@
   return {
     queueIdentity,
     normalizeQueueItem,
+    randomEligibleIndexes,
     createPlaybackQueueController,
     createBrowserPlaybackQueueController,
   };

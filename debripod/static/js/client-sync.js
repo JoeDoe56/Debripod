@@ -384,6 +384,25 @@
     return function(){};
   }
 
+  function cachedItemIdentity(item){
+    if(!item || typeof item !== "object") return "";
+    const rootId = item.root_id != null ? item.root_id : (item.root && item.root.id);
+    const sourceId = item.source_id != null ? item.source_id : (item.video_id != null ? item.video_id : item.result_id);
+    return [item.kind, item.media, rootId, item.rel, sourceId,
+      item.id, item.queue_id, item.level, item.value, item.label]
+      .map(value=>value == null ? "" : String(value)).join("\u001f");
+  }
+
+  function restoreCachedSelectionIndex(items, selectedItem, fallback){
+    const target = cachedItemIdentity(selectedItem);
+    if(target){
+      const found = (Array.isArray(items) ? items : []).findIndex((item)=>cachedItemIdentity(item) === target);
+      if(found >= 0) return found;
+    }
+    const list = Array.isArray(items) ? items : [];
+    return Math.max(0, Math.min(Math.max(0, list.length - 1), Number(fallback || 0)));
+  }
+
   function applyViewRecord(rec){
     try{
       if(!rec || !Array.isArray(rec.items) || !rec.items.length || !state) return false;
@@ -399,9 +418,11 @@
         playlistRel: cur.playlistRel || "",
         load: restoreLoadForCurrent(cur)
       };
-      state.sel = Math.max(0, Math.min(rec.items.length - 1, Number(rec.sel || 0)));
+      const recordSelection = Math.max(0, Math.min(rec.items.length - 1, Number(rec.sel || 0)));
+      const selectedRecordItem = rec.items[recordSelection];
+      state.sel = recordSelection;
       if(typeof resetList === "function") resetList(rec.items);
-      state.sel = Math.max(0, Math.min((state.items || rec.items).length - 1, Number(rec.sel || 0)));
+      state.sel = restoreCachedSelectionIndex(state.items || rec.items, selectedRecordItem, recordSelection);
       if(typeof renderList === "function") renderList();
       if(libList) requestAnimationFrame(()=>{ try{ libList.scrollTop = Number(rec.scrollTop || 0); }catch(e){} });
       return true;
@@ -414,14 +435,26 @@
     try{
       if(!state || !state.current) return;
       const current = descriptorForCurrent(state.current);
-      const items = sanitizeItem(Array.isArray(renderedItems) ? renderedItems : (state.items || []), 0) || [];
+      // The caller owns the full logical list even when the DOM is virtualized.
+      // Sanitize each row separately so sanitizeItem's nested-array bound cannot
+      // truncate a 2100-item library view to the visible window/prefix.
+      const sourceItems = Array.isArray(renderedItems) ? renderedItems : (state.items || []);
+      const persistedSourceItems = sourceItems.filter((item)=>item && item.kind !== "random");
+      const selectedItem = state.items && state.items[Number(state.sel || 0)];
+      const selectedIndex = persistedSourceItems.indexOf(selectedItem);
+      const items = persistedSourceItems
+        .map((item)=>sanitizeItem(item, 0))
+        .filter((item)=>item && typeof item === "object");
+      const snapshotSel = selectedIndex >= 0
+        ? selectedIndex
+        : Math.max(0, Number(state.sel || 0) - sourceItems.slice(0, Math.max(0, Number(state.sel || 0))).filter((item)=>item && item.kind === "random").length);
       const rootVersion = current.rootId && stateSummary && stateSummary.library_versions ? Number(stateSummary.library_versions[current.rootId] || 0) : 0;
       const rec = {
         key: viewKeyForDescriptor(current),
         current: current,
         descriptor: current,
         items: items,
-        sel: Number(state.sel || 0),
+        sel: snapshotSel,
         scrollTop: libList ? Number(libList.scrollTop || 0) : 0,
         rootId: current.rootId,
         label: current.label || "",
@@ -629,7 +662,12 @@
       }else{
         return false;
       }
-      if(typeof last.value.sel === "number") state.sel = Math.max(0, Math.min((state.items || []).length - 1, Number(last.value.sel || 0)));
+      const lastValue = last.value || {};
+      const recordSelection = Array.isArray(lastValue.items)
+        ? Math.max(0, Math.min(lastValue.items.length - 1, Number(lastValue.sel || 0)))
+        : Number(lastValue.sel || 0);
+      const selectedRecordItem = Array.isArray(lastValue.items) ? lastValue.items[recordSelection] : null;
+      state.sel = restoreCachedSelectionIndex(state.items || [], selectedRecordItem, recordSelection);
       if(typeof renderList === "function") renderList();
       if(libList) libList.scrollTop = Number(last.value.scrollTop || 0);
       return true;

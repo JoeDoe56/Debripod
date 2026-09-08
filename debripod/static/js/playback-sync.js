@@ -589,18 +589,42 @@
     return js;
   }
 
+  function rememberedLibraryBreadcrumb(){
+    const current = state.current || {};
+    const kind = String(current.kind || "");
+    const playbackPage = new Set(["now_playing", "playback_queue", "history", "queue"]);
+    const nav = state.specialNav || {};
+    const stack = Array.isArray(nav.stack) ? nav.stack : [];
+    const stackKind = stack.length ? String((stack[stack.length - 1] && stack[stack.length - 1].kind) || "") : "";
+    const isPlaybackPage = playbackPage.has(kind) || playbackPage.has(stackKind);
+    if(isPlaybackPage && nav.stack && nav.stack.length && nav.origin){
+      const origin = nav.origin;
+      return {
+        root: origin.rootRef || origin.root || null,
+        history: Array.isArray(origin.historyRefs) ? origin.historyRefs : (Array.isArray(origin.history) ? origin.history : []),
+        current: origin.currentRef || origin.current || null,
+      };
+    }
+    if(isPlaybackPage && state.libraryBreadcrumb){
+      return state.libraryBreadcrumb;
+    }
+    if(isPlaybackPage){
+      const history = Array.isArray(state.history) ? state.history : [];
+      return {root:state.root || null, history:history, current:history.length ? history[history.length - 1] : null};
+    }
+    const breadcrumb = {root:state.root || null, history:Array.isArray(state.history) ? state.history.slice() : [], current:current};
+    state.libraryBreadcrumb = breadcrumb;
+    return breadcrumb;
+  }
+
   function headerText(){
-    try{
-      if(nowPlaying && nowPlaying.style.display === "block" && state.nowPlayingPathActive){
-        return "Now Playing";
-      }
-    }catch(e){}
+    const breadcrumb = rememberedLibraryBreadcrumb();
     const parts = [];
-    if(state.root && state.root.name) parts.push(state.root.name);
-    for(const v of state.history){
+    if(breadcrumb.root && breadcrumb.root.name) parts.push(breadcrumb.root.name);
+    for(const v of breadcrumb.history){
       if(v && v.label) parts.push(v.label);
     }
-    if(state.current && state.current.label) parts.push(state.current.label);
+    if(breadcrumb.current && breadcrumb.current.label) parts.push(breadcrumb.current.label);
     return parts.length ? parts.join(" > ") : "Library";
   }
 

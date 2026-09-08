@@ -39,5 +39,40 @@
     return {retained:retained, inserted:inserted, removed:removed, selectionIndex:selectionIndex, animate:!reduced};
   }
 
-  return {TRANSITION_DURATION_MS:TRANSITION_DURATION_MS, CASCADE_STEP_MS:CASCADE_STEP_MS, spawnDelayMs:spawnDelayMs, planRowMutation:planRowMutation};
+  function shouldAnimateListMutation(previousCount, nextCount, changedRows, options){
+    const opts = options || {};
+    // A page transition animates only the rows that are actually rendered;
+    // logical dataset size must not suppress the visible transition.
+    if(opts.reason === "page load") return true;
+    return Number(previousCount || 0) <= 500 && Number(nextCount || 0) <= 500 && Number(changedRows || 0) <= 100;
+  }
+
+  function isNonVirtualInfoView(kind){
+    const value = String(kind || "");
+    return value === "roots" || value === "libinfo" || value === "media_information" || value === "youtube_comments" ||
+      value === "settings" || value === "performance" || value.indexOf("settings") === 0 || value.indexOf("setup") === 0 ||
+      value.indexOf("account") === 0 || value.indexOf("libinfo") === 0 || value.indexOf("libui") === 0 ||
+      value.indexOf("libadvanced") === 0 || value.indexOf("libbinds") === 0 || value.indexOf("libdatabase") === 0 ||
+      value.indexOf("ui_settings") === 0 || value.indexOf("range_editor") === 0;
+  }
+
+  function adaptiveOverscanRows(viewportHeight, rowHeight, velocityPxPerMs){
+    const height = Math.max(1, Number(viewportHeight) || 1);
+    const row = Math.max(1, Number(rowHeight) || 1);
+    const viewportRows = Math.max(1, Math.ceil(height / row));
+    const velocity = Math.abs(Number(velocityPxPerMs) || 0);
+    const velocityRows = Math.min(12, Math.ceil((velocity * 100) / row));
+    const base = Math.min(4, Math.max(2, Math.ceil(viewportRows * 0.25)));
+    return Math.min(16, base + velocityRows);
+  }
+
+  return {
+    TRANSITION_DURATION_MS:TRANSITION_DURATION_MS,
+    CASCADE_STEP_MS:CASCADE_STEP_MS,
+    spawnDelayMs:spawnDelayMs,
+    planRowMutation:planRowMutation,
+    shouldAnimateListMutation:shouldAnimateListMutation,
+    isNonVirtualInfoView:isNonVirtualInfoView,
+    adaptiveOverscanRows:adaptiveOverscanRows,
+  };
 });

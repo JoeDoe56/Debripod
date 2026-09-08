@@ -287,13 +287,21 @@
     const next = Array.isArray(nextItems) ? nextItems.slice() : [];
     let changedRows = Math.abs(previous.length - next.length);
     for(let ci=0;ci<Math.min(previous.length,next.length) && changedRows<=100;ci++) if(virtualItemIdentity(previous[ci],ci)!==virtualItemIdentity(next[ci],ci)) changedRows++;
-    if(previous.length > 500 || next.length > 500 || changedRows > 100) opts.animate = false;
-    const selectedIdentity = previous[state.sel] ? virtualItemIdentity(previous[state.sel], state.sel) : "";
+    const transitionApiForGuard = window.DebriPod && DebriPod.rowTransitions;
+    const canAnimateMutation = transitionApiForGuard && typeof transitionApiForGuard.shouldAnimateListMutation === "function"
+      ? transitionApiForGuard.shouldAnimateListMutation(previous.length, next.length, changedRows, opts)
+      : (opts.reason === "page load" || (previous.length <= 500 && next.length <= 500 && changedRows <= 100));
+    if(!canAnimateMutation) opts.animate = false;
+    const selectedIdentity = Object.prototype.hasOwnProperty.call(opts, "transitionSelectionIdentity")
+      ? String(opts.transitionSelectionIdentity || "")
+      : (previous[state.sel] ? virtualItemIdentity(previous[state.sel], state.sel) : "");
     const oldScroll = libList ? libList.scrollTop : 0;
     const oldRects = new Map();
+    const renderedOldIndexes = new Set();
     if(opts.animate && libList){
       libList.querySelectorAll(".ipodItem[data-index]").forEach(row=>{
         const index = Number(row.dataset.index || 0);
+        renderedOldIndexes.add(index);
         const item = previous[index];
         const kind = String((item && item.kind) || "");
         const fixedSearchRow = kind === "libsearch_result" || kind === "libsearch_file" || kind === "libsearch_status" || kind === "libsearch_filter";
@@ -307,6 +315,7 @@
     if(opts.animate && plan && plan.animate && libList){
       const listRect = libList.getBoundingClientRect();
       plan.removed.forEach(change=>{
+        if(renderedOldIndexes.size && !renderedOldIndexes.has(change.oldIndex)) return;
         const row = libList.querySelector('.ipodItem[data-index="' + change.oldIndex + '"]');
         if(!row) return;
         const rect = row.getBoundingClientRect();
@@ -349,7 +358,7 @@
         }else{
           const inserted = plan.inserted.find(change=>change.newIndex === index);
           const nearest = inserted && plan.retained.slice().sort((a,b)=>Math.abs(a.newIndex - index) - Math.abs(b.newIndex - index))[0];
-          const origin = nearest ? oldRects.get(nearest.key) : null;
+          const origin = (nearest && oldRects.get(nearest.key)) || (selectedIdentity ? oldRects.get(selectedIdentity) : null);
           const after = row.getBoundingClientRect();
           const delta = origin ? origin.top - after.top : -6;
           row.animate([{maxBlockSize:"0px", opacity:0, transform:"translateY(" + delta + "px)"}, {maxBlockSize:row.scrollHeight + "px", opacity:1, transform:"translateY(0)"}], {duration:duration, delay:transitionApi.spawnDelayMs(index), easing:"ease", fill:"both"});
@@ -434,29 +443,27 @@
     li.appendChild(row);
   }
 
-  function virtualizableViewKind(kind){
-    const stableViews = new Set([
-      "folder",
-      "metatop",
-      "metalist",
-      "history",
-      "playback_queue",
-      "libsearch_history",
-      "libsearch",
-      "libsearch_files",
-      "libsearch_result_list",
-      "libtasks"
-    ]);
-    return stableViews.has(String(kind || ""));
+    function nonVirtualInfoView(kind){
+      const transitionApi = window.DebriPod && DebriPod.rowTransitions;
+      if(transitionApi && typeof transitionApi.isNonVirtualInfoView === "function"){
+        return transitionApi.isNonVirtualInfoView(kind);
+      }
+      const value = String(kind || "");
+    return value === "roots" || value === "libinfo" || value === "media_information" || value === "youtube_comments" ||
+      value === "settings" || value === "performance" || value.indexOf("settings") === 0 || value.indexOf("setup") === 0 ||
+      value.indexOf("account") === 0 || value.indexOf("libinfo") === 0 || value.indexOf("libui") === 0 ||
+      value.indexOf("libadvanced") === 0 || value.indexOf("libbinds") === 0 || value.indexOf("libdatabase") === 0 ||
+      value.indexOf("ui_settings") === 0 || value.indexOf("range_editor") === 0;
   }
 
   function canVirtualizeList(){
     try{
       if(!libList || !state || !Array.isArray(state.items)) return false;
-      if(state.items.length < 220) return false;
       const cur = state.current || {};
       const kind = String(cur.kind || "");
-      if(!virtualizableViewKind(kind) && cur.readOnly !== true) return false;
+      if(!state.items.length || !kind || nonVirtualInfoView(kind)) return false;
+      // Library subpages are virtual by default. Form/info pages above opt
+      // out, while the row-content guard below keeps live controls safe.
       const active = document.activeElement;
       if(active && libList.contains(active) && /^(INPUT|TEXTAREA|SELECT|BUTTON)$/i.test(active.tagName || "")) return false;
       return !state.items.some((item)=> item && (
@@ -464,13 +471,10 @@
         item.kind === "range_editor_input" ||
         item.kind === "range_editor_slider" ||
         item.kind === "smart_playlist_rules_text" ||
-        item.kind === "playlist_create" ||
-        item.kind === "smart_playlist_create" ||
         item.kind === "playlist_edit_name" ||
         item.kind === "setting_value" ||
         item.kind === "settings_library_folder" ||
-        item.kind === "settings_library_remove" ||
-        item.kind === "libui_action"
+        item.kind === "settings_library_remove"
       ));
     }catch(e){
       return false;
@@ -488,8 +492,16 @@
     const viewportBottom = Math.max(viewportTop + 1, (libList.scrollTop || 0) + Math.max(1, libList.clientHeight || 1) - anchorOffset);
     const firstVisible = Math.max(0, virtualLowerBound(prefix, viewportTop) - 1);
     const lastVisible = Math.min(count, virtualLowerBound(prefix, viewportBottom) + 1);
-    const start = Math.max(0, firstVisible - 10);
-    const end = Math.max(start + 1, Math.min(count, lastVisible + 10));
+      const metrics = rowViewMetrics();
+      const rowHeight = Math.max(1, Number(metrics.fallback || 56));
+      const viewportRows = Math.max(1, Math.ceil(Math.max(1, libList.clientHeight || 1) / rowHeight));
+      const velocity = Math.abs(Number(libList._dpScrollVelocity || 0));
+      const transitionApi = window.DebriPod && DebriPod.rowTransitions;
+      const overscan = transitionApi && typeof transitionApi.adaptiveOverscanRows === "function"
+        ? transitionApi.adaptiveOverscanRows(libList.clientHeight || 1, rowHeight, velocity)
+        : Math.min(16, Math.min(4, Math.max(2, Math.ceil(viewportRows * 0.25))) + Math.min(12, Math.ceil((velocity * 100) / rowHeight)));
+    const start = Math.max(0, firstVisible - overscan);
+    const end = Math.max(start, Math.min(count, lastVisible + overscan));
     const top = prefix[start] || 0;
     const bottom = Math.max(0, totalHeight - (prefix[end] || top));
     return {enabled:true, start, end, top, bottom, visible:end - start, total:count, height:totalHeight};
@@ -1429,6 +1441,18 @@
           const renderer = (typeof liquidGlassRendererByKey === "function") ? liquidGlassRendererByKey("libPills") : null;
           if(renderer) renderer._metricsDirty = true;
           if(libList._dpVirtualized){
+            const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+            const top = Number(libList.scrollTop || 0);
+            const previousTop = Number(libList._dpLastScrollTop == null ? top : libList._dpLastScrollTop);
+            const previousTs = Number(libList._dpLastScrollTs == null ? now : libList._dpLastScrollTs);
+            libList._dpScrollVelocity = Math.abs(top - previousTop) / Math.max(1, now - previousTs);
+            libList._dpLastScrollTop = top;
+            libList._dpLastScrollTs = now;
+            if(libList._dpVirtualVelocityTimer) clearTimeout(libList._dpVirtualVelocityTimer);
+            libList._dpVirtualVelocityTimer = setTimeout(()=>{
+              libList._dpScrollVelocity = 0;
+              scheduleVirtualListRender("virtual scroll settled");
+            }, 120);
             scheduleVirtualListRender("virtual scroll render");
             if(libList._dpLiquidPillScrollTimer) clearTimeout(libList._dpLiquidPillScrollTimer);
             libList._dpLiquidPillScrollTimer = setTimeout(()=>{
@@ -1539,7 +1563,11 @@ function vibeTick(){
     if(!state.items.length) return;
     const n = state.items.length;
     const prev = state.sel;
-    const next = Math.max(0, Math.min(n - 1, Number(nextIndex || 0)));
+    const selectionApi = window.DebriPod && DebriPod.controlDispatcherApi;
+    const delta = Number(nextIndex || 0) - state.sel;
+    const next = selectionApi && typeof selectionApi.clampSelectionIndex === "function"
+      ? selectionApi.clampSelectionIndex(state.sel, delta, n)
+      : Math.max(0, Math.min(n - 1, Number(nextIndex || 0)));
     if(next === prev) return;
     state.sel = next;
     if(state.sel !== prev){
@@ -1583,7 +1611,7 @@ function vibeTick(){
     if(!it) return false;
     const k = (it.kind || "");
     if(!k) return false;
-    if(k === "info" || k === "up" || k === "random" || k === "playlist_create" || k === "smart_playlist_create" || k === "playlist_edit_entry") return false;
+    if(k === "info" || k === "up" || k === "random" || k === "liked_category" || k === "playlist_create" || k === "smart_playlist_create" || k === "playlist_edit_entry") return false;
     return true;
   }
 
@@ -1607,7 +1635,11 @@ function vibeTick(){
   }
 
   function resetList(items){
-    const arr = Array.isArray(items) ? items.slice() : [];
+    // Random is synthetic; never let a refresh feed an old control row back
+    // into the logical dataset and inject another one.
+    const arr = (Array.isArray(items) ? items : []).filter((item)=>!(item && item.kind === "random"));
+    const oldSelectedItem = state.items && state.items[state.sel];
+    const transitionSelectionIdentity = oldSelectedItem ? virtualItemIdentity(oldSelectedItem, state.sel) : "";
     if(_shouldAddRandom(arr)){
       const btn = {kind:"random", label:"Random"};
       let insertAt = 0;
@@ -1648,11 +1680,13 @@ function vibeTick(){
         const style = window.getComputedStyle ? window.getComputedStyle(libList) : null;
         const paddingTop = style ? (parseFloat(style.paddingTop || "0") || 0) : 0;
         state.pageAnchorOffset = Math.max(0, Number(state.current.entryAnchorY) - paddingTop);
-        preserveEntryAnchor = state.pageAnchorOffset > 0;
+        // Short destination pages should start at the top. Their selected-row
+        // transition supplies the visual continuity without a blank spacer.
+        preserveEntryAnchor = state.pageAnchorOffset > 0 && arr.length > 32;
       }
       libList.scrollTop = 0;
     }
-    replaceListItems(arr, {animate:false, preserveSelection:false, preserveScroll:false, preserveEntryAnchor:preserveEntryAnchor, selectionIndex:state.sel, reason:"page load"});
+    replaceListItems(arr, {animate:true, preserveSelection:false, preserveScroll:false, preserveEntryAnchor:preserveEntryAnchor, selectionIndex:state.sel, transitionSelectionIdentity:transitionSelectionIdentity, reason:"page load"});
     setHeader();
     try{ if(typeof applySelectedTextContrast === "function") applySelectedTextContrast(); }catch(e){}
 

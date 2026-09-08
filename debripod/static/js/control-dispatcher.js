@@ -7,6 +7,7 @@
   if(typeof module === "object" && module.exports) module.exports = api;
   if(globalScope && globalScope.document){
     const root = globalScope.DebriPod = globalScope.DebriPod || {};
+    root.controlDispatcherApi = api;
     root.controlDispatcher = api.createBrowserControlDispatcher(globalScope);
   }
 })(typeof globalThis !== "undefined" ? globalThis : this, function(){
@@ -49,6 +50,12 @@
     bottom: "open_now_playing",
     left: "open_history",
   });
+
+  function clampSelectionIndex(index, delta, length){
+    const count = Math.max(0, Number(length) || 0);
+    if(!count) return 0;
+    return Math.max(0, Math.min(count - 1, (Number(index) || 0) + (Number(delta) || 0)));
+  }
 
   function resolveControlCommand(gesture, control, context, details){
     const cleanGesture = String(gesture || "");
@@ -166,5 +173,5 @@
     return {context, dispatch, execute, resolveControlCommand};
   }
 
-  return {TAP_TABLE, HOLD_TABLE, resolveControlCommand, createBrowserControlDispatcher};
+  return {TAP_TABLE, HOLD_TABLE, clampSelectionIndex, resolveControlCommand, createBrowserControlDispatcher};
 });

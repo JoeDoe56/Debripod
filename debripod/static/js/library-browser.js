@@ -825,6 +825,26 @@ async function goBack(){
         buildPlaybackSessionUpdate({now:state.playbackSession.now || state.now, queue:state.playlist, queueIndex:state.playIndex, nav:state.nowNavContext || state.playbackSession.nav || null, sourceView:state.playbackSession.sourceView || null, media:"audio"}, "shuffle-toggle");
       }
     }catch(e){}
+    try{
+      if(state.current && state.current.kind === "playback_queue" && typeof buildPlaybackQueueItems === "function"){
+        const selected = state.items && state.items[state.sel];
+        const selectedCanonicalIndex = selected && selected.queueIndex != null ? Number(selected.queueIndex) : -1;
+        const oldScroll = libList ? Number(libList.scrollTop || 0) : 0;
+        const rows = buildPlaybackQueueItems();
+        const selectedIndex = selectedCanonicalIndex >= 0
+          ? rows.findIndex((row)=>Number(row.queueIndex) === selectedCanonicalIndex)
+          : -1;
+        replaceListItems(rows, {
+          animate:true,
+          preserveSelection:false,
+          preserveScroll:true,
+          selectionIndex:selectedIndex >= 0 ? selectedIndex : 0,
+          transitionSelectionIdentity:selectedCanonicalIndex >= 0 ? "queue/canonical/" + selectedCanonicalIndex : "",
+          reason:"shuffle queue refresh"
+        });
+        if(libList) libList.scrollTop = oldScroll;
+      }
+    }catch(e){}
     updateWheelLabels();
   }
 
@@ -1436,11 +1456,10 @@ if(!it) return;
     }
 
     if(it.kind === "random"){
-      const idxs = [];
-      for(let i=0;i<state.items.length;i++){
-        const cand = state.items[i];
-        if(_randomEligibleItem(cand)) idxs.push(i);
-      }
+      const queueApi = window.DebriPod && DebriPod.playbackQueueApi;
+      const idxs = queueApi && typeof queueApi.randomEligibleIndexes === "function"
+        ? queueApi.randomEligibleIndexes(state.items)
+        : state.items.reduce((out, cand, index)=>{ if(_randomEligibleItem(cand)) out.push(index); return out; }, []);
       if(!idxs.length) return;
       const ri = idxs[Math.floor(Math.random() * idxs.length)];
       state.sel = ri;
@@ -1986,6 +2005,7 @@ if(it.kind === "libtask_action"){
     await libTasksPollTick();
     return;
   }
+
   if(it.action === "restart_task"){
     await apiPost("/api/tasks/restart", {task_id: tid});
     await libTasksPollTick();
