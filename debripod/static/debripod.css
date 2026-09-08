@@ -1457,6 +1457,9 @@
       width:calc(var(--wheelSize) * .085);
       height:calc(var(--wheelSize) * .048);
       color:var(--dp-text-wheel-labels);
+      background-color:currentColor;
+      -webkit-mask:var(--wheel-icon-mask) center / contain no-repeat;
+      mask:var(--wheel-icon-mask) center / contain no-repeat;
       fill:currentColor;
       stroke:currentColor;
       text-shadow:none;
@@ -1849,7 +1852,7 @@
       width:0%;
       min-width:0;
       border-radius:999px;
-      background:var(--theme-accent-bar);
+      background:#fff;
       transition:width .12s linear;
     }
     .npSeekIndicator{
@@ -1884,7 +1887,7 @@
       top:4px;
       bottom:4px;
       width:2px;
-      background:var(--theme-accent-bar);
+      background:#fff;
     }
     .infoPill .npTime{
       margin-top:2px;

@@ -10,6 +10,7 @@ function fakeLabel(){
   const icon = {
     attributes: new Map([["src", "/icons/button4_media-paused.svg"]]),
     hidden: false,
+    style: {setProperty(name, value){ this[name] = value; }},
     classList: {toggle(name, enabled){ enabled ? classes.add(name) : classes.delete(name); }},
     getAttribute(name){ return this.attributes.get(name) || null; },
     setAttribute(name, value){ this.attributes.set(name, value); }
@@ -33,6 +34,7 @@ test("wheel label updates the repository image asset without replacing its image
 
   wheelIcons.update(fixture.label, "heart", false, {seekMode: true});
   assert.equal(fixture.icon.getAttribute("src"), "/icons/button2_seek-mode_liked-inactive.svg");
+  assert.equal(fixture.icon.style["--wheel-icon-mask"], 'url("/icons/button2_seek-mode_liked-inactive.svg")');
   assert.equal(fixture.icon, originalIcon);
   assert.equal(fixture.menu.hidden, true);
   assert.equal(fixture.classes.has("seekModeIcon"), true);

@@ -346,6 +346,17 @@
     schedulePathPillMotion();
   }
 
+  function pathPillIntrinsicTextWidth(el){
+    if(!el || !String(el.textContent || "").trim()) return 0;
+    // scrollWidth includes the stretched row's box, so it cannot shrink.
+    // A Range measures the inline content, including mixed title/album fonts.
+    const range = document.createRange();
+    range.selectNodeContents(el);
+    const width = Math.ceil(range.getBoundingClientRect().width || 0);
+    if(range.detach) range.detach();
+    return width;
+  }
+
   function updatePathPillMaxWidth(){
     try{
       const content = document.querySelector(".ipodScreenContent");
@@ -373,14 +384,14 @@
       const pathText = document.getElementById("libHeaderText");
       const padX = Math.max(0, parseFloat(rootStyle.getPropertyValue("--playbackPillPadX")) || 10);
       const basePadX = 12;
-      const pathWidth = pathText ? Math.ceil(pathText.scrollWidth || pathText.offsetWidth || 0) : 0;
+      const pathWidth = pathPillIntrinsicTextWidth(pathText);
       const nowWidth = (libHeader && libHeader.classList.contains("pathPillExpanded") && pathPillNowText)
-        ? Math.ceil(pathPillNowText.scrollWidth || pathPillNowText.offsetWidth || 0)
+        ? pathPillIntrinsicTextWidth(pathPillNowText)
         : 0;
       const expanded = !!(libHeader && libHeader.classList.contains("pathPillExpanded"));
       const targetPad = expanded ? padX : basePadX;
       const measured = Math.max(pathWidth, nowWidth) + targetPad * 2;
-      const minWidth = expanded ? Math.min(maxWidth, 150) : Math.min(maxWidth, 72);
+      const minWidth = Math.min(maxWidth, targetPad * 2 + 1);
       const target = Math.max(1, Math.min(maxWidth, Math.max(minWidth, measured || minWidth)));
       setPathPillTargetWidth(target);
     }catch(e){}
@@ -464,17 +475,10 @@
       animatePathPillGlassTransition._token = token;
       const started = performance.now();
       let didRefresh = false;
-      let lastTick = 0;
       const tick = (now)=>{
         try{
           if(animatePathPillGlassTransition._token !== token) return;
           const frameNow = Number(now || performance.now());
-          const interval = (typeof animationFrameIntervalMs === "function") ? animationFrameIntervalMs("pathPill") : (1000 / 60);
-          if(lastTick && frameNow - lastTick < interval - 1){
-            requestAnimationFrame(tick);
-            return;
-          }
-          lastTick = frameNow;
           const elapsed = frameNow - started;
           forcePathPillGlassRender(reason || "path pill transition", !didRefresh);
           didRefresh = true;
@@ -602,17 +606,10 @@
       animateInfoPillGlassTransition._token = token;
       const started = performance.now();
       let didRefresh = false;
-      let lastTick = 0;
       const tick = (now)=>{
         try{
           if(animateInfoPillGlassTransition._token !== token) return;
           const frameNow = Number(now || performance.now());
-          const interval = (typeof animationFrameIntervalMs === "function") ? animationFrameIntervalMs("infoPill") : (1000 / 60);
-          if(lastTick && frameNow - lastTick < interval - 1){
-            requestAnimationFrame(tick);
-            return;
-          }
-          lastTick = frameNow;
           const elapsed = frameNow - started;
           forceInfoPillGlassRender(reason || "info pill transition", !didRefresh);
           didRefresh = true;

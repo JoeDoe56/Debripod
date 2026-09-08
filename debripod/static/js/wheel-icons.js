@@ -35,6 +35,7 @@
       const version = String(root.DEBRIPOD_ICON_VERSION || root.DEBRIPOD_ASSET_VERSION || "");
       const src = "/icons/" + symbol + (version ? ("?v=" + encodeURIComponent(version)) : "");
       if(icon.getAttribute("src") !== src) icon.setAttribute("src", src);
+      if(icon.style) icon.style.setProperty("--wheel-icon-mask", 'url("' + src + '")');
     }
     label.dataset.wheelIcon = symbol || (isMenu ? "menu" : "");
     return visible && (isMenu || !!symbol);

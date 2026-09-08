@@ -156,7 +156,7 @@ test("static art participates in width observation and glass follows opacity", (
 test("progress input has an invisible thumb and symmetric time-label alignment", () => {
   assert.match(css, /npSeek::\-webkit-slider-thumb[\s\S]*?width:0/);
   assert.match(css, /npSeek::\-moz-range-thumb[\s\S]*?width:0/);
-  assert.match(css, /\.npMeterFill[\s\S]*?background:var\(--theme-accent-bar\)/);
+  assert.match(css, /\.npMeterFill[\s\S]*?background:#fff/);
   assert.match(css, /#npCur\{text-align:left;\}/);
   assert.match(css, /#npDur\{text-align:right;\}/);
 });
