@@ -50,6 +50,23 @@ test("path pill width motion converges and text fades only when it overflows", (
   assert.equal(overflows(122, 120), true);
 });
 
+test("width changes redraw the glass before scheduling subsequent work", () => {
+  const calls = [];
+  const lens = {rectPx: {}, el: {classList: {contains: () => true}}};
+  const renderer = {lenses: [lens], render(){
+    assert.equal(this._metricsDirty, true);
+    assert.equal(lens.rectPx, null);
+    calls.push("render");
+  }};
+  const mark = loadFunction("markPathPillWidthChanged", {
+    liquidGlassRendererByKey: () => renderer,
+    currentVisualizerFrameState: () => ({}),
+    window: {DebriPod: {frameScheduler: {mark(){ calls.push("schedule"); }}}}
+  });
+  mark();
+  assert.deepEqual(calls, ["render", "schedule"]);
+});
+
 test("list pill remains eligible while partially visible", () => {
   const match = liquidGlueSource.match(/function rowPillIntersectsListInnerRect\([^)]*\)\{[\s\S]*?\n  \}/);
   assert.ok(match, "row-pill intersection helper must remain independently testable");

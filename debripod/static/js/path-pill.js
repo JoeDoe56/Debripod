@@ -291,6 +291,9 @@
       if(renderer){
         renderer._metricsDirty = true;
         (renderer.lenses || []).forEach((lens)=>{ try{ if(lens && lens.el && lens.el.classList && lens.el.classList.contains("pathPillGlass")) lens.rectPx = null; }catch(e){} });
+        // Width was applied in this frame; draw its lens before this frame's
+        // paint rather than waiting for the scheduler's next RAF.
+        if(renderer.render) renderer.render(currentVisualizerFrameState());
       }
       const scheduler = window.DebriPod && window.DebriPod.frameScheduler;
       if(scheduler && scheduler.mark) scheduler.mark({metrics:true, render:true, textContrast:true});
