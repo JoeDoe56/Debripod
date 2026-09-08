@@ -39,14 +39,15 @@ def configure_asset_versions(*, asset_version: str | None = None, icon_version: 
         ICON_VERSION = str(icon_version)
 
 
-def _immutable_file(directory: Path, filename: str, *, mimetype: str | None = None):
+def _immutable_file(directory: Path, filename: str, *, mimetype: str | None = None, request: web.Request | None = None):
     path = directory / filename
     if not path.is_file():
         raise web.HTTPNotFound()
     response = web.FileResponse(path)
     if mimetype:
         response.content_type = mimetype
-    response.headers["Cache-Control"] = IMMUTABLE_CACHE
+    versioned = request is not None and request.query.get("v") == ICON_VERSION
+    response.headers["Cache-Control"] = IMMUTABLE_CACHE if versioned else "no-cache"
     return response
 
 
@@ -54,25 +55,25 @@ def register_icon_routes(app) -> None:
     async def icon_asset(request: web.Request):
         filename = request.match_info["filename"]
         if filename in SVG_ICON_NAMES and (PROJECT_ICON_DIR / filename).is_file():
-            return _immutable_file(PROJECT_ICON_DIR, filename, mimetype="image/svg+xml")
+            return _immutable_file(PROJECT_ICON_DIR, filename, mimetype="image/svg+xml", request=request)
         if filename in STATIC_ICON_NAMES and (STATIC_ICON_DIR / filename).is_file():
-            return _immutable_file(STATIC_ICON_DIR, filename)
+            return _immutable_file(STATIC_ICON_DIR, filename, request=request)
         raise web.HTTPNotFound()
 
     async def favicon_ico(_request: web.Request):
-        return _immutable_file(STATIC_ICON_DIR, "favicon.ico", mimetype="image/x-icon")
+        return _immutable_file(STATIC_ICON_DIR, "favicon.ico", mimetype="image/x-icon", request=_request)
 
     async def apple_touch_icon(_request: web.Request):
-        return _immutable_file(STATIC_ICON_DIR, "icon-180.png", mimetype="image/png")
+        return _immutable_file(STATIC_ICON_DIR, "icon-180.png", mimetype="image/png", request=_request)
 
     async def apple_touch_icon_precomposed(_request: web.Request):
-        return _immutable_file(STATIC_ICON_DIR, "icon-180.png", mimetype="image/png")
+        return _immutable_file(STATIC_ICON_DIR, "icon-180.png", mimetype="image/png", request=_request)
 
     async def icon_192(_request: web.Request):
-        return _immutable_file(STATIC_ICON_DIR, "icon-192.png", mimetype="image/png")
+        return _immutable_file(STATIC_ICON_DIR, "icon-192.png", mimetype="image/png", request=_request)
 
     async def icon_512(_request: web.Request):
-        return _immutable_file(STATIC_ICON_DIR, "icon-512.png", mimetype="image/png")
+        return _immutable_file(STATIC_ICON_DIR, "icon-512.png", mimetype="image/png", request=_request)
 
     async def site_webmanifest(_request: web.Request):
         manifest = {
@@ -87,20 +88,20 @@ def register_icon_routes(app) -> None:
                     "src": f"/icon-192.png?v={ICON_VERSION}",
                     "sizes": "192x192",
                     "type": "image/png",
-                    "purpose": "any maskable",
+                    "purpose": "any",
                 },
                 {
                     "src": f"/icon-512.png?v={ICON_VERSION}",
                     "sizes": "512x512",
                     "type": "image/png",
-                    "purpose": "any maskable",
+                    "purpose": "any",
                 },
             ],
         }
         return web.Response(
             text=json.dumps(manifest),
             content_type="application/manifest+json",
-            headers={"Cache-Control": "public, max-age=3600"},
+            headers={"Cache-Control": "no-cache"},
         )
 
     app.router.add_get("/icons/{filename:.*}", icon_asset)

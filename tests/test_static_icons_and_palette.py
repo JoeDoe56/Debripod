@@ -1,6 +1,8 @@
 from __future__ import annotations
 
 import asyncio
+import hashlib
+import json
 import struct
 from pathlib import Path
 from types import SimpleNamespace
@@ -9,7 +11,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from debripod.Library import metadata
-from debripod.Routes.icons import register_icon_routes
+from debripod.Routes.icons import register_icon_routes, ICON_VERSION
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -30,6 +32,13 @@ def test_committed_icon_assets_have_expected_formats_and_sizes():
     assert (STATIC_ICONS / "favicon.ico").read_bytes()[:4] == b"\x00\x00\x01\x00"
 
 
+def test_generated_icons_match_the_current_svg_source():
+    record = json.loads((STATIC_ICONS / "app-icon-assets.json").read_text())
+    assert hashlib.sha256((ROOT / record["source"]).read_text(encoding="utf-8").encode()).hexdigest() == record["sha256"]
+    for name, expected in record["assets"].items():
+        assert hashlib.sha256((STATIC_ICONS / name).read_bytes()).hexdigest() == expected
+
+
 def test_icon_routes_serve_static_immutable_assets_and_png_manifest():
     async def scenario() -> None:
         app = web.Application()
@@ -40,6 +49,9 @@ def test_icon_routes_serve_static_immutable_assets_and_png_manifest():
             for path in ("/favicon.ico", "/apple-touch-icon.png", "/icon-192.png", "/icon-512.png"):
                 response = await client.get(path)
                 assert response.status == 200
+                assert response.headers["Cache-Control"] == "no-cache"
+                await response.read()
+                response = await client.get(path + "?v=" + ICON_VERSION)
                 assert response.headers["Cache-Control"] == "public, max-age=31536000, immutable"
                 await response.read()
 
@@ -90,7 +102,7 @@ def test_wheel_uses_repository_svg_assets_and_no_generated_image_markup():
         assert filename in shell or filename in wheel_icons
     wheel_label_lines = [line for line in shell.splitlines() if 'class="wheelLabel ' in line]
     assert len(wheel_label_lines) == 4
-    assert all(line.count("<img ") == 1 for line in wheel_label_lines)
+    assert all('class="wheelIcon"' in line and "--wheel-icon-mask:url(" in line and "<img " not in line for line in wheel_label_lines)
     wheel_update = now_playing[now_playing.index("function setWheelLabel"):now_playing.index("function adjustSeekPreview")]
     forbidden = ("data:image", "base64,", "mask-image", "innerHTML", "replaceChildren", "createElement")
     assert all(token not in wheel_update for token in forbidden)
