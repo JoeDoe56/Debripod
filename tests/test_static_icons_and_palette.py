@@ -4,6 +4,7 @@ import asyncio
 import hashlib
 import json
 import struct
+import xml.etree.ElementTree as ET
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -37,6 +38,18 @@ def test_generated_icons_match_the_current_svg_source():
     assert hashlib.sha256((ROOT / record["source"]).read_text(encoding="utf-8").encode()).hexdigest() == record["sha256"]
     for name, expected in record["assets"].items():
         assert hashlib.sha256((STATIC_ICONS / name).read_bytes()).hexdigest() == expected
+
+
+def test_app_icon_wheel_is_centered_below_screen():
+    svg = ET.parse(ROOT / "icons/debripod-app-icon.svg").getroot()
+    ns = {"svg": "http://www.w3.org/2000/svg"}
+    body, screen, _ = svg.findall(".//svg:rect", ns)
+    wheel, center = svg.findall(".//svg:circle", ns)
+    screen_bottom = float(screen.attrib["y"]) + float(screen.attrib["height"])
+    body_bottom = float(body.attrib["y"]) + float(body.attrib["height"])
+    cy, radius = float(wheel.attrib["cy"]), float(wheel.attrib["r"])
+    assert cy - radius - screen_bottom == body_bottom - cy - radius
+    assert center.attrib["cy"] == wheel.attrib["cy"]
 
 
 def test_icon_routes_serve_static_immutable_assets_and_png_manifest():

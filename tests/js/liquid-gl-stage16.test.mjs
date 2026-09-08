@@ -2,12 +2,35 @@ import assert from "node:assert/strict";
 import fs from "node:fs";
 import path from "node:path";
 import test from "node:test";
+import vm from "node:vm";
 import {fileURLToPath} from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const glue = fs.readFileSync(path.resolve(here, "../../debripod/static/js/liquid-glue.js"), "utf8");
 const liquid = fs.readFileSync(path.resolve(here, "../../debripod/static/liquidGL.js"), "utf8");
 const visualizer = fs.readFileSync(path.resolve(here, "../../debripod/static/js/visualizer-engine.js"), "utf8");
+
+function extractFunction(source, name) {
+  const start = source.indexOf(`function ${name}(`);
+  assert.ok(start >= 0, `${name} must remain independently testable`);
+  const open = source.indexOf("{", start);
+  let depth = 0;
+  let quote = "";
+  let escaped = false;
+  for(let i = open; i < source.length; i++){
+    const ch = source[i];
+    if(quote){
+      if(escaped) escaped = false;
+      else if(ch === "\\") escaped = true;
+      else if(ch === quote) quote = "";
+      continue;
+    }
+    if(ch === '"' || ch === "'" || ch === "`") quote = ch;
+    else if(ch === "{") depth += 1;
+    else if(ch === "}" && --depth === 0) return source.slice(start, i + 1);
+  }
+  assert.fail(`${name} body is not balanced`);
+}
 
 test("glass uses only main and wheel render contexts", () => {
   assert.match(glue, /LIQUID_VISUALIZER_RENDERER_KEYS = \["main", "wheel"\]/);
@@ -55,4 +78,61 @@ test("pill glass opts into per-render DOM geometry without changing wheel mirror
   assert.match(liquid, /else if \(this\.lenses\.some\(\(lens\) => lens && lens\._syncDomRect\)\)/);
   assert.match(liquid, /this\._mirrorActive && this\._baseRect/);
   assert.doesNotMatch(liquid, /_liveMirrorBaseRect/);
+});
+
+test("NP teardown unregisters transient lenses, cancels selection work, and restores on return", () => {
+  const context = {
+    listSelectionMotion: {raf: -1},
+    frameScheduler: () => ({cancel(key){ context.cancelled = key; }}),
+    cancelAnimationFrame(id){ context.cancelledRaf = id; },
+    clearTimeout(id){ context.clearedTimer = id; },
+  };
+  vm.createContext(context);
+  vm.runInContext([
+    extractFunction(glue, "syncLibTransientLenses"),
+    extractFunction(glue, "cancelLibSelectionMotion"),
+  ].join("\n"), context);
+
+  const selected = {id: "libListSelectedGlass", isConnected: true};
+  const pill = {isConnected: true, matches(selector){ return selector === ".ipodPill[data-liquid-row-pill]"; }};
+  const other = {isConnected: true};
+  const destroyed = [];
+  const lens = (el, group) => ({el, _dpLensGroup: group, destroy(){destroyed.push(el);}});
+  const renderer = {
+    lenses: [lens(selected), lens(pill), lens(other, "pathPill")],
+    addLens(el){ const next = lens(el); this.lenses.push(next); return next; },
+    renderCount: 0,
+    render(){ this.renderCount += 1; },
+  };
+
+  context.syncLibTransientLenses(renderer, {
+    active: false,
+    selectedElement: selected,
+    pillElements: [pill],
+  });
+  assert.deepEqual([...renderer.lenses].map((item) => item.el), [other]);
+  assert.equal(destroyed.length, 2, "NP removes both selected and row-pill lenses");
+  renderer.render();
+  assert.equal(renderer.lenses.some((item) => item.el === selected || item.el === pill), false);
+
+  context.cancelLibSelectionMotion();
+  assert.equal(context.cancelled, "lib-selection-motion");
+  assert.equal(context.listSelectionMotion.raf, 0);
+  context.listSelectionMotion.raf = 17;
+  context.cancelLibSelectionMotion();
+  assert.equal(context.cancelledRaf, 17, "native selection RAF is cancelled too");
+
+  context.syncLibTransientLenses(renderer, {
+    active: true,
+    selectedElement: selected,
+    pillElements: [pill],
+  });
+  assert.equal(renderer.lenses.some((item) => item.el === selected), true, "selected lens returns after NP");
+  assert.equal(renderer.lenses.some((item) => item.el === pill), true, "row-pill lens returns after NP");
+});
+
+test("selected-row settings preview never re-registers a removed lens", () => {
+  const preview = extractFunction(glue, "previewLiquidGlassElementMaterial");
+  assert.match(preview, /selectedRow:\[document\.getElementById\("libListSelectedGlass"\)\]/);
+  assert.doesNotMatch(preview, /liquidGL\s*\(/, "settings preview only styles existing DOM");
 });

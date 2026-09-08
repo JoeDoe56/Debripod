@@ -553,10 +553,88 @@
     }
   }
 
+  // The shared main renderer initially registers the selected row and row
+  // pills as one target set, so those lenses have no group marker.  Teardown
+  // must therefore identify the actual elements as well as tagged groups.
+  function syncLibTransientLenses(renderer, config){
+    if(!renderer) return {selected:false, pills:0};
+    const input = config || {};
+    const selectedElement = input.selectedElement || null;
+    const pillElements = Array.from(input.pillElements || []).filter(Boolean);
+    const active = input.active !== false;
+    const wanted = new Set(active ? [selectedElement].concat(pillElements).filter(Boolean) : []);
+    const manageSelected = input.manageSelected !== false;
+    const managePills = input.managePills !== false;
+    const isSelected = (el, lens) => manageSelected && (
+      el === selectedElement ||
+      (el && el.id === "libListSelectedGlass") ||
+      (lens && lens._dpLensGroup === "selectedRow")
+    );
+    const isPill = (el, lens) => managePills && (
+      (el && el.matches && el.matches(".ipodPill[data-liquid-row-pill]")) ||
+      (lens && lens._dpLensGroup === "listPills")
+    );
+    const next = [];
+    (renderer.lenses || []).forEach((lens)=>{
+      const el = lens && lens.el;
+      const transientSelected = isSelected(el, lens);
+      const transientPill = isPill(el, lens);
+      if(!transientSelected && !transientPill){
+        if(lens && el && el.isConnected !== false) next.push(lens);
+        return;
+      }
+      const keep = active && wanted.has(el);
+      if(keep){
+        lens._dpLensGroup = transientSelected ? "selectedRow" : "listPills";
+        next.push(lens);
+      }else{
+        try{ if(lens.destroy) lens.destroy(); }catch(e){}
+      }
+    });
+    renderer.lenses = next;
+    if(active && typeof renderer.addLens === "function"){
+      const add = (el, group, options) => {
+        if(!el || !el.isConnected || renderer.lenses.some((lens)=>lens && lens.el === el)) return;
+        const lens = renderer.addLens(el, options || {});
+        if(lens) lens._dpLensGroup = group;
+      };
+      if(manageSelected) add(selectedElement, "selectedRow", input.selectedOptions);
+      if(managePills) pillElements.forEach((el)=>add(el, "listPills", input.pillOptions));
+    }
+    renderer._metricsDirty = true;
+    renderer._snapshotRectPx = null;
+    return {
+      selected: !!(selectedElement && renderer.lenses.some((lens)=>lens && lens.el === selectedElement)),
+      pills: renderer.lenses.filter((lens)=>lens && lens._dpLensGroup === "listPills").length
+    };
+  }
+
+  function cancelLibSelectionMotion(){
+    try{
+      if(typeof listSelectionMotion === "undefined" || !listSelectionMotion) return;
+      const pending = listSelectionMotion.raf;
+      if(pending > 0 && typeof cancelAnimationFrame === "function") cancelAnimationFrame(pending);
+      const scheduler = frameScheduler();
+      if(pending === -1 && scheduler && scheduler.cancel) scheduler.cancel("lib-selection-motion");
+      if(listSelectionMotion.boundaryReleaseTimer && typeof clearTimeout === "function") clearTimeout(listSelectionMotion.boundaryReleaseTimer);
+      listSelectionMotion.raf = 0;
+      listSelectionMotion.boundaryReleaseTimer = 0;
+      listSelectionMotion.boundaryHeld = false;
+      listSelectionMotion.boundaryDirection = 0;
+      listSelectionMotion.targetOpacity = 0;
+      listSelectionMotion.currentOpacity = 0;
+      listSelectionMotion.targetStretch = 0;
+      listSelectionMotion.stretch = 0;
+      listSelectionMotion.targetForegroundProgress = 0;
+      listSelectionMotion.foregroundProgress = 0;
+    }catch(e){}
+  }
+
   function destroyLibPillGlassLenses(reason){
     try{
       const renderer = liquidGlassRendererByKey("main");
-      if(renderer && renderer.syncLensGroup) renderer.syncLensGroup("listPills", [], liquidGlassElementOptions("listPills"));
+      if(renderer) syncLibTransientLenses(renderer, {active:false, manageSelected:false, managePills:true});
+      if(renderer) renderer._dpLiquidTargetIds = [];
       document.querySelectorAll(".ipodPill[data-liquid-row-pill]").forEach((el)=>{
         try{
           el.removeAttribute("data-liquid-pill-id");
@@ -570,11 +648,17 @@
 
   function destroyLibSelectionGlass(reason){
     try{
-      setLibSelectionTarget(listSelectionMotion.targetX, listSelectionMotion.targetY, listSelectionMotion.targetWidth, listSelectionMotion.targetHeight, listSelectionMotion.targetRadius, 0);
+      cancelLibSelectionMotion();
       const renderer = liquidGlassRendererByKey("main");
       if(renderer){
+        syncLibTransientLenses(renderer, {active:false, manageSelected:true, managePills:false});
         renderer._metricsDirty = true;
         renderer._snapshotRectPx = null;
+      }
+      const el = document.getElementById("libListSelectedGlass");
+      if(el){
+        el.style.opacity = "0";
+        el.classList.remove("isVisible");
       }
       markFrameWork({metrics:true, render:true});
       debugLiquidGlassRenderers(reason || "destroy lib selection");
@@ -696,6 +780,9 @@
       });
       let nextRenderer = renderer;
       if(nextRenderer && nextRenderer.syncLensGroup){
+        // Tag any lenses created by the shared initial target before syncing;
+        // otherwise an ungrouped stale pill survives an empty group sync.
+        syncLibTransientLenses(nextRenderer, {active:true, manageSelected:false, managePills:true, pillElements:elements, pillOptions:options});
         nextRenderer.syncLensGroup("listPills", elements, options);
       }else{
         window.liquidGL(options);
@@ -736,6 +823,10 @@
     targetDirection: 0,
     foregroundProgress: 0,
     targetForegroundProgress: 0,
+    boundaryHeld: false,
+    boundaryDirection: 0,
+    boundaryLastInputTs: 0,
+    boundaryReleaseTimer: 0,
     raf: 0,
     lastStepTs: 0,
     initialized: false
@@ -883,8 +974,66 @@
     try{
       const n = Number(progress || 0);
       const clamped = Math.max(-1, Math.min(1, Number.isFinite(n) ? n : 0));
+      const direction = clamped === 0 ? 0 : (clamped > 0 ? 1 : -1);
+      const activeState = window.state;
+      const items = activeState && Array.isArray(activeState.items) ? activeState.items : [];
+      const selected = activeState ? Number(activeState.sel) : NaN;
+      const atBoundary = direction !== 0 && items.length > 0 && Number.isFinite(selected) && (
+        (direction < 0 && selected <= 0) || (direction > 0 && selected >= items.length - 1)
+      );
+      if(listSelectionMotion.boundaryReleaseTimer){
+        clearTimeout(listSelectionMotion.boundaryReleaseTimer);
+        listSelectionMotion.boundaryReleaseTimer = 0;
+      }
+      if(direction !== 0 && atBoundary){
+        // Repeated wheel ticks at a terminal row are one continuous pull. Hold
+        // the maximum stretch instead of easing to zero between stale timers.
+        if(listSelectionMotion.boundaryHeld && listSelectionMotion.boundaryDirection !== direction){
+          listSelectionMotion.boundaryHeld = false;
+          listSelectionMotion.boundaryDirection = 0;
+          listSelectionMotion.targetStretch = 0;
+          listSelectionMotion.targetDirection = 0;
+          scheduleLibSelectionMotion();
+          return;
+        }
+        listSelectionMotion.boundaryHeld = true;
+        listSelectionMotion.boundaryDirection = direction;
+        listSelectionMotion.boundaryLastInputTs = Date.now();
+        listSelectionMotion.targetStretch = 1;
+        listSelectionMotion.targetDirection = direction;
+        scheduleLibSelectionMotion();
+        return;
+      }
+      if(listSelectionMotion.boundaryHeld){
+        const release = ()=>{
+          listSelectionMotion.boundaryReleaseTimer = 0;
+          listSelectionMotion.boundaryHeld = false;
+          listSelectionMotion.boundaryDirection = 0;
+          listSelectionMotion.targetStretch = 0;
+          listSelectionMotion.targetDirection = 0;
+          scheduleLibSelectionMotion();
+        };
+        if(direction === 0){
+          const elapsed = Date.now() - Number(listSelectionMotion.boundaryLastInputTs || 0);
+          const remaining = Math.max(0, 90 - elapsed);
+          if(remaining > 0){
+            listSelectionMotion.boundaryReleaseTimer = setTimeout(release, remaining);
+            return;
+          }
+          release();
+          return;
+        }
+        // A direction change releases the terminal pull before a new pull can
+        // be established, including when the selection has moved off-edge.
+        if(direction !== listSelectionMotion.boundaryDirection){
+          release();
+          return;
+        }
+        release();
+        return;
+      }
       listSelectionMotion.targetStretch = Math.abs(clamped);
-      listSelectionMotion.targetDirection = clamped === 0 ? 0 : (clamped > 0 ? 1 : -1);
+      listSelectionMotion.targetDirection = direction;
       scheduleLibSelectionMotion();
     }catch(e){}
   }
@@ -924,6 +1073,13 @@
       setLibSelectionTarget(left - hostRect.left, rowRect.top - hostRect.top, right - left, targetHeight, radius, 1);
       const renderer = liquidGlassRendererByKey("main");
       if(renderer){
+        syncLibTransientLenses(renderer, {
+          active:true,
+          manageSelected:true,
+          managePills:false,
+          selectedElement:el,
+          selectedOptions:Object.assign({}, liquidGlassElementOptions("selectedRow"), {rendererKey:"main"})
+        });
         renderer._metricsDirty = true;
         if(renderer.lenses){
           renderer.lenses.forEach((lens)=>{ try{ lens.rectPx = null; }catch(e){} });
