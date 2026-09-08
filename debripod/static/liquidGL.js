@@ -47,6 +47,11 @@
     return Number.isFinite(number) ? number : fallback;
   }
 
+  function isPowerOfTwoTexture(width, height) {
+    return Number.isInteger(width) && Number.isInteger(height) && width > 0 && height > 0 &&
+      (width & (width - 1)) === 0 && (height & (height - 1)) === 0;
+  }
+
   function normalizeLiquidGlassMaterial(value, fallback = 0) {
     return clamp(finiteNumber(value, fallback), -1, 1);
   }
@@ -518,7 +523,11 @@
         }`;
 
       const fsSource = `${hasDerivatives ? `${isWebGL2 ? "" : "#extension GL_OES_standard_derivatives : enable\n"}#define DP_HAS_DERIVATIVES 1\n` : ""}
+        #ifdef GL_FRAGMENT_PRECISION_HIGH
+        precision highp float;
+        #else
         precision mediump float;
+        #endif
         varying vec2 v_uv;
         uniform sampler2D u_tex;
         uniform sampler2D u_albumCurrentTex;
@@ -643,7 +652,7 @@
             vec2 artUv = clamp(rotated / max(1.0, length(u_reactiveViewport)) + 0.5, 0.0, 1.0);
             vec4 color = texture2D(u_tex, artUv);
             float luma = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
-            float useful = clamp((luma - u_reactiveLumaLow) / max(0.04, u_reactiveLumaHigh - u_reactiveLumaLow), 0.0, 1.0);
+            float useful = clamp((luma - u_reactiveLumaLow) / max(0.08, u_reactiveLumaHigh - u_reactiveLumaLow), 0.0, 1.0);
             float w0 = max(0.0, 1.0 - abs(useful - u_reactiveBandCenters[0]) / max(0.0001, u_reactiveBandWidths[0]));
             float w1 = max(0.0, 1.0 - abs(useful - u_reactiveBandCenters[1]) / max(0.0001, u_reactiveBandWidths[1]));
             float w2 = max(0.0, 1.0 - abs(useful - u_reactiveBandCenters[2]) / max(0.0001, u_reactiveBandWidths[2]));
@@ -654,14 +663,20 @@
             float w7 = max(0.0, 1.0 - abs(useful - u_reactiveBandCenters[7]) / max(0.0001, u_reactiveBandWidths[7]));
             float w8 = max(0.0, 1.0 - abs(useful - u_reactiveBandCenters[8]) / max(0.0001, u_reactiveBandWidths[8]));
             float total = max(0.0001, w0+w1+w2+w3+w4+w5+w6+w7+w8);
-            float frequency = (w0*u_reactiveBands[0]+w1*u_reactiveBands[1]+w2*u_reactiveBands[2]+w3*u_reactiveBands[3]+w4*u_reactiveBands[4]+w5*u_reactiveBands[5]+w6*u_reactiveBands[6]+w7*u_reactiveBands[7]+w8*u_reactiveBands[8]) / total;
+            float bandEligible = smoothstep(0.04, 0.10, luma) * (1.0 - smoothstep(0.90, 0.96, luma));
+            float frequency = bandEligible * (w0*u_reactiveBands[0]+w1*u_reactiveBands[1]+w2*u_reactiveBands[2]+w3*u_reactiveBands[3]+w4*u_reactiveBands[4]+w5*u_reactiveBands[5]+w6*u_reactiveBands[6]+w7*u_reactiveBands[7]+w8*u_reactiveBands[8]) / total;
             float brightness = clamp(1.0 + frequency*u_reactiveFrequencyResponse.x + u_reactiveEnergy*u_reactiveEnergyResponse.x + u_reactiveBeat*u_reactiveBeatResponse.x, 0.0, 4.0);
             float opacity = clamp(1.0 + frequency*u_reactiveFrequencyResponse.y + u_reactiveEnergy*u_reactiveEnergyResponse.y + u_reactiveBeat*u_reactiveBeatResponse.y, 0.0, 1.0);
             float saturation = clamp(1.0 + frequency*u_reactiveFrequencyResponse.z + u_reactiveEnergy*u_reactiveEnergyResponse.z + u_reactiveBeat*u_reactiveBeatResponse.z, 0.0, 3.0);
             float contrast = clamp(1.0 + frequency*u_reactiveFrequencyResponse.w + u_reactiveEnergy*u_reactiveEnergyResponse.w + u_reactiveBeat*u_reactiveBeatResponse.w, 0.0, 3.0);
             color.rgb = mix(vec3(luma), color.rgb, saturation);
             color.rgb = min(clamp((color.rgb - 0.5) * contrast + 0.5, 0.0, 1.0) * brightness, vec3(u_reactiveBrightnessCap));
-            color.a *= opacity * u_reactiveFade;
+            // The visualizer canvas is cleared to opaque black.  Composite
+            // the reactive layer over that black here and keep source alpha
+            // opaque; propagating fade into alpha makes the glass disappear
+            // after pause instead of showing its material over black.
+            color.rgb *= opacity * u_reactiveFade;
+            color.a = 1.0;
             return color;
           }
           if (u_useAlbumTransitionSource) {
@@ -909,6 +924,12 @@
         globalLight: gl.getUniformLocation(this.program, "u_globalLight"),
         globalLightIntensity: gl.getUniformLocation(this.program, "u_globalLightIntensity"),
       };
+      // LiquidGL writes premultiplied RGB (including SDF edge coverage).
+      // Enable matching compositing so overlapping lenses accumulate their
+      // coverage instead of overwriting one another with jagged transparent
+      // edge pixels.
+      gl.enable(gl.BLEND);
+      gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
     }
 
     /* ----------------------------- */
@@ -1383,6 +1404,10 @@
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        if (isPowerOfTwoTexture(image.naturalWidth, image.naturalHeight) && gl.generateMipmap && gl.LINEAR_MIPMAP_LINEAR != null) {
+          gl.generateMipmap(gl.TEXTURE_2D);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+        }
         if (this._rendererDebugEnabled()) {
           liquidGLLog("log", "liquidGL: album image uploaded", {
             rendererKey: this.rendererKey,
@@ -1615,6 +1640,10 @@
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
         gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+        if (isPowerOfTwoTexture(width, height) && gl.generateMipmap && gl.LINEAR_MIPMAP_LINEAR != null) {
+          gl.generateMipmap(gl.TEXTURE_2D);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+        }
       } catch (e) {
         liquidGLLog("error", "liquidGL: Texture upload failed; keeping previous texture.", e);
         if (this.texture) gl.bindTexture(gl.TEXTURE_2D, this.texture);
@@ -1858,6 +1887,12 @@
           lens.updateMetrics();
         });
         this._metricsDirty = false;
+      } else if (this.lenses.some((lens) => lens && lens._syncDomRect)) {
+        // CSS transitions can move a pill without ResizeObserver firing.
+        // Refresh only explicitly live targets on each render frame.
+        this.lenses.forEach((lens) => {
+          if (lens && lens._syncDomRect) lens.updateMetrics();
+        });
       }
 
       let hasActiveVisibleTransition = false;
@@ -1957,11 +1992,15 @@
         overscrollY = window.visualViewport.offsetTop;
       }
 
-      const x = (rect.left + overscrollX) * dpr;
-      const y =
-        this.canvas.height - (rect.top + overscrollY + rect.height) * dpr;
-      const w = rect.width * dpr;
-      const h = rect.height * dpr;
+      // WebGL viewport coordinates are integer raster bounds.  Passing CSS
+      // transition fractions through implicit float-to-int conversion makes
+      // adjacent lens edges choose different pixels from frame to frame.
+      const x = Math.round((rect.left + overscrollX) * dpr);
+      const y = Math.round(
+        this.canvas.height - (rect.top + overscrollY + rect.height) * dpr
+      );
+      const w = Math.max(1, Math.round(rect.width * dpr));
+      const h = Math.max(1, Math.round(rect.height * dpr));
 
       gl.viewport(x, y, w, h);
       gl.uniform2f(this.u.res, w, h);
@@ -2800,6 +2839,7 @@
       }
       this._transition = null;
       this._initCalled = false;
+      this._syncDomRect = this.options.liveGeometry === true;
       this.rectPx = null;
       this.radiusGl = 0;
       this.radiusCss = 0;
@@ -2883,6 +2923,9 @@
       this.hollowMaskContent =
         !!this.options.hollowMaskContent ||
         this.el.hasAttribute("data-liquid-mask-content");
+      if (Object.prototype.hasOwnProperty.call(patch || {}, "liveGeometry")) {
+        this._syncDomRect = this.options.liveGeometry === true;
+      }
 
       if (Object.prototype.hasOwnProperty.call(patch || {}, "tilt") && hadTilt !== !!this.options.tilt) {
         this.setTilt(this.options.tilt);
@@ -3579,9 +3622,7 @@
       document.body.appendChild(this._mirror);
 
       const updateClip = () => {
-        if (this._mirrorActive) {
-          this._baseRect = this._baseRect || this.el.getBoundingClientRect();
-        }
+        if (this._mirrorActive) this._baseRect = this._baseRect || this.el.getBoundingClientRect();
         const r = this._baseRect || this.el.getBoundingClientRect();
         const radius = `${this.radiusCss}px`;
         this._mirror.style.clipPath = `inset(${r.top}px ${

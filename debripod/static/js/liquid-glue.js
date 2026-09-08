@@ -90,6 +90,7 @@
       resolution: 0.25,
       reveal: "none",
       tilt: false,
+      liveGeometry: ["pathPill", "infoPill", "listPills", "selectedRow"].indexOf(key) >= 0,
       material: normalizeLiquidGlassMaterial(settings.material, 0)
     };
   }

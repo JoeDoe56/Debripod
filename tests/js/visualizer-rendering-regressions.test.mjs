@@ -23,7 +23,7 @@ function loadHelpers(names) {
     assert.ok(match, `${name} must remain independently testable`);
     return match[0];
   });
-  const context = {Math, Number, encodeURIComponent};
+  const context = {Math, Number, Array, encodeURIComponent};
   vm.createContext(context);
   vm.runInContext(snippets.join("\n"), context, {filename: visualizerPath});
   return context;
@@ -73,6 +73,31 @@ test("glass reactive sampling matches the background transform and stays premult
   const reveal = 0.5;
   assert.deepEqual(source.map(channel => channel * alpha * reveal * shape), [0.1, 0.05, 0.025]);
   assert.equal(alpha * reveal * shape, 0.125);
+});
+
+test("grayscale source samples softly exclude clipped luma and keep glass coverage opaque", () => {
+  const {visualizerBandLumaEligibility, visualizerReactiveSourcePixel} = loadHelpers([
+    "clamp01", "visualizerBandLumaEligibility", "visualizerReactiveSourcePixel"
+  ]);
+  assert.equal(visualizerBandLumaEligibility(0), 0);
+  assert.equal(visualizerBandLumaEligibility(0.04), 0);
+  assert.equal(visualizerBandLumaEligibility(1), 0);
+  assert.equal(visualizerBandLumaEligibility(0.96), 0);
+  assert.equal(visualizerBandLumaEligibility(0.5), 1);
+  assert.ok(visualizerBandLumaEligibility(0.06) < visualizerBandLumaEligibility(0.5));
+  assert.ok(visualizerBandLumaEligibility(0.94) < visualizerBandLumaEligibility(0.5));
+
+  assert.deepEqual(
+    {...visualizerReactiveSourcePixel([0.8, 0.4, 0.2], 0.5, 0.5)},
+    {r:0.2, g:0.1, b:0.05, a:1}
+  );
+  assert.deepEqual(
+    {...visualizerReactiveSourcePixel([0.8, 0.4, 0.2], 0.5, 0)},
+    {r:0, g:0, b:0, a:1}
+  );
+  assert.match(liquid, /color\.rgb \*= opacity \* u_reactiveFade/);
+  assert.match(liquid, /color\.a = 1\.0/);
+  assert.match(visualizer, /smoothstep\(0\.04,0\.10,luma\)/);
 });
 
 test("Now Playing suppresses selected-row glass and opaque zero-opacity lenses", () => {

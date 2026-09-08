@@ -50,7 +50,7 @@ def test_visualizer_art_cache_version_invalidates_previous_field(tmp_path, monke
     monkeypatch.setattr(metadata, "_sample_visualizer_art_luma", lambda _path: {"useful_luma_low": 0.1, "useful_luma_high": 0.9})
 
     first = metadata.warm_visualizer_art(str(song))
-    monkeypatch.setattr(metadata, "VISUALIZER_ART_ALGORITHM_VERSION", 2)
+    monkeypatch.setattr(metadata, "VISUALIZER_ART_ALGORITHM_VERSION", metadata.VISUALIZER_ART_ALGORITHM_VERSION + 1)
     second = metadata.warm_visualizer_art(str(song))
 
     assert first is not None and second is not None
@@ -70,3 +70,16 @@ def test_robust_luma_percentiles_normalize_dark_and_bright_fields():
     assert metadata.normalize_visualizer_art_luma(dark_luma["useful_luma_high"], dark_luma["useful_luma_low"], dark_luma["useful_luma_high"]) == 1.0
     assert metadata.normalize_visualizer_art_luma(bright_luma["useful_luma_low"], bright_luma["useful_luma_low"], bright_luma["useful_luma_high"]) == 0.0
     assert metadata.normalize_visualizer_art_luma(bright_luma["useful_luma_high"], bright_luma["useful_luma_low"], bright_luma["useful_luma_high"]) == 1.0
+
+
+def test_clipped_grayscale_extremes_do_not_define_visualizer_band_range():
+    raw = (
+        bytes([0, 0, 0] * 80)
+        + bytes([255, 255, 255] * 80)
+        + bytes([51, 51, 51] * 20)
+        + bytes([204, 204, 204] * 20)
+    )
+    bounds = metadata._robust_visualizer_luma(raw)
+    assert bounds is not None
+    assert 0.18 < bounds["useful_luma_low"] < 0.23
+    assert 0.77 < bounds["useful_luma_high"] < 0.82

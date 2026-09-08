@@ -45,6 +45,8 @@ var visualizerArtField = {
   key: "", loading: false, loaded: false, image: null, url: "", artIdentity: "", algorithmVersion: 0,
   usefulLumaLow: 0, usefulLumaHigh: 1, source: "idle"
 };
+var VISUALIZER_BAND_LUMA_MIN = 0.06;
+var VISUALIZER_BAND_LUMA_MAX = 0.94;
 var visualizerAnalysisState = {
   key: "", loaded: false, loading: false, stale: false, rate: 30, stride: 11, bandCount: 9,
   frameCount: 0, bytes: null, rootId: "", rel: "", source: "idle", mediaKind: "", activeBands: visualizerActiveBands
@@ -59,6 +61,27 @@ function clampByte(n){
   return Math.max(0, Math.min(255, Math.round(Number(n || 0)) || 0));
 }
 
+function visualizerBandLumaEligibility(luma){
+  var value = clamp01(luma);
+  var rise = value <= 0.04 ? 0 : (value >= 0.10 ? 1 : ((value - 0.04) / 0.06) * ((value - 0.04) / 0.06) * (3 - 2 * ((value - 0.04) / 0.06)));
+  var fall = value <= 0.90 ? 1 : (value >= 0.96 ? 0 : 1 - (((value - 0.90) / 0.06) * ((value - 0.90) / 0.06) * (3 - 2 * ((value - 0.90) / 0.06))));
+  return Math.max(0, Math.min(1, rise * fall));
+}
+
+function visualizerReactiveSourcePixel(rgb, opacity, fade){
+  var source = Array.isArray(rgb) ? rgb : [0, 0, 0];
+  var alpha = clamp01(opacity) * clamp01(fade);
+  // LiquidGL samples the visualizer after its opaque-black canvas clear. Keep
+  // that composited source opaque so a fade changes the sampled color, not the
+  // glass layer's coverage.
+  return {
+    r: clamp01(Number(source[0] || 0)) * alpha,
+    g: clamp01(Number(source[1] || 0)) * alpha,
+    b: clamp01(Number(source[2] || 0)) * alpha,
+    a: 1
+  };
+}
+
 function currentVisualizerMediaElement(){
   try{ if(isVideoActive && isVideoActive() && npVideo) return npVideo; }catch(e){}
   try{ if(activeAudio && activeAudio.src) return activeAudio; }catch(e){}
@@ -71,7 +94,7 @@ function currentVisualizerMediaKind(){
 
 function normalizeVisualizerArtLuma(value, usefulLow, usefulHigh){
   var low = clamp01(usefulLow);
-  var high = Math.max(low + 0.04, clamp01(usefulHigh));
+  var high = Math.max(low + 0.08, clamp01(usefulHigh));
   return clamp01((clamp01(value) - low) / (high - low));
 }
 
@@ -86,6 +109,11 @@ function visualizerBackingSize(viewportWidth, viewportHeight, devicePixelRatio){
   var cssHeight = Math.max(1, Math.round(Number(viewportHeight || 1)));
   var dpr = Math.max(1, Math.min(2, Number(devicePixelRatio || 1)));
   return {cssWidth:cssWidth, cssHeight:cssHeight, width:Math.max(1, Math.round(cssWidth * dpr)), height:Math.max(1, Math.round(cssHeight * dpr)), dpr:dpr};
+}
+
+function visualizerTextureUsesMipmaps(width, height){
+  return Number.isInteger(width) && Number.isInteger(height) && width > 0 && height > 0 &&
+    (width & (width - 1)) === 0 && (height & (height - 1)) === 0;
 }
 
 function visualizerArtUrlWithCacheBust(url, field){
@@ -265,7 +293,7 @@ function loadVisualizerArtFieldForTrack(rootId, rel, options){
           visualizerArtField = {
             key:key, loading:false, loaded:true, image:image, url:visualizerArtUrlWithCacheBust(field.url, field), artIdentity:String(field.art_identity || field.cache_key || ""),
             algorithmVersion:Number(field.algorithm_version || 0), usefulLumaLow:clamp01(field.useful_luma_low),
-            usefulLumaHigh:Math.max(clamp01(field.useful_luma_low) + 0.04, clamp01(field.useful_luma_high)), source:"art-cache"
+            usefulLumaHigh:Math.max(clamp01(field.useful_luma_low) + 0.08, clamp01(field.useful_luma_high)), source:"art-cache"
           };
           visualizerUploadedArtKey = "";
           visualizerNeedsBlackFrame = true;
@@ -461,10 +489,10 @@ function ensureVisualizerWebGL(){
     if(!visualizerGl){ visualizerWebglUnavailable = true; return false; }
     var vertex = "attribute vec2 p; varying vec2 uv; void main(){uv=(p+1.0)*0.5;gl_Position=vec4(p,0.0,1.0);}";
     var fragment = [
-      "precision mediump float;", "varying vec2 uv;", "uniform sampler2D artTex;", "uniform vec2 canvasSize;", "uniform float angle;", "uniform float lumaLow;", "uniform float lumaHigh;", "uniform float fade;", "uniform float brightnessCap;", "uniform float energy;", "uniform float beat;", "uniform float bands[9];", "uniform float bandCenters[9];", "uniform float bandWidths[9];", "uniform vec4 frequencyResponse;", "uniform vec4 energyResponse;", "uniform vec4 beatResponse;",
+      "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif", "varying vec2 uv;", "uniform sampler2D artTex;", "uniform vec2 canvasSize;", "uniform float angle;", "uniform float lumaLow;", "uniform float lumaHigh;", "uniform float fade;", "uniform float brightnessCap;", "uniform float energy;", "uniform float beat;", "uniform float bands[9];", "uniform float bandCenters[9];", "uniform float bandWidths[9];", "uniform vec4 frequencyResponse;", "uniform vec4 energyResponse;", "uniform vec4 beatResponse;",
       "float bandWeight(float l,float center,float width){return max(0.0,1.0-abs(l-center)/max(0.0001,width));}",
-      "void main(){", "vec2 screen=(uv-0.5)*canvasSize;", "float c=cos(angle);float s=sin(angle);", "vec2 rotated=vec2(c*screen.x+s*screen.y,-s*screen.x+c*screen.y);", "vec2 artUv=rotated/max(1.0,length(canvasSize))+0.5;", "vec3 rgb=texture2D(artTex,clamp(artUv,0.0,1.0)).rgb;", "float luma=dot(rgb,vec3(0.2126,0.7152,0.0722));", "float useful=clamp((luma-lumaLow)/max(0.04,lumaHigh-lumaLow),0.0,1.0);",
-      "float w0=bandWeight(useful,bandCenters[0],bandWidths[0]);float w1=bandWeight(useful,bandCenters[1],bandWidths[1]);float w2=bandWeight(useful,bandCenters[2],bandWidths[2]);", "float w3=bandWeight(useful,bandCenters[3],bandWidths[3]);float w4=bandWeight(useful,bandCenters[4],bandWidths[4]);float w5=bandWeight(useful,bandCenters[5],bandWidths[5]);", "float w6=bandWeight(useful,bandCenters[6],bandWidths[6]);float w7=bandWeight(useful,bandCenters[7],bandWidths[7]);float w8=bandWeight(useful,bandCenters[8],bandWidths[8]);", "float total=max(0.0001,w0+w1+w2+w3+w4+w5+w6+w7+w8);", "float frequency=(w0*bands[0]+w1*bands[1]+w2*bands[2]+w3*bands[3]+w4*bands[4]+w5*bands[5]+w6*bands[6]+w7*bands[7]+w8*bands[8])/total;",
+      "void main(){", "vec2 screen=(uv-0.5)*canvasSize;", "float c=cos(angle);float s=sin(angle);", "vec2 rotated=vec2(c*screen.x+s*screen.y,-s*screen.x+c*screen.y);", "vec2 artUv=rotated/max(1.0,length(canvasSize))+0.5;", "vec3 rgb=texture2D(artTex,clamp(artUv,0.0,1.0)).rgb;", "float luma=dot(rgb,vec3(0.2126,0.7152,0.0722));", "float useful=clamp((luma-lumaLow)/max(0.08,lumaHigh-lumaLow),0.0,1.0);", "float bandEligible=smoothstep(0.04,0.10,luma)*(1.0-smoothstep(0.90,0.96,luma));",
+      "float w0=bandWeight(useful,bandCenters[0],bandWidths[0]);float w1=bandWeight(useful,bandCenters[1],bandWidths[1]);float w2=bandWeight(useful,bandCenters[2],bandWidths[2]);", "float w3=bandWeight(useful,bandCenters[3],bandWidths[3]);float w4=bandWeight(useful,bandCenters[4],bandWidths[4]);float w5=bandWeight(useful,bandCenters[5],bandWidths[5]);", "float w6=bandWeight(useful,bandCenters[6],bandWidths[6]);float w7=bandWeight(useful,bandCenters[7],bandWidths[7]);float w8=bandWeight(useful,bandCenters[8],bandWidths[8]);", "float total=max(0.0001,w0+w1+w2+w3+w4+w5+w6+w7+w8);", "float frequency=bandEligible*(w0*bands[0]+w1*bands[1]+w2*bands[2]+w3*bands[3]+w4*bands[4]+w5*bands[5]+w6*bands[6]+w7*bands[7]+w8*bands[8])/total;",
       "float brightness=clamp(1.0+frequency*frequencyResponse.x+energy*energyResponse.x+beat*beatResponse.x,0.0,4.0);", "float opacity=clamp(1.0+frequency*frequencyResponse.y+energy*energyResponse.y+beat*beatResponse.y,0.0,1.0);", "float saturation=clamp(1.0+frequency*frequencyResponse.z+energy*energyResponse.z+beat*beatResponse.z,0.0,3.0);", "float contrast=clamp(1.0+frequency*frequencyResponse.w+energy*energyResponse.w+beat*beatResponse.w,0.0,3.0);", "rgb=mix(vec3(luma),rgb,saturation);rgb=(rgb-0.5)*contrast+0.5;rgb=min(clamp(rgb*brightness,0.0,1.0),vec3(brightnessCap));", "float alpha=opacity*fade;gl_FragColor=vec4(rgb*alpha,alpha);", "}"
     ].join("\n");
     visualizerProgram = linkVisualizerProgram(visualizerGl, vertex, fragment);
@@ -513,6 +541,12 @@ function uploadVisualizerArtTexture(){
     gl.bindTexture(gl.TEXTURE_2D, visualizerArtTexture);
     gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, 0);
     gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, gl.RGBA, gl.UNSIGNED_BYTE, visualizerArtField.image);
+    if(visualizerTextureUsesMipmaps(visualizerArtField.image.naturalWidth, visualizerArtField.image.naturalHeight) && gl.generateMipmap && gl.LINEAR_MIPMAP_LINEAR != null){
+      gl.generateMipmap(gl.TEXTURE_2D);
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+    }else{
+      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+    }
     visualizerUploadedArtKey = key;
     visualizerArtUploadCount += 1;
     return true;
@@ -742,7 +776,7 @@ function sampleThemeFromArt(src){
 try{
   var rootForVisualizer = window.DebriPod = window.DebriPod || {};
   rootForVisualizer.visualizerRenderer = Object.assign(rootForVisualizer.visualizerRenderer || {}, {sourceForLiquidGL:visualizerSourceForLiquidGL, render:renderVisualizerWebGL, available:()=>!!(visualizerGl && !visualizerWebglUnavailable)});
-  rootForVisualizer.visualizerArt = {normalizeLuma:normalizeVisualizerArtLuma, rotationOverscan:visualizerArtRotationOverscan, rotatedUv:rotatedVisualizerArtUv, bandMap:buildVisualizerBandLumaMap, field:()=>visualizerArtField, uploadCount:()=>visualizerArtUploadCount};
+  rootForVisualizer.visualizerArt = {normalizeLuma:normalizeVisualizerArtLuma, rotationOverscan:visualizerArtRotationOverscan, rotatedUv:rotatedVisualizerArtUv, bandMap:buildVisualizerBandLumaMap, bandLumaEligibility:visualizerBandLumaEligibility, reactiveSourcePixel:visualizerReactiveSourcePixel, field:()=>visualizerArtField, uploadCount:()=>visualizerArtUploadCount};
 }catch(e){}
 
 applyVisualizerBandLumaMap(visualizerActiveBands);

@@ -39,3 +39,20 @@ test("the glass backing scale is independent of device DPR and frost is determin
   assert.doesNotMatch(liquid, /getContext\("webgl2"/);
   assert.doesNotMatch(liquid, /this\.el\.style\.pointerEvents\s*=\s*["']none["']/);
 });
+
+test("glass composites premultiplied overlap and smooths power-of-two source minification", () => {
+  assert.match(liquid, /gl\.enable\(gl\.BLEND\)/);
+  assert.match(liquid, /gl\.blendFunc\(gl\.ONE, gl\.ONE_MINUS_SRC_ALPHA\)/);
+  assert.match(liquid, /isPowerOfTwoTexture\(width, height\)/);
+  assert.match(liquid, /gl\.generateMipmap\(gl\.TEXTURE_2D\)/);
+  assert.match(visualizer, /visualizerTextureUsesMipmaps/);
+  assert.match(visualizer, /gl\.generateMipmap\(gl\.TEXTURE_2D\)/);
+});
+
+test("pill glass opts into per-render DOM geometry without changing wheel mirror caching", () => {
+  assert.match(glue, /liveGeometry: \["pathPill", "infoPill", "listPills", "selectedRow"\]/);
+  assert.match(liquid, /this\._syncDomRect = this\.options\.liveGeometry === true/);
+  assert.match(liquid, /else if \(this\.lenses\.some\(\(lens\) => lens && lens\._syncDomRect\)\)/);
+  assert.match(liquid, /this\._mirrorActive && this\._baseRect/);
+  assert.doesNotMatch(liquid, /_liveMirrorBaseRect/);
+});

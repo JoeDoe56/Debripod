@@ -34,9 +34,16 @@ META_LOCK = threading.Lock()
 ANALYSIS_LOCK = threading.BoundedSemaphore(1)
 PALETTE_ALGORITHM_VERSION = 4
 PALETTE_COLOR_COUNT = 16
-VISUALIZER_ART_ALGORITHM_VERSION = 1
-VISUALIZER_ART_SIZE = 512
-VISUALIZER_ART_BLUR_SIGMA = 56
+VISUALIZER_ART_ALGORITHM_VERSION = 2
+# The field is sampled across the whole viewport after rotation.  A 512px
+# field is under-resolved on tall phones and desktop screens, where one source
+# texel can cover multiple visible pixels.  Keep the blur in the same visual
+# CSS scale while giving the renderer enough source detail.
+VISUALIZER_ART_SIZE = 1024
+VISUALIZER_ART_BLUR_SIGMA = 112
+VISUALIZER_BAND_LUMA_MIN = 0.06
+VISUALIZER_BAND_LUMA_MAX = 0.94
+VISUALIZER_MIN_LUMA_SPAN = 0.08
 DEFAULT_VISUALIZER_PALETTE: list[tuple[int, int, int]] = [
     (10, 132, 255),
     (94, 92, 230),
@@ -590,7 +597,7 @@ def visualizer_art_cache_key(art_identity: str) -> str:
 def visualizer_art_cache_paths(art_identity: str) -> tuple[str, str]:
     key = visualizer_art_cache_key(art_identity)
     directory = visualizer_art_cache_dir()
-    return os.path.join(directory, f"{key}.jpg"), os.path.join(directory, f"{key}.json")
+    return os.path.join(directory, f"{key}.png"), os.path.join(directory, f"{key}.json")
 
 
 def _visualizer_art_lock(key: str) -> threading.Lock:
@@ -608,7 +615,7 @@ def _clamp_unit(value: Any) -> float:
 def normalize_visualizer_art_luma(value: Any, useful_low: Any, useful_high: Any) -> float:
     """Normalize a sampled luma value against cached robust percentiles."""
     low = _clamp_unit(useful_low)
-    high = max(low + 0.04, _clamp_unit(useful_high))
+    high = max(low + VISUALIZER_MIN_LUMA_SPAN, _clamp_unit(useful_high))
     return _clamp_unit((_clamp_unit(value) - low) / (high - low))
 
 
@@ -632,11 +639,19 @@ def _robust_visualizer_luma(raw_rgb: bytes) -> Optional[dict[str, float]]:
     ]
     if not lumas:
         return None
-    low = _percentile(lumas, 0.03)
-    high = _percentile(lumas, 0.97)
-    if high < low + 0.04:
-        high = min(1.0, low + 0.04)
-        low = max(0.0, high - 0.04)
+    # Black/near-black and white/near-white pixels are framing or clipping,
+    # not useful brightness ranges for assigning audio bands.  Keep them in
+    # the image, but do not let them define the useful luma interval.
+    useful_lumas = [
+        value for value in lumas
+        if VISUALIZER_BAND_LUMA_MIN < value < VISUALIZER_BAND_LUMA_MAX
+    ]
+    interval = useful_lumas or lumas
+    low = _percentile(interval, 0.03)
+    high = _percentile(interval, 0.97)
+    if high < low + VISUALIZER_MIN_LUMA_SPAN:
+        high = min(1.0, low + VISUALIZER_MIN_LUMA_SPAN)
+        low = max(0.0, high - VISUALIZER_MIN_LUMA_SPAN)
     return {"useful_luma_low": _clamp_unit(low), "useful_luma_high": _clamp_unit(high)}
 
 
@@ -667,7 +682,9 @@ def _build_visualizer_art_image(art_path: str, destination: str) -> bool:
             f"scale={VISUALIZER_ART_SIZE}:{VISUALIZER_ART_SIZE}:force_original_aspect_ratio=increase,"
             f"crop={VISUALIZER_ART_SIZE}:{VISUALIZER_ART_SIZE},gblur=sigma={VISUALIZER_ART_BLUR_SIGMA}:steps=2"
         ),
-        "-frames:v", "1", "-q:v", "5", destination,
+        # Keep the preblurred field lossless. JPEG quantization contours are
+        # amplified by the luma-to-band normalization in the fragment shader.
+        "-frames:v", "1", "-c:v", "png", destination,
     ]
     code, _out, _err = run_cmd(args)
     try:
@@ -701,7 +718,7 @@ def _visualizer_art_metadata_from_cache(art_info: dict[str, Any]) -> Optional[di
     try:
         low = _clamp_unit(data.get("useful_luma_low"))
         high = _clamp_unit(data.get("useful_luma_high"))
-        if high < low + 0.04:
+        if high < low + VISUALIZER_MIN_LUMA_SPAN:
             return None
     except Exception:
         return None
@@ -738,7 +755,7 @@ def warm_visualizer_art(abs_path: str, *, root_id: str = "", rel: str = "", art_
         except OSError:
             return None
         token = f".{os.getpid()}.{threading.get_ident()}.tmp"
-        temp_image = image_path + token + ".jpg"
+        temp_image = image_path + token + ".png"
         temp_metadata = metadata_path + token + ".json"
         try:
             if not _build_visualizer_art_image(art_path, temp_image):
