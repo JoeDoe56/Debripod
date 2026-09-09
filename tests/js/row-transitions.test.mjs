@@ -26,15 +26,15 @@ test("keyed replacement identifies retained, inserted, removed, and selection", 
   assert.equal(plan.selectionIndex, 2);
 });
 
-test("row transition duration matches path and info pills", () => {
-  assert.equal(TRANSITION_DURATION_MS, 220);
+test("row transitions are disabled so page changes commit in one layout pass", () => {
+  assert.equal(TRANSITION_DURATION_MS, 0);
 });
 
-test("new rows cascade from top to bottom", () => {
+test("new rows never receive a cascade delay", () => {
   assert.equal(spawnDelayMs(0), 0);
-  assert.equal(spawnDelayMs(1), CASCADE_STEP_MS);
-  assert.ok(spawnDelayMs(12) > spawnDelayMs(4));
-  assert.equal(spawnDelayMs(4, {reducedMotion: true}), 0);
+  assert.equal(CASCADE_STEP_MS, 0);
+  assert.equal(spawnDelayMs(1), 0);
+  assert.equal(spawnDelayMs(12), spawnDelayMs(4));
 });
 
 test("reduced motion bypasses intermediate animation state", () => {
@@ -42,10 +42,10 @@ test("reduced motion bypasses intermediate animation state", () => {
   assert.equal(plan.animate, false);
 });
 
-test("page transitions animate rendered rows even for a 2100-item logical dataset", () => {
-  assert.equal(shouldAnimateListMutation(2100, 2100, 2100, {reason: "page load"}), true);
+test("page transitions never animate rendered rows", () => {
+  assert.equal(shouldAnimateListMutation(2100, 2100, 2100, {reason: "page load"}), false);
   assert.equal(shouldAnimateListMutation(2100, 2100, 2100, {reason: "queue refresh"}), false);
-  assert.equal(shouldAnimateListMutation(32, 2, 32, {reason: "page load"}), true);
+  assert.equal(shouldAnimateListMutation(32, 2, 32, {reason: "page load"}), false);
 });
 
 test("virtualization policy excludes root and info pages but accepts arbitrary library subpages", () => {

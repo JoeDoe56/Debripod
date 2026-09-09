@@ -12,13 +12,12 @@
   // transition layer around here used to make page changes look like a
   // cascade and, worse, let the selected glass drift while the list was
   // being replaced.
-  const TRANSITION_DURATION_MS = 220;
-  const CASCADE_STEP_MS = 28;
-  const CASCADE_MAX_DELAY_MS = 280;
+  const TRANSITION_DURATION_MS = 0;
+  const CASCADE_STEP_MS = 0;
+  const CASCADE_MAX_DELAY_MS = 0;
 
   function spawnDelayMs(index, options){
-    if(options && options.reducedMotion) return 0;
-    return Math.min(CASCADE_MAX_DELAY_MS, Math.max(0, Number(index) || 0) * CASCADE_STEP_MS);
+    return 0;
   }
 
   function planRowMutation(previous, next, identity, selectedIdentity, options){
@@ -39,15 +38,11 @@
     });
     const selectedKey = String(selectedIdentity == null ? "" : selectedIdentity);
     const selectionIndex = nextMap.has(selectedKey) ? nextMap.get(selectedKey).index : -1;
-    const reduced = !!(options && options.reducedMotion);
     return {retained:retained, inserted:inserted, removed:removed, selectionIndex:selectionIndex, animate:false};
   }
 
   function shouldAnimateListMutation(previousCount, nextCount, changedRows, options){
-    const opts = options || {};
-    // A page transition animates only the rows that are actually rendered;
-    // logical dataset size must not suppress the visible transition.
-    return Number(previousCount || 0) <= 500 && Number(nextCount || 0) <= 500 && Number(changedRows || 0) <= 100;
+    return false;
   }
 
   function isNonVirtualInfoView(kind){

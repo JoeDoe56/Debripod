@@ -282,20 +282,11 @@
   }
 
   function replaceListItems(nextItems, options){
-    const opts = Object.assign({animate:true, preserveSelection:true, preserveScroll:true, reason:"list update"}, options || {});
+    const opts = Object.assign({preserveSelection:true, preserveScroll:true, reason:"list update"}, options || {});
     const previous = Array.isArray(state.items) ? state.items : [];
     const next = Array.isArray(nextItems) ? nextItems.slice() : [];
     let changedRows = Math.abs(previous.length - next.length);
     for(let ci=0;ci<Math.min(previous.length,next.length) && changedRows<=100;ci++) if(virtualItemIdentity(previous[ci],ci)!==virtualItemIdentity(next[ci],ci)) changedRows++;
-    const transitionApiForGuard = window.DebriPod && DebriPod.rowTransitions;
-    const canAnimateMutation = transitionApiForGuard && typeof transitionApiForGuard.shouldAnimateListMutation === "function"
-      ? transitionApiForGuard.shouldAnimateListMutation(previous.length, next.length, changedRows, opts)
-      : (opts.reason === "page load" || (previous.length <= 500 && next.length <= 500 && changedRows <= 100));
-    if(!canAnimateMutation) opts.animate = false;
-    // Page changes are committed in one layout pass. The selected row's
-    // glass remains anchored by the page spacer while rows appear around it;
-    // no row-level spawn, cascade, or FLIP animation is allowed here.
-    opts.animate = false;
     const oldScroll = libList ? libList.scrollTop : 0;
     const selectedIdentity = Object.prototype.hasOwnProperty.call(opts, "transitionSelectionIdentity")
       ? String(opts.transitionSelectionIdentity || "")
@@ -1383,7 +1374,7 @@
       libList._dpLiquidPillScrollBound = true;
       libList.addEventListener("scroll", ()=>{
         try{
-          const renderer = (typeof liquidGlassRendererByKey === "function") ? liquidGlassRendererByKey("libPills") : null;
+          const renderer = (typeof liquidGlassRendererByKey === "function") ? liquidGlassRendererByKey("main") : null;
           if(renderer) renderer._metricsDirty = true;
           if(libList._dpVirtualized){
             const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
@@ -1399,19 +1390,19 @@
               scheduleVirtualListRender("virtual scroll settled");
             }, 120);
             scheduleVirtualListRender("virtual scroll render");
-            if(libList._dpLiquidPillScrollTimer) clearTimeout(libList._dpLiquidPillScrollTimer);
-            libList._dpLiquidPillScrollTimer = setTimeout(()=>{
-              libList._dpLiquidPillScrollTimer = 0;
-              try{ if(typeof reconcileLibPillGlassTargets === "function") reconcileLibPillGlassTargets("list scroll settled"); }catch(e){}
-            }, 90);
+            if(libList._dpLiquidPillScrollFrame) cancelAnimationFrame(libList._dpLiquidPillScrollFrame);
+            libList._dpLiquidPillScrollFrame = requestAnimationFrame(()=>{
+              libList._dpLiquidPillScrollFrame = 0;
+              try{ if(typeof reconcileLibPillGlassTargets === "function") reconcileLibPillGlassTargets("list scroll frame"); }catch(e){}
+            });
             return;
           }
           if(typeof invalidateLibPillGlass === "function") invalidateLibPillGlass("list scroll");
-          if(libList._dpLiquidPillScrollTimer) clearTimeout(libList._dpLiquidPillScrollTimer);
-          libList._dpLiquidPillScrollTimer = setTimeout(()=>{
-            libList._dpLiquidPillScrollTimer = 0;
-            try{ if(typeof reconcileLibPillGlassTargets === "function") reconcileLibPillGlassTargets("list scroll settled"); }catch(e){}
-          }, 90);
+          if(libList._dpLiquidPillScrollFrame) cancelAnimationFrame(libList._dpLiquidPillScrollFrame);
+          libList._dpLiquidPillScrollFrame = requestAnimationFrame(()=>{
+            libList._dpLiquidPillScrollFrame = 0;
+            try{ if(typeof reconcileLibPillGlassTargets === "function") reconcileLibPillGlassTargets("list scroll frame"); }catch(e){}
+          });
           if(typeof scheduleLiquidGlassRender === "function") scheduleLiquidGlassRender();
         }catch(e){}
       }, {passive:true});
@@ -1625,19 +1616,20 @@ function vibeTick(){
         const style = window.getComputedStyle ? window.getComputedStyle(libList) : null;
         const paddingTop = style ? (parseFloat(style.paddingTop || "0") || 0) : 0;
         state.pageAnchorOffset = Math.max(0, Number(state.current.entryAnchorY) - paddingTop);
-        // Short destination pages should start at the top. Their selected-row
-        // transition supplies the visual continuity without a blank spacer.
-        preserveEntryAnchor = state.pageAnchorOffset > 0 && arr.length > 32;
+        // Keep the selected row at the same viewport coordinate for every
+        // destination size. The spacer is laid out before the new rows, so
+        // the replacement does not need a visual row transition.
+        preserveEntryAnchor = state.pageAnchorOffset > 0 && restoreScroll == null;
       }
       libList.scrollTop = 0;
     }
-    replaceListItems(arr, {animate:true, preserveSelection:false, preserveScroll:false, preserveEntryAnchor:preserveEntryAnchor, selectionIndex:state.sel, transitionSelectionIdentity:transitionSelectionIdentity, reason:"page load"});
+    replaceListItems(arr, {preserveSelection:false, preserveScroll:false, preserveEntryAnchor:preserveEntryAnchor, selectionIndex:state.sel, transitionSelectionIdentity:transitionSelectionIdentity, reason:"page load"});
     setHeader();
     try{ if(typeof applySelectedTextContrast === "function") applySelectedTextContrast(); }catch(e){}
 
     if(restoreScroll != null && libList){
       const top = Math.max(0, restoreScroll);
-      requestAnimationFrame(()=>{ try{ libList.scrollTop = top; }catch(e){} });
+      try{ libList.scrollTop = top; }catch(e){}
     }
     try{
       if(window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.saveRenderedViewSnapshot){
@@ -1654,6 +1646,31 @@ function vibeTick(){
       }
     }catch(e){}
   }
+
+  // The glass lens has its own spring while it catches up with the selected
+  // row.  The caller (liquid-glue) can pass the lens's current and target Y
+  // values so the selected row's foreground follows that same spring without
+  // moving the row's layout or its neighbouring rows.
+  function setSelectedRowContentOffset(currentY, targetY){
+    try{
+      const selected = libList && libList.querySelector ? libList.querySelector(".ipodItem.sel") : null;
+      const previous = libList && libList._dpSelectedContentRow;
+      if(previous && previous !== selected) previous.style.removeProperty("--dp-selected-content-offset-y");
+      if(!selected){
+        if(libList) libList._dpSelectedContentRow = null;
+        return 0;
+      }
+      const current = Number(currentY);
+      const target = Number(targetY);
+      const offset = Number.isFinite(current) && Number.isFinite(target) ? current - target : 0;
+      selected.style.setProperty("--dp-selected-content-offset-y", offset.toFixed(3) + "px");
+      libList._dpSelectedContentRow = selected;
+      return offset;
+    }catch(e){
+      return 0;
+    }
+  }
+  try{ window.setSelectedRowContentOffset = setSelectedRowContentOffset; }catch(e){}
 
   function selectedRowViewportY(){
     try{

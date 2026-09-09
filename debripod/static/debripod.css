@@ -26,14 +26,14 @@
       --dp-glass-list-engrave-b: rgba(120,190,255,.78);
       --dp-glass-selected-text: #ffffff;
       --dp-glass-selected-pill-text: #ffffff;
-      --dp-text-wheel-labels: rgba(255,255,255,.68);
-      --dp-text-path-pill: rgba(255,255,255,.68);
-      --dp-text-info-pill: rgba(255,255,255,.68);
-      --dp-text-rows: rgba(255,255,255,.68);
-      --dp-text-row-pills: rgba(255,255,255,.68);
+      --dp-text-wheel-labels: rgba(35,35,35,.45);
+      --dp-text-path-pill: rgba(35,35,35,.45);
+      --dp-text-info-pill: rgba(35,35,35,.45);
+      --dp-text-rows: rgba(35,35,35,.45);
+      --dp-text-row-pills: rgba(255,255,255,.45);
       --dp-text-selected-row: #fff;
       --dp-text-selected-row-pills: #fff;
-      --dp-text-transparent-alpha: .68;
+      --dp-text-transparent-alpha: .45;
       --dp-selected-pill-edge-room: 44px;
       --dp-selected-foreground-base-pct: 0%;
       --dp-selected-foreground-target-pct: 100%;
@@ -1287,7 +1287,7 @@
       color:#fff;
     }
     .ipodItem.sel [data-selected-row-text]{
-      transform: scale(var(--dp-selected-foreground-scale, 1));
+      transform: translate3d(0, var(--dp-selected-content-offset-y, 0px), 0) scale(var(--dp-selected-foreground-scale, 1));
       transform-origin: left center;
       z-index: 4;
       position: relative;
@@ -1298,7 +1298,7 @@
     }
     .ipodItem.sel .ipodPill{
       color:#fff;
-      transform: scale(var(--dp-selected-pill-scale, 1));
+      transform: translate3d(0, var(--dp-selected-content-offset-y, 0px), 0) scale(var(--dp-selected-pill-scale, 1));
       transform-origin: center;
       z-index: 4;
     }
@@ -2146,7 +2146,7 @@
     /* The hidden info pill keeps its flow slot while its glass fades. Move the
        wheel through that slot so the visible gaps remain balanced. */
     .ipodStage:not(.layoutExpanded):has(.infoPill.infoPillHidden) .wheelZone{
-      transform:translateY(calc(-1 * (var(--infoPillHeight) + var(--stageGap))));
+      transform:translateY(calc(-.5 * (var(--infoPillHeight) + var(--stageGap))));
     }
     .debripodInlineStatus{
       position:absolute;

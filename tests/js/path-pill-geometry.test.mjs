@@ -50,7 +50,7 @@ test("path pill width motion converges and text fades only when it overflows", (
   assert.equal(overflows(122, 120), true);
 });
 
-test("width changes redraw the glass before scheduling subsequent work", () => {
+test("width changes coalesce glass work into the shared frame scheduler", () => {
   const calls = [];
   const lens = {rectPx: {}, el: {classList: {contains: () => true}}};
   const renderer = {lenses: [lens], render(){
@@ -60,11 +60,10 @@ test("width changes redraw the glass before scheduling subsequent work", () => {
   }};
   const mark = loadFunction("markPathPillWidthChanged", {
     liquidGlassRendererByKey: () => renderer,
-    currentVisualizerFrameState: () => ({}),
     window: {DebriPod: {frameScheduler: {mark(){ calls.push("schedule"); }}}}
   });
   mark();
-  assert.deepEqual(calls, ["render", "schedule"]);
+  assert.deepEqual(calls, ["schedule"]);
 });
 
 test("list pill remains eligible while partially visible", () => {
