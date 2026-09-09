@@ -4,7 +4,7 @@ import test from "node:test";
 
 const require = createRequire(import.meta.url);
 const {createBrowserControlDispatcher, resolveControlCommand, clampSelectionIndex} = require("../../debripod/static/js/control-dispatcher.js");
-const {contextMenuRows, normalizeMediaTarget} = require("../../debripod/static/js/media-actions.js");
+const {contextMenuRows, normalizeMediaTarget, createBrowserMediaActions} = require("../../debripod/static/js/media-actions.js");
 
 test("Q and E map through the same command table in all contexts", () => {
   assert.equal(resolveControlCommand("keyboard", "scroll_back", "list"), "scroll_back");
@@ -37,6 +37,34 @@ test("context menus are target-driven and reject nonplayable rows", () => {
   assert.deepEqual(contextMenuRows(movie).map((row) => row.label), ["View information", "Like"]);
   const youtube = normalizeMediaTarget({kind:"file", media:"video", root:{id:"r"}, rel:"video.mp4", source:"youtube"});
   assert.deepEqual(contextMenuRows(youtube).map((row) => row.label), ["View comments", "Like"]);
+});
+
+test("collection rows expose queue actions for long press", () => {
+  const album = normalizeMediaTarget({kind:"album", label:"Discovery", root:{id:"music"}, value:JSON.stringify({artist:"Daft Punk", album:"Discovery"})});
+  assert.equal(album.collection, true);
+  assert.equal(album.type, "album");
+  assert.deepEqual(contextMenuRows(album, {hasCurrentPlayback:true}).map((row) => row.action), ["play_next_collection", "play_after_collection"]);
+  assert.deepEqual(contextMenuRows(album).map((row) => row.action), []);
+});
+
+test("collection queue actions preserve source order when inserted next", async () => {
+  const inserted = [];
+  const win = {
+    DebriPod: {
+      apiClient: {apiGet: async () => ({items:[
+        {kind:"track", label:"One", root_id:"music", rel:"one.flac", media:"audio"},
+        {kind:"track", label:"Two", root_id:"music", rel:"two.flac", media:"audio"},
+      ]})},
+      playbackQueue: {
+        hasCurrent: () => true,
+        insertNext: (item) => { inserted.push(item.rel); return true; },
+      },
+    },
+  };
+  const actions = createBrowserMediaActions(win);
+  const album = normalizeMediaTarget({kind:"album", label:"Album", root:{id:"music"}, value:JSON.stringify({artist:"Artist", album:"Album"})});
+  await actions.executeAction({action:"play_next_collection", target:album});
+  assert.deepEqual(inserted, ["two.flac", "one.flac"]);
 });
 
 test("range editor consumes center tap, center hold, and Menu before ordinary controls", async () => {

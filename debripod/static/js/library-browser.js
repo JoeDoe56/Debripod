@@ -791,7 +791,9 @@ async function goBack(){
     const nextOn = !!on;
     try{
       const canonical = window.DebriPod && DebriPod.playbackQueue;
-      if(canonical && canonical.state.shuffle !== nextOn) canonical.setShuffle(nextOn);
+      // Rebuild on every enable so each shuffle toggle gets a fresh order,
+      // even when a restored session already had shuffle enabled.
+      if(canonical) canonical.setShuffle(nextOn);
     }catch(e){}
     if(nextOn){
       try{

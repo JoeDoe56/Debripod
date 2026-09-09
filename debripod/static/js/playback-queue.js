@@ -359,6 +359,54 @@
           win.DebriPod.clientSync.savePlaybackSession();
         }
       }catch(_error){}
+      // Queue edits must update the current history entry as well as the
+      // resumable session. Otherwise an album/playlist opened from History
+      // keeps the queue snapshot from before Play After was used.
+      if(["append", "insert-next", "remove", "shuffle"].includes(String(reason || ""))){
+        const now = appState.now;
+        const current = controller.current();
+        const queue = serialized.queue.map((item)=>Object.assign({}, item));
+        const queueIndex = serialized.queueIndex;
+        try{
+          const history = appState.playbackSession && appState.playbackSession.history;
+          if(Array.isArray(history) && history.length && now && current){
+            const match = history.find((entry)=>entry && String(entry.root_id || entry.rootId || "") === String(current.root_id || "") && String(entry.rel || "") === String(current.rel || "")) || history[0];
+            if(match) match.playlist = {items: queue, index: queueIndex};
+            try{
+              if(win.DebriPod && win.DebriPod.clientSync && win.DebriPod.clientSync.savePlaybackSession){
+                win.DebriPod.clientSync.savePlaybackSession();
+              }
+            }catch(_error){}
+          }
+        }catch(_error){}
+        try{
+          if(typeof win.playbackPost === "function" && now && current){
+            const media = String(current.media || now.media || "audio");
+            const element = media === "video" ? win.npVideo : win.activeAudio;
+            win.playbackPost({
+              media,
+              root_id: current.root_id,
+              rel: current.rel,
+              playlist: {items: queue, index: queueIndex},
+              label: current.label || current.title || "",
+              title: current.title || "",
+              artist: current.artist || "",
+              album: current.album || "",
+              art: current.art || "",
+              position: element && Number.isFinite(Number(element.currentTime)) ? Number(element.currentTime) : 0,
+              duration: element && Number.isFinite(Number(element.duration)) ? Number(element.duration) : current.duration,
+              playing: !!(element && !element.paused),
+              nav: now.nav || appState.nowNavContext || null,
+              session: appState.playbackSession || null,
+              event: "time",
+              streamed: !!current.streamed,
+              source: current.source || "",
+              ext: current.ext || "",
+              quality: current.quality || ""
+            });
+          }
+        }catch(_error){}
+      }
     }
 
     async function play(item, _index, options){

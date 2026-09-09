@@ -13,6 +13,7 @@
   "use strict";
 
   const TYPES = new Set(["music", "movie", "episode", "video", "youtube"]);
+  const COLLECTION_TYPES = new Set(["album", "artist", "genre", "playlist", "show", "show_season"]);
 
   function present(value){
     return value !== null && value !== undefined && String(value).trim() !== "";
@@ -28,10 +29,32 @@
     const rootId = item.root_id != null ? item.root_id : (item.rootId != null ? item.rootId : (item.root && item.root.id));
     const rel = String(item.rel || "");
     const sourceUrl = String(item.source_url || item.url || "");
+    const collection = COLLECTION_TYPES.has(kind);
+    if(collection){
+      const rootValue = present(rootId) ? String(rootId) : "";
+      let value = item.value;
+      if(value && typeof value === "object"){
+        try{ value = JSON.stringify(value); }catch(_error){ value = ""; }
+      }
+      return {
+        type: kind,
+        playable: false,
+        collection: true,
+        root_id: rootValue,
+        rel: rel,
+        label: String(item.label || kind),
+        value: String(value || ""),
+        show_key: String(item.show_key || item.showKey || ""),
+        season: item.season == null ? null : item.season,
+        artist: String(item.artist || ""),
+        album: String(item.album || ""),
+        genre: String(item.genre || ""),
+      };
+    }
     const knownNonPlayable = new Set([
       "heading", "info", "loading", "dir", "root", "metacat", "up", "setting_value",
       "libtask_entry", "libtask_file", "libtask_action", "libsearch_result",
-      "libsearch_file_action", "playlist", "show", "album", "artist", "genre",
+      "libsearch_file_action",
     ]);
     if(knownNonPlayable.has(kind)) return {type:"none", playable:false};
     const playable = (media === "audio" || media === "video") && (present(rel) || present(sourceUrl));
@@ -82,6 +105,9 @@
       quality: normalized.quality,
       source_url: normalized.source_url,
       source_id: normalized.source_id,
+      genre: String(item.genre || ""),
+      duration: item.duration == null ? null : item.duration,
+      tech: String(item.tech || ""),
       year: normalized.year,
       show_key: normalized.show_key,
       season: normalized.season,
@@ -91,12 +117,19 @@
   }
 
   function contextMenuRows(target, options){
-    const current = normalizeMediaTarget(target);
-    if(!current.playable) return [];
+    const current = target && (target.playable === true || target.collection === true) ? target : normalizeMediaTarget(target);
+    if(!current.playable && !current.collection) return [];
     const opts = options || {};
     const liked = !!opts.liked;
     const hasCurrent = !!opts.hasCurrentPlayback;
     const rows = [];
+    if(current.collection){
+      if(hasCurrent){
+        rows.push({action:"play_next_collection", label:"Play Next"});
+        rows.push({action:"play_after_collection", label:"Play After"});
+      }
+      return rows;
+    }
     if(current.type === "music"){
       rows.push({action:"lyrics", label:"Lyrics"});
       rows.push({action:"add_to_playlist", label:"Add to playlist"});
@@ -119,7 +152,7 @@
 
     function targetFromCurrent(explicit){
       const direct = normalizeMediaTarget(explicit);
-      if(direct.playable) return direct;
+      if(direct.playable || direct.collection) return direct;
       try{
         if(win.nowPlaying && win.nowPlaying.style.display === "block" && win.state.now){
           return normalizeMediaTarget(Object.assign({}, win.state.nowMeta || {}, {
@@ -159,9 +192,9 @@
 
     async function renderContextMenu(){
       const target = activeTarget;
-      if(!target || !target.playable) return;
+      if(!target || (!target.playable && !target.collection)) return;
       if(typeof win.showNowPlaying === "function") win.showNowPlaying(false, {navigationControlled:true});
-      const liked = await likeState(target);
+      const liked = target.collection ? false : await likeState(target);
       const queue = root.playbackQueue;
       const rows = contextMenuRows(target, {liked, hasCurrentPlayback:!!(queue && queue.hasCurrent())})
         .map((row) => ({kind:"media_action", label:row.label, action:row.action, target, pills:row.heart ? ["♥"] : []}));
@@ -173,7 +206,7 @@
 
     async function openContextMenuForCurrentTarget(explicit){
       const target = targetFromCurrent(explicit);
-      if(!target.playable) return false;
+      if(!target.playable && !target.collection) return false;
       activeTarget = target;
       const nav = root.navigationController;
       if(nav && nav.openTransient) await nav.openTransient("context_menu", renderContextMenu);
@@ -250,9 +283,66 @@
       return nav && nav.openTransient ? nav.openTransient("youtube_comments", render) : render();
     }
 
+    function collectionQuery(target){
+      const current = target || {};
+      const rootId = encodeURIComponent(String(current.root_id || ""));
+      if(!rootId) return null;
+      if(current.type === "playlist"){
+        return "/api/library/metadata?root_id=" + rootId + "&level=playlist_tracks&value=" + encodeURIComponent(String(current.rel || current.value || ""));
+      }
+      if(current.type === "album" || current.type === "artist" || current.type === "genre"){
+        let selector = {};
+        try{ selector = current.value ? JSON.parse(current.value) : {}; }catch(_error){}
+        if(current.type === "artist" && !selector.artist) selector.artist = current.label || "";
+        if(current.type === "genre" && !selector.genre) selector.genre = current.label || "";
+        return "/api/library/metadata?root_id=" + rootId + "&level=" + (current.type === "genre" ? "genre_tracks" : "tracks") + "&value=" + encodeURIComponent(JSON.stringify(selector));
+      }
+      if(current.type === "show" || current.type === "show_season"){
+        const selector = {show_key:String(current.show_key || current.value || "")};
+        if(current.type === "show_season" && current.season != null) selector.season = Number(current.season || 0);
+        return "/api/library/metadata?root_id=" + rootId + "&level=show_episodes&value=" + encodeURIComponent(JSON.stringify(selector));
+      }
+      return null;
+    }
+
+    async function expandCollection(target){
+      const query = collectionQuery(target);
+      if(!query || !root.apiClient) return [];
+      const response = await root.apiClient.apiGet(query, {localFirst:false});
+      const rows = response && Array.isArray(response.items) ? response.items : [];
+      return rows.map((row)=>{
+        if(!row || row.kind === "info") return null;
+        const media = String(row.media || (row.kind === "show_episode" || row.kind === "movie" ? "video" : "audio")).toLowerCase();
+        if(media !== "audio" && media !== "video") return null;
+        const item = Object.assign({}, row, {media});
+        if(!item.root_id && target.root_id) item.root_id = target.root_id;
+        if(!item.root && item.root_id) item.root = {id:item.root_id};
+        return normalizeMediaTarget(item);
+      }).filter((item)=>item && item.playable);
+    }
+
+    async function enqueueCollection(target, mode){
+      const current = target && target.collection === true ? target : normalizeMediaTarget(target);
+      if(!current.collection || !root.playbackQueue) return false;
+      const items = await expandCollection(current);
+      if(!items.length) return false;
+      const queueItems = items.map((item)=>item.canonical_queue_item);
+      const hasCurrent = root.playbackQueue.hasCurrent && root.playbackQueue.hasCurrent();
+      if(!hasCurrent){
+        root.playbackQueue.replaceFromPlayableList(queueItems, queueItems[0]);
+        return true;
+      }
+      const method = mode === "next" ? "insertNext" : "append";
+      let changed = false;
+      const itemsToInsert = mode === "next" ? queueItems.slice().reverse() : queueItems;
+      for(const item of itemsToInsert) changed = !!root.playbackQueue[method](item) || changed;
+      return changed;
+    }
+
     async function executeAction(row){
       const action = String(row && row.action || "");
-      const target = normalizeMediaTarget((row && row.target) || activeTarget);
+      const rawTarget = (row && row.target) || activeTarget;
+      const target = rawTarget && (rawTarget.playable === true || rawTarget.collection === true) ? rawTarget : normalizeMediaTarget(rawTarget);
       if(action === "lyrics") return false;
       if(action === "add_to_playlist"){
         if(target.type === "music" && typeof win.viewMediaPlaylistAdd === "function"){
@@ -268,6 +358,8 @@
       }
       if(action === "play_next") return root.playbackQueue && root.playbackQueue.insertNext(target.canonical_queue_item);
       if(action === "play_after") return root.playbackQueue && root.playbackQueue.append(target.canonical_queue_item);
+      if(action === "play_next_collection") return enqueueCollection(target, "next");
+      if(action === "play_after_collection") return enqueueCollection(target, "after");
       if(action === "view_information") return showInformation(target);
       if(action === "view_comments") return showComments(target);
       return false;
