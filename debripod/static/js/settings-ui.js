@@ -41,6 +41,8 @@
     if(window.DebriPod && DebriPod.uiSettings && DebriPod.uiSettings.setDeviceSettingsUserId){
       uiSettings = DebriPod.uiSettings.setDeviceSettingsUserId(js && js.device_settings_user_id);
       liquidGlassElements = cloneGlassElementSettings(uiSettings.liquidGlassElements);
+      applyUiTuningCss();
+      applyLiquidGlassStyleOptions();
     }
     state.startupSettings = Object.assign({}, (js && js.startup) || {});
     state.serverControlsOwner = !!(js && js.server_controls_owner);
@@ -1915,10 +1917,10 @@ async function libDoSearch(engine, q){
     ];
   }
 
-  const TEXT_MODE_ORDER = ["contrast", "transparent"];
+  const TEXT_MODE_ORDER = ["white", "transparent"];
   const ANIMATION_FPS_ORDER = [30, 60, 120];
   const TEXT_MODE_LABELS = {
-    contrast:"Contrast",
+    white:"White",
     transparent:"Transparent"
   };
 

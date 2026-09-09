@@ -24,8 +24,8 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "visualizerEnergyResponse": {"brightness": 0.12, "opacity": 0.0, "saturation": 0.05, "contrast": 0.05},
     "visualizerBeatResponse": {"brightness": 0.10, "opacity": 0.0, "saturation": 0.0, "contrast": 0.05},
     "videoAmbient": {"enabled": True, "sampleFps": 8, "brightness": 1.0, "saturation": 1.0, "audioEnergyBrightness": 0.12, "smoothing": 0.82},
-    "textModes": {"wheelLabels": "transparent", "pathPill": "transparent", "infoPill": "transparent", "rows": "transparent", "rowPills": "transparent", "selectedRow": "contrast", "selectedRowPills": "contrast"},
-    "textTransparency": 0.68,
+    "textModes": {"wheelLabels": "transparent", "pathPill": "transparent", "infoPill": "transparent", "rows": "transparent", "rowPills": "transparent", "selectedRow": "white", "selectedRowPills": "white"},
+    "textTransparency": 0.45,
     "animationFps": {"selectedRow": 60, "wheelTilt": 60, "libraryList": 60, "infoPill": 60, "pathPill": 60, "rowInsertion": 60},
     "performanceOverlayButton": True, "performanceOverlayText": False,
     "liquidGlassElements": {
@@ -45,7 +45,7 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
 DEFAULT_UI_APP_SETTINGS: dict[str, Any] = {
     "UI_VISUALIZER": True, "UI_VISUALIZER_MAX_BRIGHTNESS_PCT": 60, "UI_VISUALIZER_FPS_LOCK": 30,
     "UI_VISUALIZER_FREQUENCY_RESPONSE": DEFAULT_UI_SETTINGS["visualizerFrequencyResponse"], "UI_VISUALIZER_ENERGY_RESPONSE": DEFAULT_UI_SETTINGS["visualizerEnergyResponse"], "UI_VISUALIZER_BEAT_RESPONSE": DEFAULT_UI_SETTINGS["visualizerBeatResponse"], "UI_VIDEO_AMBIENT": DEFAULT_UI_SETTINGS["videoAmbient"],
-    "UI_TEXT_WHEEL_LABELS": "transparent", "UI_TEXT_PATH_PILL": "transparent", "UI_TEXT_INFO_PILL": "transparent", "UI_TEXT_ROWS": "transparent", "UI_TEXT_ROW_PILLS": "transparent", "UI_TEXT_SELECTED_ROW": "contrast", "UI_TEXT_SELECTED_ROW_PILLS": "contrast", "UI_TEXT_TRANSPARENCY": 0.68,
+    "UI_TEXT_WHEEL_LABELS": "transparent", "UI_TEXT_PATH_PILL": "transparent", "UI_TEXT_INFO_PILL": "transparent", "UI_TEXT_ROWS": "transparent", "UI_TEXT_ROW_PILLS": "transparent", "UI_TEXT_SELECTED_ROW": "white", "UI_TEXT_SELECTED_ROW_PILLS": "white", "UI_TEXT_TRANSPARENCY": 0.45,
     "UI_ANIMATION_SELECTED_ROW_FPS": 60, "UI_ANIMATION_WHEEL_TILT_FPS": 60, "UI_ANIMATION_LIBRARY_LIST_FPS": 60, "UI_ANIMATION_INFO_PILL_FPS": 60, "UI_ANIMATION_PATH_PILL_FPS": 60, "UI_ANIMATION_ROW_INSERTION_FPS": 60,
     "UI_PERFORMANCE_OVERLAY_BUTTON": True, "UI_PERFORMANCE_OVERLAY_TEXT": False,
     "UI_GLASS_LIBRARY_LIST": DEFAULT_UI_SETTINGS["liquidGlassElements"]["libraryList"], "UI_GLASS_WHEEL": DEFAULT_UI_SETTINGS["liquidGlassElements"]["wheel"], "UI_GLASS_PATH_PILL": DEFAULT_UI_SETTINGS["liquidGlassElements"]["pathPill"], "UI_GLASS_INFO_PILL": DEFAULT_UI_SETTINGS["liquidGlassElements"]["infoPill"], "UI_GLASS_LIST_PILLS": DEFAULT_UI_SETTINGS["liquidGlassElements"]["listPills"], "UI_GLASS_SELECTED_ROW": DEFAULT_UI_SETTINGS["liquidGlassElements"]["selectedRow"],
@@ -280,9 +280,9 @@ def _coerce_setting(key: str, value: Any) -> Any:
     default = DEFAULT_APP_SETTINGS.get(key)
     if key.startswith("UI_TEXT_") and key != "UI_TEXT_TRANSPARENCY":
         clean = str(value or "").strip().lower()
-        if clean in {"black", "white", "engraved"}:
-            return "contrast"
-        return clean if clean in {"contrast", "transparent"} else str(default or "transparent")
+        if clean in {"black", "contrast", "engraved"}:
+            return "white"
+        return clean if clean in {"white", "transparent"} else str(default or "transparent")
     if key == "DEBRID_PROVIDER":
         clean = str(value or "").strip().lower()
         return clean if clean in {"", "real_debrid", "alldebrid", "premiumize", "torbox"} else ""

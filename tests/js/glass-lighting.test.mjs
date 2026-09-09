@@ -63,13 +63,16 @@ test("direct orientation and pointer changes update only the light state and set
   assert.equal(fixture.api.testing.isAnimating(), false);
 });
 
-test("a remembered grant attaches directly without a new prompt and retains pointer fallback until sensor data", async () => {
+test("a remembered grant retries on a gesture and retains pointer fallback until sensor data", async () => {
   const fixture = load({permission:"granted", stored:"granted"});
   fixture.api.testing.pointerMove({clientX:400, clientY:0});
   fixture.api.testing.step(20);
   assert.equal(fixture.api.state().source, "pointer");
-  assert.equal(fixture.documentListeners.has("touchend"), false);
+  assert.equal(fixture.documentListeners.has("touchend"), true);
   assert.equal(fixture.permissionCalls(), 0);
+  fixture.documentListeners.get("touchend")();
+  await Promise.resolve();
+  assert.equal(fixture.permissionCalls(), 1);
   fixture.windowListeners.get("deviceorientation")({beta:0, gamma:0});
   fixture.windowListeners.get("deviceorientation")({beta:45, gamma:45});
   fixture.api.testing.step(40);
@@ -81,7 +84,7 @@ test("explicit motion retry can re-request a saved grant only before valid senso
   const fixture = load({permission:"granted", stored:"granted"});
   assert.equal(fixture.permissionCalls(), 0);
   assert.equal(await fixture.api.requestOrientationPermission(), "granted");
-  assert.equal(fixture.permissionCalls(), 0);
+  assert.equal(fixture.permissionCalls(), 1);
   assert.equal(await fixture.api.requestOrientationPermission(true), "granted");
   assert.equal(fixture.permissionCalls(), 1);
   fixture.windowListeners.get("deviceorientation")({beta:0, gamma:0});

@@ -117,7 +117,7 @@
     const stored = storedPermission();
     if(stored === "granted"){
       attachOrientation();
-      if(retry !== true || orientationActive) return Promise.resolve("granted");
+      if(orientationActive) return Promise.resolve("granted");
     }
     if(retry === true && stored === "denied"){
       permissionRequested = false;
@@ -152,7 +152,6 @@
     if(stored === "denied") return;
     if(stored === "granted"){
       attachOrientation();
-      return;
     }
     const requestOnce = ()=>{
       requestOrientationPermission().then(result=>{

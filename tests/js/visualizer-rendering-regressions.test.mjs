@@ -120,17 +120,14 @@ test("paused video cannot restart ambient sampling", () => {
   assert.equal(context.canSampleVideoAmbient(video, false), false);
 });
 
-test("selected-row contrast is sampled from visualizer colors instead of hardcoded white", () => {
-  assert.match(visualizer, /DebriPodPalette\.sampleContrastText/);
-  assert.match(visualizer, /getElementById\("libListSelectedGlass"\)/);
-  assert.match(visualizer, /visualizerFade > 0\.002 \? samples : \[\]/);
-  assert.match(visualizer, /if\(contrastState !== visualizerContrastState\)[\s\S]*applySelectedTextContrast\(\)/);
-  assert.doesNotMatch(visualizer, /setProperty\("--lib-selected(?:-pill)?(?:-render)?-contrast",\s*"#ffffff"\)/);
-  const context = {window: {}};
+test("selected row stays white across changing visualizer artwork", () => {
+  const start = visualizer.indexOf("function applySelectedTextContrast()");
+  const end = visualizer.indexOf("function visualizerShouldShow()", start);
+  const colors = new Map();
+  const context = {document:{documentElement:{style:{setProperty:(key,value)=>colors.set(key,value)}}}};
   vm.createContext(context);
-  vm.runInContext(palette, context, {filename: palettePath});
-  assert.equal(context.window.DebriPodPalette.sampleContrastText([], "#ffffff"), "#ffffff");
-  assert.equal(context.window.DebriPodPalette.sampleContrastText([], "#000000"), "#000000");
-  assert.equal(context.window.DebriPodPalette.sampleContrastText(["rgba(255,255,255,.9)"], "#ffffff"), "#000000");
-  assert.equal(context.window.DebriPodPalette.sampleContrastText(["rgba(0,0,0,.9)"], "#000000"), "#ffffff");
+  vm.runInContext(visualizer.slice(start,end), context);
+  context.applySelectedTextContrast();
+  assert.equal(colors.get("--lib-selected-render-contrast"), "#ffffff");
+  assert.equal(colors.get("--lib-selected-pill-render-contrast"), "#ffffff");
 });

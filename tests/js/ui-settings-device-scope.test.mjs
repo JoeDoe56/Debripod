@@ -87,3 +87,22 @@ test("motion-effect strength is bounded and retained per device user", () => {
 test("motion-effect range editor keeps a friendly label", () => {
   assert.match(settingsUiSource, /glassMotionEffectMultiplier:\"Motion effect\"/);
 });
+
+test("repeated settings responses preserve the live device object and transparency", () => {
+  const storage = makeStorage();
+  const api = loadUiSettings(storage);
+  const initial = api.setDeviceSettingsUserId("alice");
+  assert.equal(initial.textTransparency, .45);
+  initial.textTransparency = .42;
+  assert.equal(api.setDeviceSettingsUserId("alice"), initial);
+  assert.equal(api.settings.textTransparency, .42);
+  api.saveUiSettings(initial);
+  assert.equal(loadUiSettings(storage).setDeviceSettingsUserId("alice").textTransparency, .42);
+});
+
+test("retired contrast settings migrate to white", () => {
+  const api = loadUiSettings(makeStorage());
+  assert.equal(api.normalizeTextMode("contrast"), "white");
+  assert.equal(api.normalizeTextMode("engraved"), "white");
+  assert.equal(api.settings.textModes.selectedRow, "white");
+});

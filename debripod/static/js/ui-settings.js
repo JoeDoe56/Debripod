@@ -21,8 +21,8 @@
     infoPill: "transparent",
     rows: "transparent",
     rowPills: "transparent",
-    selectedRow: "contrast",
-    selectedRowPills: "contrast"
+    selectedRow: "white",
+    selectedRowPills: "white"
   };
   const DEFAULT_ANIMATION_FPS = {
     selectedRow: 60,
@@ -52,10 +52,10 @@
           "infoPill": "transparent",
           "rows": "transparent",
           "rowPills": "transparent",
-          "selectedRow": "contrast",
-          "selectedRowPills": "contrast"
+          "selectedRow": "white",
+          "selectedRowPills": "white"
       },
-      "textTransparency": 0.68,
+      "textTransparency": 0.45,
       "animationFps": {
           "selectedRow": 60,
           "wheelTilt": 60,
@@ -115,13 +115,13 @@
 
   function normalizeTextMode(value, fallback){
     const k = String(value || "transparent").trim().toLowerCase();
-    if(k === "black" || k === "white" || k === "engraved") return "contrast";
-    if(k === "contrast" || k === "transparent") return k;
-    return fallback === "contrast" ? "contrast" : "transparent";
+    if(k === "black" || k === "contrast" || k === "engraved") return "white";
+    if(k === "white" || k === "transparent") return k;
+    return fallback === "white" ? "white" : "transparent";
   }
 
   function normalizeTextTransparency(value){
-    return clampNumber(value, DEFAULT_UI_SETTINGS && DEFAULT_UI_SETTINGS.textTransparency != null ? DEFAULT_UI_SETTINGS.textTransparency : 0.68, 0, 1);
+    return clampNumber(value, DEFAULT_UI_SETTINGS && DEFAULT_UI_SETTINGS.textTransparency != null ? DEFAULT_UI_SETTINGS.textTransparency : 0.45, 0, 1);
   }
 
   function cloneTextModes(value){
@@ -273,6 +273,7 @@
   function setDeviceSettingsUserId(userId){
     const next = String(userId || "").trim();
     if(!next) return root.uiSettings ? root.uiSettings.settings : loadUiSettings();
+    if(next === deviceSettingsUserId && root.uiSettings) return root.uiSettings.settings;
     deviceSettingsUserId = next;
     const targetKey = deviceSettingsKey(next);
     try{

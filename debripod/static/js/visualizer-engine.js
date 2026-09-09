@@ -604,23 +604,8 @@ function currentVisualizerFrameState(ts){
 function applySelectedTextContrast(){
   try{
     var root = document.documentElement;
-    var style = window.getComputedStyle ? window.getComputedStyle(root) : null;
-    var selectedEl = document.getElementById("libListSelectedGlass");
-    var selectedStyle = selectedEl && window.getComputedStyle ? window.getComputedStyle(selectedEl) : null;
-    var materialText = selectedStyle ? String(selectedStyle.getPropertyValue("--dp-glass-selected-text") || "").trim() : "";
-    if(!materialText && style) materialText = String(style.getPropertyValue("--dp-glass-selected-text") || "").trim();
-    var samples = style ? [
-      style.getPropertyValue("--theme-visualizer-a"),
-      style.getPropertyValue("--theme-visualizer-b"),
-      style.getPropertyValue("--theme-visualizer-c"),
-      style.getPropertyValue("--theme-accent")
-    ].map(value=>String(value || "").trim()).filter(Boolean) : [];
-    var activeSamples = visualizerFade > 0.002 ? samples : [];
-    var sampler = window.DebriPodPalette && window.DebriPodPalette.sampleContrastText;
-    var selected = typeof sampler === "function" ? sampler(activeSamples, materialText) : materialText;
-    if(!selected) selected = materialText;
-    if(!selected) selected = "#000000";
-    var edge = selected.toLowerCase() === "#000000" ? "rgba(0,0,0,.65)" : "rgba(255,255,255,.65)";
+    var selected = "#ffffff";
+    var edge = "rgba(255,255,255,.65)";
     root.style.setProperty("--lib-selected-contrast", selected);
     root.style.setProperty("--lib-selected-pill-contrast", selected);
     root.style.setProperty("--lib-selected-render-contrast", selected);
