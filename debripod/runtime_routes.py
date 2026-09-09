@@ -1893,15 +1893,15 @@ def _coerce_advanced_ui_defaults(raw: Any, glass: dict[str, Any]) -> dict[str, A
         "infoPill": "transparent",
         "rows": "transparent",
         "rowPills": "transparent",
-        "selectedRow": "contrast",
-        "selectedRowPills": "contrast",
+        "selectedRow": "white",
+        "selectedRowPills": "white",
     }
     text_modes_raw = source.get("textModes") if isinstance(source.get("textModes"), dict) else {}
     text_modes = {}
     for key, fallback in text_defaults.items():
         inherited = text_modes_raw.get("pathPill") if key == "infoPill" and "infoPill" not in text_modes_raw else fallback
         value = str(text_modes_raw.get(key, inherited)).strip().lower()
-        text_modes[key] = "contrast" if value in {"black", "white", "engraved"} else (value if value in {"contrast", "transparent"} else fallback)
+        text_modes[key] = "white" if value in {"black", "contrast", "engraved"} else (value if value in {"white", "transparent"} else fallback)
 
     fps_defaults = {
         "selectedRow": 60,
@@ -1940,7 +1940,7 @@ def _coerce_advanced_ui_defaults(raw: Any, glass: dict[str, Any]) -> dict[str, A
         "visualizerMaxBrightnessPct": brightness,
         "visualizerFpsLock": fps_lock,
         "textModes": text_modes,
-        "textTransparency": clamp_num("textTransparency", 0.68, 0.0, 1.0),
+        "textTransparency": clamp_num("textTransparency", 0.45, 0.0, 1.0),
         "animationFps": animation_fps,
         "performanceOverlayButton": bool(source.get("performanceOverlayButton", False)),
         "performanceOverlayText": bool(source.get("performanceOverlayText", False)),
@@ -2874,9 +2874,13 @@ async def api_library_metadata(request: web.Request):
         except Exception:
             selector = {}
         show_key = str(selector.get("show_key") or "")
+        # A show collection request omits season and should enqueue every
+        # episode. Season views still pass an explicit value, including 0 for
+        # specials.
+        has_season = "season" in selector
         season = int(selector.get("season") or 0)
         show = next((item for item in (data.get("shows") or []) if isinstance(item, dict) and str(item.get("show_key") or "") == show_key), None)
-        episodes = [item for item in ((show or {}).get("episodes") or []) if isinstance(item, dict) and int((item.get("parse") or {}).get("season") or 0) == season]
+        episodes = [item for item in ((show or {}).get("episodes") or []) if isinstance(item, dict) and (not has_season or int((item.get("parse") or {}).get("season") or 0) == season)]
         items = []
         for episode in episodes:
             row = playable_video_row(episode, "show_episode")

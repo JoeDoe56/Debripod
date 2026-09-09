@@ -292,45 +292,17 @@
       ? transitionApiForGuard.shouldAnimateListMutation(previous.length, next.length, changedRows, opts)
       : (opts.reason === "page load" || (previous.length <= 500 && next.length <= 500 && changedRows <= 100));
     if(!canAnimateMutation) opts.animate = false;
+    // Page changes are committed in one layout pass. The selected row's
+    // glass remains anchored by the page spacer while rows appear around it;
+    // no row-level spawn, cascade, or FLIP animation is allowed here.
+    opts.animate = false;
+    const oldScroll = libList ? libList.scrollTop : 0;
     const selectedIdentity = Object.prototype.hasOwnProperty.call(opts, "transitionSelectionIdentity")
       ? String(opts.transitionSelectionIdentity || "")
       : (previous[state.sel] ? virtualItemIdentity(previous[state.sel], state.sel) : "");
-    const oldScroll = libList ? libList.scrollTop : 0;
-    const oldRects = new Map();
-    const renderedOldIndexes = new Set();
-    if(opts.animate && libList){
-      libList.querySelectorAll(".ipodItem[data-index]").forEach(row=>{
-        const index = Number(row.dataset.index || 0);
-        renderedOldIndexes.add(index);
-        const item = previous[index];
-        const kind = String((item && item.kind) || "");
-        const fixedSearchRow = kind === "libsearch_result" || kind === "libsearch_file" || kind === "libsearch_status" || kind === "libsearch_filter";
-        if(item && !fixedSearchRow) oldRects.set(virtualItemIdentity(item, index), row.getBoundingClientRect());
-      });
-    }
     const transitionApi = window.DebriPod && DebriPod.rowTransitions;
     const reducedMotion = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
     const plan = transitionApi ? transitionApi.planRowMutation(previous, next, virtualItemIdentity, selectedIdentity, {reducedMotion:reducedMotion}) : null;
-    const removedRows = [];
-    if(opts.animate && plan && plan.animate && libList){
-      const listRect = libList.getBoundingClientRect();
-      plan.removed.forEach(change=>{
-        if(renderedOldIndexes.size && !renderedOldIndexes.has(change.oldIndex)) return;
-        const row = libList.querySelector('.ipodItem[data-index="' + change.oldIndex + '"]');
-        if(!row) return;
-        const rect = row.getBoundingClientRect();
-        const clone = row.cloneNode(true);
-        clone.removeAttribute("data-index");
-        clone.classList.add("dpRowRemoving");
-        Object.assign(clone.style, {
-          position:"absolute", left:(rect.left - listRect.left) + "px",
-          top:(rect.top - listRect.top + libList.scrollTop) + "px",
-          width:rect.width + "px", height:rect.height + "px",
-          pointerEvents:"none", zIndex:"20"
-        });
-        removedRows.push(clone);
-      });
-    }
     state.items = next;
     state.itemsVersion = Number(state.itemsVersion || 0) + 1;
     if(opts.preserveSelection && plan && plan.selectionIndex >= 0) state.sel = plan.selectionIndex;
@@ -339,33 +311,6 @@
     invalidateVirtualPrefix();
     renderList({rowMutation:true, preserveEntryAnchor:!!opts.preserveEntryAnchor});
     if(opts.preserveScroll && libList) libList.scrollTop = oldScroll;
-    const animateRows = ()=>{
-      if(!(opts.animate && plan && plan.animate && libList)) return;
-      const duration = transitionApi.TRANSITION_DURATION_MS;
-      removedRows.forEach(clone=>{
-        libList.appendChild(clone);
-        const animation = clone.animate([{maxBlockSize:clone.offsetHeight + "px", opacity:1}, {maxBlockSize:"0px", opacity:0, transform:"translateY(-6px)"}], {duration:duration, easing:"ease", fill:"both"});
-        animation.finished.then(()=>clone.remove()).catch(()=>clone.remove());
-      });
-      libList.querySelectorAll(".ipodItem[data-index]").forEach(row=>{
-        const index = Number(row.dataset.index || 0);
-        const key = next[index] ? virtualItemIdentity(next[index], index) : "";
-        const before = oldRects.get(key);
-        if(before){
-          const after = row.getBoundingClientRect();
-          const delta = before.top - after.top;
-          if(Math.abs(delta) > 0.5) row.animate([{transform:"translateY(" + delta + "px)"}, {transform:"translateY(0)"}], {duration:duration, easing:"ease", fill:"both"});
-        }else{
-          const inserted = plan.inserted.find(change=>change.newIndex === index);
-          const nearest = inserted && plan.retained.slice().sort((a,b)=>Math.abs(a.newIndex - index) - Math.abs(b.newIndex - index))[0];
-          const origin = (nearest && oldRects.get(nearest.key)) || (selectedIdentity ? oldRects.get(selectedIdentity) : null);
-          const after = row.getBoundingClientRect();
-          const delta = origin ? origin.top - after.top : -6;
-          row.animate([{maxBlockSize:"0px", opacity:0, transform:"translateY(" + delta + "px)"}, {maxBlockSize:row.scrollHeight + "px", opacity:1, transform:"translateY(0)"}], {duration:duration, delay:transitionApi.spawnDelayMs(index), easing:"ease", fill:"both"});
-        }
-      });
-    };
-    animateRows();
     invalidateVirtualPrefix();
     return plan;
   }

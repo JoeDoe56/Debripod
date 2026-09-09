@@ -39,6 +39,7 @@
       if(!libHeader) return;
       clearPlaybackPillHideFinalTimers();
       libHeader.classList.remove("pathPillHidden");
+      updatePathPillMaxWidth();
       setTimeout(()=> startHScrollTextAuto(document.getElementById("libHeaderText")), playbackPillTransitionMs + 20);
       animatePathPillGlassTransition("path pill shown", playbackPillTransitionMs);
     }catch(e){}
@@ -137,13 +138,14 @@
         const tick = (now)=>{
           try{
             if(!el._dpHScrollAutoRunning || !document.body.contains(el)) return;
-            const t = (Number(now || performance.now()) - start) % ((travelMs * 2) + 900);
+            const endpointPauseMs = 1350;
+            const t = (Number(now || performance.now()) - start) % ((travelMs * 2) + (endpointPauseMs * 2));
             if(t <= travelMs){
               el.scrollLeft = Math.min(maxScroll, (t / travelMs) * maxScroll);
-            }else if(t <= travelMs + 900){
+            }else if(t <= travelMs + endpointPauseMs){
               el.scrollLeft = maxScroll;
             }else{
-              const backT = (t - travelMs - 900) / travelMs;
+              const backT = (t - travelMs - endpointPauseMs) / travelMs;
               el.scrollLeft = Math.max(0, maxScroll * (1 - backT));
             }
             el._dpHScrollAutoFrame = requestAnimationFrame(tick);
@@ -235,6 +237,8 @@
   var pathPillMotion = {
     currentWidth: 0,
     targetWidth: 0,
+    currentHeight: 29,
+    targetHeight: 29,
     raf: 0,
     lastStepTs: 0,
     initialized: false
@@ -315,13 +319,18 @@
         const elapsed = pathPillMotion.lastStepTs ? Math.max(1, now - pathPillMotion.lastStepTs) : interval;
         pathPillMotion.lastStepTs = now;
         pathPillMotion.currentWidth = pathPillMotionNextWidth(pathPillMotion.currentWidth, pathPillMotion.targetWidth, elapsed);
+        pathPillMotion.currentHeight = pathPillMotionNextWidth(pathPillMotion.currentHeight, pathPillMotion.targetHeight, elapsed);
         if(Math.abs(pathPillMotion.targetWidth - pathPillMotion.currentWidth) < 0.35){
           pathPillMotion.currentWidth = pathPillMotion.targetWidth;
         }
+        if(Math.abs(pathPillMotion.targetHeight - pathPillMotion.currentHeight) < 0.35){
+          pathPillMotion.currentHeight = pathPillMotion.targetHeight;
+        }
         document.documentElement.style.setProperty("--pathPillRenderedWidth", pathPillMotion.currentWidth.toFixed(2) + "px");
+        document.documentElement.style.setProperty("--pathPillRenderedHeight", pathPillMotion.currentHeight.toFixed(2) + "px");
         markPathPillWidthChanged();
         updatePathPillScrollingMasks();
-        if(pathPillMotion.currentWidth !== pathPillMotion.targetWidth) schedulePathPillMotion();
+        if(pathPillMotion.currentWidth !== pathPillMotion.targetWidth || pathPillMotion.currentHeight !== pathPillMotion.targetHeight) schedulePathPillMotion();
       }catch(e){}
     };
     try{
@@ -344,6 +353,20 @@
       pathPillMotion.currentWidth = next;
       root.style.setProperty("--pathPillRenderedWidth", next + "px");
       updatePathPillScrollingMasks();
+      return;
+    }
+    schedulePathPillMotion();
+  }
+
+  function setPathPillTargetHeight(target){
+    const next = Math.max(1, Number(target) || 1);
+    const root = document.documentElement;
+    root.style.setProperty("--pathPillTargetHeight", next + "px");
+    pathPillMotion.targetHeight = next;
+    if(!pathPillMotion.initialized){
+      pathPillMotion.initialized = true;
+      pathPillMotion.currentHeight = next;
+      root.style.setProperty("--pathPillRenderedHeight", next + "px");
       return;
     }
     schedulePathPillMotion();
@@ -397,6 +420,14 @@
       const minWidth = Math.min(maxWidth, targetPad * 2 + 1);
       const target = Math.max(1, Math.min(maxWidth, Math.max(minWidth, measured || minWidth)));
       setPathPillTargetWidth(target);
+      const pathStyle = window.getComputedStyle ? getComputedStyle(libHeader) : null;
+      const padY = Math.max(0, parseFloat(pathStyle && pathStyle.paddingTop || "5") || 5);
+      const rowGap = Math.max(0, parseFloat(rootStyle.getPropertyValue("--playbackPillRowGap")) || 1);
+      const pathHeight = Math.max(14, Math.ceil((pathText && pathText.getBoundingClientRect ? pathText.getBoundingClientRect().height : 14) || 14));
+      const nowHeight = expanded && pathPillNowText
+        ? Math.max(14, Math.ceil((pathPillNowText.getBoundingClientRect ? pathPillNowText.getBoundingClientRect().height : 14) || 14))
+        : 0;
+      setPathPillTargetHeight(pathHeight + (expanded ? nowHeight + rowGap : 0) + padY * 2);
     }catch(e){}
   }
   try{ window.updatePathPillMaxWidth = updatePathPillMaxWidth; }catch(e){}
@@ -420,10 +451,10 @@
     }catch(e){}
   }
 
-  function forcePathPillGlassRender(reason, refreshSource){
+  function forcePathPillGlassRender(reason, refreshSource, refreshText){
     try{
       updatePathPillMaxWidth();
-      refreshPlaybackPillTextLayer(reason || "path pill", false);
+      if(refreshText !== false) refreshPlaybackPillTextLayer(reason || "path pill", false);
       const renderer = liquidGlassRendererByKey("default");
       if(!renderer) return;
       if(renderer.setVisible) renderer.setVisible(true);
@@ -483,11 +514,11 @@
           if(animatePathPillGlassTransition._token !== token) return;
           const frameNow = Number(now || performance.now());
           const elapsed = frameNow - started;
-          forcePathPillGlassRender(reason || "path pill transition", !didRefresh);
+          forcePathPillGlassRender(reason || "path pill transition", !didRefresh, !didRefresh);
           didRefresh = true;
           if(elapsed < dur) requestAnimationFrame(tick);
           else{
-            forcePathPillGlassRender((reason || "path pill transition") + " end", false);
+            forcePathPillGlassRender((reason || "path pill transition") + " end", false, true);
             refreshPlaybackPillTextLayer((reason || "path pill transition") + " text end", true);
           }
         }catch(e){}
@@ -551,10 +582,10 @@
     }
   }
 
-  function forceInfoPillGlassRender(reason, refreshSource){
+  function forceInfoPillGlassRender(reason, refreshSource, refreshText){
     try{
       updatePathPillMaxWidth();
-      refreshPlaybackPillTextLayer(reason || "info pill", false);
+      if(refreshText !== false) refreshPlaybackPillTextLayer(reason || "info pill", false);
       const renderer = liquidGlassRendererByKey("default");
       if(!renderer) return;
       if(renderer.setVisible) renderer.setVisible(true);
@@ -614,11 +645,11 @@
           if(animateInfoPillGlassTransition._token !== token) return;
           const frameNow = Number(now || performance.now());
           const elapsed = frameNow - started;
-          forceInfoPillGlassRender(reason || "info pill transition", !didRefresh);
+          forceInfoPillGlassRender(reason || "info pill transition", !didRefresh, !didRefresh);
           didRefresh = true;
           if(elapsed < dur) requestAnimationFrame(tick);
           else{
-            forceInfoPillGlassRender((reason || "info pill transition") + " end", false);
+            forceInfoPillGlassRender((reason || "info pill transition") + " end", false, true);
             refreshPlaybackPillTextLayer((reason || "info pill transition") + " text end", true);
           }
         }catch(e){}
@@ -659,6 +690,7 @@
     if(!playbackPillsVisible){
       hidePlaybackPillsImmediate(reason || "no media");
       try{ if(libHeader) libHeader.classList.remove("pathPillExpanded"); }catch(e){}
+      try{ updatePathPillMaxWidth(); }catch(e){}
       showPathPill(!!pathPillPinned);
       return;
     }

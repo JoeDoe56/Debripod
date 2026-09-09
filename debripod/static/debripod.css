@@ -31,8 +31,8 @@
       --dp-text-info-pill: rgba(255,255,255,.68);
       --dp-text-rows: rgba(255,255,255,.68);
       --dp-text-row-pills: rgba(255,255,255,.68);
-      --dp-text-selected-row: var(--lib-selected-render-contrast);
-      --dp-text-selected-row-pills: var(--lib-selected-pill-render-contrast);
+      --dp-text-selected-row: #fff;
+      --dp-text-selected-row-pills: #fff;
       --dp-text-transparent-alpha: .68;
       --dp-selected-pill-edge-room: 44px;
       --dp-selected-foreground-base-pct: 0%;
@@ -73,7 +73,10 @@
       --playbackPillMaxWidth: min(calc(100vw - 24px), var(--pathPillMaxWidth, calc(100vw - 24px)));
       --pathPillTargetWidth: auto;
       --pathPillRenderedWidth: var(--pathPillTargetWidth);
-      --path-text-fade: 12px;
+      --pathPillCollapsedHeight: 29px;
+      --pathPillExpandedHeight: 48px;
+      --pathPillRenderedHeight: var(--pathPillCollapsedHeight);
+      --path-text-fade: 0px;
       --infoBarThickness: 8.4px;
       --infoBarInsetX: 9px;
       --infoPillWidth: var(--pathPillMaxWidth, calc(100vw - 24px));
@@ -496,6 +499,9 @@
       isolation:isolate;
       align-items:center;
       width:var(--pathPillRenderedWidth);
+      height:var(--pathPillRenderedHeight);
+      min-height:var(--pathPillRenderedHeight);
+      box-sizing:border-box;
       max-width: var(--playbackPillMaxWidth);
       padding: 8px 12px;
       border-radius: 999px;
@@ -510,7 +516,7 @@
       clip-path: inset(0 round 999px);
       opacity: 1;
       transform: translateY(0);
-      transition: opacity var(--playbackPillFadeMs) ease, transform var(--playbackPillFadeMs) ease;
+      transition: opacity var(--playbackPillFadeMs) ease, transform var(--playbackPillFadeMs) ease, height var(--playbackPillFadeMs) cubic-bezier(.22,.8,.24,1), min-height var(--playbackPillFadeMs) cubic-bezier(.22,.8,.24,1);
       will-change: opacity, transform, width;
     }
     .pathPill.pathPillExpanded{
@@ -543,6 +549,7 @@
       text-align:center;
       text-overflow:ellipsis;
       color: var(--dp-text-path-pill);
+      line-height:1.2;
       text-shadow: none;
     }
     .pathPillRows{
@@ -607,14 +614,15 @@
       overflow:hidden;
       text-overflow:ellipsis;
       color:var(--dp-text-path-pill);
+      line-height:1.2;
     }
     .pathPillNowTextSmall{
       font-size:11px;
     }
     .pathPillText.pathPillTextScrollable,
     .pathPillNowText.pathPillTextScrollable{
-      -webkit-mask-image:linear-gradient(to right, transparent 0, #000 var(--path-text-fade), #000 calc(100% - var(--path-text-fade)), transparent 100%);
-      mask-image:linear-gradient(to right, transparent 0, #000 var(--path-text-fade), #000 calc(100% - var(--path-text-fade)), transparent 100%);
+      -webkit-mask-image:linear-gradient(to right, #000 0, #000 100%);
+      mask-image:linear-gradient(to right, #000 0, #000 100%);
     }
     .pathPill.pathPillHidden{
       opacity: 0;
@@ -1276,7 +1284,7 @@
       transition: background .45s ease, outline-color .45s ease, box-shadow .45s ease;
     }
     .ipodItem.sel .glassText{
-      color: color-mix(in srgb, var(--dp-text-rows) var(--dp-selected-foreground-base-pct), var(--dp-text-selected-row) var(--dp-selected-foreground-target-pct));
+      color:#fff;
     }
     .ipodItem.sel [data-selected-row-text]{
       transform: scale(var(--dp-selected-foreground-scale, 1));
@@ -1286,14 +1294,12 @@
       transition: none;
     }
     .ipodItem.sel .ipodPillText{
-      color: color-mix(in srgb, var(--dp-text-row-pills) var(--dp-selected-foreground-base-pct), var(--dp-text-selected-row-pills) var(--dp-selected-foreground-target-pct));
+      color:#fff;
     }
     .ipodItem.sel .ipodPill{
-      color: color-mix(in srgb, var(--dp-text-row-pills) var(--dp-selected-foreground-base-pct), var(--dp-text-selected-row-pills) var(--dp-selected-foreground-target-pct));
+      color:#fff;
       transform: scale(var(--dp-selected-pill-scale, 1));
       transform-origin: center;
-      padding-left: var(--dp-selected-pill-pad-x, 8px);
-      padding-right: var(--dp-selected-pill-pad-x, 8px);
       z-index: 4;
     }
     #libList.dpGlassMaterialLight .ipodItem.sel{
@@ -1374,12 +1380,14 @@
       will-change: transform;
     }
     .wheelCenter.centerPulse{
-      animation: wheelCenterPulse var(--centerBounceDuration, .24s) cubic-bezier(0.2, var(--centerBounceOvershoot, .9), 0.2, 1);
+      animation: wheelCenterPulse var(--centerBounceDuration, .34s) cubic-bezier(.22,.8,.24,1);
     }
     @keyframes wheelCenterPulse{
       0%{ transform: translate(-50%,-50%) scale(1); }
-      42%{ transform: translate(-50%,-50%) scale(var(--centerBounceScale, 1.075)); }
-      72%{ transform: translate(-50%,-50%) scale(0.985); }
+      18%{ transform: translate(-50%,-50%) scale(.965); }
+      46%{ transform: translate(-50%,-50%) scale(var(--centerBounceScale, 1.075)); }
+      70%{ transform: translate(-50%,-50%) scale(.992); }
+      86%{ transform: translate(-50%,-50%) scale(1.018); }
       100%{ transform: translate(-50%,-50%) scale(1); }
     }
     .wheelCenterGlass{
@@ -2131,6 +2139,14 @@
       flex-direction:column;
       align-items:center;
       justify-content:center;
+      transform:translateY(0);
+      transition:transform var(--playbackPillFadeMs) cubic-bezier(.22,.8,.24,1);
+      will-change:transform;
+    }
+    /* The hidden info pill keeps its flow slot while its glass fades. Move the
+       wheel through that slot so the visible gaps remain balanced. */
+    .ipodStage:not(.layoutExpanded):has(.infoPill.infoPillHidden) .wheelZone{
+      transform:translateY(calc(-1 * (var(--infoPillHeight) + var(--stageGap))));
     }
     .debripodInlineStatus{
       position:absolute;
