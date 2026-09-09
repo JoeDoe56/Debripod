@@ -55,6 +55,7 @@
       queueIndex: -1,
       nav: null,
       sourceView: null,
+      queueSessionId: "",
       updatedAt: 0,
       revision: 0,
       local: false
@@ -149,12 +150,21 @@
 
   function ensurePlaybackSession(){
     if(!state.playbackSession || typeof state.playbackSession !== "object"){
-      state.playbackSession = {now:null, queue:[], history:[], queueIndex:-1, nav:null, sourceView:null, updatedAt:0, revision:0, local:false};
+      state.playbackSession = {now:null, queue:[], history:[], queueIndex:-1, nav:null, sourceView:null, queueSessionId:"", updatedAt:0, revision:0, local:false};
     }
     if(!Array.isArray(state.playbackSession.queue)) state.playbackSession.queue = [];
     if(!Array.isArray(state.playbackSession.history)) state.playbackSession.history = [];
     if(!isFinite(state.playbackSession.revision)) state.playbackSession.revision = 0;
     return state.playbackSession;
+  }
+
+  function newPlaybackQueueSession(){
+    const sess = ensurePlaybackSession();
+    try{
+      if(typeof crypto !== "undefined" && crypto.randomUUID) sess.queueSessionId = crypto.randomUUID();
+      else sess.queueSessionId = "q-" + Date.now().toString(36) + "-" + Math.random().toString(36).slice(2, 10);
+    }catch(e){ sess.queueSessionId = "q-" + Date.now().toString(36); }
+    return sess.queueSessionId;
   }
 
   function applyPlaybackQueueToRuntime(queue, index, media, reason, revision){
@@ -235,6 +245,7 @@
       if(state.now) state.now.nav = sess.nav;
     }
     if(fields && Object.prototype.hasOwnProperty.call(fields, "sourceView")) sess.sourceView = fields.sourceView || null;
+    if(fields && Object.prototype.hasOwnProperty.call(fields, "queueSessionId")) sess.queueSessionId = String(fields.queueSessionId || "");
     sess.updatedAt = Date.now();
     sess.revision = nextRevision;
     sess.local = reason !== "server-newer";
@@ -274,6 +285,7 @@
     } : null;
     const playlist = (serverSession && Array.isArray(serverSession.queue)) ? serverSession.queue : (sn && sn.playlist && Array.isArray(sn.playlist.items) ? sn.playlist.items : null);
     const queueIndex = (serverSession && isFinite(serverSession.queueIndex)) ? Number(serverSession.queueIndex) : (sn && sn.playlist && isFinite(sn.playlist.index) ? Number(sn.playlist.index) : 0);
+    if(serverSession && serverSession.queueSessionId) sess.queueSessionId = String(serverSession.queueSessionId);
     buildPlaybackSessionUpdate({
       now: nextNow || sess.now,
       queue: playlist || sess.queue,

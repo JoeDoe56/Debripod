@@ -2303,6 +2303,9 @@ if(it.kind === "root"){
       if(forceShow === false && controller.hasItems()){
         if(normalized && controller.setCurrent(normalized.queue_id)) return;
       }
+      // A non-dispatching replace is a new user-selected queue. Natural next
+      // and previous calls remain in the current session via isDispatching().
+      if(typeof window.newPlaybackQueueSession === "function") window.newPlaybackQueueSession();
       controller.replaceFromPlayableList(candidates, item);
     }catch(e){}
   }

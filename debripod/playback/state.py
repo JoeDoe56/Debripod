@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import hashlib
+import json
 import os
 import threading
 import time
@@ -245,10 +247,29 @@ def _public_entry(value: Any) -> Any:
         return [_public_entry(x) for x in value]
     if isinstance(value, dict):
         d = dict(value)
-        for key in ("_key", "_sess", "_list", "_stream_item"):
+        for key in ("_key", "_sess", "_list", "_queue_key", "_queue_session", "_stream_item"):
             d.pop(key, None)
         return {k: _public_entry(v) for k, v in d.items()}
     return value
+
+
+def _queue_signature(items: Any) -> str:
+    """Return a stable identity for the ordered queue snapshot."""
+    clean = []
+    for item in items if isinstance(items, list) else []:
+        if not isinstance(item, dict):
+            continue
+        root = str(item.get("root_id") or item.get("rootId") or ((item.get("root") or {}).get("id") if isinstance(item.get("root"), dict) else ""))
+        rel = str(item.get("rel") or "")
+        media = str(item.get("media") or "audio").lower()
+        if root and rel:
+            clean.append((media, root, rel))
+    if not clean:
+        return ""
+    try:
+        return hashlib.sha1(json.dumps(clean, ensure_ascii=False, separators=(",", ":")).encode("utf-8")).hexdigest()
+    except Exception:
+        return ""
 
 def _sanitize_session_item(it: Any, media_fallback: str = "audio") -> Optional[Dict[str, Any]]:
     if not isinstance(it, dict):
@@ -305,6 +326,7 @@ def _sanitize_playback_session(raw: Any, now_entry: Optional[dict], recent: list
         "queueIndex": queue_index,
         "nav": _public_entry(nav),
         "sourceView": _public_entry(source_view),
+        "queueSessionId": str(src.get("queueSessionId") or src.get("queue_session_id") or ""),
         "updatedAt": src.get("updatedAt") or int(time.time() * 1000),
         "revision": revision,
     }
@@ -416,6 +438,7 @@ def playback_update_from_client(payload: dict, runtime: PlaybackRuntime | None =
     art = str(js.get("art") or "").strip()
     nav = js.get("nav") if isinstance(js.get("nav"), dict) else {}
     ev = str(js.get("event") or "").strip().lower()
+    client_session = js.get("session") if isinstance(js.get("session"), dict) else {}
 
     pos = js.get("position")
     dur = js.get("duration")
@@ -503,6 +526,15 @@ def playback_update_from_client(payload: dict, runtime: PlaybackRuntime | None =
                 now_entry["playlist_hash"] = playlist_hash
         except Exception:
             pass
+    queue_session = str(client_session.get("queueSessionId") or client_session.get("queue_session_id") or js.get("queue_session_id") or "").strip()
+    queue_items = playlist_ctx.get("items") if isinstance(playlist_ctx, dict) else None
+    if not queue_items and isinstance(client_session.get("queue"), list):
+        queue_items = client_session.get("queue")
+    queue_key = playlist_hash or _queue_signature(queue_items)
+    if queue_key:
+        now_entry["_queue_key"] = queue_key
+    if queue_session:
+        now_entry["_queue_session"] = queue_session
     if stream_item:
         now_entry["streamed"] = True
         now_entry["source"] = str(stream_item.get("source") or now_entry.get("source") or "").strip().lower()
@@ -539,7 +571,6 @@ def playback_update_from_client(payload: dict, runtime: PlaybackRuntime | None =
     # recently played overwrite key (list or directory context)
     now_entry["_list"] = _recent_list_key(media, root_id, rel, nav)
     source_view = js.get("source_view") if isinstance(js.get("source_view"), dict) else None
-    client_session = js.get("session") if isinstance(js.get("session"), dict) else {}
 
     state, lock = _runtime_parts(runtime)
     with lock:
@@ -630,9 +661,19 @@ def playback_update_from_client(payload: dict, runtime: PlaybackRuntime | None =
             if isinstance(it2, dict) and it2.get("_key") == k:
                 found_by_key = i
                 break
+        found_by_session = None
+        if queue_session:
+            for i, it2 in enumerate(recent):
+                if isinstance(it2, dict) and it2.get("_queue_session") == queue_session:
+                    found_by_session = i
+                    break
 
         if ev_s == "start":
-            if recent and isinstance(recent[0], dict) and recent[0].get("_list") == now_entry.get("_list"):
+            newest = recent[0] if recent and isinstance(recent[0], dict) else None
+            same_queue_session = bool(queue_session and newest and newest.get("_queue_session") == queue_session)
+            same_queue_snapshot = bool(queue_key and newest and newest.get("_queue_key") == queue_key)
+            same_legacy_list = bool(not queue_session and newest and newest.get("_list") == now_entry.get("_list"))
+            if newest and (same_queue_session or same_queue_snapshot or same_legacy_list):
                 recent[0] = dict(now_entry)
             else:
                 if found_by_key is not None:
@@ -643,7 +684,9 @@ def playback_update_from_client(payload: dict, runtime: PlaybackRuntime | None =
                 recent.insert(0, dict(now_entry))
         else:
             # Do not reorder on time/pause/stop updates; just refresh fields if we can find a matching entry.
-            if found_by_key is not None and isinstance(recent[found_by_key], dict):
+            if found_by_session is not None and isinstance(recent[found_by_session], dict):
+                recent[found_by_session].update(dict(now_entry))
+            elif found_by_key is not None and isinstance(recent[found_by_key], dict):
                 recent[found_by_key].update(dict(now_entry))
             elif recent and isinstance(recent[0], dict) and recent[0].get("_list") == now_entry.get("_list"):
                 recent[0].update(dict(now_entry))

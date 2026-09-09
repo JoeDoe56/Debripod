@@ -501,6 +501,7 @@
           history: Array.isArray(session.history) ? session.history : [],
           nav: session.nav || null,
           sourceView: session.sourceView || null,
+          queueSessionId: session.queueSessionId || "",
           media: session.now && session.now.media ? session.now.media : "audio"
         }, "local-restore", Number(session.revision || 0) || undefined);
         if(state.playbackSession) state.playbackSession.local = true;

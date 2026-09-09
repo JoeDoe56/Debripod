@@ -74,6 +74,7 @@ test("actual shuffle toggle refreshes Queue rows by canonical index and preserve
   const setterEnd = librarySource.indexOf("\n  function toggleShuffle()", setterStart);
   assert.ok(setterStart >= 0 && setterEnd > setterStart, "shuffle setter must remain present");
   const setter = librarySource.slice(setterStart, setterEnd);
+  assert.match(setter, /canonical\.setShuffle\(nextOn\)/, "every enable must rebuild the canonical shuffle order");
   const label = extractFunction(searchSource, "function queueItemLabel(item, index)");
   const builder = extractFunction(searchSource, "function buildPlaybackQueueItems()");
   const audioItems = [
