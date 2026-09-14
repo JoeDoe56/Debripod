@@ -90,6 +90,9 @@
           return;
         }
       }catch(e){}
+      const transport = window.DebriPod && DebriPod.playbackTransport;
+      const currentMedia = isVideoActive() ? npVideo : activeAudio;
+      if(transport && transport.resume(currentMedia)) return;
       if(isVideoActive()){
         try{ preparePlaybackMediaAudio(npVideo); }catch(e){}
         try{ unlockPlaybackMediaAudio(); }catch(e){}
@@ -106,6 +109,8 @@
       try{
         const m = isVideoActive() ? npVideo : activeAudio;
         if(typeof cancelVisualizerTrackTransition === "function") cancelVisualizerTrackTransition();
+        const transport = window.DebriPod && DebriPod.playbackTransport;
+        if(transport && transport.pause(m)) return;
         if(m) m.pause();
       }catch(e){}
     });
@@ -113,6 +118,8 @@
       try{
         const m = isVideoActive() ? npVideo : activeAudio;
         if(typeof cancelVisualizerTrackTransition === "function") cancelVisualizerTrackTransition();
+        const transport = window.DebriPod && DebriPod.playbackTransport;
+        if(transport && transport.pause(m)) return;
         if(m) m.pause();
       }catch(e){}
     });

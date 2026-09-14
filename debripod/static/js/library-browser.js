@@ -377,6 +377,7 @@ async function goBack(){
 
     videoOverlayActive = false;
     try{ if(window.DebriPod && DebriPod.videoAmbient) DebriPod.videoAmbient.stop(); }catch(e){}
+    try{ if(window.DebriPod && DebriPod.playbackTransport) DebriPod.playbackTransport.cancel(npVideo); }catch(e){}
     try{ npVideo.pause(); }catch(e){}
     try{
       npVideo.removeAttribute("src");
@@ -398,6 +399,7 @@ async function goBack(){
     const sourceView = captureSourceViewContext(item, state.videoPlaylist && state.videoPlaylist.length ? state.videoPlaylist : (state.items || []), state.videoIndex >= 0 ? state.videoIndex : 0);
     if(forceShow) openNowPlayingExplicit();
 
+    try{ if(window.DebriPod && DebriPod.playbackTransport) DebriPod.playbackTransport.cancel(activeAudio); }catch(e){}
     try{ if(activeAudio) activeAudio.pause(); }catch(e){}
     resetGaplessPrime();
     destroyHlsController("audio");
@@ -430,6 +432,7 @@ async function goBack(){
       .catch(()=>normalizePlaybackMetadata({}, item, item.label || "Video"));
     let loadRequest;
     try{
+      try{ if(window.DebriPod && DebriPod.playbackTransport) DebriPod.playbackTransport.cancel(npVideo); }catch(e){}
       try{ npVideo.pause(); }catch(e){}
       destroyHlsController("video");
       npVideo.removeAttribute("src");
@@ -574,6 +577,7 @@ async function goBack(){
 
     if(forceShow) openNowPlayingExplicit();
 
+    try{ if(window.DebriPod && DebriPod.playbackTransport) DebriPod.playbackTransport.cancel(activeAudio); }catch(e){}
     try{ if(activeAudio) activeAudio.pause(); }catch(e){}
     destroyHlsController("audio");
     resetGaplessPrime();
@@ -691,6 +695,13 @@ async function goBack(){
     if(!isVideoActive() && !state.now) return;
     const m = wheelMedia();
     if(!m) return;
+    const transport = window.DebriPod && DebriPod.playbackTransport;
+    if(transport){
+      try{ transport.toggle(m); }catch(e){}
+      if(!isVideoActive() && canMediaSession()) navigator.mediaSession.playbackState = transport.isPaused(m) ? "paused" : "playing";
+      try{ syncMediaSessionControls(); }catch(e){}
+      return;
+    }
     if(m.paused){
 
       try{
@@ -1031,6 +1042,9 @@ async function goBack(){
         });
       }catch(e){}
     });
+    ["loadstart", "emptied"].forEach((name)=>{
+      try{ el.addEventListener(name, ()=>{ try{ if(window.DebriPod && DebriPod.playbackTransport) DebriPod.playbackTransport.cancel(el); }catch(e){} }); }catch(e){}
+    });
   }
   try{ ensurePlaybackAudioSession(); }catch(e){}
   wireAudio(audioMain);
@@ -1096,6 +1110,9 @@ async function goBack(){
           warnMedia("video", name, npVideo);
         });
       }catch(e){}
+    });
+    ["loadstart", "emptied"].forEach((name)=>{
+      try{ npVideo.addEventListener(name, ()=>{ try{ if(window.DebriPod && DebriPod.playbackTransport) DebriPod.playbackTransport.cancel(npVideo); }catch(e){} }); }catch(e){}
     });
   }
 

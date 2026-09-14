@@ -97,3 +97,17 @@ test("preload media stays unrouted and never receives audible gain", async () =>
   assert.equal(graph.isRouted(preload), false);
   assert.equal(graph.testing.getRecord(active).gain.gain.value, 0.8);
 });
+
+test("transport gain is independent from the user volume gain", async () => {
+  const graph = loadGraph();
+  const audio = mediaElement();
+  graph.setActiveElement(audio);
+  await graph.unlock();
+  graph.setVolume(0.6);
+  assert.equal(graph.setTransportLevel(audio, 0.25), true);
+  const record = graph.testing.getRecord(audio);
+  assert.equal(record.transportGain.gain.value, 0.25);
+  assert.equal(record.gain.gain.value, 0.6);
+  graph.resetTransportLevel(audio);
+  assert.equal(record.transportGain.gain.value, 1);
+});

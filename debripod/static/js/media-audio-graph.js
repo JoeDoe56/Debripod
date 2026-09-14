@@ -41,16 +41,19 @@
     try{
       const source = context.createMediaElementSource(element);
       const analyser = context.createAnalyser();
+      const transportGain = context.createGain();
       const gain = context.createGain();
       analyser.fftSize = 256;
       analyser.smoothingTimeConstant = 0.62;
       source.connect(analyser);
-      analyser.connect(gain);
+      analyser.connect(transportGain);
+      transportGain.connect(gain);
       gain.connect(context.destination);
       const record = {
         element: element,
         source: source,
         analyser: analyser,
+        transportGain: transportGain,
         gain: gain,
         frequencyData: new Uint8Array(analyser.frequencyBinCount),
         timeData: new Uint8Array(analyser.fftSize)
@@ -91,6 +94,33 @@
     volume = clampVolume(value);
     applyActiveVolume();
     return volume;
+  }
+
+  function setTransportLevel(element, value){
+    const record = records.get(element || activeElement);
+    if(!record || !record.transportGain) return false;
+    try{
+      const target = clampVolume(value);
+      const param = record.transportGain.gain;
+      if(param && typeof param.setTargetAtTime === "function" && audioContext && Number.isFinite(Number(audioContext.currentTime))){
+        param.setTargetAtTime(target, Number(audioContext.currentTime), 0.004);
+      }else param.value = target;
+      return true;
+    }catch(error){ return false; }
+  }
+
+  function resetTransportLevel(element){
+    const record = records.get(element || activeElement);
+    if(record && record.transportGain){
+      try{
+        const param = record.transportGain.gain;
+        if(param && typeof param.cancelScheduledValues === "function" && audioContext) param.cancelScheduledValues(Number(audioContext.currentTime) || 0);
+        if(param && typeof param.setValueAtTime === "function" && audioContext) param.setValueAtTime(1, Number(audioContext.currentTime) || 0);
+        else param.value = 1;
+        return true;
+      }catch(error){}
+    }
+    return false;
   }
 
   function unlock(){
@@ -138,6 +168,8 @@
     unlock: unlock,
     setActiveElement: setActiveElement,
     setVolume: setVolume,
+    setTransportLevel: setTransportLevel,
+    resetTransportLevel: resetTransportLevel,
     getFrequencyData: getFrequencyData,
     getRms: getRms,
     isRouted: (element)=>!!records.get(element),
