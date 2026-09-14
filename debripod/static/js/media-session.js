@@ -105,12 +105,14 @@
     setMediaActionHandler("pause", ()=>{
       try{
         const m = isVideoActive() ? npVideo : activeAudio;
+        if(typeof cancelVisualizerTrackTransition === "function") cancelVisualizerTrackTransition();
         if(m) m.pause();
       }catch(e){}
     });
     setMediaActionHandler("stop", ()=>{
       try{
         const m = isVideoActive() ? npVideo : activeAudio;
+        if(typeof cancelVisualizerTrackTransition === "function") cancelVisualizerTrackTransition();
         if(m) m.pause();
       }catch(e){}
     });

@@ -704,6 +704,7 @@ async function goBack(){
       if(!isVideoActive() && canMediaSession()) navigator.mediaSession.playbackState = "playing";
       try{ syncMediaSessionControls(); }catch(e){}
     }else{
+      try{ if(typeof cancelVisualizerTrackTransition === "function") cancelVisualizerTrackTransition(); }catch(e){}
       try{ m.pause(); }catch(e){}
       if(!isVideoActive() && canMediaSession()) navigator.mediaSession.playbackState = "paused";
       try{ syncMediaSessionControls(); }catch(e){}

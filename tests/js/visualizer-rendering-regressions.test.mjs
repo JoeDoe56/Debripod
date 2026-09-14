@@ -46,6 +46,16 @@ test("visualizer uses a capped HiDPI backing store and versioned art URL", () =>
   assert.match(url, /cache-7%3Aart-7%3A1%3A512%3A512/);
 });
 
+test("visualizer crossfades the outgoing artwork before releasing its frozen angle", () => {
+  assert.match(visualizer, /uniform sampler2D previousArtTex/);
+  assert.match(visualizer, /mix\(outgoing,incoming,clamp\(artMix/);
+  assert.match(visualizer, /uniform float previousAngle/);
+  assert.match(visualizer, /uniform float incomingAngle/);
+  assert.match(visualizer, /fromAngle/);
+  assert.match(visualizer, /toAngle:Math\.PI/);
+  assert.match(visualizer, /gl\.pixelStorei\(gl\.UNPACK_FLIP_Y_WEBGL, 1\)/);
+});
+
 test("glass reactive sampling matches the background transform and stays premultiplied", () => {
   assert.match(liquid, /vec2 backgroundUv = vec2\(clamp\(uv\.x, 0\.0, 1\.0\), 1\.0 - clamp\(uv\.y, 0\.0, 1\.0\)\)/);
   const premultiply = liquid.indexOf("final.rgb *= final.a");

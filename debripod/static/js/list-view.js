@@ -488,6 +488,12 @@
       const spacer = document.createElement("li");
       spacer.className = "ipodListEndSpacer";
       spacer.setAttribute("aria-hidden", "true");
+      const extra = Math.max(0, Number(state.pageAnchorBottomSlack || 0));
+      if(extra > 0){
+        const rootStyle = window.getComputedStyle ? window.getComputedStyle(document.documentElement) : null;
+        const edgeRoom = rootStyle ? (parseFloat(rootStyle.getPropertyValue("--dp-selected-pill-edge-room")) || 44) : 44;
+        spacer.style.height = (edgeRoom + 56 + extra).toFixed(1) + "px";
+      }
       layer.appendChild(spacer);
     }catch(e){}
   }
@@ -1572,6 +1578,10 @@ function vibeTick(){
 
   function resetList(items){
     try{ if(typeof window.cancelSelectionStepQueue === "function") window.cancelSelectionStepQueue(); }catch(e){}
+    // Capture the pill that is actually visible before changing selection or
+    // replacing the list. A destination view can carry an older saved anchor
+    // from when it was entered, while the live glass may have settled lower.
+    const liveAnchorY = selectedRowViewportY();
     // Random is synthetic; never let a refresh feed an old control row back
     // into the logical dataset and inject another one.
     const arr = (Array.isArray(items) ? items : []).filter((item)=>!(item && item.kind === "random"));
@@ -1614,12 +1624,16 @@ function vibeTick(){
     }
 
     let preserveEntryAnchor = false;
+    let requestedAnchorY = null;
     state.pageAnchorOffset = 0;
+    state.pageAnchorBottomSlack = 0;
     if(libList){
       libList.classList.toggle("dpLibraryRoot", !!(state.current && state.current.kind === "roots"));
-      const requestedAnchorY = restoreAnchorY != null
-        ? restoreAnchorY
-        : (Number.isFinite(Number(state.current && state.current.entryAnchorY)) ? Number(state.current.entryAnchorY) : null);
+      requestedAnchorY = resolveListAnchorY(
+        liveAnchorY,
+        restoreAnchorY,
+        state.current && state.current.entryAnchorY,
+      );
       if(Number.isFinite(requestedAnchorY)){
         const style = window.getComputedStyle ? window.getComputedStyle(libList) : null;
         const paddingTop = style ? (parseFloat(style.paddingTop || "0") || 0) : 0;
@@ -1629,6 +1643,7 @@ function vibeTick(){
         let selectedPrefix = 0;
         for(let i = 0; i < Math.max(0, state.sel); i++) selectedPrefix += estimatedItemHeight(arr[i]);
         state.pageAnchorOffset = Math.max(0, requestedAnchorY - paddingTop - selectedPrefix);
+        state.pageAnchorBottomSlack = Math.max(0, paddingTop + selectedPrefix - requestedAnchorY) + 48;
         // Keep the selected row at the same viewport coordinate for every
         // destination size. The spacer is laid out before the new rows, so
         // the replacement does not need a visual row transition.
@@ -1640,7 +1655,7 @@ function vibeTick(){
     setHeader();
     try{ if(typeof applySelectedTextContrast === "function") applySelectedTextContrast(); }catch(e){}
 
-    if(restoreAnchorY != null && libList){
+    if(Number.isFinite(requestedAnchorY) && libList){
       // Correct the estimated prefix against the actual rendered row before
       // the browser gets a chance to paint. This keeps the selected pill
       // stationary without a deferred scroll jump.
@@ -1649,7 +1664,7 @@ function vibeTick(){
         const listRect = libList.getBoundingClientRect();
         if(row && listRect){
           const actualY = row.getBoundingClientRect().top - listRect.top;
-          if(Number.isFinite(actualY)) libList.scrollTop = Math.max(0, (libList.scrollTop || 0) + actualY - restoreAnchorY);
+          if(Number.isFinite(actualY)) libList.scrollTop = Math.max(0, (libList.scrollTop || 0) + actualY - requestedAnchorY);
         }
       }catch(e){}
     }else if(restoreScroll != null && libList){
@@ -1673,6 +1688,15 @@ function vibeTick(){
         }
       }
     }catch(e){}
+  }
+
+  function resolveListAnchorY(liveAnchorY, savedAnchorY, entryAnchorY){
+    for(const value of [liveAnchorY, savedAnchorY, entryAnchorY]){
+      if(value == null || value === "") continue;
+      const number = Number(value);
+      if(Number.isFinite(number)) return number;
+    }
+    return null;
   }
 
   // The glass lens has its own spring while it catches up with the selected
