@@ -192,6 +192,8 @@ function beginVisualizerTrackTransition(previousCover){
       pendingFinish:false,
       pendingSince:0,
       waitingForArt:false,
+      artReady:false,
+      resolvedSameCover:null,
       startedAt:(typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now(),
       progress:0,
       fromCover:visualizerCoverKey(previousCover || (state && state.nowMeta && state.nowMeta.art)),
@@ -205,10 +207,10 @@ function beginVisualizerTrackTransition(previousCover){
 function finishVisualizerTrackTransition(nextCover){
   if(!visualizerTrackTransition.active) return;
   var nextKey = visualizerCoverKey(nextCover);
-  var sameCover = !!(visualizerTrackTransition.fromCover && nextKey && visualizerTrackTransition.fromCover === nextKey);
+  var sameCover = visualizerTrackTransition.resolvedSameCover != null ? visualizerTrackTransition.resolvedSameCover : !!(visualizerTrackTransition.fromCover && nextKey && visualizerTrackTransition.fromCover === nextKey);
   visualizerTrackTransition.toCover = nextKey;
   visualizerTrackTransition.sameCover = sameCover;
-  visualizerTrackTransition.waitingForArt = !sameCover;
+  visualizerTrackTransition.waitingForArt = !sameCover && !visualizerTrackTransition.artReady;
   visualizerTrackTransition.pendingFinish = true;
   visualizerTrackTransition.pendingSince = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
   scheduleVisualizerFrame(0);
@@ -323,6 +325,8 @@ function visualizerShouldSchedule(fade, target, needsBlackFrame){
 }
 
 function resetVisualizerArtField(reason){
+  // Missing metadata during a handoff is not an instruction to blank glass.
+  if(visualizerTrackTransition.active && visualizerArtField.loaded && visualizerArtField.image) return;
   visualizerArtFieldNonce += 1;
   try{ if(visualizerArtRetryTimer) clearTimeout(visualizerArtRetryTimer); }catch(e){}
   visualizerArtRetryTimer = 0;
@@ -387,7 +391,12 @@ function loadVisualizerArtFieldForTrack(rootId, rel, options){
             var frozenAngle = currentVisualizerAngle();
             visualizerArtTransition = {active:true, progress:0, fromImage:visualizerArtField.image, fromKey:fromKey, toKey:toKey, fromAngle:frozenAngle, toAngle:Math.PI, startedAt:(typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now()};
           }
-          if(visualizerTrackTransition.active) visualizerTrackTransition.waitingForArt = false;
+          if(visualizerTrackTransition.active){
+            visualizerTrackTransition.waitingForArt = false;
+            visualizerTrackTransition.artReady = true;
+            visualizerTrackTransition.resolvedSameCover = !!fromKey && fromKey === toKey;
+            visualizerTrackTransition.sameCover = visualizerTrackTransition.resolvedSameCover;
+          }
           visualizerArtField = {
             key:key, loading:false, loaded:true, image:image, url:visualizerArtUrlWithCacheBust(field.url, field), artIdentity:String(field.art_identity || field.cache_key || ""),
             algorithmVersion:Number(field.algorithm_version || 0), usefulLumaLow:clamp01(field.useful_luma_low),
@@ -914,7 +923,7 @@ function cycleVisualizerFpsLock(){
 function sampleThemeFromArt(src){
   var value = String(src || "").trim();
   visualizerTrackKey = value;
-  if(!value) resetVisualizerArtField("no artwork");
+  if(!value && !visualizerArtField.loaded) resetVisualizerArtField("no artwork");
   updateVisualizerState();
 }
 

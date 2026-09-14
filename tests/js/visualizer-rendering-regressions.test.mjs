@@ -144,7 +144,7 @@ test("selected row stays white across changing visualizer artwork", () => {
 
 
 test("natural handoff holds artwork until ready and resumes without an angle jump", () => {
-  const c = loadHelpers(["clamp01", "normalizeVisualizerRotationsPerTrack", "visualizerRotationForProgress", "visualizerProgress01", "currentVisualizerAngle", "updateVisualizerTrackTransition", "cancelVisualizerTrackTransition", "visualizerCoverKey"]);
+  const c = loadHelpers(["clamp01", "normalizeVisualizerRotationsPerTrack", "visualizerRotationForProgress", "visualizerProgress01", "currentVisualizerAngle", "updateVisualizerTrackTransition", "cancelVisualizerTrackTransition", "visualizerCoverKey", "finishVisualizerTrackTransition"]);
   const media = {duration:100, currentTime:7, paused:false, ended:false};
   Object.assign(c, {currentVisualizerMediaElement:()=>media, currentVisualizerRotationCount:()=>3, scheduleVisualizerFrame:()=>{}, visualizerFrozenAngle:7*Math.PI, visualizerRotationOffset:0, visualizerRotationStartProgress:0, visualizerArtTransition:{active:false}, visualizerTrackTransition:{active:true, pendingFinish:true, startedAt:1, pendingSince:1, waitingForArt:true, sameCover:false}});
   c.updateVisualizerTrackTransition(5000);
@@ -164,4 +164,7 @@ test("natural handoff holds artwork until ready and resumes without an angle jum
   assert.equal(c.currentVisualizerAngle(),angle,"same artwork continues at the frozen angle");
   assert.notEqual(c.visualizerCoverKey("/art?rel=A"),c.visualizerCoverKey("/art?rel=B"));
   assert.equal(c.visualizerCoverKey("/art?rel=A&dp_art=123"),"/art?rel=A");
+  c.visualizerTrackTransition={active:true,artReady:true,resolvedSameCover:false,fromCover:"A"};
+  c.finishVisualizerTrackTransition("B");
+  assert.equal(c.visualizerTrackTransition.waitingForArt,false,"already loaded artwork is not put back into waiting");
 });
