@@ -664,7 +664,8 @@
           // from shearing or exposing a hard seam. Express the travel in
           // screen pixels so portrait and landscape phones behave alike.
           vec2 projected = centered * (1.0 + 0.035 * radius2);
-          vec2 screen = projected * u_reactiveViewport + u_reactiveParallax * (7.0 * (0.28 + 0.72 * hemisphere));
+          vec2 motion = vec2(u_reactiveParallax.x, -u_reactiveParallax.y);
+          vec2 screen = projected * u_reactiveViewport + motion * (7.0 * (0.28 + 0.72 * hemisphere));
           float c = cos(angle);
           float s = sin(angle);
           vec2 rotated = vec2(c * screen.x + s * screen.y, -s * screen.x + c * screen.y);
