@@ -3,6 +3,59 @@
   let button = null;
   let overlay = null;
   let timer = 0;
+  let buttonVisible = false;
+  let rubbing = null;
+  let suppressClick = false;
+
+  function toggleOverlay(){
+    const s = settings();
+    if(!s) return;
+    s.performanceOverlayText = !s.performanceOverlayText;
+    save();
+    refresh();
+  }
+
+  // A sustained alternating stroke unlocks the button. Taps, a straight
+  // swipe, or separate short strokes cannot accumulate into a toggle.
+  function rubSample(sample, x, y, now){
+    if(!sample || now - sample.lastAt > 320) return null;
+    const dx = x - sample.x;
+    const dy = y - sample.y;
+    const delta = Math.abs(dx) >= Math.abs(dy) ? dx : dy;
+    if(Math.abs(delta) < 4) return sample;
+    const direction = Math.sign(delta);
+    if(sample.direction && direction !== sample.direction) sample.turns++;
+    sample.direction = direction;
+    sample.distance += Math.hypot(dx,dy);
+    sample.x = x; sample.y = y; sample.lastAt = now;
+    sample.complete = now - sample.startedAt >= 1500 && sample.turns >= 8 && sample.distance >= 120;
+    return sample;
+  }
+
+  function bindRubGesture(){
+    button.style.touchAction = "none";
+    button.style.transition = "opacity 220ms ease";
+    button.addEventListener("pointerdown", event=>{
+      if(event.button != null && event.button !== 0) return;
+      suppressClick = false;
+      rubbing = {pointerId:event.pointerId, x:event.clientX,y:event.clientY,startedAt:event.timeStamp,lastAt:event.timeStamp,turns:0,distance:0,direction:0};
+      if(button.setPointerCapture) button.setPointerCapture(event.pointerId);
+    });
+    button.addEventListener("pointermove", event=>{
+      if(!rubbing || rubbing.pointerId !== event.pointerId) return;
+      const rect = button.getBoundingClientRect();
+      if(event.clientX < rect.left-16 || event.clientX > rect.right+16 || event.clientY < rect.top-16 || event.clientY > rect.bottom+16){ rubbing=null; suppressClick=true; return; }
+      rubbing = rubSample(rubbing,event.clientX,event.clientY,event.timeStamp);
+      if(!rubbing){ suppressClick=true; return; }
+      if(rubbing.distance > 12) suppressClick=true;
+      if(rubbing.complete){
+        buttonVisible = !buttonVisible;
+        rubbing=null;
+        refresh();
+      }
+    });
+    ["pointerup","pointercancel","lostpointercapture"].forEach(name=>button.addEventListener(name,()=>{rubbing=null;}));
+  }
 
   function settings(){
     try{ return root.uiSettings && root.uiSettings.settings ? root.uiSettings.settings : window.uiSettings; }catch(e){ return null; }
@@ -20,12 +73,10 @@
       button.textContent = "P";
       button.setAttribute("aria-label", "Performance overlay");
       button.addEventListener("click", ()=>{
-        const s = settings();
-        if(!s) return;
-        s.performanceOverlayText = !s.performanceOverlayText;
-        save();
-        refresh();
+        if(suppressClick){ suppressClick=false; return; }
+        if(buttonVisible) toggleOverlay();
       });
+      bindRubGesture();
       document.body.appendChild(button);
     }
     if(!overlay){
@@ -123,11 +174,14 @@
   function refresh(){
     ensure();
     const s = settings() || {};
-    const buttonOn = !!s.performanceOverlayButton;
-    const textOn = !!(s.performanceOverlayButton && s.performanceOverlayText);
-    button.hidden = !buttonOn;
+    const buttonOn = buttonVisible;
+    const textOn = !!s.performanceOverlayText;
+    button.hidden = false;
+    button.style.opacity = buttonOn ? "1" : "0";
+    button.tabIndex = buttonOn ? 0 : -1;
+    button.setAttribute("aria-hidden", buttonOn ? "false" : "true");
     overlay.hidden = !textOn;
-    button.style.display = buttonOn ? "block" : "none";
+    button.style.display = "block";
     overlay.style.display = textOn ? "block" : "none";
     overlay.setAttribute("aria-hidden", overlay.hidden ? "true" : "false");
     placeButton();
@@ -143,5 +197,12 @@
   window.addEventListener("orientationchange", refresh, {passive:true});
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", refresh, {once:true});
   else refresh();
-  root.performanceOverlay = {refresh};
+  window.addEventListener("keydown", event=>{
+    if(event.repeat || event.ctrlKey || event.metaKey || event.altKey || String(event.key || "").toLowerCase() !== "p") return;
+    const target = event.target;
+    if(target && (target.isContentEditable || (target.closest && target.closest("input,textarea,select,[contenteditable='true']")))) return;
+    event.preventDefault();
+    toggleOverlay();
+  });
+  root.performanceOverlay = {refresh, toggle:toggleOverlay, testing:{rubSample}};
 })();

@@ -49,9 +49,9 @@
   }
   function setTarget(x, y, intensity, source){
     target = {
-      x: clamp(x, -0.55, 0.55),
-      y: clamp(y, -0.50, 0.50),
-      intensity: clamp(intensity, 0, 0.55),
+      x: clamp(x, -1, 1),
+      y: clamp(y, -1, 1),
+      intensity: clamp(intensity, 0, 1),
       source: source === "orientation" || source === "pointer" ? source : "default"
     };
     schedule();
@@ -61,8 +61,9 @@
     const now = Number(timestamp || performance.now() || Date.now());
     const interval = 1000 / currentFps();
     if(lastFrameAt && now - lastFrameAt < interval - 1){ schedule(); return false; }
+    const elapsed = lastFrameAt ? Math.max(1, now - lastFrameAt) : interval;
     lastFrameAt = now;
-    const smoothing = 0.16;
+    const smoothing = 1 - Math.exp(-elapsed / 45);
     light.x += (target.x - light.x) * smoothing;
     light.y += (target.y - light.y) * smoothing;
     light.intensity += (target.intensity - light.intensity) * smoothing;
@@ -98,10 +99,10 @@
     if(!orientationOrigin) orientationOrigin = {beta, gamma};
     const angle = Number(window.screen && window.screen.orientation && window.screen.orientation.angle || window.orientation || 0) * Math.PI / 180;
     const multiplier = motionEffectMultiplier();
-    const dx = (gamma - orientationOrigin.gamma) / 45 * multiplier;
-    const dy = (beta - orientationOrigin.beta) / 45 * multiplier;
+    const dx = Math.sin((gamma - orientationOrigin.gamma) * Math.PI / 180) * 2 * multiplier;
+    const dy = Math.sin((beta - orientationOrigin.beta) * Math.PI / 180) * 2 * multiplier;
     orientationActive = true;
-    setTarget(neutral.x + dx * Math.cos(angle) + dy * Math.sin(angle), neutral.y + dy * Math.cos(angle) - dx * Math.sin(angle), 0.46, "orientation");
+    setTarget(neutral.x + dx * Math.cos(angle) + dy * Math.sin(angle), neutral.y + dy * Math.cos(angle) - dx * Math.sin(angle), 0.95, "orientation");
   }
   function attachOrientation(){
     if(orientationAttached || !window.addEventListener) return;

@@ -137,3 +137,15 @@ test("light uniforms alter highlights and shadows while only the wheel retains g
   assert.match(source, /window\.setWheelTiltTarget/);
   assert.doesNotMatch(source, /getBoundingClientRect|\.style\./);
 });
+
+test("device tilt sweeps the light through all quadrants with a short damping time",()=>{
+  for(const [beta,gamma] of [[35,35],[35,-35],[-35,35],[-35,-35]]){
+    const f=load();
+    f.api.testing.orientationChange({beta:0,gamma:0});
+    f.api.testing.orientationChange({beta,gamma});
+    for(let t=20;t<=200;t+=20)f.api.testing.step(t);
+    assert.equal(Math.sign(f.api.state().x),Math.sign(gamma));
+    assert.equal(Math.sign(f.api.state().y),Math.sign(beta));
+    assert.ok(f.api.state().intensity>.9);
+  }
+});
