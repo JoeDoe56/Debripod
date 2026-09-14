@@ -66,7 +66,8 @@
       },
       "performanceOverlayText": false,
       "liquidGlassElements": cloneGlassElementSettings(DEFAULT_LIQUID_GLASS_ELEMENT_SETTINGS),
-      "glassRenderScale": 1.0,
+      "glassRenderScale": 1.5,
+      "glassRenderScaleVersion": 1,
       "glassFrostSamples": 8,
       "glassIdleFps": 30,
       "glassInteractionFps": 60,
@@ -211,7 +212,8 @@
     if(saved.animationFps != null) out.animationFps = cloneAnimationFps(saved.animationFps);
     if(saved.performanceOverlayText != null) out.performanceOverlayText = !!saved.performanceOverlayText;
     if(saved.liquidGlassElements != null) out.liquidGlassElements = cloneGlassElementSettings(saved.liquidGlassElements);
-    if(saved.glassRenderScale != null) out.glassRenderScale = clampNumber(saved.glassRenderScale, out.glassRenderScale, 0.5, 2);
+    if(saved.glassRenderScale != null) out.glassRenderScale = Number(saved.glassRenderScaleVersion || 0) < 1 ? 1.5 : clampNumber(saved.glassRenderScale, out.glassRenderScale, 0.5, 2);
+    out.glassRenderScaleVersion = 1;
     if(saved.glassFrostSamples != null) out.glassFrostSamples = Math.round(clampNumber(saved.glassFrostSamples, out.glassFrostSamples, 0, 16));
     if(saved.glassIdleFps != null) out.glassIdleFps = normalizeAnimationFps(saved.glassIdleFps);
     if(saved.glassInteractionFps != null) out.glassInteractionFps = normalizeAnimationFps(saved.glassInteractionFps);
@@ -244,7 +246,7 @@
     out.videoAmbient = cloneVideoAmbientSettings(out.videoAmbient);
     out.performanceOverlayText = !!out.performanceOverlayText;
     out.liquidGlassElements = cloneGlassElementSettings(out.liquidGlassElements);
-    out.glassRenderScale = clampNumber(out.glassRenderScale, 1, 0.5, 2);
+    out.glassRenderScale = clampNumber(out.glassRenderScale, 1.5, 0.5, 2);
     out.glassFrostSamples = Math.round(clampNumber(out.glassFrostSamples, 8, 0, 16));
     out.glassIdleFps = normalizeAnimationFps(out.glassIdleFps);
     out.glassInteractionFps = normalizeAnimationFps(out.glassInteractionFps);

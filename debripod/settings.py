@@ -36,7 +36,7 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
         "listPills": {"material": 0.0},
         "selectedRow": {"material": -0.50},
     },
-    "glassRenderScale": 1.0, "glassFrostSamples": 8, "glassIdleFps": 30, "glassInteractionFps": 60,
+    "glassRenderScale": 1.5, "glassRenderScaleVersion": 1, "glassFrostSamples": 8, "glassIdleFps": 30, "glassInteractionFps": 60,
     "centerBounceAmount": 0.075, "centerBounceDuration": 240.0, "centerBounceOvershoot": 0.9,
     "wheelClickTiltAmount": 0.5, "wheelTiltRampDuration": 90.0, "wheelTiltReleaseDuration": 360.0,
     "infoPillDarkMultiplier": 1.0, "infoPillLightMultiplier": 1.0,

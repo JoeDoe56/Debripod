@@ -32,10 +32,10 @@
   }
 
   // Pointer, wheel, and keyboard repeat can all arrive faster than a row can
-  // settle. Keep one pending direction and release at most 24 row steps per
+  // settle. Keep one pending direction and release at most 18 row steps per
   // second. Coalescing the direction prevents a stale backlog after a fast
   // gesture or a page transition.
-  const SELECTION_STEP_INTERVAL_MS = 1000 / 24;
+  const SELECTION_STEP_INTERVAL_MS = 1000 / 18;
   let selectionStepTimer = 0;
   let selectionStepPending = "";
   let selectionStepLastTs = 0;

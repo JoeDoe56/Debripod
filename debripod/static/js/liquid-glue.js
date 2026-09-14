@@ -908,7 +908,9 @@
         return;
       }
       listSelectionMotion.lastStepTs = now;
-      const stiffness = 0.34;
+      const elapsed = listSelectionMotion.motionStepTs ? Math.max(1, Math.min(64, now - listSelectionMotion.motionStepTs)) : 16.667;
+      listSelectionMotion.motionStepTs = now;
+      const stiffness = 1 - Math.exp(-elapsed / 40);
       listSelectionMotion.currentX += (listSelectionMotion.targetX - listSelectionMotion.currentX) * stiffness;
       listSelectionMotion.currentY += (listSelectionMotion.targetY - listSelectionMotion.currentY) * stiffness;
       listSelectionMotion.currentWidth += (listSelectionMotion.targetWidth - listSelectionMotion.currentWidth) * stiffness;
@@ -1086,7 +1088,9 @@
       const selectedKey = String(state.itemsVersion || 0) + ":" + String(state.sel);
       if(listSelectionMotion.selectedKey !== selectedKey){
         listSelectionMotion.selectedKey = selectedKey;
-        listSelectionMotion.foregroundProgress = 0;
+        const changedAt = performance.now();
+        if(!listSelectionMotion.selectionChangedAt || changedAt - listSelectionMotion.selectionChangedAt > 180) listSelectionMotion.foregroundProgress = 0;
+        listSelectionMotion.selectionChangedAt = changedAt;
         listSelectionMotion.targetForegroundProgress = 1;
         applyLibSelectionForeground();
         scheduleLibSelectionMotion();
@@ -1113,14 +1117,14 @@
           manageSelected:true,
           managePills:false,
           selectedElement:el,
-          selectedOptions:Object.assign({}, liquidGlassElementOptions("selectedRow"), {rendererKey:"main", clipTarget:"#libList", clipToPaddingBox:true})
+          selectedOptions:Object.assign({}, liquidGlassElementOptions("selectedRow"), {rendererKey:"main", clipTarget:null, clipToPaddingBox:false})
         });
         renderer._metricsDirty = true;
         if(renderer.lenses){
           renderer.lenses.forEach((lens)=>{ try{ lens.rectPx = null; }catch(e){} });
         }
       }
-      if(reason && renderer && renderer.render) renderer.render(currentVisualizerFrameState());
+      if(reason && renderer) markFrameWork({metrics:true, render:true});
     }catch(e){}
   }
 
