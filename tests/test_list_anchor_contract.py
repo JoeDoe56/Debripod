@@ -9,8 +9,11 @@ def test_new_pages_anchor_their_first_selection_to_the_originating_row():
     assert "function selectedRowViewportY()" in source
     assert "view.entryAnchorY = entryAnchorY" in source
     assert "appendPageAnchorSpacer(itemsLayer)" in source
-    assert "state.pageAnchorOffset = Math.max(0, Number(state.current.entryAnchorY) - paddingTop)" in source
+    assert "state.pageAnchorOffset = Math.max(0, requestedAnchorY - paddingTop - selectedPrefix)" in source
     assert "!renderOptions.preserveEntryAnchor" in source
+    assert "savedAnchorY" in source
+    assert 'getElementById("libListSelectedGlass")' in source
+    assert "restoreAnchorY" in source
 
 
 def test_library_root_drops_the_general_selected_row_top_clearance():

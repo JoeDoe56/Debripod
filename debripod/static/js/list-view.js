@@ -1592,6 +1592,7 @@ function vibeTick(){
     // Restore selection and scroll when returning to a list via Menu/back
     let restoreSel = null;
     let restoreScroll = null;
+    let restoreAnchorY = null;
     try{
       if(state.current && typeof state.current.savedSel === "number" && isFinite(state.current.savedSel)){
         restoreSel = Number(state.current.savedSel);
@@ -1599,7 +1600,10 @@ function vibeTick(){
       if(state.current && typeof state.current.savedScroll === "number" && isFinite(state.current.savedScroll)){
         restoreScroll = Number(state.current.savedScroll);
       }
-    }catch(e){ restoreSel = null; restoreScroll = null; }
+      if(state.current && typeof state.current.savedAnchorY === "number" && isFinite(state.current.savedAnchorY)){
+        restoreAnchorY = Number(state.current.savedAnchorY);
+      }
+    }catch(e){ restoreSel = null; restoreScroll = null; restoreAnchorY = null; }
 
     if(restoreSel != null){
       const max = Math.max(0, arr.length - 1);
@@ -1612,14 +1616,22 @@ function vibeTick(){
     state.pageAnchorOffset = 0;
     if(libList){
       libList.classList.toggle("dpLibraryRoot", !!(state.current && state.current.kind === "roots"));
-      if(state.current && Number.isFinite(Number(state.current.entryAnchorY))){
+      const requestedAnchorY = restoreAnchorY != null
+        ? restoreAnchorY
+        : (Number.isFinite(Number(state.current && state.current.entryAnchorY)) ? Number(state.current.entryAnchorY) : null);
+      if(Number.isFinite(requestedAnchorY)){
         const style = window.getComputedStyle ? window.getComputedStyle(libList) : null;
         const paddingTop = style ? (parseFloat(style.paddingTop || "0") || 0) : 0;
-        state.pageAnchorOffset = Math.max(0, Number(state.current.entryAnchorY) - paddingTop);
+        // Include the restored selection's natural prefix in the spacer so
+        // back navigation can keep a selected row at the live glass position,
+        // even when that row is not the first item in a short destination.
+        let selectedPrefix = 0;
+        for(let i = 0; i < Math.max(0, state.sel); i++) selectedPrefix += estimatedItemHeight(arr[i]);
+        state.pageAnchorOffset = Math.max(0, requestedAnchorY - paddingTop - selectedPrefix);
         // Keep the selected row at the same viewport coordinate for every
         // destination size. The spacer is laid out before the new rows, so
         // the replacement does not need a visual row transition.
-        preserveEntryAnchor = state.pageAnchorOffset > 0 && restoreScroll == null;
+        preserveEntryAnchor = true;
       }
       libList.scrollTop = 0;
     }
@@ -1627,7 +1639,19 @@ function vibeTick(){
     setHeader();
     try{ if(typeof applySelectedTextContrast === "function") applySelectedTextContrast(); }catch(e){}
 
-    if(restoreScroll != null && libList){
+    if(restoreAnchorY != null && libList){
+      // Correct the estimated prefix against the actual rendered row before
+      // the browser gets a chance to paint. This keeps the selected pill
+      // stationary without a deferred scroll jump.
+      try{
+        const row = libList.querySelector(".ipodItem.sel");
+        const listRect = libList.getBoundingClientRect();
+        if(row && listRect){
+          const actualY = row.getBoundingClientRect().top - listRect.top;
+          if(Number.isFinite(actualY)) libList.scrollTop = Math.max(0, (libList.scrollTop || 0) + actualY - restoreAnchorY);
+        }
+      }catch(e){}
+    }else if(restoreScroll != null && libList){
       const top = Math.max(0, restoreScroll);
       try{ libList.scrollTop = top; }catch(e){}
     }
@@ -1642,7 +1666,10 @@ function vibeTick(){
     try{
       if(state.current){
         state.current.savedSel = state.sel;
-        if(libList) state.current.savedScroll = libList.scrollTop;
+        if(libList){
+          state.current.savedScroll = libList.scrollTop;
+          state.current.savedAnchorY = selectedRowViewportY();
+        }
       }
     }catch(e){}
   }
@@ -1675,9 +1702,17 @@ function vibeTick(){
   function selectedRowViewportY(){
     try{
       if(!libList) return null;
+      const listRect = libList.getBoundingClientRect();
+      const glass = document.getElementById("libListSelectedGlass");
+      if(glass && glass.classList && glass.classList.contains("isVisible")){
+        const glassRect = glass.getBoundingClientRect();
+        if(glassRect && glassRect.height > 0){
+          const glassY = glassRect.top - listRect.top;
+          if(Number.isFinite(glassY)) return Math.max(0, glassY);
+        }
+      }
       const row = libList.querySelector(".ipodItem.sel");
       if(!row) return null;
-      const listRect = libList.getBoundingClientRect();
       const rowRect = row.getBoundingClientRect();
       const y = rowRect.top - listRect.top;
       return Number.isFinite(y) ? Math.max(0, y) : null;

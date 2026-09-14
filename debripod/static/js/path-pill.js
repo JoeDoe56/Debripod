@@ -120,6 +120,7 @@
       el._dpHScrollAutoFrame = 0;
       el._dpHScrollAutoTimer = 0;
       el._dpHScrollAutoRunning = false;
+      if(el.classList && (el === document.getElementById("libHeaderText") || el === pathPillNowText)) el.classList.remove("pathPillTextEndpoint");
     }catch(e){}
   }
   function startHScrollTextAuto(el){
@@ -130,6 +131,11 @@
       el.scrollLeft = 0;
       const maxScroll = Math.max(0, el.scrollWidth - el.clientWidth);
       if(maxScroll <= 1) return;
+      const isPathText = el === document.getElementById("libHeaderText") || el === pathPillNowText;
+      const setEndpointState = (atEndpoint)=>{
+        try{ if(isPathText && el.classList) el.classList.toggle("pathPillTextEndpoint", !!atEndpoint); }catch(e){}
+      };
+      setEndpointState(true);
       el._dpHScrollAutoTimer = setTimeout(()=>{
         const start = performance.now();
         const pxPerSecond = 34;
@@ -140,12 +146,18 @@
             if(!el._dpHScrollAutoRunning || !document.body.contains(el)) return;
             const endpointPauseMs = 1350;
             const t = (Number(now || performance.now()) - start) % ((travelMs * 2) + (endpointPauseMs * 2));
-            if(t <= travelMs){
-              el.scrollLeft = Math.min(maxScroll, (t / travelMs) * maxScroll);
-            }else if(t <= travelMs + endpointPauseMs){
+            if(t <= endpointPauseMs){
+              setEndpointState(true);
+              el.scrollLeft = 0;
+            }else if(t <= endpointPauseMs + travelMs){
+              setEndpointState(false);
+              el.scrollLeft = Math.min(maxScroll, ((t - endpointPauseMs) / travelMs) * maxScroll);
+            }else if(t <= endpointPauseMs + travelMs + endpointPauseMs){
+              setEndpointState(true);
               el.scrollLeft = maxScroll;
             }else{
-              const backT = (t - travelMs - endpointPauseMs) / travelMs;
+              setEndpointState(false);
+              const backT = (t - endpointPauseMs - travelMs - endpointPauseMs) / travelMs;
               el.scrollLeft = Math.max(0, maxScroll * (1 - backT));
             }
             el._dpHScrollAutoFrame = requestAnimationFrame(tick);
