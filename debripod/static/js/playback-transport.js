@@ -20,9 +20,9 @@
     try{ return root.DebriPod && root.DebriPod.mediaAudioGraph; }catch(error){ return null; }
   }
 
-  function transportLevel(media, value){
+  function transportLevel(media, value, immediate){
     const api = graph();
-    try{ return !!(api && api.setTransportLevel && api.setTransportLevel(media, clamp01(value))); }catch(error){ return false; }
+    try{ return !!(api && api.setTransportLevel && api.setTransportLevel(media, clamp01(value), !!immediate)); }catch(error){ return false; }
   }
 
   function notifyVisualizer(){
@@ -72,7 +72,7 @@
     if(!media || !state || states.get(media) !== state) return;
     cancelTimer(state);
     state.level = state.targetPaused ? 0 : 1;
-    transportLevel(media, state.level);
+    transportLevel(media, state.level, true);
     if(state.targetPaused){
       setRate(media, state.slowRate);
       try{ media.pause(); }catch(error){}
@@ -112,17 +112,23 @@
       pitchCaptured:false, pitchValues:{}, generation:0
     };
     if(!states.has(media)) states.set(media, state);
+    const wasPaused = !!state.intendedPaused;
     state.targetPaused = !!targetPaused;
     state.generation = Number(state.generation || 0) + 1;
     state.baseRate = Math.max(0.05, number(state.baseRate || media && media.playbackRate, 1));
     state.slowRate = Math.max(0.05, state.baseRate * SLOW_RATE_RATIO);
     state.startLevel = clamp01(state.level);
     state.startRate = Math.max(0.05, number(media && media.playbackRate, state.targetPaused ? state.baseRate : state.slowRate));
+    if(!targetPaused && !wasPaused && state.startLevel < 0.999) state.startRate = state.slowRate;
     state.startedAt = clock();
     state.phase = targetPaused ? "slowing" : "speeding";
     state.intendedPaused = !!targetPaused;
     disablePitch(media, state);
     cancelTimer(state);
+    if(!targetPaused){
+      transportLevel(media, state.startLevel, true);
+      setRate(media, state.startRate);
+    }
     notifyVisualizer();
     return state;
   }

@@ -37,6 +37,7 @@ var visualizerUploadedArtKey = "";
 var visualizerArtUploadCount = 0;
 var visualizerFade = 0;
 var visualizerFadeTarget = 0;
+var visualizerTransportWasActive = false;
 var visualizerNeedsBlackFrame = true;
 var visualizerContrastState = "";
 var visualizerAnalysisNonce = 0;
@@ -741,7 +742,7 @@ function visualizerSourceForLiquidGL(){
 
 function updateVisualizerArtTransition(now){
   if(!visualizerArtTransition.active) return;
-  visualizerArtTransition.progress = clamp01((Number(now || 0) - Number(visualizerArtTransition.startedAt || now || 0)) / 320);
+  visualizerArtTransition.progress = clamp01((Number(now || 0) - Number(visualizerArtTransition.startedAt || now || 0)) / 220);
   if(visualizerArtTransition.progress >= 1){
     visualizerArtTransition.active = false;
     visualizerArtTransition.fromImage = null;
@@ -835,7 +836,10 @@ function visualizerFrame(ts){
     if(transportLevel != null && visualizerEnabled && visualizerArtField.loaded && currentVisualizerMediaKind() !== "video"){
       visualizerFade = clamp01(transportLevel);
       visualizerFadeTarget = transport.isPaused(currentVisualizerMediaElement()) ? 0 : 1;
+    }else if(visualizerTransportWasActive && visualizerFadeTarget === 1){
+      visualizerFade = 1;
     }else visualizerFade += (visualizerFadeTarget - visualizerFade) * fadeStep;
+    visualizerTransportWasActive = transportLevel != null;
     if(Math.abs(visualizerFadeTarget - visualizerFade) < 0.002) visualizerFade = visualizerFadeTarget;
     if(fadeWasVisible && visualizerFadeTarget === 0 && visualizerFade === 0) visualizerNeedsBlackFrame = true;
     var media = currentVisualizerMediaElement();

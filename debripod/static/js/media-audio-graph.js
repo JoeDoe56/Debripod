@@ -96,13 +96,16 @@
     return volume;
   }
 
-  function setTransportLevel(element, value){
+  function setTransportLevel(element, value, immediate){
     const record = records.get(element || activeElement);
     if(!record || !record.transportGain) return false;
     try{
       const target = clampVolume(value);
       const param = record.transportGain.gain;
-      if(param && typeof param.setTargetAtTime === "function" && audioContext && Number.isFinite(Number(audioContext.currentTime))){
+      if(immediate && param && typeof param.cancelScheduledValues === "function" && audioContext) param.cancelScheduledValues(Number(audioContext.currentTime) || 0);
+      if(immediate && param && typeof param.setValueAtTime === "function" && audioContext){
+        param.setValueAtTime(target, Number(audioContext.currentTime) || 0);
+      }else if(param && typeof param.setTargetAtTime === "function" && audioContext && Number.isFinite(Number(audioContext.currentTime))){
         param.setTargetAtTime(target, Number(audioContext.currentTime), 0.004);
       }else param.value = target;
       return true;

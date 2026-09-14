@@ -168,3 +168,20 @@ test("natural handoff holds artwork until ready and resumes without an angle jum
   c.finishVisualizerTrackTransition("B");
   assert.equal(c.visualizerTrackTransition.waitingForArt,false,"already loaded artwork is not put back into waiting");
 });
+
+
+test("manual transport and visualizer share the exact envelope including completion", () => {
+  const c=loadHelpers(["clamp01","visualizerFrame"]);
+  let level=.5, paused=true;
+  Object.assign(c,{performance:{now:()=>1000},visualizerFpsLock:60,normalizeVisualizerFpsLock:()=>60,visualizerLastFrameTs:0,updateVisualizerArtTransition:()=>{},updateVisualizerTrackTransition:()=>{},visualizerShouldShow:()=>true,visualizerArtField:{loaded:true},visualizerFade:1,visualizerEnabled:true,visualizerTransportWasActive:false,visualizerNeedsBlackFrame:false,currentVisualizerMediaElement:()=>({}),currentVisualizerMediaKind:()=>"audio",visualizerShouldSchedule:()=>false,window:{DebriPod:{playbackTransport:{visualizerLevel:()=>level,isPaused:()=>paused}}}});
+  c.visualizerFrame(1000);
+  assert.equal(c.visualizerFade,.5);
+  assert.equal(c.visualizerFadeTarget,0);
+  paused=false;level=.8;
+  c.visualizerFrame(1100);
+  assert.equal(c.visualizerFade,.8);
+  assert.equal(c.visualizerFadeTarget,1);
+  level=null;
+  c.visualizerFrame(1200);
+  assert.equal(c.visualizerFade,1,"completed audio ramp must not leave a visual fade tail");
+});
