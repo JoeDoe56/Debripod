@@ -1593,6 +1593,12 @@ function vibeTick(){
   }
 
   function resetList(items){
+    // A previous page's scroll target must never move the newly anchored list.
+    if(libList){
+      if(libList._dpScrollAnimFrame) cancelAnimationFrame(libList._dpScrollAnimFrame);
+      libList._dpScrollAnimFrame = 0;
+      libList._dpScrollAnimTarget = null;
+    }
     try{ if(typeof window.cancelSelectionStepQueue === "function") window.cancelSelectionStepQueue(); }catch(e){}
     // Capture the pill that is actually visible before changing selection or
     // replacing the list. A destination view can carry an older saved anchor
