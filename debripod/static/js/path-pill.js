@@ -120,22 +120,20 @@
       el._dpHScrollAutoFrame = 0;
       el._dpHScrollAutoTimer = 0;
       el._dpHScrollAutoRunning = false;
-      if(el.classList && (el === document.getElementById("libHeaderText") || el === pathPillNowText)) el.classList.remove("pathPillTextEndpoint");
+      if(el.classList) el.classList.remove("pathPillTextScrollable", "hScrollTextScrollable");
     }catch(e){}
   }
   function startHScrollTextAuto(el){
     try{
-      if(!el || !hScrollTextIsScrollable(el)) return;
+      if(!el) return;
       stopHScrollTextAuto(el);
+      if(!hScrollTextIsScrollable(el)) return;
       try{ el.style.textOverflow = "clip"; }catch(e){}
+      const isPathText = el === document.getElementById("libHeaderText") || el === pathPillNowText;
+      if(el.classList) el.classList.add(isPathText ? "pathPillTextScrollable" : "hScrollTextScrollable");
       el.scrollLeft = 0;
       const maxScroll = Math.max(0, el.scrollWidth - el.clientWidth);
       if(maxScroll <= 1) return;
-      const isPathText = el === document.getElementById("libHeaderText") || el === pathPillNowText;
-      const setEndpointState = (atEndpoint)=>{
-        try{ if(isPathText && el.classList) el.classList.toggle("pathPillTextEndpoint", !!atEndpoint); }catch(e){}
-      };
-      setEndpointState(true);
       el._dpHScrollAutoTimer = setTimeout(()=>{
         const start = performance.now();
         const pxPerSecond = 34;
@@ -147,16 +145,12 @@
             const endpointPauseMs = 1350;
             const t = (Number(now || performance.now()) - start) % ((travelMs * 2) + (endpointPauseMs * 2));
             if(t <= endpointPauseMs){
-              setEndpointState(true);
               el.scrollLeft = 0;
             }else if(t <= endpointPauseMs + travelMs){
-              setEndpointState(false);
               el.scrollLeft = Math.min(maxScroll, ((t - endpointPauseMs) / travelMs) * maxScroll);
             }else if(t <= endpointPauseMs + travelMs + endpointPauseMs){
-              setEndpointState(true);
               el.scrollLeft = maxScroll;
             }else{
-              setEndpointState(false);
               const backT = (t - endpointPauseMs - travelMs - endpointPauseMs) / travelMs;
               el.scrollLeft = Math.max(0, maxScroll * (1 - backT));
             }

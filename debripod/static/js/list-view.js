@@ -232,16 +232,13 @@
       if(!libList) return;
       const maxTop = Math.max(0, libList.scrollHeight - libList.clientHeight);
       const target = Math.max(0, Math.min(maxTop, Number(targetTop || 0)));
+      libList._dpScrollAnimTarget = target;
       if(Math.abs((libList.scrollTop || 0) - target) < 0.5){
         libList.scrollTop = target;
+        libList._dpScrollAnimTarget = null;
         if(typeof invalidateLibPillGlass === "function") invalidateLibPillGlass("scroll correction");
         return;
       }
-      if(libList._dpScrollAnimFrame) cancelAnimationFrame(libList._dpScrollAnimFrame);
-      const start = libList.scrollTop || 0;
-      const delta = target - start;
-      const started = performance.now();
-      const duration = Math.min(180, Math.max(80, Math.abs(delta) * 1.15));
       let lastTick = 0;
       const tick = (now)=>{
         try{
@@ -252,16 +249,27 @@
             return;
           }
           lastTick = frameNow;
-          const t = Math.max(0, Math.min(1, (frameNow - started) / duration));
-          const eased = 1 - Math.pow(1 - t, 3);
-          libList.scrollTop = start + delta * eased;
+          const current = Number(libList.scrollTop || 0);
+          const desired = Number(libList._dpScrollAnimTarget);
+          if(!Number.isFinite(desired)){
+            libList._dpScrollAnimFrame = 0;
+            return;
+          }
+          const elapsed = Math.max(1, interval);
+          const mix = 1 - Math.exp(-elapsed / 78);
+          const next = current + ((desired - current) * mix);
+          libList.scrollTop = Math.abs(desired - next) < 0.35 ? desired : next;
           if(typeof invalidateLibPillGlass === "function") invalidateLibPillGlass("smooth scroll");
-          if(t < 1) libList._dpScrollAnimFrame = requestAnimationFrame(tick);
-          else libList._dpScrollAnimFrame = 0;
+          if(Math.abs(desired - libList.scrollTop) > 0.35) libList._dpScrollAnimFrame = requestAnimationFrame(tick);
+          else{
+            libList._dpScrollAnimTarget = null;
+            libList._dpScrollAnimFrame = 0;
+          }
         }catch(e){
           libList._dpScrollAnimFrame = 0;
         }
       };
+      if(libList._dpScrollAnimFrame) return;
       libList._dpScrollAnimFrame = requestAnimationFrame(tick);
     }catch(e){}
   }
@@ -1538,7 +1546,6 @@ function vibeTick(){
       }
       refreshSelectedHScrollText();
       if(typeof reconcileLibPillGlassTargets === "function") reconcileLibPillGlassTargets("selection");
-      if(typeof applySelectedTextContrast === "function") applySelectedTextContrast();
       if(typeof updateGlassTextUnderColors === "function") updateGlassTextUnderColors();
     }catch(e){
       renderList();
@@ -1653,8 +1660,6 @@ function vibeTick(){
     }
     replaceListItems(arr, {preserveSelection:false, preserveScroll:false, preserveEntryAnchor:preserveEntryAnchor, selectionIndex:state.sel, transitionSelectionIdentity:transitionSelectionIdentity, reason:"page load"});
     setHeader();
-    try{ if(typeof applySelectedTextContrast === "function") applySelectedTextContrast(); }catch(e){}
-
     if(Number.isFinite(requestedAnchorY) && libList){
       // Correct the estimated prefix against the actual rendered row before
       // the browser gets a chance to paint. This keeps the selected pill

@@ -492,6 +492,7 @@
       gap: 10px;
       pointer-events: auto;
       overflow:visible;
+      translate:var(--dp-parallax-x, 0px) var(--dp-parallax-y, 0px);
     }
 .pathPill{
       display:inline-flex;
@@ -624,11 +625,14 @@
     .pathPillNowText.pathPillTextScrollable{
       -webkit-mask-image:linear-gradient(to right, transparent 0, #000 var(--path-text-fade), #000 calc(100% - var(--path-text-fade)), transparent 100%);
       mask-image:linear-gradient(to right, transparent 0, #000 var(--path-text-fade), #000 calc(100% - var(--path-text-fade)), transparent 100%);
+      box-sizing:border-box;
+      padding-inline:var(--path-text-fade);
     }
-    .pathPillText.pathPillTextScrollable.pathPillTextEndpoint,
-    .pathPillNowText.pathPillTextScrollable.pathPillTextEndpoint{
-      -webkit-mask-image:none;
-      mask-image:none;
+    .hScrollText.hScrollTextScrollable{
+      -webkit-mask-image:linear-gradient(to right, transparent 0, #000 var(--path-text-fade), #000 calc(100% - var(--path-text-fade)), transparent 100%);
+      mask-image:linear-gradient(to right, transparent 0, #000 var(--path-text-fade), #000 calc(100% - var(--path-text-fade)), transparent 100%);
+      box-sizing:border-box;
+      padding-inline:var(--path-text-fade);
     }
     .pathPill.pathPillHidden{
       opacity: 0;
@@ -656,6 +660,7 @@
     }
     .ipodWheelWrap{
       pointer-events:auto;
+      translate:var(--dp-parallax-x, 0px) var(--dp-parallax-y, 0px);
     }
     /* The wheel is a touch control, not document content.  Prevent a held
        press from opening the browser's text-selection handles on its labels. */
@@ -687,6 +692,7 @@
       overflow:hidden;
       display:block;
       isolation:isolate;
+      translate:var(--dp-parallax-x, 0px) var(--dp-parallax-y, 0px);
     }
 
     .ipodScreenContent{
@@ -1713,6 +1719,7 @@
   transition:opacity var(--playbackPillFadeMs) ease, transform var(--playbackPillFadeMs) ease, visibility 0s linear 0s;
   will-change:opacity, transform;
   pointer-events:auto;
+  translate:var(--dp-parallax-x, 0px) var(--dp-parallax-y, 0px);
 }
 .infoPill.infoPillHidden{
   opacity:0;
