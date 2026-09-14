@@ -234,6 +234,10 @@
       const target = Math.max(0, Math.min(maxTop, Number(targetTop || 0)));
       libList._dpScrollAnimTarget = target;
       if(Math.abs((libList.scrollTop || 0) - target) < 0.5){
+        if(libList._dpScrollAnimFrame){
+          cancelAnimationFrame(libList._dpScrollAnimFrame);
+          libList._dpScrollAnimFrame = 0;
+        }
         libList.scrollTop = target;
         libList._dpScrollAnimTarget = null;
         if(typeof invalidateLibPillGlass === "function") invalidateLibPillGlass("scroll correction");
@@ -248,14 +252,19 @@
             libList._dpScrollAnimFrame = requestAnimationFrame(tick);
             return;
           }
+          const elapsed = lastTick ? Math.max(1, frameNow - lastTick) : interval;
           lastTick = frameNow;
           const current = Number(libList.scrollTop || 0);
-          const desired = Number(libList._dpScrollAnimTarget);
-          if(!Number.isFinite(desired)){
+          if(libList._dpScrollAnimTarget == null){
             libList._dpScrollAnimFrame = 0;
             return;
           }
-          const elapsed = Math.max(1, interval);
+          const desired = Number(libList._dpScrollAnimTarget);
+          if(!Number.isFinite(desired)){
+            libList._dpScrollAnimTarget = null;
+            libList._dpScrollAnimFrame = 0;
+            return;
+          }
           const mix = 1 - Math.exp(-elapsed / 78);
           const next = current + ((desired - current) * mix);
           libList.scrollTop = Math.abs(desired - next) < 0.35 ? desired : next;
