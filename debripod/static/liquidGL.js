@@ -577,6 +577,7 @@
         uniform float u_reactiveArtMix;
         uniform float u_reactivePreviousAngle;
         uniform vec2  u_reactiveViewport;
+        uniform vec2  u_reactiveParallax;
         uniform float u_reactiveAngle;
         uniform float u_reactiveLumaLow;
         uniform float u_reactiveLumaHigh;
@@ -649,23 +650,38 @@
           return col;
         }
 
+        // Convert the source UV into the same gently curved, bottom-left
+        // projected space used by the visualizer.  Keeping this in one helper
+        // is important: refracted/frosted samples must move with the visible
+        // background instead of exposing a second, flat parallax plane.
+        vec2 reactiveProjectedUV(vec2 uv, float angle) {
+          vec2 backgroundUv = vec2(clamp(uv.x, 0.0, 1.0), 1.0 - clamp(uv.y, 0.0, 1.0));
+          vec2 centered = backgroundUv - 0.5;
+          float radius2 = dot(centered, centered);
+          float hemisphere = sqrt(max(0.2, 1.0 - radius2 * 1.4));
+          // Seven CSS pixels per axis is deliberately subtle. The hemisphere
+          // term gives the centre more depth while keeping the rounded edges
+          // from shearing or exposing a hard seam. Express the travel in
+          // screen pixels so portrait and landscape phones behave alike.
+          vec2 projected = centered * (1.0 + 0.035 * radius2);
+          vec2 screen = projected * u_reactiveViewport + u_reactiveParallax * (7.0 * (0.28 + 0.72 * hemisphere));
+          float c = cos(angle);
+          float s = sin(angle);
+          vec2 rotated = vec2(c * screen.x + s * screen.y, -s * screen.x + c * screen.y);
+          return clamp(rotated / max(1.0, length(u_reactiveViewport)) + 0.5, 0.0, 1.0);
+        }
+
         vec4 sampleBaseLiquidSource(vec2 uv) {
           if (u_reactiveArtSource) {
             // Lens bounds are CSS top-left UVs; the visualizer background is
             // rendered with bottom-left WebGL UVs. Keep both paths identical.
-            vec2 backgroundUv = vec2(clamp(uv.x, 0.0, 1.0), 1.0 - clamp(uv.y, 0.0, 1.0));
-            vec2 screen = (backgroundUv - 0.5) * u_reactiveViewport;
-            float c = cos(u_reactiveAngle);
-            float s = sin(u_reactiveAngle);
-            vec2 rotated = vec2(c * screen.x + s * screen.y, -s * screen.x + c * screen.y);
-            vec2 artUv = clamp(rotated / max(1.0, length(u_reactiveViewport)) + 0.5, 0.0, 1.0);
+            vec2 artUv = reactiveProjectedUV(uv, u_reactiveAngle);
             // DOM images are uploaded without a flip in this renderer; the
             // visualizer uploads flipped images. Match its bottom-left UVs.
             vec4 color = texture2D(u_tex, vec2(artUv.x, 1.0-artUv.y));
             if (u_reactiveArtMix < 1.0) {
               float pc = cos(u_reactivePreviousAngle), ps = sin(u_reactivePreviousAngle);
-              vec2 previousRotated = vec2(pc*screen.x+ps*screen.y, -ps*screen.x+pc*screen.y);
-              vec2 previousUv = clamp(previousRotated/max(1.0,length(u_reactiveViewport))+0.5,0.0,1.0);
+              vec2 previousUv = reactiveProjectedUV(uv, u_reactivePreviousAngle);
               vec4 previous = texture2D(u_reactivePreviousTex,vec2(previousUv.x,1.0-previousUv.y));
               color = mix(previous,color,u_reactiveArtMix);
             }
@@ -950,6 +966,7 @@
         reactiveArtMix: gl.getUniformLocation(this.program, "u_reactiveArtMix"),
         reactivePreviousAngle: gl.getUniformLocation(this.program, "u_reactivePreviousAngle"),
         reactiveViewport: gl.getUniformLocation(this.program, "u_reactiveViewport"),
+        reactiveParallax: gl.getUniformLocation(this.program, "u_reactiveParallax"),
         reactiveAngle: gl.getUniformLocation(this.program, "u_reactiveAngle"),
         reactiveLumaLow: gl.getUniformLocation(this.program, "u_reactiveLumaLow"),
         reactiveLumaHigh: gl.getUniformLocation(this.program, "u_reactiveLumaHigh"),
@@ -979,7 +996,7 @@
       const configuredScale = window.DebriPod && window.DebriPod.uiSettings && window.DebriPod.uiSettings.settings
         ? Number(window.DebriPod.uiSettings.settings.glassRenderScale)
         : 1;
-      const renderScale = Math.max(0.5, Math.min(2, Number.isFinite(configuredScale) ? configuredScale : 1));
+      const renderScale = Math.max(0.5, Math.min(2, Number.isFinite(configuredScale) ? configuredScale : 1.5));
       this._dpr = renderScale;
       this.canvas.width = Math.max(1, Math.round(innerWidth * renderScale));
       this.canvas.height = Math.max(1, Math.round(innerHeight * renderScale));
@@ -1309,6 +1326,15 @@
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D,this.texture);
       gl.uniform2f(this.u.reactiveViewport, window.innerWidth || 1, window.innerHeight || 1);
+      let parallaxX = 0;
+      let parallaxY = 0;
+      try {
+        const lighting = window.DebriPod && window.DebriPod.glassLighting;
+        const motion = lighting && typeof lighting.parallax === "function" ? lighting.parallax() : null;
+        parallaxX = Math.max(-1, Math.min(1, finite(motion && motion.x, 0)));
+        parallaxY = Math.max(-1, Math.min(1, finite(motion && motion.y, 0)));
+      } catch (e) {}
+      if (this.u.reactiveParallax) gl.uniform2f(this.u.reactiveParallax, parallaxX, parallaxY);
       gl.uniform1f(this.u.reactiveAngle, transition.active ? finite(transition.toAngle, Math.PI) : finite(fs.angleRadians, Math.PI));
       gl.uniform1f(this.u.reactiveLumaLow, Math.max(0, Math.min(1, finite(fs.lumaLow, 0))));
       gl.uniform1f(this.u.reactiveLumaHigh, Math.max(.04, Math.min(1, finite(fs.lumaHigh, 1))));
@@ -2239,10 +2265,13 @@
       const clip = lens.clipRectPx;
       if (clip) {
         gl.enable(gl.SCISSOR_TEST);
-        const left = Math.max(0, Math.ceil(clip.left * dpr));
-        const right = Math.min(this.canvas.width, Math.floor(clip.right * dpr));
-        const bottom = Math.max(0, Math.ceil(this.canvas.height - clip.bottom * dpr));
-        const top = Math.min(this.canvas.height, Math.floor(this.canvas.height - clip.top * dpr));
+        // Round the scissor outwards. Rounding a lens' own visible bounds
+        // inward removes the outer SDF coverage on fractional positions and
+        // turns smooth rounded corners into flat one pixel cuts.
+        const left = Math.max(0, Math.floor(clip.left * dpr));
+        const right = Math.min(this.canvas.width, Math.ceil(clip.right * dpr));
+        const bottom = Math.max(0, Math.floor(this.canvas.height - clip.bottom * dpr));
+        const top = Math.min(this.canvas.height, Math.ceil(this.canvas.height - clip.top * dpr));
         gl.scissor(left, bottom, Math.max(0, right - left), Math.max(0, top - bottom));
       }
       gl.drawArrays(gl.TRIANGLES, 0, 6);

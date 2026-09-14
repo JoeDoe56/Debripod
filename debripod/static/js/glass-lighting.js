@@ -1,8 +1,11 @@
 (function(){
   const root = window.DebriPod = window.DebriPod || {};
   const neutral = {x:-0.16, y:-0.22, intensity:0.22, source:"default"};
+  const PARALLAX_FOREGROUND_PX = 4.6;
   const light = Object.assign({}, neutral);
   let target = Object.assign({}, neutral);
+  const parallax = {x:0, y:0};
+  const parallaxTarget = {x:0, y:0};
   let frame = 0;
   let lastFrameAt = 0;
   let pointerIdleTimer = 0;
@@ -40,8 +43,21 @@
   function markGlassFrame(){
     try{
       const scheduler = root.frameScheduler;
-      if(scheduler && scheduler.mark) scheduler.mark({render:true, keepAlive:true});
+      if(scheduler && scheduler.mark) scheduler.mark({render:true, metrics:true, keepAlive:true});
     }catch(e){}
+  }
+  function writeParallaxCss(){
+    try{
+      const style = document.documentElement && document.documentElement.style;
+      if(!style) return;
+      style.setProperty("--dp-parallax-x", (parallax.x * PARALLAX_FOREGROUND_PX).toFixed(3) + "px");
+      style.setProperty("--dp-parallax-y", (parallax.y * PARALLAX_FOREGROUND_PX).toFixed(3) + "px");
+    }catch(e){}
+  }
+  function setParallaxTarget(x, y){
+    parallaxTarget.x = clamp(x, -1, 1);
+    parallaxTarget.y = clamp(y, -1, 1);
+    schedule();
   }
   function schedule(){
     if(frame || document.hidden) return;
@@ -67,19 +83,17 @@
     light.x += (target.x - light.x) * smoothing;
     light.y += (target.y - light.y) * smoothing;
     light.intensity += (target.intensity - light.intensity) * smoothing;
+    parallax.x += (parallaxTarget.x - parallax.x) * smoothing;
+    parallax.y += (parallaxTarget.y - parallax.y) * smoothing;
     light.source = target.source;
-    // Only the wheel has geometric tilt; other lenses receive lighting alone.
-    if(light.source === "orientation" && window && typeof window.setWheelTiltTarget === "function"){
-      const degrees = typeof window.wheelRotationMaxDegrees === "number" ? window.wheelRotationMaxDegrees : 5;
-      window.setWheelTiltTarget(-(light.y - neutral.y) * degrees, (light.x - neutral.x) * degrees, 90);
-    }
-    const moving = Math.abs(target.x - light.x) > 0.002 || Math.abs(target.y - light.y) > 0.002 || Math.abs(target.intensity - light.intensity) > 0.002;
+    writeParallaxCss();
+    const moving = Math.abs(target.x - light.x) > 0.002 || Math.abs(target.y - light.y) > 0.002 || Math.abs(target.intensity - light.intensity) > 0.002 || Math.abs(parallaxTarget.x - parallax.x) > 0.002 || Math.abs(parallaxTarget.y - parallax.y) > 0.002;
     markGlassFrame();
     if(moving) schedule();
     return moving;
   }
   function resetPointerLight(){
-    if(!orientationActive) setTarget(neutral.x, neutral.y, neutral.intensity, "default");
+    if(!orientationActive){ setParallaxTarget(0, 0); setTarget(neutral.x, neutral.y, neutral.intensity, "default"); }
   }
   function pointerMove(event){
     if(orientationActive) return;
@@ -101,7 +115,10 @@
     const multiplier = motionEffectMultiplier();
     const dx = Math.sin((gamma - orientationOrigin.gamma) * Math.PI / 180) * 2 * multiplier;
     const dy = Math.sin((beta - orientationOrigin.beta) * Math.PI / 180) * 2 * multiplier;
+    const parallaxX = (dx * Math.cos(angle) + dy * Math.sin(angle)) / 2;
+    const parallaxY = (dy * Math.cos(angle) - dx * Math.sin(angle)) / 2;
     orientationActive = true;
+    setParallaxTarget(parallaxX, parallaxY);
     setTarget(neutral.x + dx * Math.cos(angle) + dy * Math.sin(angle), neutral.y + dy * Math.cos(angle) - dx * Math.sin(angle), 0.95, "orientation");
   }
   function attachOrientation(){
@@ -173,9 +190,14 @@
 
   root.glassLighting = {
     state: ()=>({x:light.x, y:light.y, intensity:light.intensity, source:light.source}),
+    // Normalized phone motion shared by DOM foreground and LiquidGL background.
+    // Keep this independent from wheel geometry: orientation changes only affect
+    // material lighting and the depth parallax layers.
+    parallax: ()=>({x:parallax.x, y:parallax.y}),
     status: ()=> orientationActive ? "Active" : storedPermission() === "denied" ? "Denied" : "Waiting for motion",
     requestOrientationPermission,
-    testing: {permissionKey, storedPermission, setTarget, pointerMove, orientationChange, step, isAnimating:()=>!!frame, reset:()=>{ target=Object.assign({}, neutral); Object.assign(light, neutral); frame=0; lastFrameAt=0; orientationActive=false; orientationOrigin=null; }}
+    testing: {permissionKey, storedPermission, setTarget, setParallaxTarget, pointerMove, orientationChange, step, isAnimating:()=>!!frame, reset:()=>{ target=Object.assign({}, neutral); Object.assign(light, neutral); parallax.x=0; parallax.y=0; parallaxTarget.x=0; parallaxTarget.y=0; writeParallaxCss(); frame=0; lastFrameAt=0; orientationActive=false; orientationOrigin=null; }}
   };
+  writeParallaxCss();
   init();
 })();
