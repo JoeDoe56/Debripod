@@ -530,6 +530,11 @@
         #endif
         varying vec2 v_uv;
         uniform sampler2D u_tex;
+        uniform sampler2D u_underGlass;
+        uniform bool u_hasUnderGlass;
+        uniform sampler2D u_underText;
+        uniform vec4 u_underTextBounds;
+        uniform bool u_hasUnderText;
         uniform sampler2D u_albumCurrentTex;
         uniform sampler2D u_albumNextTex;
         uniform vec2  u_resolution;
@@ -568,6 +573,9 @@
         uniform bool  u_useAlbumTransitionSource;
         uniform bool  u_debugAlbumSourceFlat;
         uniform bool  u_reactiveArtSource;
+        uniform sampler2D u_reactivePreviousTex;
+        uniform float u_reactiveArtMix;
+        uniform float u_reactivePreviousAngle;
         uniform vec2  u_reactiveViewport;
         uniform float u_reactiveAngle;
         uniform float u_reactiveLumaLow;
@@ -586,7 +594,8 @@
         uniform float u_globalLightIntensity;
 
         float udRoundBox( vec2 p, vec2 b, float r ) {
-          return length(max(abs(p)-b+r,0.0))-r;
+          vec2 q = abs(p) - b + r;
+          return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
         }
 
         float edgeFactor(vec2 uv, float radius_px){
@@ -640,7 +649,7 @@
           return col;
         }
 
-        vec4 sampleLiquidSource(vec2 uv) {
+        vec4 sampleBaseLiquidSource(vec2 uv) {
           if (u_reactiveArtSource) {
             // Lens bounds are CSS top-left UVs; the visualizer background is
             // rendered with bottom-left WebGL UVs. Keep both paths identical.
@@ -650,7 +659,16 @@
             float s = sin(u_reactiveAngle);
             vec2 rotated = vec2(c * screen.x + s * screen.y, -s * screen.x + c * screen.y);
             vec2 artUv = clamp(rotated / max(1.0, length(u_reactiveViewport)) + 0.5, 0.0, 1.0);
-            vec4 color = texture2D(u_tex, artUv);
+            // DOM images are uploaded without a flip in this renderer; the
+            // visualizer uploads flipped images. Match its bottom-left UVs.
+            vec4 color = texture2D(u_tex, vec2(artUv.x, 1.0-artUv.y));
+            if (u_reactiveArtMix < 1.0) {
+              float pc = cos(u_reactivePreviousAngle), ps = sin(u_reactivePreviousAngle);
+              vec2 previousRotated = vec2(pc*screen.x+ps*screen.y, -ps*screen.x+pc*screen.y);
+              vec2 previousUv = clamp(previousRotated/max(1.0,length(u_reactiveViewport))+0.5,0.0,1.0);
+              vec4 previous = texture2D(u_reactivePreviousTex,vec2(previousUv.x,1.0-previousUv.y));
+              color = mix(previous,color,u_reactiveArtMix);
+            }
             float luma = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));
             float useful = clamp((luma - u_reactiveLumaLow) / max(0.08, u_reactiveLumaHigh - u_reactiveLumaLow), 0.0, 1.0);
             float w0 = max(0.0, 1.0 - abs(useful - u_reactiveBandCenters[0]) / max(0.0001, u_reactiveBandWidths[0]));
@@ -683,6 +701,22 @@
             return sampleAlbumArtSource(uv);
           }
           return texture2D(u_tex, clamp(uv, vec2(0.0), vec2(1.0)));
+        }
+
+        vec4 sampleLiquidSource(vec2 uv) {
+          vec4 base = sampleBaseLiquidSource(uv);
+          if (u_hasUnderGlass) {
+            vec4 under = texture2D(u_underGlass, vec2(clamp(uv.x, 0.0, 1.0), 1.0 - clamp(uv.y, 0.0, 1.0)));
+            base = vec4(under.rgb + base.rgb * (1.0 - under.a), under.a + base.a * (1.0 - under.a));
+          }
+          if (u_hasUnderText) {
+            vec2 textUV = (uv - u_underTextBounds.xy) / u_underTextBounds.zw;
+            if (textUV.x >= 0.0 && textUV.y >= 0.0 && textUV.x <= 1.0 && textUV.y <= 1.0) {
+              vec4 text = texture2D(u_underText, textUV);
+              base = vec4(text.rgb + base.rgb * (1.0 - text.a), text.a + base.a * (1.0 - text.a));
+            }
+          }
+          return base;
         }
 
         void main(){
@@ -821,9 +855,9 @@
             vec3 N = normalize(vec3(n2 * rimSlope, 0.62));
             vec2 tiltNormal = vec2(sin(radians(u_tiltY)), -sin(radians(u_tiltX))) * 0.34;
             N = normalize(vec3(N.xy + tiltNormal, N.z));
-            vec2 globalLight = u_globalLight * u_globalLightIntensity;
-            vec3 primaryLight = normalize(vec3(-0.48 + globalLight.x * 0.24, 0.76 - globalLight.y * 0.24, 0.52));
-            vec3 secondaryLight = normalize(vec3(0.42 - globalLight.x * 0.18, -0.78 + globalLight.y * 0.18, 0.46));
+            vec2 globalLight = mix(vec2(-0.48, 0.76), vec2(u_globalLight.x, -u_globalLight.y) * 1.4, u_globalLightIntensity);
+            vec3 primaryLight = normalize(vec3(globalLight, 0.52));
+            vec3 secondaryLight = normalize(vec3(-globalLight, 0.46));
             float primaryFacing = max(dot(N, primaryLight), 0.0);
             float secondaryFacing = max(dot(N, secondaryLight), 0.0);
             float sharp = outerPeak * pow(primaryFacing, 7.0) * u_specularPrimary;
@@ -866,6 +900,11 @@
 
       this.u = {
         tex: gl.getUniformLocation(this.program, "u_tex"),
+        underGlass: gl.getUniformLocation(this.program, "u_underGlass"),
+        hasUnderGlass: gl.getUniformLocation(this.program, "u_hasUnderGlass"),
+        underText: gl.getUniformLocation(this.program, "u_underText"),
+        underTextBounds: gl.getUniformLocation(this.program, "u_underTextBounds"),
+        hasUnderText: gl.getUniformLocation(this.program, "u_hasUnderText"),
         albumCurrentTex: gl.getUniformLocation(this.program, "u_albumCurrentTex"),
         albumNextTex: gl.getUniformLocation(this.program, "u_albumNextTex"),
         res: gl.getUniformLocation(this.program, "u_resolution"),
@@ -907,6 +946,9 @@
         useAlbumTransitionSource: gl.getUniformLocation(this.program, "u_useAlbumTransitionSource"),
         debugAlbumSourceFlat: gl.getUniformLocation(this.program, "u_debugAlbumSourceFlat"),
         reactiveArtSource: gl.getUniformLocation(this.program, "u_reactiveArtSource"),
+        reactivePreviousTex: gl.getUniformLocation(this.program, "u_reactivePreviousTex"),
+        reactiveArtMix: gl.getUniformLocation(this.program, "u_reactiveArtMix"),
+        reactivePreviousAngle: gl.getUniformLocation(this.program, "u_reactivePreviousAngle"),
         reactiveViewport: gl.getUniformLocation(this.program, "u_reactiveViewport"),
         reactiveAngle: gl.getUniformLocation(this.program, "u_reactiveAngle"),
         reactiveLumaLow: gl.getUniformLocation(this.program, "u_reactiveLumaLow"),
@@ -1122,8 +1164,7 @@
         while (node && node !== document.body) {
           const style = window.getComputedStyle(node);
           if (
-            Number(style.opacity || 1) <= 0.01 ||
-            (node.classList && node.classList.contains("infoPillHidden"))
+            Number(style.opacity || 1) <= 0.01
           ) {
             return true;
           }
@@ -1251,8 +1292,24 @@
       const response = (kind) => ["brightness", "opacity", "saturation", "contrast"].map((channel) => finite(fs.responseSettings && fs.responseSettings[kind] && fs.responseSettings[kind][channel], 0));
       if (this.u.reactiveArtSource) gl.uniform1i(this.u.reactiveArtSource, reactive ? 1 : 0);
       if (!reactive) return;
+      const transition = fs.artTransition || {};
+      let artMix = 1;
+      gl.activeTexture(gl.TEXTURE4);
+      if(transition.active && transition.fromImage && transition.fromKey){
+        if(this._reactivePreviousKey !== transition.fromKey){
+          const uploaded = this._uploadAlbumImageTexture(transition.fromImage,this._reactivePreviousTexture);
+          if(uploaded){this._reactivePreviousTexture=uploaded;this._reactivePreviousKey=transition.fromKey;}
+        }
+        if(this._reactivePreviousTexture && this._reactivePreviousKey === transition.fromKey) artMix = Math.max(0,Math.min(1,finite(transition.progress,0)));
+      }
+      gl.bindTexture(gl.TEXTURE_2D,artMix < 1 ? this._reactivePreviousTexture : this.texture);
+      gl.uniform1i(this.u.reactivePreviousTex,4);
+      gl.uniform1f(this.u.reactiveArtMix,artMix);
+      gl.uniform1f(this.u.reactivePreviousAngle,finite(transition.fromAngle,finite(fs.angleRadians,Math.PI)));
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D,this.texture);
       gl.uniform2f(this.u.reactiveViewport, window.innerWidth || 1, window.innerHeight || 1);
-      gl.uniform1f(this.u.reactiveAngle, finite(fs.angleRadians, Math.PI));
+      gl.uniform1f(this.u.reactiveAngle, transition.active ? finite(transition.toAngle, Math.PI) : finite(fs.angleRadians, Math.PI));
       gl.uniform1f(this.u.reactiveLumaLow, Math.max(0, Math.min(1, finite(fs.lumaLow, 0))));
       gl.uniform1f(this.u.reactiveLumaHigh, Math.max(.04, Math.min(1, finite(fs.lumaHigh, 1))));
       gl.uniform1f(this.u.reactiveFade, Math.max(0, Math.min(1, finite(fs.fade, fs.active ? 1 : 0))));
@@ -1313,12 +1370,14 @@
           const sourceRect = adapter.sourceRect || { left: 0, top: 0, width: window.innerWidth || 1, height: window.innerHeight || 1 };
           this._reactiveArtActive = true;
           this._sourceCssRect = sourceRect;
-          if (artKey === this._reactiveArtKey && this.texture) return true;
+          if (artKey === this._reactiveArtKey && this.texture && !this._sourceIsSolidFallback) return true;
           const uploaded = this.updateTextureFromImage(adapter.image, { reason: reason || "reactive artwork", sourceRect });
           if (uploaded) this._reactiveArtKey = artKey;
           return uploaded;
         }
         this._reactiveArtActive = false;
+        this._reactiveArtKey = "";
+        this._dpReactiveArtKey = "";
         if (adapter && adapter.ready && adapter.texture && adapter.gl === this.gl) {
           this.texture = adapter.texture;
           this.textureWidth = adapter.width || 1;
@@ -1755,7 +1814,10 @@
       const wanted = new Set(Array.from(elements || []).filter(Boolean));
       this.lenses = this.lenses.filter((lens) => {
         if (!lens || !lens.el) return false;
-        if (lens._dpLensGroup !== groupKey) return lens.el.isConnected;
+        if (lens._dpLensGroup !== groupKey) {
+          if (!lens.el.isConnected && lens.destroy) lens.destroy();
+          return lens.el.isConnected;
+        }
         const keep = wanted.has(lens.el) && lens.el.isConnected;
         if (!keep && lens.destroy) lens.destroy();
         return keep;
@@ -1803,6 +1865,7 @@
 
     setVisible(on) {
       const next = !!on;
+      if(!next && this.rendererKey === "main" && window.DebriPod && window.DebriPod.rowRefraction) window.DebriPod.rowRefraction.clear();
       if (this.visible === next) {
         if (!next) {
           this.clear();
@@ -1897,8 +1960,26 @@
 
       let hasActiveVisibleTransition = false;
       const transitionTime = Number.isFinite(fs.timestamp) ? fs.timestamp : performance.now();
-      this.lenses.forEach((lens) => {
+      // One copy per optical depth, not per row. Each upper lens samples the
+      // completed lower glass pass at its refracted UV coordinates.
+      const depth = lens => {
+        const el = lens.el;
+        if (el.id === "libListSelectedGlass") return 2;
+        if (el.matches && el.matches("[data-liquid-row-pill]") && el.closest(".ipodItem.sel")) return 3;
+        if (el.matches && el.matches("[data-liquid-row-pill], .wheelCenterGlass, .pathPillGlass, .infoPillGlass")) return 1;
+        return 0;
+      };
+      const textLayer = this.rendererKey === "main" && window.DebriPod && window.DebriPod.rowRefraction;
+      if(textLayer) textLayer.beginFrame();
+      let currentDepth = 0;
+      gl.uniform1i(this.u.hasUnderGlass, 0);
+      this.lenses.slice().sort((a,b) => depth(a) - depth(b)).forEach((lens) => {
         if (this._lensVisible(lens)) {
+          const nextDepth = depth(lens);
+          if (nextDepth !== currentDepth) {
+            this._captureUnderGlass();
+            currentDepth = nextDepth;
+          }
           this._hiddenSkipSince = 0;
           if (lens._advanceTransition && lens._advanceTransition(transitionTime)) {
             hasActiveVisibleTransition = true;
@@ -1909,6 +1990,7 @@
         }
       });
 
+      if(textLayer) textLayer.endFrame();
       if (hasActiveVisibleTransition) this.requestRender();
       const renderFinishedAt = typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
       const submissionMs = Math.max(0, renderFinishedAt - renderStartedAt);
@@ -1917,6 +1999,48 @@
       if (this._renderSubmissionSamples.length > 120) {
         this._renderSubmissionTotalMs -= this._renderSubmissionSamples.shift();
       }
+    }
+
+    _bindUnderText(source) {
+      const gl = this.gl;
+      gl.activeTexture(gl.TEXTURE5);
+      if(!this._underTextTexture) this._underTextTexture = this._createAlbumTexture();
+      gl.bindTexture(gl.TEXTURE_2D,this._underTextTexture);
+      if(this._underTextRevision !== source.revision){
+        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL,false);
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL,true);
+        gl.texImage2D(gl.TEXTURE_2D,0,gl.RGBA,gl.RGBA,gl.UNSIGNED_BYTE,source.canvas);
+        gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL,false);
+        this._underTextRevision = source.revision;
+      }
+      gl.uniform1i(this.u.underText,5);
+      const r=source.bounds, w=window.innerWidth || 1, h=window.innerHeight || 1;
+      gl.uniform4f(this.u.underTextBounds,r.left/w,r.top/h,r.width/w,r.height/h);
+      gl.uniform1i(this.u.hasUnderText,1);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D,this.texture);
+    }
+
+    _captureUnderGlass() {
+      const gl = this.gl;
+      gl.activeTexture(gl.TEXTURE3);
+      if (!this._underGlassTexture) {
+        this._underGlassTexture = gl.createTexture();
+        gl.bindTexture(gl.TEXTURE_2D, this._underGlassTexture);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+        gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+      } else gl.bindTexture(gl.TEXTURE_2D, this._underGlassTexture);
+      if (this._underGlassWidth !== this.canvas.width || this._underGlassHeight !== this.canvas.height) {
+        gl.copyTexImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 0, 0, this.canvas.width, this.canvas.height, 0);
+        this._underGlassWidth = this.canvas.width;
+        this._underGlassHeight = this.canvas.height;
+      } else gl.copyTexSubImage2D(gl.TEXTURE_2D, 0, 0, 0, 0, 0, this.canvas.width, this.canvas.height);
+      gl.uniform1i(this.u.underGlass, 3);
+      gl.uniform1i(this.u.hasUnderGlass, 1);
+      gl.activeTexture(gl.TEXTURE0);
+      gl.bindTexture(gl.TEXTURE_2D, this.texture);
     }
 
     _lensVisible(lens) {
@@ -1930,8 +2054,7 @@
           if (
             parentStyle.display === "none" ||
             parentStyle.visibility === "hidden" ||
-            Number(parentStyle.opacity || 1) <= 0.01 ||
-            (node.classList && node.classList.contains("infoPillHidden"))
+            Number(parentStyle.opacity || 1) <= 0.01
           ) {
             return false;
           }
@@ -1950,6 +2073,12 @@
     _renderLens(lens) {
       const gl = this.gl;
       const rect = lens.rectPx;
+      gl.uniform1i(this.u.hasUnderText, 0);
+      const textLayer = this.rendererKey === "main" && window.DebriPod && window.DebriPod.rowRefraction;
+      if(rect && lens.el.id === "libListSelectedGlass" && textLayer){
+        const textSource = textLayer.prepare(rect,lens.radiusCss);
+        if(textSource) this._bindUnderText(textSource);
+      }
       const forceCanary = this._forceGlassCanary();
       if (forceCanary && !this.texture) {
         const canary = this._ensureDebugCanaryTexture();
@@ -2071,7 +2200,7 @@
       gl.uniform1f(this.u.frostSamples, this._configuredFrostSamples());
       gl.uniform1f(this.u.radius, lens.radiusGl);
       gl.uniform1i(this.u.specular, resolved.specular ? 1 : 0);
-      gl.uniform1f(this.u.revealProgress, lens._revealProgress || 1.0);
+      gl.uniform1f(this.u.revealProgress, lens._revealProgress == null ? 1.0 : lens._revealProgress);
       gl.uniform1i(this.u.revealType, lens.revealTypeIndex || 0);
 
       const mag = Math.max(
@@ -2107,7 +2236,17 @@
         }
       }
 
+      const clip = lens.clipRectPx;
+      if (clip) {
+        gl.enable(gl.SCISSOR_TEST);
+        const left = Math.max(0, Math.ceil(clip.left * dpr));
+        const right = Math.min(this.canvas.width, Math.floor(clip.right * dpr));
+        const bottom = Math.max(0, Math.ceil(this.canvas.height - clip.bottom * dpr));
+        const top = Math.min(this.canvas.height, Math.floor(this.canvas.height - clip.top * dpr));
+        gl.scissor(left, bottom, Math.max(0, right - left), Math.max(0, top - bottom));
+      }
       gl.drawArrays(gl.TRIANGLES, 0, 6);
+      gl.disable(gl.SCISSOR_TEST);
     }
 
     /* ----------------------------- */
@@ -3064,8 +3203,7 @@
         if (
           style.display === "none" ||
           style.visibility === "hidden" ||
-          (node !== this.el && parseFloat(style.opacity || "1") <= 0.01) ||
-          (node.classList && node.classList.contains("infoPillHidden"))
+          (node !== this.el && parseFloat(style.opacity || "1") <= 0.01)
         ) {
           return true;
         }
@@ -3076,10 +3214,11 @@
 
     /* ----------------------------- */
     updateMetrics() {
-      const rect =
+      const suppliedRect = this.options && typeof this.options.geometryRect === "function" ? this.options.geometryRect(this.el) : null;
+      const rect = suppliedRect || (
         this._mirrorActive && this._baseRect
           ? this._baseRect
-          : this.el.getBoundingClientRect();
+          : this.el.getBoundingClientRect());
       const style = window.getComputedStyle(this.el);
 
       if (
@@ -3127,12 +3266,9 @@
         }
       }
 
-      this.rectPx = {
-        left: visibleRect.left,
-        top: visibleRect.top,
-        width: visibleRect.right - visibleRect.left,
-        height: visibleRect.bottom - visibleRect.top,
-      };
+      // Clip raster output, never squeeze the lens geometry as it scrolls.
+      this.clipRectPx = visibleRect;
+      this.rectPx = {left:rect.left, top:rect.top, width:rect.width, height:rect.height};
 
       const brRaw = style.borderTopLeftRadius.split(" ")[0];
       const isPct = brRaw.trim().endsWith("%");
@@ -3260,49 +3396,15 @@
       this._shadowStrength = shadowStrength;
       const shadowValue = this._shadowValue(shadowStrength);
 
-      const syncShadow = () => {
-        if (!this._shadowEl) return;
-        const r =
-          this._mirrorActive && this._baseRect
-            ? this._baseRect
-            : this.el.getBoundingClientRect();
-        this._shadowEl.style.left = `${r.left}px`;
-        this._shadowEl.style.top = `${r.top}px`;
-        this._shadowEl.style.width = `${r.width}px`;
-        this._shadowEl.style.height = `${r.height}px`;
-        this._shadowEl.style.borderRadius = `${this.radiusCss}px`;
-      };
-
-      if (enabled) {
-        this.el.style.boxShadow = shadowValue;
-
-        if (!this._shadowEl) {
-          this._shadowEl = document.createElement("div");
-          Object.assign(this._shadowEl.style, {
-            position: "fixed",
-            pointerEvents: "none",
-            zIndex: effectiveZ(this.el) - 2,
-            boxShadow: shadowValue,
-            willChange: "transform, width, height",
-            opacity: this.revealTypeIndex === 1 ? 0 : 1,
-          });
-          document.body.appendChild(this._shadowEl);
-
-          this._shadowSyncFn = syncShadow;
-          window.addEventListener("resize", this._shadowSyncFn, {
-            passive: true,
-          });
-        }
-        this._shadowEl.style.boxShadow = shadowValue;
-        syncShadow();
-      } else {
-        if (this._shadowEl) {
-          window.removeEventListener("resize", this._shadowSyncFn);
-          this._shadowEl.remove();
-          this._shadowEl = null;
-        }
-        this.el.style.boxShadow = this.originalShadow;
+      // The lens DOM element already owns the rounded shadow and follows
+      // scrolling, clipping, transforms and visibility. A body-level clone
+      // leaves stale rectangular ghosts when virtual rows are recycled.
+      if (this._shadowEl) {
+        window.removeEventListener("resize", this._shadowSyncFn);
+        this._shadowEl.remove();
+        this._shadowEl = null;
       }
+      this.el.style.boxShadow = enabled ? shadowValue : this.originalShadow;
     }
 
     /* ----------------------------- */

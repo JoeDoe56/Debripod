@@ -72,8 +72,8 @@ test("glass composites premultiplied overlap and smooths power-of-two source min
   assert.match(visualizer, /gl\.generateMipmap\(gl\.TEXTURE_2D\)/);
 });
 
-test("pill glass opts into per-render DOM geometry without changing wheel mirror caching", () => {
-  assert.match(glue, /liveGeometry: \["pathPill", "infoPill", "listPills", "selectedRow"\]/);
+test("glass follows per-render DOM geometry including the bouncing center", () => {
+  assert.match(glue, /liveGeometry: true/);
   assert.match(liquid, /this\._syncDomRect = this\.options\.liveGeometry === true/);
   assert.match(liquid, /else if \(this\.lenses\.some\(\(lens\) => lens && lens\._syncDomRect\)\)/);
   assert.match(liquid, /this\._mirrorActive && this\._baseRect/);
@@ -135,4 +135,93 @@ test("selected-row settings preview never re-registers a removed lens", () => {
   const preview = extractFunction(glue, "previewLiquidGlassElementMaterial");
   assert.match(preview, /selectedRow:\[document\.getElementById\("libListSelectedGlass"\)\]/);
   assert.doesNotMatch(preview, /liquidGL\s*\(/, "settings preview only styles existing DOM");
+});
+
+test("artwork recovers after a temporary unavailable source, including the same album", () => {
+  let adapter = {ready:true, image:{}, artKey:"album:a"};
+  let uploads = 0;
+  const context = {window:{innerWidth:400, innerHeight:800, DebriPod:{visualizerRenderer:{sourceForLiquidGL:()=>adapter}}}};
+  vm.createContext(context);
+  const start = liquid.indexOf('    refreshSourceTexture(reason = "") {');
+  const end = liquid.indexOf('    _createAlbumTexture()', start);
+  const method = vm.runInContext('({' + liquid.slice(start,end) + '}).refreshSourceTexture', context);
+  const renderer = {sourceType:"visualizerWebgl", sourceRefreshCount:0, _resolveSourceElement:()=>null,
+    updateTextureFromImage(){uploads++; this.texture={}; this._sourceIsSolidFallback=false; return true;},
+    updateTextureFromSolidColor(){this.texture={}; this._sourceIsSolidFallback=true; return true;}};
+  method.call(renderer);
+  assert.equal(uploads,1);
+  method.call(renderer);
+  assert.equal(uploads,1);
+  adapter = {ready:false};
+  method.call(renderer);
+  assert.equal(renderer._reactiveArtActive,false);
+  adapter = {ready:true,image:{},artKey:"album:a"};
+  method.call(renderer);
+  assert.equal(uploads,2);
+  assert.equal(renderer._sourceIsSolidFallback,false);
+});
+
+test("glass stack capture reallocates only on resize and reuses the texture", () => {
+  const calls = [];
+  const gl = new Proxy({}, {get:(_target,key)=>key === "createTexture" ? ()=>({}) : (...args)=>calls.push([key,...args])});
+  const context = {};
+  vm.createContext(context);
+  const start = liquid.indexOf('    _captureUnderGlass() {');
+  const end = liquid.indexOf('    _lensVisible(lens)', start);
+  const method = vm.runInContext('({' + liquid.slice(start,end) + '})._captureUnderGlass', context);
+  const renderer = {gl, canvas:{width:400,height:800},u:{}};
+  method.call(renderer);
+  method.call(renderer);
+  assert.equal(calls.filter(c=>c[0] === "copyTexImage2D").length,1);
+  assert.equal(calls.filter(c=>c[0] === "copyTexSubImage2D").length,1);
+  renderer.canvas.width=800;
+  method.call(renderer);
+  assert.equal(calls.filter(c=>c[0] === "copyTexImage2D").length,2);
+});
+
+test("shared scheduler resolves the app namespace and carries visualizer state into glass frames", () => {
+  const scheduler = {mark(){}};
+  let rendered = null;
+  const context = {window:{DebriPod:{frameScheduler:scheduler}},
+    updateGlassTextUnderColors(){}, updateLibSelectionGlass(){},
+    liquidGlassRenderers:()=>[{render:frame=>{rendered=frame;}}], rendererTargetVisible:()=>true,
+    currentVisualizerFrameState:()=>({fade:.8,active:true,angleRadians:2.4}),
+    positionMainLiquidCanvas(){}};
+  vm.createContext(context);
+  vm.runInContext(extractFunction(glue,"frameScheduler") + extractFunction(glue,"renderLiquidGlassNow"),context);
+  assert.equal(context.frameScheduler(),scheduler);
+  context.renderLiquidGlassNow({timestamp:100,flags:{render:true}});
+  assert.equal(rendered.fade,.8);
+  assert.equal(rendered.angleRadians,2.4);
+  assert.equal(rendered.timestamp,100);
+});
+
+test("rounded lens shadows stay on the element and never spawn detached clones",()=>{
+  const start=liquid.indexOf('    setShadow(enabled, strength) {');
+  const end=liquid.indexOf('    _reveal()',start);
+  const context={clamp:(n,a,b)=>Math.max(a,Math.min(b,n)),finiteNumber:(n,f)=>Number.isFinite(Number(n))?Number(n):f,window:{removeEventListener(){}}};
+  vm.createContext(context);
+  const method=vm.runInContext('({'+liquid.slice(start,end)+'}).setShadow',context);
+  let removed=0;
+  const lens={options:{},el:{style:{}},originalShadow:'none',_shadowEl:{remove(){removed++;}},_shadowValue:()=> 'rounded-shadow'};
+  method.call(lens,true,.2);
+  assert.equal(removed,1);assert.equal(lens._shadowEl,null);assert.equal(lens.el.style.boxShadow,'rounded-shadow');
+  method.call(lens,false,.2);assert.equal(lens.el.style.boxShadow,'none');
+});
+
+test("reactive glass shares crossfade progress and uploads outgoing artwork only once",()=>{
+  const start=liquid.indexOf('    _bindReactiveVisualizerUniforms(frameState) {');
+  const end=liquid.indexOf('    _globalLightingState()',start);
+  const context={window:{innerWidth:400,innerHeight:800},Float32Array};vm.createContext(context);
+  const method=vm.runInContext('({'+liquid.slice(start,end)+'})._bindReactiveVisualizerUniforms',context);
+  const uniforms=new Map();
+  const gl=new Proxy({}, {get:(_t,key)=>String(key).startsWith('uniform') ? (name,value)=>uniforms.set(name,value) : ()=>{}});
+  let uploads=0;
+  const renderer={gl,texture:{},_reactiveArtActive:true,u:new Proxy({}, {get:(_t,key)=>key}),_uploadAlbumImageTexture(){uploads++;return {};}};
+  const transition={active:true,fromImage:{},fromKey:'old',progress:.25,fromAngle:7,toAngle:Math.PI};
+  method.call(renderer,{artTransition:transition,fade:1});
+  assert.equal(uniforms.get('reactiveArtMix'),.25);assert.equal(uniforms.get('reactivePreviousAngle'),7);assert.equal(uniforms.get('reactiveAngle'),Math.PI);
+  transition.progress=.75;method.call(renderer,{artTransition:transition,fade:1});
+  assert.equal(uploads,1);assert.equal(uniforms.get('reactiveArtMix'),.75);
+  method.call(renderer,{fade:1,angleRadians:9});assert.equal(uniforms.get('reactiveArtMix'),1);assert.equal(uniforms.get('reactiveAngle'),9);
 });

@@ -141,3 +141,27 @@ test("selected row stays white across changing visualizer artwork", () => {
   assert.equal(colors.get("--lib-selected-render-contrast"), "#ffffff");
   assert.equal(colors.get("--lib-selected-pill-render-contrast"), "#ffffff");
 });
+
+
+test("natural handoff holds artwork until ready and resumes without an angle jump", () => {
+  const c = loadHelpers(["clamp01", "normalizeVisualizerRotationsPerTrack", "visualizerRotationForProgress", "visualizerProgress01", "currentVisualizerAngle", "updateVisualizerTrackTransition", "cancelVisualizerTrackTransition", "visualizerCoverKey"]);
+  const media = {duration:100, currentTime:7, paused:false, ended:false};
+  Object.assign(c, {currentVisualizerMediaElement:()=>media, currentVisualizerRotationCount:()=>3, scheduleVisualizerFrame:()=>{}, visualizerFrozenAngle:7*Math.PI, visualizerRotationOffset:0, visualizerRotationStartProgress:0, visualizerArtTransition:{active:false}, visualizerTrackTransition:{active:true, pendingFinish:true, startedAt:1, pendingSince:1, waitingForArt:true, sameCover:false}});
+  c.updateVisualizerTrackTransition(5000);
+  assert.equal(c.visualizerTrackTransition.active,true, "slow artwork must not unfreeze early");
+  c.visualizerTrackTransition.waitingForArt=false;
+  c.updateVisualizerTrackTransition(5100);
+  assert.equal(c.currentVisualizerAngle(),Math.PI);
+  media.currentTime=100;
+  assert.equal(c.currentVisualizerAngle(),7*Math.PI);
+  const angle=c.currentVisualizerAngle();
+  c.cancelVisualizerTrackTransition();
+  assert.equal(c.currentVisualizerAngle(),angle,"manual pause preserves the phase");
+  c.visualizerTrackTransition={active:true,pendingFinish:true,sameCover:true,startedAt:1};
+  c.visualizerFrozenAngle=angle;
+  media.currentTime=2;
+  c.updateVisualizerTrackTransition(5200);
+  assert.equal(c.currentVisualizerAngle(),angle,"same artwork continues at the frozen angle");
+  assert.notEqual(c.visualizerCoverKey("/art?rel=A"),c.visualizerCoverKey("/art?rel=B"));
+  assert.equal(c.visualizerCoverKey("/art?rel=A&dp_art=123"),"/art?rel=A");
+});

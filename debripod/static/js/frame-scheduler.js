@@ -98,6 +98,10 @@
     for(const entry of run){
       try{ entry[1](Object.assign({key: entry[0]}, frameState)); }catch(e){}
     }
+    // Geometry jobs run before rendering. Their work belongs to this paint,
+    // not a second RAF where glass would trail the DOM by one frame.
+    const sameFrameWork = consumeWork();
+    Object.keys(sameFrameWork).forEach(key => { if(sameFrameWork[key]) flags[key] = true; });
     const taskRun = Array.from(tasks.entries());
     for(const entry of taskRun){
       const task = entry[1];

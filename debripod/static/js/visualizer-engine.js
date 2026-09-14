@@ -48,6 +48,7 @@ var visualizerArtField = {
   usefulLumaLow: 0, usefulLumaHigh: 1, source: "idle"
 };
 var visualizerRotationOffset = 0;
+var visualizerRotationStartProgress = 0;
 var visualizerFrozenAngle = Math.PI;
 var visualizerTrackTransition = {active:false, pendingFinish:false, pendingSince:0, waitingForArt:false, startedAt:0, progress:1, fromCover:"", toCover:"", sameCover:false};
 var visualizerArtTransition = {active:false, progress:1, fromImage:null, fromKey:"", toKey:"", fromAngle:Math.PI, toAngle:Math.PI, startedAt:0};
@@ -165,7 +166,8 @@ function currentVisualizerRotationCount(){
 function visualizerCoverKey(value){
   var text = String(value || "").trim();
   if(!text) return "";
-  return text.replace(/[?#].*$/, "").replace(/\\/g, "/").toLowerCase();
+  // Preserve query parameters that identify artwork (root_id/rel).
+  return text.replace(/#.*$/, "").replace(/([?&])dp_art=[^&]*&?/, "$1").replace(/[?&]$/, "").replace(/\\/g, "/");
 }
 
 function visualizerProgress01(media){
@@ -179,7 +181,7 @@ function visualizerProgress01(media){
 function currentVisualizerAngle(){
   if(visualizerTrackTransition.active) return visualizerFrozenAngle;
   var progress = visualizerProgress01(currentVisualizerMediaElement());
-  return progress === null ? visualizerFrozenAngle : visualizerRotationForProgress(progress, currentVisualizerRotationCount()) + visualizerRotationOffset;
+  return progress === null ? visualizerFrozenAngle : visualizerRotationForProgress(clamp01((progress - visualizerRotationStartProgress) / Math.max(0.000001, 1 - visualizerRotationStartProgress)), currentVisualizerRotationCount()) + visualizerRotationOffset;
 }
 
 function beginVisualizerTrackTransition(previousCover){
@@ -213,10 +215,12 @@ function finishVisualizerTrackTransition(nextCover){
 }
 
 function cancelVisualizerTrackTransition(){
+  if(!visualizerTrackTransition.active) return;
+  visualizerRotationStartProgress = visualizerProgress01(currentVisualizerMediaElement()) || 0;
+  visualizerRotationOffset = visualizerFrozenAngle - Math.PI;
   visualizerTrackTransition.active = false;
   visualizerTrackTransition.pendingFinish = false;
   visualizerTrackTransition.progress = 1;
-  visualizerRotationOffset = 0;
   scheduleVisualizerFrame(0);
 }
 
@@ -228,8 +232,8 @@ function updateVisualizerTrackTransition(now){
   var media = currentVisualizerMediaElement();
   var playing = !!(media && !media.paused && !media.ended);
   var artReady = !visualizerTrackTransition.waitingForArt && (!visualizerArtTransition.active || visualizerArtTransition.progress >= 1);
-  var timedOut = Number(now || 0) - Number(visualizerTrackTransition.pendingSince || now || 0) > 1200;
-  if(playing && (visualizerTrackTransition.sameCover || artReady || timedOut)){
+  if(playing && (visualizerTrackTransition.sameCover || artReady)){
+    visualizerRotationStartProgress = visualizerProgress01(media) || 0;
     if(visualizerTrackTransition.sameCover) visualizerRotationOffset = visualizerFrozenAngle - Math.PI;
     else visualizerRotationOffset = 0;
     visualizerTrackTransition.active = false;
@@ -811,13 +815,18 @@ function visualizerFrame(ts){
     }
     var elapsed = visualizerLastFrameTs ? Math.max(1, now - visualizerLastFrameTs) : interval;
     visualizerLastFrameTs = now;
-    updateVisualizerTrackTransition(now);
     updateVisualizerArtTransition(now);
+    updateVisualizerTrackTransition(now);
     visualizerActive = visualizerShouldShow();
     visualizerFadeTarget = visualizerActive && visualizerArtField.loaded ? 1 : 0;
     var fadeWasVisible = visualizerFade > 0.002;
+    var transport = window.DebriPod && window.DebriPod.playbackTransport;
+    var transportLevel = transport && transport.visualizerLevel(currentVisualizerMediaElement());
     var fadeStep = Math.min(1, elapsed / 260);
-    visualizerFade += (visualizerFadeTarget - visualizerFade) * fadeStep;
+    if(transportLevel != null && visualizerEnabled && visualizerArtField.loaded && currentVisualizerMediaKind() !== "video"){
+      visualizerFade = clamp01(transportLevel);
+      visualizerFadeTarget = transport.isPaused(currentVisualizerMediaElement()) ? 0 : 1;
+    }else visualizerFade += (visualizerFadeTarget - visualizerFade) * fadeStep;
     if(Math.abs(visualizerFadeTarget - visualizerFade) < 0.002) visualizerFade = visualizerFadeTarget;
     if(fadeWasVisible && visualizerFadeTarget === 0 && visualizerFade === 0) visualizerNeedsBlackFrame = true;
     var media = currentVisualizerMediaElement();

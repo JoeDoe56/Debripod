@@ -27,9 +27,9 @@ def test_device_ui_settings_have_explicit_descriptors_and_never_normalize_as_ser
         {"textModes": {"wheelLabels": "black", "pathPill": "white", "rows": "engraved"}},
         {},
     )
-    assert defaults["textModes"]["wheelLabels"] == "contrast"
-    assert defaults["textModes"]["pathPill"] == "contrast"
-    assert defaults["textModes"]["rows"] == "contrast"
+    assert defaults["textModes"]["wheelLabels"] == "white"
+    assert defaults["textModes"]["pathPill"] == "white"
+    assert defaults["textModes"]["rows"] == "white"
 
 
 def test_retired_animation_keys_are_removed_from_defaults_and_legacy_updates():
@@ -60,15 +60,15 @@ def test_owner_server_setting_migration_keeps_meaningful_legacy_value(monkeypatc
     assert writes == [({"YTDLP_CMD": "D:/tools/yt-dlp.exe"}, "")]
 
 
-def test_ui_offers_exactly_contrast_and_transparent_text_modes():
+def test_ui_offers_exactly_white_and_transparent_text_modes():
     source = (REPO / "debripod" / "static" / "js" / "settings-ui.js").read_text(encoding="utf-8")
     list_view = (REPO / "debripod" / "static" / "js" / "list-view.js").read_text(encoding="utf-8")
     library_browser = (REPO / "debripod" / "static" / "js" / "library-browser.js").read_text(encoding="utf-8")
     playback_sync = (REPO / "debripod" / "static" / "js" / "playback-sync.js").read_text(encoding="utf-8")
-    assert 'const TEXT_MODE_ORDER = ["contrast", "transparent"];' in source
+    assert 'const TEXT_MODE_ORDER = ["white", "transparent"];' in source
     assert 'pageTransition' not in source
     assert 'rowExpansion' not in source
-    assert 'replaceListItems(arr, {animate:false, preserveSelection:false, preserveScroll:false' in list_view
+    assert 'replaceListItems(arr, {preserveSelection:false, preserveScroll:false' in list_view
     assert 'pageTransition' not in list_view
     assert 'animateWhenPageIsVisible' not in list_view
     assert '_dpPageTransitionActive' not in list_view
