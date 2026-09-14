@@ -1571,6 +1571,7 @@ function vibeTick(){
   }
 
   function resetList(items){
+    try{ if(typeof window.cancelSelectionStepQueue === "function") window.cancelSelectionStepQueue(); }catch(e){}
     // Random is synthetic; never let a refresh feed an old control row back
     // into the logical dataset and inject another one.
     const arr = (Array.isArray(items) ? items : []).filter((item)=>!(item && item.kind === "random"));

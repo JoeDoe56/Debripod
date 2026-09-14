@@ -31,12 +31,72 @@
     }
   }
 
+  // Pointer, wheel, and keyboard repeat can all arrive faster than a row can
+  // settle. Keep one pending direction and release at most 24 row steps per
+  // second. Coalescing the direction prevents a stale backlog after a fast
+  // gesture or a page transition.
+  const SELECTION_STEP_INTERVAL_MS = 1000 / 24;
+  let selectionStepTimer = 0;
+  let selectionStepPending = "";
+  let selectionStepLastTs = 0;
+  let selectionStepGeneration = 0;
+  function cancelSelectionStepQueue(){
+    selectionStepGeneration += 1;
+    if(selectionStepTimer) clearTimeout(selectionStepTimer);
+    selectionStepTimer = 0;
+    selectionStepPending = "";
+  }
+  function queueSelectionStep(control){
+    const value = String(control || "");
+    if(value !== "scroll_forward" && value !== "scroll_back") return dispatchControl("wheel_step", value);
+    if(nowPlaying && nowPlaying.style.display === "block" && seekMode) return dispatchControl("wheel_step", value);
+    const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+    const elapsed = now - selectionStepLastTs;
+    if(!selectionStepPending && (selectionStepLastTs <= 0 || elapsed >= SELECTION_STEP_INTERVAL_MS)){
+      selectionStepLastTs = now;
+      return dispatchControl("wheel_step", value);
+    }
+    selectionStepPending = value;
+    if(!selectionStepTimer){
+      const generation = selectionStepGeneration;
+      const wait = Math.max(1, SELECTION_STEP_INTERVAL_MS - Math.max(0, elapsed));
+      selectionStepTimer = setTimeout(()=>{
+        selectionStepTimer = 0;
+        if(generation !== selectionStepGeneration) return;
+        const pending = selectionStepPending;
+        selectionStepPending = "";
+        if(!pending) return;
+        selectionStepLastTs = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
+        dispatchControl("wheel_step", pending).catch(()=>{});
+      }, wait);
+    }
+    return Promise.resolve();
+  }
+  try{ window.cancelSelectionStepQueue = cancelSelectionStepQueue; }catch(e){}
+
+  var wheelCenterAnimation = null;
   function pulseWheelCenter(){
     try{
       if(!btnCenter) return;
-      btnCenter.classList.remove("centerPulse");
-      void btnCenter.offsetWidth;
-      btnCenter.classList.add("centerPulse");
+      if(wheelCenterAnimation) wheelCenterAnimation.cancel();
+      const amount = clampNumber(uiSettings.centerBounceAmount, DEFAULT_UI_SETTINGS.centerBounceAmount, 0, .3);
+      const duration = clampNumber(uiSettings.centerBounceDuration, DEFAULT_UI_SETTINGS.centerBounceDuration, 0, 1000);
+      const overshoot = clampNumber(uiSettings.centerBounceOvershoot, DEFAULT_UI_SETTINGS.centerBounceOvershoot, 0, 1.4);
+      const pose = scale => "translate(-50%,-50%) scale(" + scale + ")";
+      wheelCenterAnimation = btnCenter.animate([
+        {transform:pose(1), offset:0},
+        {transform:pose(1 + amount), offset:.32},
+        {transform:pose(1 - amount * .28 * overshoot), offset:.66},
+        {transform:pose(1 + amount * .08 * overshoot), offset:.86},
+        {transform:pose(1), offset:1}
+      ], {duration, easing:"cubic-bezier(.35,0,.25,1)"});
+      const animation = wheelCenterAnimation;
+      const sync = ()=>{
+        if(wheelCenterAnimation !== animation) return;
+        markFrameWork({metrics:true, render:true, keepAlive:animation.playState === "running"});
+        if(animation.playState === "running") requestAnimationFrame(sync);
+      };
+      sync();
     }catch(e){}
   }
 
@@ -64,6 +124,7 @@
   });
 
   function performWheelButtonTap(zone, control, options){
+    cancelSelectionStepQueue();
     triggerWheelClickTilt(zone);
     if(options && options.pulse) pulseWheelCenter();
     vibeTick();
@@ -301,7 +362,7 @@
       const steps = Math.trunc(accum / step);
       const count = Math.abs(steps);
       const control = steps > 0 ? "scroll_forward" : "scroll_back";
-      for(let i = 0; i < count; i++) dispatchControl("wheel_step", control).catch(()=>{});
+      for(let i = 0; i < count; i++) queueSelectionStep(control).catch(()=>{});
       accum -= steps * step;
       if(nowPlaying.style.display === "block" && seekMode) showPlaybackPills(true, "seek wheel step");
       if(nowPlaying.style.display !== "block"){
@@ -331,6 +392,7 @@
   }, {passive:false});
 
   function wheelPointerEnd(){
+    cancelSelectionStepQueue();
     wheelPointerDown = false;
     dragging = false;
     wheelDownOnButton = false;
@@ -358,7 +420,7 @@
 
     ev.preventDefault();
     const dir = ev.deltaY > 0 ? 1 : -1;
-    dispatchControl("wheel_step", dir > 0 ? "scroll_forward" : "scroll_back").catch(()=>{});
+    queueSelectionStep(dir > 0 ? "scroll_forward" : "scroll_back").catch(()=>{});
     if(nowPlaying.style.display !== "block"){
       try{ if(typeof setLibSelectionStretch === "function") setLibSelectionStretch(dir * 0.35); }catch(e){}
       setTimeout(()=>{ try{ if(typeof setLibSelectionStretch === "function") setLibSelectionStretch(0); }catch(e){} }, 90);
@@ -392,8 +454,13 @@
     if(!control) return;
     ev.preventDefault();
     if(control === "center") pulseWheelCenter();
-    dispatchControl("keyboard", control).catch(()=>{});
+    if(control === "scroll_forward" || control === "scroll_back") queueSelectionStep(control).catch(()=>{});
+    else dispatchControl("keyboard", control).catch(()=>{});
   });
+
+  window.addEventListener("keyup", (ev)=>{
+    if(ev.key === "q" || ev.key === "Q" || ev.key === "e" || ev.key === "E") cancelSelectionStepQueue();
+  }, {passive:true});
 
 
 
