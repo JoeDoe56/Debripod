@@ -105,6 +105,7 @@
   }
 
   function makeState(media, targetPaused){
+    const rotationStartTime = visualizerTime(media);
     const state = states.get(media) || {
       phase:"normal", level:targetPaused ? 1 : 0, targetPaused:false, intendedPaused:false,
       baseRate:Math.max(0.05, number(media && media.playbackRate, 1)), slowRate:1,
@@ -121,6 +122,8 @@
     state.startRate = Math.max(0.05, number(media && media.playbackRate, state.targetPaused ? state.baseRate : state.slowRate));
     if(!targetPaused && !wasPaused && state.startLevel < 0.999) state.startRate = state.slowRate;
     state.startedAt = clock();
+    state.rotationStartTime = rotationStartTime;
+    state.rotationWaiting = !targetPaused && !!media.paused;
     state.phase = targetPaused ? "slowing" : "speeding";
     state.intendedPaused = !!targetPaused;
     disablePitch(media, state);
@@ -155,10 +158,12 @@
       result.then(()=>{
         if(states.get(media) !== next || next.generation !== generation) return;
         next.startedAt = clock();
+        next.rotationWaiting = false;
         tick(media, next, next.startedAt, generation);
       }).catch(()=>{ if(states.get(media) === next && next.generation === generation) cancel(media); });
     }else{
       next.startedAt = clock();
+      next.rotationWaiting = false;
       tick(media, next, next.startedAt, generation);
     }
     return true;
@@ -192,12 +197,26 @@
     return state && (state.phase !== "normal" || state.intendedPaused) ? clamp01(state.level) : null;
   }
 
+  function visualizerTime(media){
+    const state = states.get(media);
+    const actual = number(media && media.currentTime, 0);
+    if(!state || state.phase === "paused") return actual;
+    if(state.rotationWaiting) return state.rotationStartTime;
+    const t = clamp01((clock() - state.startedAt) / DURATION_MS);
+    // Integral of the exact smoothstep used by the audio rate ramp. Reading
+    // this at render time avoids coarse media.currentTime updates on iOS.
+    const integratedEase = t * t * t - 0.5 * t * t * t * t;
+    const targetRate = state.targetPaused ? state.slowRate : state.baseRate;
+    const distance = (DURATION_MS / 1000) * (state.startRate * t + (targetRate - state.startRate) * integratedEase);
+    return Math.min(number(media && media.duration, Infinity), state.rotationStartTime + distance);
+  }
+
   function isPaused(media){
     const state = states.get(media);
     return state ? !!state.intendedPaused : !!(media && media.paused);
   }
 
-  const api = {pause, resume, toggle, cancel, isPaused, visualizerLevel, duration:DURATION_MS, testing:{states, tick, constants:{DURATION_MS, SLOW_RATE_RATIO}}};
+  const api = {pause, resume, toggle, cancel, isPaused, visualizerLevel, visualizerTime, duration:DURATION_MS, testing:{states, tick, constants:{DURATION_MS, SLOW_RATE_RATIO}}};
   root.DebriPod = root.DebriPod || {};
   root.DebriPod.playbackTransport = api;
 })(window);

@@ -175,7 +175,9 @@ function visualizerProgress01(media){
   try{
     var duration = Number(media && media.duration || 0);
     if(!Number.isFinite(duration) || duration <= 0) return null;
-    return clamp01(Number(media.currentTime || 0) / duration);
+    var transport = typeof window !== "undefined" && window.DebriPod && window.DebriPod.playbackTransport;
+    var time = transport && typeof transport.visualizerTime === "function" ? transport.visualizerTime(media) : Number(media.currentTime || 0);
+    return clamp01(time / duration);
   }catch(e){ return null; }
 }
 
