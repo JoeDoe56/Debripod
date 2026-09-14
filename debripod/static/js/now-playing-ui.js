@@ -85,16 +85,25 @@ function setPlaybackPillMetadata(meta, fallbackLabel){
   try{ if(nowPlaying && nowPlaying.style.display === "block") setHeader(); }catch(e){}
 }
 
+var nowPlayingDisplayedArtIdentity = "";
+
 async function updateNowPlayingDisplay(meta, fallbackLabel, opts){
   var m = meta || {};
   var options = opts || {};
   var nextArt = nowPlayingArtSrcValue(m.art);
+  var nextIdentity = String(m.artIdentity || "").trim();
   var currentArt = currentNowPlayingArtSrc();
+  // Track-specific /art URLs may return the exact same image. Keep the
+  // displayed image (and renderer) untouched when its content is unchanged.
+  if(nextArt && currentArt && nextIdentity && nextIdentity === nowPlayingDisplayedArtIdentity){
+    setPlaybackPillMetadata(m, fallbackLabel);
+    return;
+  }
   var currentArtKey = nowPlayingArtCompareKey(currentArt);
   var nextArtKey = nowPlayingArtCompareKey(nextArt);
   var animateArt = !!(options.animateArt && npArt && currentArtKey && nextArtKey && currentArtKey !== nextArtKey);
-  sampleThemeFromArt(nextArt);
   setNowPlayingArtSrc(nextArt, {animate: animateArt, duration: 220});
+  nowPlayingDisplayedArtIdentity = nextIdentity;
   setPlaybackPillMetadata(m, fallbackLabel);
 }
 

@@ -8,6 +8,7 @@ var npArtTextureState = {
   textures: [null, null],
   images: [null, null],
   currentSrc: "",
+  requestNonce: 0,
   currentSlot: 0,
   nextSlot: 1,
   fadeStart: 0,
@@ -275,15 +276,12 @@ function setNowPlayingArtTexture(src, opts){
   const options = opts || {};
   const st = npArtTextureState;
   const canvas = document.getElementById("npArt");
+  const requestNonce = ++st.requestNonce;
   if(canvas && canvas.dataset) canvas.dataset.artSrc = art;
   const nextKey = nowPlayingArtCompareKey(art);
   const curKey = nowPlayingArtCompareKey(st.currentSrc);
   if(nextKey === curKey){
-    stopNowPlayingArtTextureLoop();
-    showStaticNowPlayingArt(art);
-    setNowPlayingArtCanvasAnimating(false);
-    st.fadeActive = false;
-    st.frame = 0;
+    // An unchanged cover must not switch between the static image and GL.
     return;
   }
   if(!art){
@@ -322,9 +320,11 @@ function setNowPlayingArtTexture(src, opts){
 
   const previousSrc = st.currentSrc;
   loadNowPlayingArtImage(previousSrc, function(prevImg){
+    if(requestNonce !== st.requestNonce) return;
     try{
       uploadNowPlayingArtTexture(st.currentSlot, prevImg);
       loadNowPlayingArtImage(art, function(nextImg){
+        if(requestNonce !== st.requestNonce) return;
         try{
           const targetSlot = st.currentSlot ? 0 : 1;
           uploadNowPlayingArtTexture(targetSlot, nextImg);
@@ -342,6 +342,7 @@ function setNowPlayingArtTexture(src, opts){
           renderNowPlayingArtTexture(performance.now());
         }catch(e){}
       }, function(){
+        if(requestNonce !== st.requestNonce) return;
         stopNowPlayingArtTextureLoop();
         st.fadeActive = false;
         st.frame = 0;
@@ -350,6 +351,7 @@ function setNowPlayingArtTexture(src, opts){
       });
     }catch(e){}
   }, function(){
+    if(requestNonce !== st.requestNonce) return;
     stopNowPlayingArtTextureLoop();
     st.currentSrc = art;
     st.fadeActive = false;

@@ -3075,7 +3075,8 @@ async def api_library_filemeta(request: web.Request):
         ver = str(int(os.path.getmtime(os.path.dirname(abs_path))))
     except OSError:
         ver = ""
-    ap = await asyncio.to_thread(art_for_media_path, abs_path) if is_audio(abs_path) else None
+    art_info = await asyncio.to_thread(art_identity_for_media, abs_path, root_id=root_id, rel=rel, meta=meta) if is_audio(abs_path) else None
+    ap = art_info.get("art_path") if art_info else None
     if ap:
         art = "/art/" + quote(root_id, safe="") + "/" + quote(rel, safe="/")
         if ver:
@@ -3090,6 +3091,7 @@ async def api_library_filemeta(request: web.Request):
             "duration": meta.get("duration"),
             "tech": meta.get("tech") or "",
             "art": art,
+            "artIdentity": str((art_info or {}).get("art_identity") or ""),
         }
     )
 
