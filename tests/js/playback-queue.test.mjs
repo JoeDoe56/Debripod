@@ -32,6 +32,15 @@ test("next and previous dispatch mixed media through one play callback", async (
   assert.deepEqual(played, ["video", "audio"]);
 });
 
+test("automatic next-track dispatch does not open Now Playing", async () => {
+  const options = [];
+  const queue = createPlaybackQueueController({}, (_item, _index, opts) => options.push(opts));
+  queue.replaceFromPlayableList([audio("a.mp3"), audio("b.mp3")], audio("a.mp3"));
+  await queue.next();
+  assert.equal(options.length, 1);
+  assert.equal(options[0].forceShow, undefined);
+});
+
 test("serialization preserves canonical index and shuffle fields", () => {
   const queue = createPlaybackQueueController();
   queue.replaceFromPlayableList([audio("a.mp3"), video("b.mkv")], video("b.mkv"));

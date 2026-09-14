@@ -1837,6 +1837,7 @@ async function libDoSearch(engine, q){
           settingRow:true
         });
         items.push({kind:"libui_action", label:"FPS Lock", action:"cycle_visualizer_fps_lock", pills:[String(normalizeVisualizerFpsLock(fps)) + " FPS"]});
+        items.push({kind:"libui_action", label:"Rotations per song", sub_label:"Integer number of artwork rotations during each song.", action:"set_visualizer_rotations", pills:[String(normalizeVisualizerRotationsPerTrack(uiSettings.visualizerRotationsPerTrack))], forceTwoLine:true, settingRow:true});
         [
           ["frequency", "Frequency response", uiSettings.visualizerFrequencyResponse],
           ["energy", "Energy response", uiSettings.visualizerEnergyResponse],
@@ -2070,7 +2071,6 @@ async function libDoSearch(engine, q){
         const labels = advancedCategoryLabels();
         const items = [
           {kind:"libui_action", label:"Review source-default diff", sub_label:"Shows nonsecret, nonprivate changes to review before a Git commit", action:"review_defaults_diff", pills:["Diff"], forceTwoLine:true, settingRow:true},
-          {kind:"libui_action", label:"Performance overlay button", sub_label:"Show the compact performance toggle button", action:"toggle_performance_overlay_button", pills:[uiSettings.performanceOverlayButton ? "On" : "Off"], forceTwoLine:true, settingRow:true}
         ].concat(["glass", "text", "ui", "animations", "search", "downloads", "services", "playback", "system"].map((key)=>({
           kind:"libui_action",
           label:labels[key],
@@ -2862,17 +2862,19 @@ async function libDoSearch(engine, q){
         cycleVisualizerFpsLock();
         await viewLibUiSettings(false);
         return true;
+      case "set_visualizer_rotations":
+        await viewRangeEditor({
+          label:"Rotations per song",
+          current:normalizeVisualizerRotationsPerTrack(uiSettings.visualizerRotationsPerTrack),
+          meta:{min:1, max:12, step:1, integer:true},
+          onCommit: async function(value){
+            setVisualizerRotationsPerTrack(value);
+          },
+          onReturn: async function(){ await viewLibUiSettings(false); }
+        }, true);
+        return true;
       case "review_defaults_diff":
         return await reviewDefaultsDiff();
-      case "toggle_performance_overlay_button":
-        uiSettings.performanceOverlayButton = !uiSettings.performanceOverlayButton;
-        saveUiSettings();
-        if(window.DebriPod && DebriPod.performanceOverlay && DebriPod.performanceOverlay.refresh){
-          DebriPod.performanceOverlay.refresh();
-          setTimeout(()=>{ try{ DebriPod.performanceOverlay.refresh(); }catch(e){} }, 0);
-        }
-        await viewLibAdvancedSettings(false);
-        return true;
       case "full_reindex":
         return await startFullReindex();
       case "database_backups":

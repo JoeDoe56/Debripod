@@ -45,6 +45,10 @@ var visualizerArtField = {
   key: "", loading: false, loaded: false, image: null, url: "", artIdentity: "", algorithmVersion: 0,
   usefulLumaLow: 0, usefulLumaHigh: 1, source: "idle"
 };
+var visualizerRotationOffset = 0;
+var visualizerFrozenAngle = Math.PI;
+var visualizerTrackTransition = {active:false, startedAt:0, progress:1, fromCover:"", toCover:"", sameCover:false};
+var visualizerArtTransition = {active:false, progress:1, fromImage:null, fromKey:"", toKey:"", startedAt:0};
 var VISUALIZER_BAND_LUMA_MIN = 0.06;
 var VISUALIZER_BAND_LUMA_MAX = 0.94;
 var visualizerAnalysisState = {
@@ -143,7 +147,23 @@ function rotatedVisualizerArtUv(u, v, angle, viewportWidth, viewportHeight){
 }
 
 function visualizerRotationForProgress(progress01){
-  return Math.PI + (4 * Math.PI * clamp01(progress01));
+  var rotations = arguments.length > 1 ? normalizeVisualizerRotationsPerTrack(arguments[1]) : 3;
+  return Math.PI + (2 * Math.PI * rotations * clamp01(progress01));
+}
+
+function normalizeVisualizerRotationsPerTrack(value){
+  var n = Number(value);
+  return Number.isFinite(n) ? Math.max(1, Math.min(12, Math.round(n))) : 3;
+}
+
+function currentVisualizerRotationCount(){
+  try{ return normalizeVisualizerRotationsPerTrack(uiSettings && uiSettings.visualizerRotationsPerTrack); }catch(e){ return 3; }
+}
+
+function visualizerCoverKey(value){
+  var text = String(value || "").trim();
+  if(!text) return "";
+  return text.replace(/[?#].*$/, "").replace(/\\/g, "/").toLowerCase();
 }
 
 function visualizerProgress01(media){
@@ -155,8 +175,43 @@ function visualizerProgress01(media){
 }
 
 function currentVisualizerAngle(){
+  if(visualizerTrackTransition.active) return visualizerFrozenAngle;
   var progress = visualizerProgress01(currentVisualizerMediaElement());
-  return progress === null ? Math.PI : visualizerRotationForProgress(progress);
+  return progress === null ? visualizerFrozenAngle : visualizerRotationForProgress(progress, currentVisualizerRotationCount()) + visualizerRotationOffset;
+}
+
+function beginVisualizerTrackTransition(previousCover){
+  if(!visualizerTrackTransition.active){
+    visualizerFrozenAngle = currentVisualizerAngle();
+    visualizerTrackTransition = {
+      active:true,
+      startedAt:(typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now(),
+      progress:0,
+      fromCover:visualizerCoverKey(previousCover || (state && state.nowMeta && state.nowMeta.art)),
+      toCover:"",
+      sameCover:false
+    };
+  }
+  scheduleVisualizerFrame(0);
+}
+
+function finishVisualizerTrackTransition(nextCover){
+  if(!visualizerTrackTransition.active) return;
+  var nextKey = visualizerCoverKey(nextCover);
+  var sameCover = !!(visualizerTrackTransition.fromCover && nextKey && visualizerTrackTransition.fromCover === nextKey);
+  visualizerTrackTransition.toCover = nextKey;
+  visualizerTrackTransition.sameCover = sameCover;
+  if(sameCover) visualizerRotationOffset = visualizerFrozenAngle - Math.PI;
+  else visualizerRotationOffset = 0;
+  visualizerTrackTransition.active = false;
+  visualizerTrackTransition.progress = 1;
+  scheduleVisualizerFrame(0);
+}
+
+function updateVisualizerTrackTransition(now){
+  if(!visualizerTrackTransition.active) return;
+  var started = Number(visualizerTrackTransition.startedAt || now || 0);
+  visualizerTrackTransition.progress = clamp01((Number(now || 0) - started) / 260);
 }
 
 function normalizeActiveBands(value, bandCount){
@@ -276,7 +331,15 @@ function loadVisualizerArtFieldForTrack(rootId, rel, options){
     }
     if(visualizerArtField.key === key && (visualizerArtField.loaded || visualizerArtField.loading || visualizerArtRetryTimer) && !opts.retryAttempt) return;
     var nonce = ++visualizerArtFieldNonce;
-    visualizerArtField = {key:key, loading:true, loaded:false, image:null, url:"", artIdentity:"", algorithmVersion:0, usefulLumaLow:0, usefulLumaHigh:1, source:"loading"};
+    // Keep the outgoing artwork alive while the next field warms and loads.
+    // Clearing this object during an ended-event handoff made the WebGL
+    // surface fade to its black clear color for a frame or two.
+    var previousField = visualizerArtField && visualizerArtField.loaded && visualizerArtField.image ? visualizerArtField : null;
+    if(previousField){
+      visualizerArtField = Object.assign({}, previousField, {key:key, loading:true, source:"transition-loading"});
+    }else{
+      visualizerArtField = {key:key, loading:true, loaded:false, image:null, url:"", artIdentity:"", algorithmVersion:0, usefulLumaLow:0, usefulLumaHigh:1, source:"loading"};
+    }
     apiGet("/api/library/visualizer-art?root_id=" + encodeURIComponent(rid) + "&rel=" + encodeURIComponent(rp), {networkOnly:true, cache:"no-store", abortKey:"visualizer-art"})
       .then((res)=>{
         if(nonce !== visualizerArtFieldNonce) return;
@@ -290,13 +353,20 @@ function loadVisualizerArtFieldForTrack(rootId, rel, options){
         var image = new Image();
         image.onload = ()=>{
           if(nonce !== visualizerArtFieldNonce) return;
+          var fromKey = visualizerArtField && visualizerArtField.loaded ? String(visualizerArtField.artIdentity || "") + ":" + String(visualizerArtField.algorithmVersion || 0) : "";
+          var toKey = String(field.art_identity || field.cache_key || "") + ":" + String(field.algorithm_version || 0);
+          if(fromKey && fromKey !== toKey){
+            visualizerArtTransition = {active:true, progress:0, fromImage:visualizerArtField.image, fromKey:fromKey, toKey:toKey, startedAt:(typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now()};
+          }
           visualizerArtField = {
             key:key, loading:false, loaded:true, image:image, url:visualizerArtUrlWithCacheBust(field.url, field), artIdentity:String(field.art_identity || field.cache_key || ""),
             algorithmVersion:Number(field.algorithm_version || 0), usefulLumaLow:clamp01(field.useful_luma_low),
             usefulLumaHigh:Math.max(clamp01(field.useful_luma_low) + 0.08, clamp01(field.useful_luma_high)), source:"art-cache"
           };
           visualizerUploadedArtKey = "";
-          visualizerNeedsBlackFrame = true;
+          // The new texture is uploaded on the next frame; leave the old
+          // source available to LiquidGL throughout the handoff.
+          visualizerNeedsBlackFrame = false;
           scheduleVisualizerFrame(0);
         };
         image.onerror = ()=>{
@@ -596,9 +666,18 @@ function visualizerSourceForLiquidGL(){
   return {image:visualizerArtField.image, artKey:visualizerArtField.artIdentity + ":" + visualizerArtField.algorithmVersion, width:visualizerArtField.image && visualizerArtField.image.naturalWidth || 0, height:visualizerArtField.image && visualizerArtField.image.naturalHeight || 0, sourceRect:{left:0, top:0, width:window.innerWidth || 1, height:window.innerHeight || 1}, ready:!!(visualizerArtField.loaded && visualizerArtField.image && visualizerArtField.artIdentity)};
 }
 
+function updateVisualizerArtTransition(now){
+  if(!visualizerArtTransition.active) return;
+  visualizerArtTransition.progress = clamp01((Number(now || 0) - Number(visualizerArtTransition.startedAt || now || 0)) / 320);
+  if(visualizerArtTransition.progress >= 1){
+    visualizerArtTransition.active = false;
+    visualizerArtTransition.fromImage = null;
+  }
+}
+
 function currentVisualizerFrameState(ts){
   var progress = visualizerProgress01(currentVisualizerMediaElement());
-  return {kind:"audio", timestamp:Number(ts || performance.now() || 0), active:!!visualizerActive, fade:visualizerFade, brightnessCap:currentVisualizerBrightnessCap(), energy:visualizerEnergy, beat:visualizerBeatPulse, bass:visualizerBass, mid:visualizerMid, treble:visualizerTreble, bands:visualizerBands, bandCenters:visualizerBandCenters, bandWidths:visualizerBandWidths, activeBands:visualizerActiveBands, artImage:visualizerArtField.image, artKey:visualizerArtField.artIdentity + ":" + visualizerArtField.algorithmVersion, lumaLow:visualizerArtField.usefulLumaLow, lumaHigh:visualizerArtField.usefulLumaHigh, progress01:progress, angleRadians:currentVisualizerAngle(), responseSettings:currentVisualizerResponseSettings(), sourceRevision:visualizerArtUploadCount, artworkField:{loaded:!!visualizerArtField.loaded, artIdentity:visualizerArtField.artIdentity, normalizedLumaLow:0, normalizedLumaHigh:1, rotationOverscan:visualizerArtRotationOverscan(window.innerWidth || 1, window.innerHeight || 1)}, analysisSource:visualizerAnalysisState.loaded ? "sqlite" : visualizerAnalysisState.source};
+  return {kind:"audio", timestamp:Number(ts || performance.now() || 0), active:!!visualizerActive, fade:visualizerFade, brightnessCap:currentVisualizerBrightnessCap(), energy:visualizerEnergy, beat:visualizerBeatPulse, bass:visualizerBass, mid:visualizerMid, treble:visualizerTreble, bands:visualizerBands, bandCenters:visualizerBandCenters, bandWidths:visualizerBandWidths, activeBands:visualizerActiveBands, artImage:visualizerArtField.image, artKey:visualizerArtField.artIdentity + ":" + visualizerArtField.algorithmVersion, lumaLow:visualizerArtField.usefulLumaLow, lumaHigh:visualizerArtField.usefulLumaHigh, progress01:progress, angleRadians:currentVisualizerAngle(), responseSettings:currentVisualizerResponseSettings(), sourceRevision:visualizerArtUploadCount, artworkField:{loaded:!!visualizerArtField.loaded, artIdentity:visualizerArtField.artIdentity, normalizedLumaLow:0, normalizedLumaHigh:1, rotationOverscan:visualizerArtRotationOverscan(window.innerWidth || 1, window.innerHeight || 1)}, trackTransition:Object.assign({}, visualizerTrackTransition), artTransition:Object.assign({}, visualizerArtTransition), analysisSource:visualizerAnalysisState.loaded ? "sqlite" : visualizerAnalysisState.source};
 }
 
 function applySelectedTextContrast(){
@@ -618,7 +697,9 @@ function applySelectedTextContrast(){
 function visualizerShouldShow(){
   try{
     var media = currentVisualizerMediaElement();
-    return !!(visualizerEnabled && media && !media.paused && !media.ended && currentVisualizerMediaKind() !== "video");
+    if(!visualizerEnabled || currentVisualizerMediaKind() === "video") return false;
+    if(visualizerTrackTransition.active) return !!(visualizerArtField.loaded && visualizerArtField.image);
+    return !!(media && !media.paused && !media.ended);
   }catch(e){ return false; }
 }
 
@@ -669,6 +750,8 @@ function visualizerFrame(ts){
     }
     var elapsed = visualizerLastFrameTs ? Math.max(1, now - visualizerLastFrameTs) : interval;
     visualizerLastFrameTs = now;
+    updateVisualizerTrackTransition(now);
+    updateVisualizerArtTransition(now);
     visualizerActive = visualizerShouldShow();
     visualizerFadeTarget = visualizerActive && visualizerArtField.loaded ? 1 : 0;
     var fadeWasVisible = visualizerFade > 0.002;
@@ -745,6 +828,13 @@ function setVisualizerFpsLock(value){
   scheduleVisualizerFrame(0);
 }
 
+function setVisualizerRotationsPerTrack(value){
+  var normalized = normalizeVisualizerRotationsPerTrack(value);
+  uiSettings.visualizerRotationsPerTrack = normalized;
+  try{ saveUiSettings(); }catch(e){}
+  scheduleVisualizerFrame(0);
+}
+
 function cycleVisualizerFpsLock(){
   var values = [30,60,120];
   var current = values.indexOf(normalizeVisualizerFpsLock(visualizerFpsLock));
@@ -761,7 +851,7 @@ function sampleThemeFromArt(src){
 try{
   var rootForVisualizer = window.DebriPod = window.DebriPod || {};
   rootForVisualizer.visualizerRenderer = Object.assign(rootForVisualizer.visualizerRenderer || {}, {sourceForLiquidGL:visualizerSourceForLiquidGL, render:renderVisualizerWebGL, available:()=>!!(visualizerGl && !visualizerWebglUnavailable)});
-  rootForVisualizer.visualizerArt = {normalizeLuma:normalizeVisualizerArtLuma, rotationOverscan:visualizerArtRotationOverscan, rotatedUv:rotatedVisualizerArtUv, bandMap:buildVisualizerBandLumaMap, bandLumaEligibility:visualizerBandLumaEligibility, reactiveSourcePixel:visualizerReactiveSourcePixel, field:()=>visualizerArtField, uploadCount:()=>visualizerArtUploadCount};
+  rootForVisualizer.visualizerArt = {normalizeLuma:normalizeVisualizerArtLuma, rotationOverscan:visualizerArtRotationOverscan, rotatedUv:rotatedVisualizerArtUv, bandMap:buildVisualizerBandLumaMap, bandLumaEligibility:visualizerBandLumaEligibility, reactiveSourcePixel:visualizerReactiveSourcePixel, field:()=>visualizerArtField, uploadCount:()=>visualizerArtUploadCount, transition:()=>Object.assign({}, visualizerArtTransition), trackTransition:()=>Object.assign({}, visualizerTrackTransition)};
 }catch(e){}
 
 applyVisualizerBandLumaMap(visualizerActiveBands);

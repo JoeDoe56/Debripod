@@ -1934,15 +1934,20 @@ def _coerce_advanced_ui_defaults(raw: Any, glass: dict[str, Any]) -> dict[str, A
         fps_lock = 60
     if fps_lock not in {30, 60, 120}:
         fps_lock = 60
+    try:
+        rotations = int(source.get("visualizerRotationsPerTrack", 3))
+    except Exception:
+        rotations = 3
+    rotations = max(1, min(12, rotations))
 
     return {
         "visualizer": bool(source.get("visualizer", True)),
         "visualizerMaxBrightnessPct": brightness,
         "visualizerFpsLock": fps_lock,
+        "visualizerRotationsPerTrack": rotations,
         "textModes": text_modes,
         "textTransparency": clamp_num("textTransparency", 0.45, 0.0, 1.0),
         "animationFps": animation_fps,
-        "performanceOverlayButton": bool(source.get("performanceOverlayButton", False)),
         "performanceOverlayText": bool(source.get("performanceOverlayText", False)),
         "liquidGlassElements": "__LIQUID_GLASS_DEFAULTS__",
         "centerBounceAmount": clamp_num("centerBounceAmount", 0.075, 0.0, 0.3),

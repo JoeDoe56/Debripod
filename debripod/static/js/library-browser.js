@@ -392,6 +392,8 @@ async function goBack(){
     try{ preparePlaybackMediaAudio(npVideo); }catch(e){}
     try{ unlockPlaybackMediaAudio(); }catch(e){}
     syncCanonicalPlaybackStart(item, state.videoPlaylist && state.videoPlaylist.length ? state.videoPlaylist : (state.items || []), forceShow);
+    const visualizerTrackChanged = !!(state.now && (state.now.rootId !== item.root.id || state.now.rel !== item.rel));
+    if(visualizerTrackChanged) try{ beginVisualizerTrackTransition(state.nowMeta && state.nowMeta.art); }catch(e){}
     const playbackNav = captureNavContext();
     const sourceView = captureSourceViewContext(item, state.videoPlaylist && state.videoPlaylist.length ? state.videoPlaylist : (state.items || []), state.videoIndex >= 0 ? state.videoIndex : 0);
     if(forceShow) openNowPlayingExplicit();
@@ -448,6 +450,7 @@ async function goBack(){
     state.now = {rootId: rootId, rel: rel, media: "video", streamed: !!item.streamed, nav: playbackNav};
     state.nowNavContext = playbackNav;
     state.nowMeta = meta;
+    if(visualizerTrackChanged) try{ finishVisualizerTrackTransition(meta && meta.art || item.art || ""); }catch(e){}
     try{
       let vq = Array.isArray(state.videoPlaylist) && state.videoPlaylist.length ? state.videoPlaylist : buildVideoPlaylistFromItems(state.items || []);
       if(!vq.length) vq = [item];
@@ -486,6 +489,8 @@ async function goBack(){
     try{ preparePlaybackMediaAudio(activeAudio); }catch(e){}
     try{ unlockPlaybackMediaAudio(); }catch(e){}
     syncCanonicalPlaybackStart(item, playlist || state.playlist || state.items || [], forceShow);
+    const visualizerTrackChanged = !!(state.now && (state.now.rootId !== item.root.id || state.now.rel !== item.rel));
+    if(visualizerTrackChanged) try{ beginVisualizerTrackTransition(state.nowMeta && state.nowMeta.art); }catch(e){}
     const playbackNav = captureNavContext();
     const sourceView = captureSourceViewContext(item, playlist || state.playlist || state.items || [], (typeof index === "number" ? index : state.playIndex));
     stopVideoOverlay();
@@ -622,6 +627,7 @@ async function goBack(){
     state.now = {rootId: rootId, rel: rel, media: "audio", streamed: !!item.streamed, nav: playbackNav};
     state.nowNavContext = playbackNav;
     state.nowMeta = meta;
+    if(visualizerTrackChanged) try{ finishVisualizerTrackTransition(meta && meta.art || item.art || ""); }catch(e){}
     try{
       buildPlaybackSessionUpdate({now:Object.assign({}, state.now, {meta:meta}), queue:state.playlist, queueIndex:state.playIndex, nav:playbackNav, sourceView:sourceView, media:"audio"}, "playback-start");
     }catch(e){}
@@ -881,7 +887,9 @@ async function goBack(){
       const np = (state.orderPos || 0) + 1;
       if(np >= 0 && np < state.playOrder.length) state.orderPos = np;
     }
-    playIndex(ni);
+    // Ended-event advances stay in the current view even when the legacy
+    // queue projection is being used.
+    playIndex(ni, false);
   }
 
   function playPrev(){
@@ -930,7 +938,7 @@ async function goBack(){
       }
       const ni = (state.videoIndex || 0) + 1;
       if(ni >= 0 && ni < state.videoPlaylist.length){
-        playVideoIndex(ni, true, 0);
+        playVideoIndex(ni, false, 0);
       }
     }catch(e){}
   }

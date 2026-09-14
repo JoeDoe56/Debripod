@@ -411,7 +411,10 @@
 
     async function play(item, _index, options){
       const legacy = legacyItem(item);
-      const forceShow = !options || options.forceShow !== false;
+      // Queue dispatches are also used by the media ended handler.  Opening
+      // Now Playing is an explicit user action, so an omitted option must not
+      // turn an automatic next-track handoff into a navigation event.
+      const forceShow = !!(options && options.forceShow);
       if(item.media === "video"){
         return win.startVideoFromItem(legacy, forceShow, Number((options && options.resumeTime) || 0));
       }

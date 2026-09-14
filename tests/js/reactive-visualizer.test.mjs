@@ -21,16 +21,28 @@ function load(names) {
   return context;
 }
 
-test("rotation is exactly two deterministic clockwise turns across a track", () => {
+test("rotation is exactly three deterministic clockwise turns across a track by default", () => {
   const {clamp01, visualizerRotationForProgress} = load(["clamp01", "visualizerRotationForProgress"]);
   const pi = Math.PI;
   assert.equal(visualizerRotationForProgress(0), pi);
-  assert.equal(visualizerRotationForProgress(0.25), 2 * pi);
-  assert.equal(visualizerRotationForProgress(0.5), 3 * pi);
-  assert.equal(visualizerRotationForProgress(0.75), 4 * pi);
-  assert.equal(visualizerRotationForProgress(1), 5 * pi);
+  assert.equal(visualizerRotationForProgress(0.25), 2.5 * pi);
+  assert.equal(visualizerRotationForProgress(0.5), 4 * pi);
+  assert.equal(visualizerRotationForProgress(0.75), 5.5 * pi);
+  assert.equal(visualizerRotationForProgress(1), 7 * pi);
   assert.equal(visualizerRotationForProgress(0.5), visualizerRotationForProgress(0.5));
   assert.equal(clamp01(1.2), 1);
+});
+
+test("configured rotation count starts upside down and is integer bounded", () => {
+  const {clamp01, normalizeVisualizerRotationsPerTrack, visualizerRotationForProgress} = load([
+    "clamp01", "normalizeVisualizerRotationsPerTrack", "visualizerRotationForProgress"
+  ]);
+  const pi = Math.PI;
+  assert.equal(normalizeVisualizerRotationsPerTrack(undefined), 3);
+  assert.equal(normalizeVisualizerRotationsPerTrack(3.8), 4);
+  assert.equal(normalizeVisualizerRotationsPerTrack(99), 12);
+  assert.equal(visualizerRotationForProgress(0, 3), pi);
+  assert.equal(visualizerRotationForProgress(1, 3), 7 * pi);
 });
 
 test("active high band owns the brightest useful luma and low-only spans the field", () => {

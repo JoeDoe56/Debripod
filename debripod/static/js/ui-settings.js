@@ -42,6 +42,7 @@
       "visualizer": true,
       "visualizerMaxBrightnessPct": 60,
       "visualizerFpsLock": 30,
+      "visualizerRotationsPerTrack": 3,
       "visualizerFrequencyResponse": {"brightness": 1.0, "opacity": 0.0, "saturation": 0.15, "contrast": 0.10},
       "visualizerEnergyResponse": {"brightness": 0.12, "opacity": 0.0, "saturation": 0.05, "contrast": 0.05},
       "visualizerBeatResponse": {"brightness": 0.10, "opacity": 0.0, "saturation": 0.0, "contrast": 0.05},
@@ -63,7 +64,6 @@
           "infoPill": 60,
           "pathPill": 60
       },
-      "performanceOverlayButton": true,
       "performanceOverlayText": false,
       "liquidGlassElements": cloneGlassElementSettings(DEFAULT_LIQUID_GLASS_ELEMENT_SETTINGS),
       "glassRenderScale": 1.0,
@@ -111,6 +111,11 @@
     const n = Number(value);
     if(n === 30 || n === 60 || n === 120) return n;
     return 60;
+  }
+
+  function normalizeVisualizerRotationsPerTrack(value){
+    const n = Number(value);
+    return Number.isFinite(n) ? Math.max(1, Math.min(12, Math.round(n))) : 3;
   }
 
   function normalizeTextMode(value, fallback){
@@ -196,6 +201,7 @@
     if(saved.visualizerMaxBrightnessPct != null) out.visualizerMaxBrightnessPct = normalizeVisualizerMaxBrightnessPct(saved.visualizerMaxBrightnessPct);
     else if(saved.visualizerStrength != null) out.visualizerMaxBrightnessPct = legacyVisualizerBrightnessPct(saved.visualizerStrength);
     if(saved.visualizerFpsLock != null) out.visualizerFpsLock = normalizeVisualizerFpsLock(saved.visualizerFpsLock);
+    if(saved.visualizerRotationsPerTrack != null) out.visualizerRotationsPerTrack = normalizeVisualizerRotationsPerTrack(saved.visualizerRotationsPerTrack);
     if(saved.visualizerFrequencyResponse != null) out.visualizerFrequencyResponse = cloneVisualizerResponse(saved.visualizerFrequencyResponse, out.visualizerFrequencyResponse);
     if(saved.visualizerEnergyResponse != null) out.visualizerEnergyResponse = cloneVisualizerResponse(saved.visualizerEnergyResponse, out.visualizerEnergyResponse);
     if(saved.visualizerBeatResponse != null) out.visualizerBeatResponse = cloneVisualizerResponse(saved.visualizerBeatResponse, out.visualizerBeatResponse);
@@ -203,7 +209,6 @@
     if(saved.textModes != null) out.textModes = cloneTextModes(saved.textModes);
     if(saved.textTransparency != null) out.textTransparency = normalizeTextTransparency(saved.textTransparency);
     if(saved.animationFps != null) out.animationFps = cloneAnimationFps(saved.animationFps);
-    if(saved.performanceOverlayButton != null) out.performanceOverlayButton = !!saved.performanceOverlayButton;
     if(saved.performanceOverlayText != null) out.performanceOverlayText = !!saved.performanceOverlayText;
     if(saved.liquidGlassElements != null) out.liquidGlassElements = cloneGlassElementSettings(saved.liquidGlassElements);
     if(saved.glassRenderScale != null) out.glassRenderScale = clampNumber(saved.glassRenderScale, out.glassRenderScale, 0.5, 2);
@@ -232,11 +237,11 @@
     out.textTransparency = normalizeTextTransparency(out.textTransparency);
     out.animationFps = cloneAnimationFps(out.animationFps);
     out.visualizerMaxBrightnessPct = normalizeVisualizerMaxBrightnessPct(out.visualizerMaxBrightnessPct);
+    out.visualizerRotationsPerTrack = normalizeVisualizerRotationsPerTrack(out.visualizerRotationsPerTrack);
     out.visualizerFrequencyResponse = cloneVisualizerResponse(out.visualizerFrequencyResponse, DEFAULT_UI_SETTINGS.visualizerFrequencyResponse);
     out.visualizerEnergyResponse = cloneVisualizerResponse(out.visualizerEnergyResponse, DEFAULT_UI_SETTINGS.visualizerEnergyResponse);
     out.visualizerBeatResponse = cloneVisualizerResponse(out.visualizerBeatResponse, DEFAULT_UI_SETTINGS.visualizerBeatResponse);
     out.videoAmbient = cloneVideoAmbientSettings(out.videoAmbient);
-    out.performanceOverlayButton = !!out.performanceOverlayButton;
     out.performanceOverlayText = !!out.performanceOverlayText;
     out.liquidGlassElements = cloneGlassElementSettings(out.liquidGlassElements);
     out.glassRenderScale = clampNumber(out.glassRenderScale, 1, 0.5, 2);
@@ -353,6 +358,7 @@
     normalizeVisualizerStrength,
     normalizeVisualizerMaxBrightnessPct,
     normalizeVisualizerFpsLock,
+    normalizeVisualizerRotationsPerTrack,
     normalizeTextMode,
     normalizeTextTransparency,
     cloneTextModes,
