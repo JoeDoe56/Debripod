@@ -121,10 +121,11 @@ function infoPillLabelValues(mode, volume, progress){
 function renderInfoPillLabels(){
   try{
     var media = (typeof wheelMedia === "function") ? wheelMedia() : null;
+    var gapless = (typeof gaplessPlaybackSnapshot === "function") ? gaplessPlaybackSnapshot() : null;
     var progress = {
-      left: fmtTime(media && isFinite(media.currentTime) ? Number(media.currentTime) : 0),
+      left: fmtTime(gapless ? Number(gapless.position || 0) : (media && isFinite(media.currentTime) ? Number(media.currentTime) : 0)),
       center: (npTech && npTech.dataset && npTech.dataset.progressText) || "",
-      right: fmtTime(media && isFinite(media.duration) ? Number(media.duration) : 0)
+      right: fmtTime(gapless ? Number(gapless.duration || 0) : (media && isFinite(media.duration) ? Number(media.duration) : 0))
     };
     var labels = infoPillLabelValues(npControlMode, userVol, progress);
     if(npCur) npCur.textContent = labels.left;
@@ -202,7 +203,8 @@ function resetSeekIdle(){
 function updateSeekIndicator(){
   try{
     const m = wheelMedia();
-    const d = (m && m.duration) ? m.duration : 0;
+    const gapless = (typeof gaplessPlaybackSnapshot === "function") ? gaplessPlaybackSnapshot() : null;
+    const d = gapless ? Number(gapless.duration || 0) : ((m && m.duration) ? m.duration : 0);
     if(d <= 0){
       npSeekIndicator.style.left = "0%";
       updateProgressMeterFill(0);
@@ -222,7 +224,8 @@ function enterSeekMode(){
   seekChanged = false;
   showPlaybackPills(true, "seek mode");
   var m = wheelMedia();
-  seekPreview = (m && m.currentTime) ? m.currentTime : 0;
+  var gapless = (typeof gaplessPlaybackSnapshot === "function") ? gaplessPlaybackSnapshot() : null;
+  seekPreview = gapless ? Number(gapless.position || 0) : ((m && m.currentTime) ? m.currentTime : 0);
   showProgressBar("seek mode");
   try{ npSeekIndicator.style.display = "block"; }catch(e){}
   updateSeekIndicator();
@@ -240,8 +243,10 @@ function cancelSeekMode(){
   try{ npSeekIndicator.style.display = "none"; }catch(e){}
   try{
     const m = wheelMedia();
-    const d = (m && m.duration) ? m.duration : 0;
-    updateProgressMeterFill(d > 0 ? ((Number(m.currentTime || 0) / d) * 100) : 0);
+    const gapless = (typeof gaplessPlaybackSnapshot === "function") ? gaplessPlaybackSnapshot() : null;
+    const d = gapless ? Number(gapless.duration || 0) : ((m && m.duration) ? m.duration : 0);
+    const t = gapless ? Number(gapless.position || 0) : Number(m && m.currentTime || 0);
+    updateProgressMeterFill(d > 0 ? ((t / d) * 100) : 0);
   }catch(e){}
   showProgressBar("seek cancel");
   updateWheelLabels();
@@ -250,10 +255,12 @@ function cancelSeekMode(){
 function commitSeekMode(){
   if(!seekMode) return;
   var m = wheelMedia();
-  var d = (m && m.duration) ? m.duration : 0;
+  var gapless = (typeof gaplessPlaybackSnapshot === "function") ? gaplessPlaybackSnapshot() : null;
+  var d = gapless ? Number(gapless.duration || 0) : ((m && m.duration) ? m.duration : 0);
   if(d > 0){
     try{
-      if(m) m.currentTime = Math.max(0, Math.min(d, seekPreview));
+      if(gapless && window.DebriPod && DebriPod.gaplessAudio && DebriPod.gaplessAudio.seek) DebriPod.gaplessAudio.seek(Math.max(0, Math.min(d, seekPreview)));
+      else if(m) m.currentTime = Math.max(0, Math.min(d, seekPreview));
     }catch(e){}
   }
   cancelSeekMode();
@@ -303,7 +310,9 @@ function updateWheelLabels(){
       setWheelLabel(lFwd, "next");
       if(nowPlaying.style.display === "block"){
         const m = wheelMedia();
-        setWheelLabel(lPlay, (m && m.paused) ? "play" : "pause", !(m && m.paused));
+        const gapless = (typeof gaplessPlaybackSnapshot === "function") ? gaplessPlaybackSnapshot() : null;
+        const paused = gapless ? !gapless.playing : !!(m && m.paused);
+        setWheelLabel(lPlay, paused ? "play" : "pause", !paused);
       }else if(state.now){
         const m = wheelMedia();
         const isPaused = m ? !!m.paused : !(state.serverNow && state.serverNow.playing);
@@ -318,7 +327,8 @@ function updateWheelLabels(){
 
 
 function adjustSeekPreview(dir){  var m = wheelMedia();
-  var d = (m && m.duration) ? m.duration : 0;
+  var gapless = (typeof gaplessPlaybackSnapshot === "function") ? gaplessPlaybackSnapshot() : null;
+  var d = gapless ? Number(gapless.duration || 0) : ((m && m.duration) ? m.duration : 0);
   if(d <= 0) return;
   const pillsWereShown = (typeof isPlaybackPillsShown === "function") ? isPlaybackPillsShown() : false;
   var step = Math.max(2, d / 200);

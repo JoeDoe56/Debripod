@@ -43,6 +43,15 @@ test("schedules the next buffer at the current buffer's exact sample timeline", 
   ]);
 });
 
+test("uses one configured intentional gap when gapless mode is disabled", ()=>{
+  const {api,starts}=load();
+  api.start(item("one"), {duration:3}, item("two"), {duration:2}, {gap:0.12});
+  assert.ok(Math.abs(starts[1].when - 13.145) < 1e-9);
+  const session=api.testing.getSession();
+  session.source.onended();
+  assert.equal(api.snapshot().key, api.testing.keyFor(item("one")));
+});
+
 test("promotes a prestarted next track without scheduling a duplicate source", ()=>{
   const {api,starts}=load();
   const first=item("one"), second=item("two");
@@ -54,3 +63,17 @@ test("promotes a prestarted next track without scheduling a duplicate source", (
   assert.equal(api.snapshot().key, api.testing.keyFor(second));
 });
 
+test("keeps the sample timeline when a paused or sought track resumes and queues track three", ()=>{
+  const {api,starts}=load();
+  const first=item("one"), second=item("two"), third=item("three");
+  api.start(first,{duration:1},second,{duration:2});
+  assert.equal(api.pause(), true);
+  assert.equal(api.resume(), true);
+  assert.equal(api.testing.getSession().next.item.rel, "two");
+  assert.equal(api.seek(0.5), true);
+  const session=api.testing.getSession();
+  session.source.onended();
+  assert.equal(api.snapshot().key, api.testing.keyFor(second));
+  assert.equal(api.scheduleNext(third,{duration:4}), true);
+  assert.equal(starts.at(-1).when, 12.525);
+});

@@ -182,4 +182,8 @@
       getContext: ()=>audioContext
     }
   };
+  try{
+    if(root.document) root.document.addEventListener("visibilitychange", ()=>{ if(!root.document.hidden) unlock(); });
+    root.addEventListener("pageshow", unlock);
+  }catch(error){}
 })(window);

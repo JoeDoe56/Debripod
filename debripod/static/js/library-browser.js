@@ -346,6 +346,7 @@ async function goBack(){
     }catch(e){}
   }
   var videoOverlayActive = false;
+  var npSeekDragging = false;
 
 
   function isVideoActive(){
@@ -502,6 +503,14 @@ async function goBack(){
     const rel = item.rel;
 
     const same = state.now && state.now.rootId === rootId && state.now.rel === rel;
+    // Decode the current and next finite tracks before starting them so both
+    // sources can share one AudioContext clock. The regular element path is
+    // retained as a browser/stream fallback inside the loader.
+    if(!same && state.gaplessEnabled && state.preloadEnabled && typeof startGaplessAudioFromItem === "function"){
+      try{
+        if(await startGaplessAudioFromItem(item, playlist || state.playlist || [], index, forceShow, resumeTime)) return;
+      }catch(e){}
+    }
     if(same){
       try{
         buildPlaybackSessionUpdate({now:Object.assign({}, state.now, {nav:playbackNav, meta:state.nowMeta || {}}), queue:state.playlist, queueIndex:state.playIndex, nav:playbackNav, sourceView:sourceView, media:"audio"}, "playback-start");
@@ -696,6 +705,16 @@ async function goBack(){
     if(!isVideoActive() && !state.now) return;
     const m = wheelMedia();
     if(!m) return;
+    if(!isVideoActive() && typeof gaplessPlaybackActive === "function" && gaplessPlaybackActive()){
+      const g = window.DebriPod && DebriPod.gaplessAudio;
+      try{
+        if(g && g.snapshot && g.snapshot().playing){ g.pause(); }
+        else if(g && g.resume){ g.resume(); }
+        if(canMediaSession()) navigator.mediaSession.playbackState = g && g.snapshot && g.snapshot().playing ? "playing" : "paused";
+        updateGaplessUi(); syncMediaSessionControls();
+      }catch(e){}
+      return;
+    }
     const transport = window.DebriPod && DebriPod.playbackTransport;
     if(transport){
       try{ transport.toggle(m); }catch(e){}
@@ -727,6 +746,11 @@ async function goBack(){
     if(nowPlaying.style.display !== "block") return;
     const m = wheelMedia();
     if(!m) return;
+    if(!isVideoActive() && typeof gaplessPlaybackActive === "function" && gaplessPlaybackActive()){
+      const g = window.DebriPod && DebriPod.gaplessAudio, snap = gaplessPlaybackSnapshot();
+      try{ if(g && g.seek && snap) g.seek(Math.max(0, Math.min(Number(snap.duration || 0), Number(snap.position || 0) + Number(delta || 0)))); updateGaplessUi(); }catch(e){}
+      return;
+    }
     const d = m.duration || 0;
     const t = m.currentTime || 0;
     const nt = Math.max(0, Math.min(d || (t + delta), t + delta));
@@ -981,8 +1005,13 @@ async function goBack(){
       const d = el.duration || 0;
       const t = el.currentTime || 0;
       if(d > 0){
-        npSeek.value = Math.floor((t / d) * 1000);
-        updateProgressMeterFill((t / d) * 100);
+        // While the wheel or range thumb is being dragged the preview is the
+        // source of truth. Media timeupdate events arrive asynchronously and
+        // used to pull the fill behind the seek indicator.
+        if((typeof seekMode === "undefined" || !seekMode) && !npSeekDragging){
+          npSeek.value = Math.floor((t / d) * 1000);
+          updateProgressMeterFill((t / d) * 100);
+        }
       }
       try{ syncMediaSessionPosition(); }catch(e){}
       try{ syncMediaSessionControls(); }catch(e){}
@@ -1117,8 +1146,16 @@ async function goBack(){
     });
   }
 
+  npSeek.addEventListener("pointerdown", ()=>{ npSeekDragging = true; });
+  npSeek.addEventListener("pointerup", ()=>{ npSeekDragging = false; });
+  npSeek.addEventListener("blur", ()=>{ npSeekDragging = false; });
   npSeek.addEventListener("input", ()=>{
     const m = wheelMedia();
+    if(!isVideoActive() && typeof gaplessPlaybackActive === "function" && gaplessPlaybackActive()){
+      const snap = gaplessPlaybackSnapshot(), g = window.DebriPod && DebriPod.gaplessAudio;
+      if(snap && g && g.seek){ try{ g.seek((parseInt(npSeek.value, 10) / 1000) * Number(snap.duration || 0)); updateGaplessUi(); }catch(e){} }
+      return;
+    }
     const d = (m && m.duration) ? m.duration : 0;
     if(d > 0){
       updateProgressMeterFill((parseInt(npSeek.value, 10) / 1000) * 100);

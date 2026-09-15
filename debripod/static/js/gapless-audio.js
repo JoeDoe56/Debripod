@@ -20,7 +20,10 @@
     const C = root.AudioContext || root.webkitAudioContext;
     if(!C) return null;
     try{ context = new C(); }catch(e){ context = null; }
-    if(context){ try{ output = context.createGain(); output.gain.value = volume; output.connect(context.destination); }catch(e){ output = null; } }
+    if(context){
+      try{ output = context.createGain(); output.gain.value = volume; output.connect(context.destination); }catch(e){ output = null; }
+      try{ context.addEventListener("statechange", ()=>{ if(context && (context.state === "interrupted" || context.state === "suspended")) resumeContext(); }); }catch(e){}
+    }
     return context;
   }
   function supported(){ return !!(getContext() && output && typeof context.decodeAudioData === "function"); }
@@ -66,17 +69,25 @@
     session.next = null;
     try{ if(typeof session.onBoundary === "function") session.onBoundary(session.current); }catch(e){}
   }
+  function handoffIfCurrent(src){
+    if(!session || session.source !== src || !session.next) return;
+    const next = session.next, delay = Math.max(0, number(session.gap, 0));
+    if(delay > 0){
+      const owner = session;
+      setTimeout(()=>{ if(session === owner && session.source === src && session.next === next) promote(next); }, delay * 1000);
+    }else promote(next);
+  }
   function scheduleNext(item, buffer){
     if(!session || !context || !output || !buffer || !item) return false;
-    const when = session.startedAt + Math.max(0, session.duration - session.offset);
+    const when = session.startedAt + Math.max(0, session.duration - session.offset) + Math.max(0, number(session.gap, 0));
     let src = null;
     try{
       src = context.createBufferSource(); src.buffer = buffer; src.connect(output);
       src.onended = ()=>{
-        // The current source's ended event is the handoff point. The next
-        // source has already been scheduled on the same clock, so promoting
-        // the session here only changes bookkeeping and never starts audio.
-        if(session && session.source === src && session.next) promote(session.next);
+        if(!session || session.source !== src) return;
+        if(session.next){ handoffIfCurrent(src); return; }
+        session.playing = false; session.offset = session.duration;
+        try{ if(typeof session.onEnded === "function") session.onEnded(session.current); }catch(e){}
       };
       src.start(when, 0);
     }catch(e){ stopSource(src); return false; }
@@ -95,10 +106,10 @@
       src = ctx.createBufferSource(); src.buffer = buffer; src.connect(output);
       src.start(when, offset);
     }catch(e){ stopSource(src); return false; }
-    session = {current:item, key:keyFor(item), buffer, duration:number(buffer.duration,0), offset, startedAt:when, source:src, next:null, playing:true, onBoundary:opts.onBoundary || null, onEnded:opts.onEnded || null};
+    session = {current:item, key:keyFor(item), buffer, duration:number(buffer.duration,0), offset, startedAt:when, source:src, next:null, playing:true, gap:Math.max(0, number(opts.gap, 0)), onBoundary:opts.onBoundary || null, onEnded:opts.onEnded || null};
     src.onended = ()=>{
       if(!session || session.source !== src) return;
-      if(session.next){ promote(session.next); return; }
+      if(session.next){ handoffIfCurrent(src); return; }
       session.playing = false; session.offset = session.duration;
       try{ if(typeof session.onEnded === "function") session.onEnded(session.current); }catch(e){}
     };
@@ -111,7 +122,9 @@
   }
   function pause(){
     if(!session || !session.playing) return false;
-    session.offset = currentPosition(); session.playing = false; stopSource(session.source); if(session.next) stopSource(session.next.source); session.next = null; return true;
+    session.offset = currentPosition(); session.playing = false; stopSource(session.source);
+    if(session.next){ stopSource(session.next.source); session.pausedNext = {item:session.next.item, buffer:session.next.buffer}; session.next = null; }
+    return true;
   }
   function resume(){
     if(!session || session.playing) return false;
@@ -120,12 +133,9 @@
     // resumeBuffer; if unavailable, a subsequent regular media load wins.
     const buffer = session.buffer;
     if(!buffer) return false;
-    const when = number(context.currentTime,0) + 0.025;
-    let src = null;
-    try{ src=context.createBufferSource();src.buffer=buffer;src.connect(output);src.start(when,offset); }catch(e){ stopSource(src); return false; }
-    session.source=src;session.startedAt=when;session.playing=true;session.key=key;session.duration=duration;
-    src.onended=()=>{if(session&&session.source===src){session.playing=false;session.offset=session.duration;try{if(session.onEnded)session.onEnded(session.current)}catch(e){}}};
-    return true;
+    const queued = session.pausedNext || null;
+    session.pausedNext = null;
+    return resumeWith(item, buffer, offset, queued && queued.item, queued && queued.buffer);
   }
   function seek(offset){
     if(!session || !session.buffer) return false;
@@ -135,15 +145,18 @@
   }
   function resumeAfterSeek(){
     const wasPlaying=session.playing; const item=session.current, buffer=session.buffer, off=session.offset;
+    const queued=session.next ? {item:session.next.item,buffer:session.next.buffer} : null;
     stopSource(session.source); if(session.next) stopSource(session.next.source); session.next=null; session.playing=false;
     if(!wasPlaying) return true;
-    return resumeWith(item,buffer,off);
+    return resumeWith(item,buffer,off,queued && queued.item,queued && queued.buffer);
   }
-  function resumeWith(item,buffer,off){
+  function resumeWith(item,buffer,off,nextItem,nextBuffer){
     const when=number(context.currentTime,0)+0.025; let src=null;
     try{src=context.createBufferSource();src.buffer=buffer;src.connect(output);src.start(when,off)}catch(e){stopSource(src);return false}
     session.source=src;session.startedAt=when;session.offset=off;session.playing=true;
-    src.onended=()=>{if(session&&session.source===src){session.playing=false;session.offset=session.duration;try{if(session.onEnded)session.onEnded(session.current)}catch(e){}}}; return true;
+    src.onended=()=>{if(session&&session.source===src){if(session.next){handoffIfCurrent(src);return;}session.playing=false;session.offset=session.duration;try{if(session.onEnded)session.onEnded(session.current)}catch(e){}}};
+    if(nextItem && nextBuffer) scheduleNext(nextItem, nextBuffer);
+    return true;
   }
   function takePrestarted(item){
     if(!session || session.key !== keyFor(item)) return false;
