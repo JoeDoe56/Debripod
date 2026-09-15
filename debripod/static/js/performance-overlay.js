@@ -4,8 +4,9 @@
   let overlay = null;
   let timer = 0;
   let buttonVisible = false;
-  let rubbing = null;
-  let suppressClick = false;
+  let tapCount = 0;
+  let tapStartedAt = 0;
+  let tapTimer = 0;
 
   function toggleOverlay(){
     const s = settings();
@@ -15,46 +16,30 @@
     refresh();
   }
 
-  // A sustained alternating stroke unlocks the button. Taps, a straight
-  // swipe, or separate short strokes cannot accumulate into a toggle.
-  function rubSample(sample, x, y, now){
-    if(!sample || now - sample.lastAt > 320) return null;
-    const dx = x - sample.x;
-    const dy = y - sample.y;
-    const delta = Math.abs(dx) >= Math.abs(dy) ? dx : dy;
-    if(Math.abs(delta) < 4) return sample;
-    const direction = Math.sign(delta);
-    if(sample.direction && direction !== sample.direction) sample.turns++;
-    sample.direction = direction;
-    sample.distance += Math.hypot(dx,dy);
-    sample.x = x; sample.y = y; sample.lastAt = now;
-    sample.complete = now - sample.startedAt >= 1500 && sample.turns >= 8 && sample.distance >= 120;
-    return sample;
-  }
-
-  function bindRubGesture(){
-    button.style.touchAction = "none";
-    button.style.transition = "opacity 220ms ease";
-    button.addEventListener("pointerdown", event=>{
-      if(event.button != null && event.button !== 0) return;
-      suppressClick = false;
-      rubbing = {pointerId:event.pointerId, x:event.clientX,y:event.clientY,startedAt:event.timeStamp,lastAt:event.timeStamp,turns:0,distance:0,direction:0};
-      if(button.setPointerCapture) button.setPointerCapture(event.pointerId);
-    });
-    button.addEventListener("pointermove", event=>{
-      if(!rubbing || rubbing.pointerId !== event.pointerId) return;
-      const rect = button.getBoundingClientRect();
-      if(event.clientX < rect.left-16 || event.clientX > rect.right+16 || event.clientY < rect.top-16 || event.clientY > rect.bottom+16){ rubbing=null; suppressClick=true; return; }
-      rubbing = rubSample(rubbing,event.clientX,event.clientY,event.timeStamp);
-      if(!rubbing){ suppressClick=true; return; }
-      if(rubbing.distance > 12) suppressClick=true;
-      if(rubbing.complete){
-        buttonVisible = !buttonVisible;
-        rubbing=null;
-        refresh();
-      }
-    });
-    ["pointerup","pointercancel","lostpointercapture"].forEach(name=>button.addEventListener(name,()=>{rubbing=null;}));
+  // Delay the normal click action until a rapid triple tap can be ruled out.
+  function tapButton(event){
+    const now = Number(event.timeStamp) || 0;
+    if(tapCount && now - tapStartedAt > 550){
+      if(tapTimer) clearTimeout(tapTimer);
+      tapTimer = 0;
+      tapCount = 0;
+    }
+    if(!tapCount) tapStartedAt = now;
+    tapCount++;
+    if(tapTimer) clearTimeout(tapTimer);
+    if(tapCount === 3){
+      tapCount = 0;
+      tapTimer = 0;
+      buttonVisible = !buttonVisible;
+      refresh();
+      return;
+    }
+    tapTimer = setTimeout(()=>{
+      const single = tapCount === 1;
+      tapCount = 0;
+      tapTimer = 0;
+      if(single && buttonVisible) toggleOverlay();
+    }, 550 - (now - tapStartedAt));
   }
 
   function settings(){
@@ -72,11 +57,9 @@
       button.className = "dpPerfButton";
       button.textContent = "P";
       button.setAttribute("aria-label", "Performance overlay");
-      button.addEventListener("click", ()=>{
-        if(suppressClick){ suppressClick=false; return; }
-        if(buttonVisible) toggleOverlay();
-      });
-      bindRubGesture();
+      button.style.touchAction = "manipulation";
+      button.style.transition = "opacity 220ms ease";
+      button.addEventListener("click", tapButton);
       document.body.appendChild(button);
     }
     if(!overlay){
@@ -204,5 +187,5 @@
     event.preventDefault();
     toggleOverlay();
   });
-  root.performanceOverlay = {refresh, toggle:toggleOverlay, testing:{rubSample}};
+  root.performanceOverlay = {refresh, toggle:toggleOverlay, testing:{tapButton}};
 })();

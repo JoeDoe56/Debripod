@@ -4,13 +4,13 @@ import fs from 'node:fs';
 import vm from 'node:vm';
 const source=fs.readFileSync(new URL('../../debripod/static/js/performance-overlay.js',import.meta.url),'utf8');
 function load(){
- const listeners=new Map(),elements=[];
+ const listeners=new Map(),elements=[],timers=new Map(); let timerId=0;
  const settings={performanceOverlayText:false};
  const node=()=>({style:{},hidden:false,setAttribute(){},addEventListener(name,fn){this[name]=fn;},getBoundingClientRect:()=>({left:0,top:0,right:34,bottom:34,width:34,height:34})});
  const document={readyState:'complete',body:{appendChild(el){elements.push(el);}},createElement:node,getElementById:()=>null};
  const window={innerWidth:400,innerHeight:800,addEventListener:(key,fn)=>listeners.set(key,fn),DebriPod:{uiSettings:{settings,saveUiSettings(){}}}};
- vm.runInNewContext(source,{window,document,setInterval:()=>1,clearInterval(){}});
- return {api:window.DebriPod.performanceOverlay,settings,listeners,elements};
+ vm.runInNewContext(source,{window,document,setInterval:()=>1,clearInterval(){},setTimeout:(fn)=>{timers.set(++timerId,fn);return timerId;},clearTimeout:id=>timers.delete(id)});
+ return {api:window.DebriPod.performanceOverlay,settings,listeners,elements,flush:()=>{for(const fn of timers.values())fn();timers.clear();}};
 }
 test('P toggles the overlay independently of the hidden button and ignores typing',()=>{
  const f=load(),key=f.listeners.get('keydown');
@@ -20,12 +20,21 @@ test('P toggles the overlay independently of the hidden button and ignores typin
  key({key:'p',target:{isContentEditable:true}});assert.equal(f.settings.performanceOverlayText,true);
  key({key:'p',preventDefault(){}});assert.equal(f.settings.performanceOverlayText,false);
 });
-test('rub requires sustained reversals and rejects pauses or one-way swipes',()=>{
- const {rubSample}=load().api.testing;
- const start=()=>({x:0,y:0,startedAt:0,lastAt:0,turns:0,distance:0,direction:0});
- let s=start();for(let t=80;t<=1600;t+=80)s=rubSample(s,t%160===0?-10:10,0,t);
- assert.equal(s.complete,true);
- s=start();for(let t=80;t<=1600;t+=80)s=rubSample(s,t,0,t);
- assert.equal(s.complete,false);
- assert.equal(rubSample(start(),10,0,500),null);
+test('rapid triple taps reveal and hide without toggling the overlay',()=>{
+ const f=load(),tap=f.api.testing.tapButton;
+ for(const timeStamp of [10,150,300])tap({timeStamp});
+ assert.equal(f.elements[0].style.opacity,'1');
+ assert.equal(f.settings.performanceOverlayText,false);
+ f.flush();assert.equal(f.settings.performanceOverlayText,false);
+ for(const timeStamp of [800,900,1000])tap({timeStamp});
+ assert.equal(f.elements[0].style.opacity,'0');
+ assert.equal(f.settings.performanceOverlayText,false);
+});
+test('slow taps do not unlock; a visible single tap still toggles the overlay',()=>{
+ const f=load(),tap=f.api.testing.tapButton;
+ for(const timeStamp of [0,1000,2000]){tap({timeStamp});f.flush();}
+ assert.equal(f.elements[0].style.opacity,'0');
+ for(const timeStamp of [3000,3100,3200])tap({timeStamp});
+ tap({timeStamp:4000});f.flush();
+ assert.equal(f.settings.performanceOverlayText,true);
 });
