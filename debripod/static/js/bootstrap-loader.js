@@ -11,6 +11,7 @@
     "/static/js/frame-scheduler.js",
     "/static/js/app-state.js",
     "/static/js/media-audio-graph.js",
+    "/static/js/gapless-audio.js",
     "/static/js/playback-transport.js",
     "/static/js/glass-lighting.js",
     "/static/js/liquid-glue.js",

@@ -25,6 +25,7 @@
     lastfmEnabled: false,
     playbackStreamingMode: "http",
     preloadEnabled: true,
+    gaplessEnabled: false,
     preloadBytes: 2097152,
     shuffleEnabled: false,
     playOrder: null,
@@ -591,6 +592,7 @@
   async function loadConfig(){
     const js = await apiGet("/api/library/config", {localFirst:false});
     state.preloadEnabled = !!js.preload_enabled;
+    state.gaplessEnabled = !!js.gapless_enabled && state.preloadEnabled;
     state.preloadBytes = js.preload_bytes || state.preloadBytes;
     state.roots = js.roots || [];
     state.lastfmEnabled = !!js.lastfm_enabled;

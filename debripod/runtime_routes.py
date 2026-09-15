@@ -1342,6 +1342,7 @@ async def api_library_config(request: web.Request):
             "roots": rts,
             "aggregate_root": {"id": LIBRARY_ALL_ROOT_ID, "name": "Library", "mode": "metadata"},
             "preload_enabled": bool(PRELOAD_NEXT_FOR_GAPLESS),
+            "gapless_enabled": bool(ENABLE_GAPLESS_PLAYBACK and PRELOAD_NEXT_FOR_GAPLESS),
             "preload_bytes": int(PRELOAD_NEXT_CHUNK_BYTES),
             "lastfm_enabled": bool(lastfm and lastfm.enabled()),
             "wheel_rotation_max_degrees": float(WHEEL_ROTATION_MAX_DEGREES),

@@ -208,6 +208,7 @@
       playback: [
         {key:"PLAYBACK_STREAMING_MODE", label:"Streaming mode", type:"choice", choices:["http","hls"], value:s.PLAYBACK_STREAMING_MODE},
         {key:"PRELOAD_NEXT_FOR_GAPLESS", label:"Preload next", type:"bool", value:s.PRELOAD_NEXT_FOR_GAPLESS},
+        {key:"ENABLE_GAPLESS_PLAYBACK", label:"Enable gapless playback", type:"bool", value:s.ENABLE_GAPLESS_PLAYBACK, disabled:!s.PRELOAD_NEXT_FOR_GAPLESS, sub_label:s.PRELOAD_NEXT_FOR_GAPLESS ? "Starts the next decoded track on the same audio clock." : "Requires Preload next."},
         {key:"FFMPEG_PATH", label:"ffmpeg", type:"tool_path", value:s.FFMPEG_PATH, tool:"ffmpeg", toolStatus:ffmpeg, sub_label: ffmpeg.ok ? ("Detected: " + (ffmpeg.found || "ffmpeg")) : "ffmpeg was not found. Set the ffmpeg path in Playback settings.", advanced:true},
         {key:"FFPROBE_PATH", label:"ffprobe", type:"tool_path", value:s.FFPROBE_PATH, tool:"ffprobe", toolStatus:ffprobe, sub_label: ffprobe.ok ? ("Detected: " + (ffprobe.found || "ffprobe")) : (ffprobe.install_hint || "Install ffprobe or set a path."), advanced:true}
       ],
@@ -510,7 +511,7 @@
           tool:r.tool || "",
           toolStatus:r.toolStatus || null,
           provider:r.provider || "",
-          disabled:!!(r.provider && activeProvider && r.provider !== activeProvider),
+          disabled:!!r.disabled || !!(r.provider && activeProvider && r.provider !== activeProvider),
           pills:(settingConnectionPills(r) || [{text:settingValueLabel(r.value)}]).concat([settingSavePill(r)])
         }));
         if(category === "services"){
@@ -2038,7 +2039,7 @@ async function libDoSearch(engine, q){
       if(cat === "search") return key === "RESULTS_PER_PAGE" || key === "MAX_FILES_PER_TORRENT" || key === "MAX_TORRENT_WAIT_SECONDS" || key === "SEARCH_HISTORY_MAX_ITEMS" || key === "SEARCH_DISK_CACHE_TTL_SECONDS" || key === "SEARCH_STREAM_SESSION_TTL_SECONDS";
       if(cat === "downloads") return key === "REPLACE_ORIGINAL";
       if(cat === "services") return key.indexOf("SOULSEEK_") === 0 || key === "AIOSLSK_LOGGING_ENABLED" || key.indexOf("LOCAL_INDEX_") === 0 || key.indexOf("TORRENT_SEARCH_") === 0 || key.indexOf("LASTFM_") === 0 || key === "YTDLP_CMD" || key.indexOf("YOUTUBE_") === 0 || key === "RD_BASE";
-      if(cat === "playback") return key === "WHEEL_ROTATION_MAX_DEGREES" || key === "FFMPEG_PATH" || key === "FFPROBE_PATH" || key === "AUDIO_TRANSCODE" || key === "VIDEO_BROWSER_TARGET_EXT" || key === "AUTO_TRANSCODE_FOR_BROWSER_COMPATIBILITY" || key === "PRELOAD_NEXT_CHUNK_BYTES";
+      if(cat === "playback") return key === "WHEEL_ROTATION_MAX_DEGREES" || key === "FFMPEG_PATH" || key === "FFPROBE_PATH" || key === "AUDIO_TRANSCODE" || key === "VIDEO_BROWSER_TARGET_EXT" || key === "AUTO_TRANSCODE_FOR_BROWSER_COMPATIBILITY" || key === "PRELOAD_NEXT_CHUNK_BYTES" || key === "ENABLE_GAPLESS_PLAYBACK";
       return false;
     }).map(settingRowToListItem);
   }
