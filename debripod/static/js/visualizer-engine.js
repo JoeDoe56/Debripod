@@ -1,4 +1,4 @@
-var volBarTimer = null;
+﻿var volBarTimer = null;
 var seekMode = false;
 var seekChanged = false;
 var seekPreview = 0;
@@ -173,12 +173,10 @@ function visualizerCoverKey(value){
 
 function visualizerProgress01(media){
   try{
-    var gapless = window.DebriPod && DebriPod.gaplessAudio && DebriPod.gaplessAudio.snapshot ? DebriPod.gaplessAudio.snapshot() : null;
     var duration = Number(media && media.duration || 0);
-    if(gapless && gapless.duration > 0){ duration = Number(gapless.duration); }
     if(!Number.isFinite(duration) || duration <= 0) return null;
     var transport = typeof window !== "undefined" && window.DebriPod && window.DebriPod.playbackTransport;
-    var time = gapless && gapless.duration > 0 ? Number(gapless.position || 0) : (transport && typeof transport.visualizerTime === "function" ? transport.visualizerTime(media) : Number(media.currentTime || 0));
+    var time = transport && typeof transport.visualizerTime === "function" ? transport.visualizerTime(media) : Number(media.currentTime || 0);
     return clamp01(time / duration);
   }catch(e){ return null; }
 }
@@ -531,7 +529,6 @@ function sampleCachedVisualizerAnalysis(media){
   try{
     var analysis = visualizerAnalysisState;
     if(!analysis.loaded || !analysis.bytes || !analysis.frameCount || !media) return null;
-    var gapless = window.DebriPod && DebriPod.gaplessAudio && DebriPod.gaplessAudio.snapshot ? DebriPod.gaplessAudio.snapshot() : null;
     var mediaTime = gapless && gapless.duration > 0 ? Number(gapless.position || 0) : Number(media.currentTime || 0);
     var position = Math.max(0, Math.min(analysis.frameCount - 1, mediaTime * analysis.rate));
     var firstFrame = Math.floor(position);
@@ -796,7 +793,6 @@ function visualizerShouldShow(){
     var media = currentVisualizerMediaElement();
     if(!visualizerEnabled || currentVisualizerMediaKind() === "video") return false;
     if(visualizerTrackTransition.active) return !!(visualizerArtField.loaded && visualizerArtField.image);
-    var gapless = window.DebriPod && DebriPod.gaplessAudio && DebriPod.gaplessAudio.snapshot ? DebriPod.gaplessAudio.snapshot() : null;
     return gapless ? !!gapless.playing : !!(media && !media.paused && !media.ended);
   }catch(e){ return false; }
 }
