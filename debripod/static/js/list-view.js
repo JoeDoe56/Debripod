@@ -1518,6 +1518,8 @@ function vibeTick(){
 ;
 
 
+  var selectionRefreshFrame = 0;
+
   function setSelectionFast(nextIndex){
     if(!state.items.length) return;
     const n = state.items.length;
@@ -1546,16 +1548,19 @@ function vibeTick(){
       if(newEl){
         syncSelectedRowMarkers(newEl, true);
         if(typeof updateLibSelectionGlass === "function") updateLibSelectionGlass("selection target");
-        requestAnimationFrame(()=>{ try{ updateLibSelectionGlass("selection target settled"); }catch(e){} });
         ensureLibItemVisible(newEl);
       }else if(libList._dpVirtualized){
         libList.scrollTop = Math.max(0, virtualOffsetForIndex(state.sel) - Math.max(32, (libList.clientHeight || 320) * 0.35));
         renderList();
         return;
       }
-      refreshSelectedHScrollText();
-      if(typeof reconcileLibPillGlassTargets === "function") reconcileLibPillGlassTargets("selection");
-      if(typeof updateGlassTextUnderColors === "function") updateGlassTextUnderColors();
+      if(!selectionRefreshFrame) selectionRefreshFrame = requestAnimationFrame(()=>{
+        selectionRefreshFrame = 0;
+        refreshSelectedHScrollText();
+        if(typeof updateLibSelectionGlass === "function") updateLibSelectionGlass("selection target settled");
+        if(typeof reconcileLibPillGlassTargets === "function") reconcileLibPillGlassTargets("selection");
+        if(typeof updateGlassTextUnderColors === "function") updateGlassTextUnderColors();
+      });
     }catch(e){
       renderList();
     }
@@ -1735,7 +1740,10 @@ function vibeTick(){
       const current = Number(currentY);
       const target = Number(targetY);
       const offset = Number.isFinite(current) && Number.isFinite(target) ? current - target : 0;
-      selected.style.setProperty("--dp-selected-content-offset-y", offset.toFixed(3) + "px");
+      const value = offset.toFixed(3) + "px";
+      if(selected.style.getPropertyValue("--dp-selected-content-offset-y") !== value){
+        selected.style.setProperty("--dp-selected-content-offset-y", value);
+      }
       libList._dpSelectedContentRow = selected;
       return offset;
     }catch(e){

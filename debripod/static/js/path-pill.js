@@ -120,7 +120,7 @@
       el._dpHScrollAutoFrame = 0;
       el._dpHScrollAutoTimer = 0;
       el._dpHScrollAutoRunning = false;
-      if(el.classList) el.classList.remove("pathPillTextScrollable", "hScrollTextScrollable");
+      if(el.classList) el.classList.remove("pathPillTextScrollable");
     }catch(e){}
   }
   function startHScrollTextAuto(el){
@@ -165,7 +165,10 @@
     try{
       if(!libList) return;
       libList.querySelectorAll(".hScrollText").forEach((el)=>{
-        if(el.closest && el.closest(".ipodItem.sel")) startHScrollTextAuto(el);
+        el.classList.toggle("hScrollTextScrollable", hScrollTextIsScrollable(el));
+        if(el.closest && el.closest(".ipodItem.sel")){
+          if(!el._dpHScrollAutoRunning && !el._dpHScrollAutoTimer) startHScrollTextAuto(el);
+        }
         else{
           stopHScrollTextAuto(el);
           try{ el.scrollLeft = 0; }catch(e){}
@@ -208,7 +211,10 @@
         }
         down = false;
         moved = false;
-        if(el.closest && el.closest(".ipodItem.sel")) startHScrollTextAuto(el);
+        el.classList.toggle("hScrollTextScrollable", hScrollTextIsScrollable(el));
+        if(el.closest && el.closest(".ipodItem.sel")){
+          if(!el._dpHScrollAutoRunning && !el._dpHScrollAutoTimer) startHScrollTextAuto(el);
+        }
       };
       el.addEventListener("pointerup", end, {passive:false});
       el.addEventListener("pointercancel", end, {passive:false});

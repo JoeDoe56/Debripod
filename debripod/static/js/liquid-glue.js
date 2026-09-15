@@ -848,8 +848,26 @@
     boundaryReleaseTimer: 0,
     raf: 0,
     lastStepTs: 0,
-    initialized: false
+    initialized: false,
+    rapidInput: false,
+    rapidCount: 0,
+    lastInputAt: 0,
+    settleTimer: 0
   };
+
+  function noteLibSelectionInput(now){
+    const motion = listSelectionMotion;
+    motion.rapidCount = motion.lastInputAt && now - motion.lastInputAt < 110 ? motion.rapidCount + 1 : 1;
+    motion.lastInputAt = now;
+    if(motion.rapidCount >= 3) motion.rapidInput = true;
+    if(motion.settleTimer) clearTimeout(motion.settleTimer);
+    motion.settleTimer = setTimeout(()=>{
+      motion.settleTimer = 0;
+      motion.rapidInput = false;
+      motion.rapidCount = 0;
+      updateLibSelectionGlass("input settled");
+    }, 160);
+  }
 
   function applyLibSelectionForeground(){
       const fg = Math.max(0, Math.min(1, listSelectionMotion.foregroundProgress || 0));
@@ -972,6 +990,7 @@
 
   function setLibSelectionTarget(x, y, width, height, radius, opacity){
     try{
+      opacity = listSelectionMotion.rapidInput ? 0 : opacity;
       if(listSelectionMotion.initialized && listSelectionMotion.targetX === x && listSelectionMotion.targetY === y &&
          listSelectionMotion.targetWidth === width && listSelectionMotion.targetHeight === height &&
          listSelectionMotion.targetRadius === radius && listSelectionMotion.targetOpacity === opacity) return;
@@ -980,6 +999,7 @@
       listSelectionMotion.targetWidth = width;
       listSelectionMotion.targetHeight = height;
       listSelectionMotion.targetRadius = radius;
+      opacity = listSelectionMotion.rapidInput ? 0 : opacity;
       listSelectionMotion.targetOpacity = opacity;
       listSelectionMotion.targetForegroundProgress = opacity > 0.5 ? 1 : 0;
       if(!listSelectionMotion.initialized){
@@ -1089,6 +1109,7 @@
       if(listSelectionMotion.selectedKey !== selectedKey){
         listSelectionMotion.selectedKey = selectedKey;
         const changedAt = performance.now();
+        noteLibSelectionInput(changedAt);
         if(!listSelectionMotion.selectionChangedAt || changedAt - listSelectionMotion.selectionChangedAt > 180) listSelectionMotion.foregroundProgress = 0;
         listSelectionMotion.selectionChangedAt = changedAt;
         listSelectionMotion.targetForegroundProgress = 1;
@@ -1109,7 +1130,6 @@
       const targetHeight = Math.max(1, rowRect.height || (visibleBottom - visibleTop));
       const radius = targetHeight > 58 ? 16 : 999;
       setLibSelectionTarget(left - hostRect.left, rowRect.top - hostRect.top, right - left, targetHeight, radius, 1);
-      if(typeof setSelectedRowContentOffset === "function") setSelectedRowContentOffset(listSelectionMotion.currentY, listSelectionMotion.targetY);
       const renderer = liquidGlassRendererByKey("main");
       if(renderer){
         syncLibTransientLenses(renderer, {
