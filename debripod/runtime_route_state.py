@@ -3,6 +3,7 @@ from __future__ import annotations
 from .runtime_state import *
 from .runtime_downloads import *
 from .Services.debrid import get_active_provider
+from .Services.youtube import YTDLP_QUALITY_TARGETS
 from .user_runtime import SearchStreamStore, UserRuntime
 
 _LEGACY_STREAM_STORE = SearchStreamStore()
@@ -176,10 +177,10 @@ async def _engine_prepare_stream_session(payload: dict, http, runtime: UserRunti
         for it in selected:
             if not isinstance(it, dict):
                 continue
-            format_id = str(it.get('format_id') or it.get('itag') or it.get('file_id') or '').strip()
-            if not format_id:
+            quality_target = str(it.get('quality_target') or '').strip().lower()
+            if quality_target not in {f'{height}p' for height in YTDLP_QUALITY_TARGETS} and quality_target not in {'audio', 'best'}:
                 continue
-            name = str(it.get('name') or it.get('title') or ('Format ' + format_id)).strip() or 'Format'
+            name = str(it.get('name') or it.get('title') or ('Audio Only' if quality_target == 'audio' else quality_target)).strip() or quality_target
             media = str(it.get('media') or '').strip().lower() or ('audio' if str(it.get('ext') or '').lower() in ('mp3','m4a','aac','ogg','opus','wav','flac') else 'video')
             item_url = _ytdlp_source_url(it)
             if not selected_fallback_url and item_url:
@@ -202,10 +203,10 @@ async def _engine_prepare_stream_session(payload: dict, http, runtime: UserRunti
                 'streamed': True,
                 'ext': str(it.get('ext') or '').lower(),
                 'quality': str(it.get('quality') or it.get('bitrate') or ''),
+                'quality_target': quality_target,
+                'duration': float(it.get('duration') or 0) if str(it.get('duration') or '').strip() else 0,
                 'url': stream_source_url,
                 'youtube_url': stream_source_url,
-                'format_id': format_id,
-                'itag': format_id,
                 'mime': '',
                 'requires_local_mux': bool(media != 'audio'),
             })
@@ -221,7 +222,7 @@ async def _engine_prepare_stream_session(payload: dict, http, runtime: UserRunti
         out_items = []
         for it in items:
             rel = _search_stream_rel(session_id, str(it.get('item_id') or ''))
-            out_items.append({'root_id': SEARCH_STREAM_ROOT_ID, 'rel': rel, 'media': it.get('media') or '', 'label': it.get('name') or '', 'title': it.get('title') or '', 'artist': it.get('artist') or '', 'album': it.get('album') or '', 'art': it.get('art') or '', 'streamed': True, 'source': it.get('source') or src, 'ext': it.get('ext') or '', 'quality': it.get('quality') or '', 'size': int(it.get('size') or 0)})
+            out_items.append({'root_id': SEARCH_STREAM_ROOT_ID, 'rel': rel, 'media': it.get('media') or '', 'label': it.get('name') or '', 'title': it.get('title') or '', 'artist': it.get('artist') or '', 'album': it.get('album') or '', 'art': it.get('art') or '', 'streamed': True, 'source': it.get('source') or src, 'ext': it.get('ext') or '', 'quality': it.get('quality') or '', 'quality_target': it.get('quality_target') or '', 'duration': float(it.get('duration') or 0), 'size': int(it.get('size') or 0)})
         return {'session_id': session_id, 'title': title, 'items': out_items}
     if src != "torrent":
         raise RuntimeError("Streaming is not available for this source")

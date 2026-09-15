@@ -1,4 +1,10 @@
 import asyncio
+import json
+import os
+import shutil
+import subprocess
+
+import pytest
 
 from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
@@ -70,7 +76,7 @@ def test_pasted_soundcloud_url_still_uses_generic_ytdlp_inspection(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_format_rows_retain_the_durable_inspected_url(monkeypatch):
+def test_format_rows_retain_the_durable_inspected_url_without_cdn_bypass(monkeypatch):
     source_url = "https://media.example.test/watch/42"
     monkeypatch.setattr(youtube, "_yt_dlp_extract_info", lambda _url: {
         "formats": [{
@@ -80,7 +86,7 @@ def test_format_rows_retain_the_durable_inspected_url(monkeypatch):
     })
     files = youtube.ytdlp_list_formats(source_url)
     assert files[0]["source_url"] == source_url
-    assert files[0]["direct_url"] == "https://cdn.example.test/signed-media-url"
+    assert "direct_url" not in files[0]
 
 
 def test_format_rows_use_resolution_targets_and_best_stream_selectors(monkeypatch):
@@ -94,10 +100,22 @@ def test_format_rows_use_resolution_targets_and_best_stream_selectors(monkeypatc
     })
     files = youtube.ytdlp_list_formats(source_url)
     assert [row["quality_target"] for row in files] == ["1080p", "720p", "audio"]
-    assert files[0]["format_selector"].startswith("bestvideo[height<=1080]")
-    assert files[1]["format_selector"].startswith("bestvideo[height<=720]")
+    assert youtube._yt_stream_format_selector({"quality_target": files[0]["quality_target"], "media": "video"}).startswith("bestvideo[height<=1080]")
+    assert youtube._yt_stream_format_selector({"quality_target": files[1]["quality_target"], "media": "video"}).startswith("bestvideo[height<=720]")
     assert files[2]["name"] == "Audio Only"
-    assert files[2]["format_selector"] == "bestaudio/best"
+    assert youtube._yt_stream_format_selector({"quality_target": files[2]["quality_target"], "media": "audio"}) == "bestaudio/best"
+
+
+def test_generic_progressive_format_gets_bounded_video_and_audio_targets(monkeypatch):
+    source_url = "https://generic.example.test/media.mp4"
+    monkeypatch.setattr(youtube, "_yt_dlp_extract_info", lambda _url: {
+        "formats": [{"format_id": "mp4", "ext": "mp4", "url": "https://cdn.example.test/media.mp4"}],
+        "duration": 3.0,
+    })
+    files = youtube.ytdlp_list_formats(source_url)
+    assert [row["quality_target"] for row in files] == ["best", "audio"]
+    assert files[1]["audio_extract"] is True
+    assert "format_id" not in files[0] and "itag" not in files[0] and "direct_url" not in files[0]
 
 
 def test_ytdlp_output_validation_requires_complete_media(monkeypatch, tmp_path):
@@ -122,6 +140,80 @@ def test_ytdlp_output_validation_requires_complete_media(monkeypatch, tmp_path):
         raise AssertionError("format-specific intermediate was accepted")
 
 
+def test_ytdlp_output_validation_reads_real_ffmpeg_artifact(tmp_path, monkeypatch):
+    bundled = r"C:\Users\bugma\AppData\Local\Medal\recorder-3.877.0\{}"
+    ffmpeg = shutil.which("ffmpeg") or (bundled.format("ffmpeg.exe") if os.path.exists(bundled.format("ffmpeg.exe")) else "")
+    ffprobe = shutil.which("ffprobe") or (bundled.format("ffprobe.exe") if os.path.exists(bundled.format("ffprobe.exe")) else "")
+    if not ffmpeg or not ffprobe:
+        pytest.skip("ffmpeg and ffprobe are required for the media artifact fixture")
+    output = tmp_path / "fixture.m4a"
+    subprocess.run([
+        ffmpeg, "-v", "error", "-f", "lavfi", "-i", "sine=frequency=440:duration=0.8",
+        "-c:a", "aac", "-y", str(output),
+    ], check=True)
+    def probe(path):
+        result = subprocess.run([
+            ffprobe, "-v", "error", "-print_format", "json", "-show_format", "-show_streams", path,
+        ], check=False, capture_output=True, text=True)
+        if result.returncode:
+            raise RuntimeError(result.stderr or "ffprobe failed")
+        return json.loads(result.stdout)
+    monkeypatch.setattr(youtube, "ffprobe_json", probe)
+    result = youtube.validate_ytdlp_output(str(output), media="audio", expected_duration=0.5)
+    assert result["duration"] >= 0.5
+    assert any(stream.get("codec_type") == "audio" for stream in result["streams"])
+    muxed = tmp_path / "fixture.mp4"
+    subprocess.run([
+        ffmpeg, "-v", "error", "-f", "lavfi", "-i", "color=c=black:s=320x180:r=24:d=0.8",
+        "-f", "lavfi", "-i", "sine=frequency=880:duration=0.8", "-shortest",
+        "-c:v", "libx264", "-c:a", "aac", "-y", str(muxed),
+    ], check=True)
+    muxed_result = youtube.validate_ytdlp_output(str(muxed), media="video", expected_duration=0.5)
+    muxed_kinds = {stream.get("codec_type") for stream in muxed_result["streams"]}
+    assert {"audio", "video"}.issubset(muxed_kinds)
+    with pytest.raises(RuntimeError, match="still contains video"):
+        youtube.validate_ytdlp_output(str(muxed), media="audio")
+    truncated = tmp_path / "truncated.mp4"
+    truncated.write_bytes(muxed.read_bytes()[: max(32, muxed.stat().st_size // 4)])
+    with pytest.raises(RuntimeError):
+        youtube.validate_ytdlp_output(str(truncated), media="video")
+    video_only = tmp_path / "video-only.mp4"
+    subprocess.run([
+        ffmpeg, "-v", "error", "-f", "lavfi", "-i", "color=c=black:s=320x180:r=24:d=0.8",
+        "-c:v", "libx264", "-y", str(video_only),
+    ], check=True)
+    with pytest.raises(RuntimeError, match="missing audio"):
+        youtube.validate_ytdlp_output(str(video_only), media="video")
+
+
+def test_stream_cache_retries_and_ignores_client_selector(monkeypatch, tmp_path):
+    calls = []
+    monkeypatch.setattr(youtube, "_youtube_stream_cache_dir", lambda: str(tmp_path))
+    monkeypatch.setattr(youtube, "_yt_dlp_base_args", lambda: [])
+    monkeypatch.setattr(youtube, "ffprobe_json", lambda _path: {
+        "format": {"duration": "1.0"},
+        "streams": [{"codec_type": "video", "duration": "1.0"}, {"codec_type": "audio", "duration": "1.0"}],
+    })
+    def run(args):
+        calls.append(list(args))
+        if len(calls) == 1:
+            return 1, "", "provider rejected preferred selector"
+        output_template = args[args.index("-o") + 1]
+        output_path = output_template.replace(".%(ext)s", ".mp4")
+        with open(output_path, "wb") as handle:
+            handle.write(b"complete")
+        return 0, "dp:filepath:" + output_path, ""
+    monkeypatch.setattr(youtube, "_run_ytdlp", run)
+    path = youtube._prepare_youtube_stream_file("https://media.example.test/item", {
+        "media": "video", "quality_target": "720p", "format_selector": "--malicious-client-selector",
+    })
+    assert path.endswith(".mp4")
+    assert len(calls) == 2
+    first_selector = calls[0][calls[0].index("-f") + 1]
+    assert "height<=720" in first_selector
+    assert "malicious" not in first_selector
+
+
 def test_selected_ytdlp_format_uses_source_url_for_stream_preparation():
     source_url = "https://media.example.test/watch/42"
 
@@ -129,9 +221,8 @@ def test_selected_ytdlp_format_uses_source_url_for_stream_preparation():
         prepared = await route_state._engine_prepare_stream_session({
             "source": "youtube",
             "selected": [{
-                "format_id": "251", "name": "Audio", "media": "audio",
+                "quality_target": "audio", "name": "Audio Only", "media": "audio",
                 "source_url": source_url,
-                "direct_url": "https://cdn.example.test/signed-media-url",
             }],
         }, None)
         stream_item = route_state._search_stream_get(prepared["items"][0]["rel"])

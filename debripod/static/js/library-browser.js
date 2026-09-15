@@ -1730,19 +1730,19 @@ if(it.kind === "libsearch_history_action"){
           const visible = (state.items || []).filter(x=>x && x.kind === "libsearch_file" && x.selectable);
           let anyUnsel = false;
           for(const v of visible){
-            const key = src === "torrent" ? ("file:" + firstIdentifierText(v.file_id, v.label)) : (src === "youtube" ? ("format:" + firstIdentifierText(v.itag, v.file_id, v.label)) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
+            const key = src === "torrent" ? ("file:" + firstIdentifierText(v.file_id, v.label)) : (src === "youtube" ? ("quality:" + firstIdentifierText(v.file_id, v.label)) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
             if(key && !target.selected.has(key)){ anyUnsel = true; break; }
           }
           target.downloadQueued = false;
           if(anyUnsel){
             for(const v of visible){
-              const key = src === "torrent" ? ("file:" + firstIdentifierText(v.file_id, v.label)) : (src === "youtube" ? ("format:" + firstIdentifierText(v.itag, v.file_id, v.label)) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
+              const key = src === "torrent" ? ("file:" + firstIdentifierText(v.file_id, v.label)) : (src === "youtube" ? ("quality:" + firstIdentifierText(v.file_id, v.label)) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
               if(!key) continue;
-              target.selected.set(key, {key:key, remote_path:String(v.remote_path || ""), file_id:identifierText(v.file_id), itag:firstIdentifierText(v.itag, v.format_id, v.file_id), format_id:firstIdentifierText(v.format_id, v.itag, v.file_id), size:Number(v.size || 0), name:String(v.label || ""), label:String(v.label || ""), source:String(v.source || src || ""), ext:String(v.ext || ((((v.pills || [])[1] && typeof (v.pills || [])[1] === "string") ? (v.pills || [])[1] : "") || "")), quality:String(v.quality || ""), bitrate:String(v.bitrate || ""), media:String(v.media || (target.result && target.result.media) || ""), root_id:String(v.root_id || (target.result && target.result.root_id) || ""), rel:String(v.rel || ""), source_url:String(v.source_url || (target.result && (target.result.source_url || target.result.original_url || target.result.canonical_url || target.result.url)) || ""), direct_url:String(v.direct_url || ""), url:String((target.result && (target.result.url || target.result.original_url || target.result.canonical_url)) || "")});
+              target.selected.set(key, {key:key, remote_path:String(v.remote_path || ""), file_id:identifierText(v.file_id), size:Number(v.size || 0), name:String(v.label || ""), label:String(v.label || ""), source:String(v.source || src || ""), ext:String(v.ext || ((((v.pills || [])[1] && typeof (v.pills || [])[1] === "string") ? (v.pills || [])[1] : "") || "")), quality:String(v.quality || ""), quality_target:String(v.quality_target || ""), audio_extract:!!v.audio_extract, duration:Number(v.duration || 0), bitrate:String(v.bitrate || ""), media:String(v.media || (target.result && target.result.media) || ""), root_id:String(v.root_id || (target.result && target.result.root_id) || ""), rel:String(v.rel || ""), source_url:String(v.source_url || (target.result && (target.result.source_url || target.result.original_url || target.result.canonical_url || target.result.url)) || ""), url:String((target.result && (target.result.url || target.result.original_url || target.result.canonical_url)) || "")});
             }
           }else{
             for(const v of visible){
-              const key = src === "torrent" ? ("file:" + firstIdentifierText(v.file_id, v.label)) : (src === "youtube" ? ("format:" + firstIdentifierText(v.itag, v.file_id, v.label)) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
+              const key = src === "torrent" ? ("file:" + firstIdentifierText(v.file_id, v.label)) : (src === "youtube" ? ("quality:" + firstIdentifierText(v.file_id, v.label)) : (src === "library" ? ("library:" + String(v.root_id || (target.result && target.result.root_id) || "") + ":" + String(v.rel || "")) : String(v.remote_path || v.label || "")));
               if(key) target.selected.delete(key);
             }
           }
@@ -1768,7 +1768,7 @@ if(it.kind === "libsearch_history_action"){
               libSetFileStatus("", "");
               return;
             }
-            const sel = Array.from(target.selected.values()).map(x=>({remote_path:x.remote_path || "", file_id:identifierText(x.file_id), itag:firstIdentifierText(x.itag, x.format_id, x.file_id), format_id:firstIdentifierText(x.format_id, x.itag, x.file_id), size:x.size || 0, name:x.name || "", source:x.source || src || "", ext:x.ext || "", quality:x.quality || "", bitrate:x.bitrate || "", media:x.media || "", source_url:x.source_url || x.url || rr.source_url || rr.original_url || rr.canonical_url || rr.url || "", direct_url:x.direct_url || "", url:x.url || rr.url || rr.original_url || rr.canonical_url || ""}));
+             const sel = Array.from(target.selected.values()).map(x=>({remote_path:x.remote_path || "", file_id:identifierText(x.file_id), size:x.size || 0, name:x.name || "", source:x.source || src || "", ext:x.ext || "", quality:x.quality || "", quality_target:x.quality_target || "", audio_extract:!!x.audio_extract, duration:Number(x.duration || 0), bitrate:x.bitrate || "", media:x.media || "", source_url:x.source_url || x.url || rr.source_url || rr.original_url || rr.canonical_url || rr.url || "", url:x.url || rr.url || rr.original_url || rr.canonical_url || ""}));
             const res = await apiPost("/api/libsearch/stream_selected", {
               source: src,
               provider: rr.provider || "",
@@ -1806,18 +1806,17 @@ if(it.kind === "libsearch_history_action"){
             }else if(src === "youtube"){
               const rr = target.result || {};
               const sel = Array.from(target.selected.values()).map(x=>({
-                file_id:firstIdentifierText(x.file_id, x.itag, x.format_id),
-                itag:firstIdentifierText(x.itag, x.format_id, x.file_id),
-                format_id:firstIdentifierText(x.format_id, x.itag, x.file_id),
+                 file_id:String(x.file_id || ""),
                 name:String(x.name || x.title || x.label || ""),
                 title:String(x.title || x.name || x.label || ""),
-                ext:String(x.ext || ""),
-                media:String(x.media || ""),
+                 ext:String(x.ext || ""),
+                 quality_target:String(x.quality_target || ""),
+                 duration:Number(x.duration || 0),
+                 media:String(x.media || ""),
                 source_url:String(x.source_url || x.url || rr.source_url || rr.original_url || rr.canonical_url || rr.url || ""),
-                direct_url:String(x.direct_url || ""),
                 url:String(x.url || rr.url || rr.original_url || rr.canonical_url || ""),
                 size:Number(x.size || 0)
-              })).filter(x=>x.itag || x.format_id || x.file_id || x.url);
+              })).filter(x=>x.file_id || x.url);
               const res = await apiPost("/api/youtube/enqueue", {
                 title: rr.title || rr.directory_title || rr.name || rr.source_label || "Media",
                 source: src,

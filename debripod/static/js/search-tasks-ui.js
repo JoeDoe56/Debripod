@@ -109,7 +109,7 @@
         if(f.bitDepth && (!bd || bd !== f.bitDepth)) continue;
         if(f.sampleRate && (!sr || sr !== f.sampleRate)) continue;
         visibleFileCount += 1;
-        const key = src === "torrent" ? ("file:" + firstIdentifierText(ff.file_id, name)) : (src === "youtube" ? ("format:" + firstIdentifierText(ff.itag, ff.file_id, name)) : (src === "library" ? ("library:" + String(ff.root_id || rr.root_id || "") + ":" + String(ff.rel || "")) : (String(ff.remote_path || name))));
+        const key = src === "torrent" ? ("file:" + firstIdentifierText(ff.file_id, name)) : (src === "youtube" ? ("quality:" + firstIdentifierText(ff.file_id, name)) : (src === "library" ? ("library:" + String(ff.root_id || rr.root_id || "") + ":" + String(ff.rel || "")) : (String(ff.remote_path || name))));
         const dlState = normalizeSlskDownloadState(String(ff.download_state || ""));
         const pills = [];
         // yt-dlp keeps "youtube" as its internal source for format handling,
@@ -137,17 +137,15 @@
           ext: ext,
            quality: String(ff.quality || ""),
            quality_target: String(ff.quality_target || ""),
-           format_selector: String(ff.format_selector || ""),
+           audio_extract: !!ff.audio_extract,
+           duration: Number(ff.duration || 0),
            bitrate: String(ff.bitrate || ""),
           source_url: String(ff.source_url || rr.source_url || rr.original_url || rr.canonical_url || rr.url || ""),
-          direct_url: String(ff.direct_url || ""),
-          itag: firstIdentifierText(ff.itag, ff.format_id, ff.file_id),
-          format_id: firstIdentifierText(ff.format_id, ff.itag, ff.file_id),
           source: fileSource || src,
           onToggle: ()=>{
             if(dlState) return;
             if(target.selected.has(key)) target.selected.delete(key);
-            else target.selected.set(key, {key:key, remote_path:String(ff.remote_path || ""), file_id:identifierText(ff.file_id), itag:firstIdentifierText(ff.itag, ff.format_id, ff.file_id), format_id:firstIdentifierText(ff.format_id, ff.itag, ff.file_id), size:Number(ff.size || 0), name:name, label:name, source:String(ff.source || src || ""), ext:String(ff.ext || ""), quality:String(ff.quality || ""), quality_target:String(ff.quality_target || ""), format_selector:String(ff.format_selector || ""), bitrate:String(ff.bitrate || ""), media:String(ff.media || rr.media || ""), root_id:String(ff.root_id || rr.root_id || ""), rel:String(ff.rel || ""), source_url:String(ff.source_url || rr.source_url || rr.original_url || rr.canonical_url || rr.url || ""), direct_url:String(ff.direct_url || ""), url:String((target.result && (target.result.url || target.result.original_url || target.result.canonical_url)) || "")});
+            else target.selected.set(key, {key:key, remote_path:String(ff.remote_path || ""), file_id:identifierText(ff.file_id), size:Number(ff.size || 0), name:name, label:name, source:String(ff.source || src || ""), ext:String(ff.ext || ""), quality:String(ff.quality || ""), quality_target:String(ff.quality_target || ""), audio_extract:!!ff.audio_extract, duration:Number(ff.duration || 0), bitrate:String(ff.bitrate || ""), media:String(ff.media || rr.media || ""), root_id:String(ff.root_id || rr.root_id || ""), rel:String(ff.rel || ""), source_url:String(ff.source_url || rr.source_url || rr.original_url || rr.canonical_url || rr.url || ""), url:String((target.result && (target.result.url || target.result.original_url || target.result.canonical_url)) || "")});
           }
         });
       }
@@ -174,7 +172,8 @@
       ext:String(it.ext || ""),
       quality:String(it.quality || ""),
       quality_target:String(it.quality_target || ""),
-      format_selector:String(it.format_selector || "")
+      audio_extract:!!it.audio_extract,
+      duration:Number(it.duration || 0)
     })).filter(it=>it.root.id && it.rel && (it.media === "audio" || it.media === "video"));
   }
 

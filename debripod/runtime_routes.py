@@ -983,7 +983,10 @@ async def api_youtube_enqueue(request: web.Request):
             continue
         name = str(it.get('name') or it.get('title') or f'Format {i+1}')
         ext = str(it.get('ext') or 'mp4').lower()
-        file_id = str(it.get('file_id') or it.get('itag') or sha1_text(name + '|' + ext)[:12])
+        quality_target = str(it.get('quality_target') or '').strip().lower()
+        if quality_target not in {'2160p', '1440p', '1080p', '720p', '480p', '360p', 'audio', 'best'}:
+            quality_target = 'audio' if str(it.get('media') or '').strip().lower() == 'audio' else 'best'
+        file_id = 'quality-' + quality_target
         item_source_url = _ytdlp_enqueue_source_url(it) or url
         if item_source_url not in safe_source_urls:
             try:
@@ -993,15 +996,13 @@ async def api_youtube_enqueue(request: web.Request):
         item_source_url = safe_source_urls[item_source_url]
         entries.append({
             'file_id': file_id,
-            'itag': str(it.get('itag') or it.get('format_id') or it.get('file_id') or ''),
-            'format_id': str(it.get('format_id') or it.get('itag') or it.get('file_id') or ''),
             'name': name,
             'title': name,
             'ext': ext,
-            'quality_target': str(it.get('quality_target') or '').strip(),
-            'format_selector': str(it.get('format_selector') or it.get('selector') or '').strip(),
+            'quality_target': quality_target,
+            'audio_extract': bool(it.get('audio_extract')),
+            'duration': float(it.get('duration') or 0) if str(it.get('duration') or '').strip() else 0,
             'media': str(it.get('media') or '').strip().lower(),
-            'direct_url': str(it.get('direct_url') or '').strip(),
             'source_url': item_source_url,
             'url': item_source_url,
             'total': int(it.get('size') or 0) if str(it.get('size') or '').strip() else 0,

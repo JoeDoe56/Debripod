@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 from .runtime_state import *
 from .runtime_video_post import *
 from .Services.youtube import validate_ytdlp_output
@@ -49,9 +51,11 @@ def _youtube_find_downloaded_path(task_dir: str, base_title: str, preferred_ext:
     for name in names:
         if name != stem and not name.startswith(stem + '.'):
             continue
+        if name.count('.') != stem.count('.') + 1:
+            continue
         if any(token in name.lower() for token in ('.part', '.ytdl', '.tmp', '.temp')):
             continue
-        if '.f' in name.lower() and any(part[1:].isdigit() for part in name.lower().split('.') if part.startswith('f')):
+        if any(re.fullmatch(r'f[0-9a-z]+', part) for part in name.lower().split('.')[1:-1]):
             continue
         cand = os.path.join(folder, name)
         if not os.path.isfile(cand):
@@ -183,17 +187,21 @@ def _youtube_run_download(task_id: str, entry: Dict[str, Any], seq: int, total_c
 
     title = sanitize_filename(str(entry.get('name') or entry.get('title') or 'youtube'))
     ext = str(entry.get('ext') or '').strip().lower() or 'mp4'
-    format_id = str(entry.get('format_id') or entry.get('itag') or '').strip()
     quality_target = str(entry.get('quality_target') or '').strip()
     media = str(entry.get('media') or '').strip().lower()
+    # Audio Only must remain audio-only even when an extractor exposes only a
+    # combined progressive format. yt-dlp's ``best`` audio postprocessor is a
+    # remux when possible and only converts when the source requires it.
+    audio_extract = media == 'audio'
+    if audio_extract:
+        ext = 'm4a'
     source_url = str(entry.get('source_url') or entry.get('url') or task.source_url or task.magnet or '').strip()
     if not source_url:
         raise RuntimeError('No URL found for the selected format')
     out_tpl = os.path.join(task.task_dir, title + '.%(ext)s')
     preferred_out = os.path.join(task.task_dir, title + '.' + ext)
 
-    format_spec = dict(entry)
-    format_spec.update({'format_id': format_id, 'media': media, 'ext': ext})
+    format_spec = {'quality_target': quality_target, 'media': media, 'ext': ext}
     selector = _yt_stream_format_selector(format_spec)
     selectors = [selector]
     # A second invocation gets a less restrictive selector when a provider's
@@ -204,7 +212,7 @@ def _youtube_run_download(task_id: str, entry: Dict[str, Any], seq: int, total_c
     except Exception:
         target_height = 0
     if target_height > 0 and media != 'audio':
-        fallback = f'bestvideo[height<={target_height}]+bestaudio/best[height<={target_height}]/best'
+        fallback = f'bestvideo[height<={target_height}]+bestaudio/best[height<={target_height}]'
         if fallback not in selectors:
             selectors.append(fallback)
 
@@ -216,11 +224,13 @@ def _youtube_run_download(task_id: str, entry: Dict[str, Any], seq: int, total_c
     actual = ''
     last_error = ''
     for attempt, attempt_selector in enumerate(selectors, start=1):
-        args = _yt_dlp_base_args()
+        args = _yt_dlp_base_args() + ['--no-part', '--force-overwrites']
         if attempt_selector:
             args += ['-f', attempt_selector]
         if media != 'audio':
             args += ['--merge-output-format', _yt_selected_output_ext({'media': media, 'ext': ext})]
+        elif audio_extract:
+            args += ['--extract-audio', '--audio-format', 'best']
         args += [
             '--newline',
             '--progress-template', 'download:dp:%(progress.downloaded_bytes)s:%(progress.total_bytes)s:%(progress.speed)s',
@@ -238,9 +248,17 @@ def _youtube_run_download(task_id: str, entry: Dict[str, Any], seq: int, total_c
             _update_task_file_entry(task_id, 'youtube_files', file_id, state='paused', paused=True, error='')
             _youtube_recompute_overall(task_id)
             return None
+        if rc != 0:
+            last_error = 'yt-dlp timed out' if timed_out else (error or 'yt-dlp failed')
+            if attempt == len(selectors):
+                raise RuntimeError(last_error)
+            continue
         candidate = str(actual_path or '').strip()
         if not candidate or not os.path.exists(candidate):
-            candidate = _youtube_find_downloaded_path(task.task_dir, title, ext, media, entry.get('duration') or 0)
+            last_error = 'yt-dlp did not report its final output path'
+            if attempt == len(selectors):
+                raise RuntimeError(last_error)
+            continue
         try:
             validate_ytdlp_output(candidate, media=media, expected_duration=entry.get('duration') or 0)
             actual = candidate

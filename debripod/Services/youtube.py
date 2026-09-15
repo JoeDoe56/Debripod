@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import re
 import threading
 import xml.etree.ElementTree as ET
 from typing import Any, Callable, Dict, List, Optional, Tuple
@@ -299,9 +300,6 @@ def _yt_selected_output_ext(fmt: dict) -> str:
 
 
 def _yt_stream_format_selector(fmt: dict) -> str:
-    explicit = str(fmt.get("format_selector") or fmt.get("selector") or "").strip()
-    if explicit:
-        return explicit
     target = str(fmt.get("quality_target") or "").strip().lower()
     if target in {"audio", "audio_only", "audio only"}:
         return "bestaudio/best"
@@ -310,18 +308,16 @@ def _yt_stream_format_selector(fmt: dict) -> str:
     except Exception:
         target_height = 0
     if target_height > 0:
-        # Prefer browser-friendly AVC/AAC, then fall back to the best codec
-        # pair and finally a progressive file when a site lacks split streams.
-        return (f"bestvideo[height<={target_height}][vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
+        # Resolution is selected before codec so a higher requested target is
+        # never silently downgraded merely because another codec is present.
+        # AAC is preferred where available for browser compatibility.
+        return (f"bestvideo[height<={target_height}]+bestaudio[acodec^=mp4a]/"
                 f"bestvideo[height<={target_height}]+bestaudio/"
                 f"best[height<={target_height}]")
-    fid = str(fmt.get("format_id") or fmt.get("itag") or fmt.get("file_id") or "").strip()
     media = str(fmt.get("media") or "").strip().lower()
-    if not fid:
-        return "best"
     if media == "audio":
-        return fid
-    return f"{fid}+bestaudio/best"
+        return "bestaudio/best"
+    return "best"
 
 
 YTDLP_QUALITY_TARGETS = (2160, 1440, 1080, 720, 480, 360)
@@ -341,18 +337,23 @@ def _yt_quality_target_rows(info: dict, source_url: str) -> List[dict]:
     formats = [f for f in list(info.get("formats") or []) if isinstance(f, dict)]
     usable = [f for f in formats if str(f.get("ext") or "").lower() not in {"mhtml", "jpg", "jpeg", "png", "webp"}]
     videos = []
+    unknown_progressive = []
     audios = []
     for fmt in usable:
         vcodec = str(fmt.get("vcodec") or "").lower()
         acodec = str(fmt.get("acodec") or "").lower()
         if vcodec not in {"", "none"} and _yt_number(fmt.get("height")) > 0:
             videos.append(fmt)
-        if vcodec in {"", "none"} and acodec not in {"", "none"}:
+        elif vcodec in {"", "none"} and acodec in {"", "none"} and str(fmt.get("ext") or "").lower() in {"mp4", "webm", "mkv", "mov"}:
+            unknown_progressive.append(fmt)
+        # Keep combined progressive formats as an Audio Only fallback for
+        # extractors that do not expose a separate audio stream.
+        if acodec not in {"", "none"}:
             audios.append(fmt)
     rows: List[dict] = []
     used_heights = set()
     for target in YTDLP_QUALITY_TARGETS:
-        candidates = [f for f in videos if _yt_number(f.get("height")) <= target]
+        candidates = [f for f in videos if int(_yt_number(f.get("height"))) == target]
         if not candidates:
             continue
         # Highest resolution at or below target; then prefer AVC and larger
@@ -367,25 +368,60 @@ def _yt_quality_target_rows(info: dict, source_url: str) -> List[dict]:
         if height in used_heights:
             continue
         used_heights.add(height)
-        fid = str(chosen.get("format_id") or "").strip()
-        row = _yt_format_row(chosen, source_url, quality_target=f"{height}p")
+        row = _yt_format_row(chosen, source_url, quality_target=f"{target}p")
         # The displayed row is the selected available height. Once a source
         # lacks (for example) 2160p, asking yt-dlp for <=2160 would make the
         # same stream look like a higher target and would duplicate it.
-        row["format_selector"] = _yt_stream_format_selector({"quality_target": f"{height}p"})
         row["name"] = f"{height}p"
         row["title"] = row["name"]
         row["quality"] = row["name"]
-        row["file_id"] = fid or f"quality-{height}p"
-        row["format_id"] = fid
-        row["itag"] = fid
+        row["file_id"] = f"quality-{target}p"
+        row["duration"] = _yt_number(chosen.get("duration")) or _yt_number(info.get("duration"))
         rows.append(row)
+    if not rows and videos:
+        # Generic extractors sometimes expose a non-standard height. Keep a
+        # bounded Best choice rather than returning an API row the client
+        # cannot enqueue as one of the six targets.
+        chosen = max(videos, key=lambda f: (_yt_number(f.get("height")), _yt_number(f.get("tbr"))))
+        row = _yt_format_row(chosen, source_url, quality_target="best")
+        height = int(_yt_number(chosen.get("height")))
+        row["name"] = f"{height}p" if height else "Best"
+        row["title"] = row["name"]
+        row["quality"] = row["name"]
+        row["file_id"] = "quality-best"
+        row["duration"] = _yt_number(chosen.get("duration")) or _yt_number(info.get("duration"))
+        rows.append(row)
+    if not videos and unknown_progressive:
+        chosen = max(unknown_progressive, key=lambda f: _yt_number(f.get("tbr")))
+        row = _yt_format_row(chosen, source_url, quality_target="best")
+        row["name"] = "Best"; row["title"] = "Best"; row["quality"] = "Best"; row["file_id"] = "quality-best"
+        row["duration"] = _yt_number(chosen.get("duration")) or _yt_number(info.get("duration"))
+        rows.append(row)
+        audio_row = _yt_format_row(chosen, source_url, quality_target="audio")
+        audio_row["media"] = "audio"; audio_row["name"] = "Audio Only"; audio_row["title"] = "Audio Only"; audio_row["quality"] = "Audio Only"; audio_row["file_id"] = "quality-audio"; audio_row["audio_extract"] = True
+        audio_row["duration"] = row["duration"]
+        rows.append(audio_row)
+    if not formats and str(info.get("url") or "").strip():
+        chosen = {"ext": str(info.get("ext") or "mp4"), "url": str(info.get("url") or ""), "vcodec": "", "acodec": ""}
+        row = _yt_format_row(chosen, source_url, quality_target="best")
+        row["name"] = "Best"; row["title"] = "Best"; row["quality"] = "Best"; row["file_id"] = "quality-best"
+        row["duration"] = _yt_number(info.get("duration"))
+        rows.append(row)
+        audio_row = _yt_format_row(chosen, source_url, quality_target="audio")
+        audio_row["media"] = "audio"; audio_row["name"] = "Audio Only"; audio_row["title"] = "Audio Only"; audio_row["quality"] = "Audio Only"; audio_row["file_id"] = "quality-audio"; audio_row["audio_extract"] = True
+        audio_row["duration"] = _yt_number(info.get("duration"))
+        rows.append(audio_row)
     if audios:
-        audios.sort(key=lambda f: (_yt_number(f.get("abr")), _yt_number(f.get("tbr"))), reverse=True)
+        audios.sort(key=lambda f: (
+            str(f.get("vcodec") or "").lower() in {"", "none"},
+            _yt_number(f.get("abr")),
+            _yt_number(f.get("tbr")),
+        ), reverse=True)
         row = _yt_format_row(audios[0], source_url, quality_target="audio")
         row["name"] = "Audio Only"; row["title"] = "Audio Only"; row["quality"] = "Audio Only"
-        row["format_selector"] = "bestaudio/best"
-        row["file_id"] = "audio-only"; row["format_id"] = ""; row["itag"] = ""
+        row["file_id"] = "quality-audio"
+        row["audio_extract"] = str(audios[0].get("vcodec") or "").lower() not in {"", "none"}
+        row["duration"] = _yt_number(audios[0].get("duration")) or _yt_number(info.get("duration"))
         rows.append(row)
     return rows
 
@@ -393,20 +429,20 @@ def _yt_quality_target_rows(info: dict, source_url: str) -> List[dict]:
 def _yt_format_row(fmt: dict, source_url: str, *, quality_target: str) -> dict:
     ext = str(fmt.get("ext") or "").strip().lower()
     media = _yt_guess_media(fmt)
-    fid = str(fmt.get("format_id") or "").strip()
     size = 0
     for key in ("filesize", "filesize_approx"):
         try:
             if int(fmt.get(key) or 0) > 0: size = int(fmt[key]); break
         except Exception: pass
     return {
-        "file_id": fid, "itag": fid, "format_id": fid,
+        "file_id": "quality-" + (quality_target or "best").lower().replace(" ", "-"),
         "name": _yt_quality_text(fmt), "title": _yt_quality_text(fmt), "ext": ext,
         "quality": _yt_quality_text(fmt), "quality_target": quality_target,
-        "format_selector": "", "bitrate": _yt_audio_bitrate_k(fmt),
+        "duration": _yt_number(fmt.get("duration")),
+        "bitrate": _yt_audio_bitrate_k(fmt),
         "size": size, "size_text": human_bytes(size) if size > 0 else "",
         "source": "youtube", "selectable": True, "media": media,
-        "source_url": source_url, "direct_url": str(fmt.get("url") or "").strip(),
+        "source_url": source_url,
         "fps": int(_yt_number(fmt.get("fps"))), "height": int(_yt_number(fmt.get("height"))),
         "width": int(_yt_number(fmt.get("width"))), "acodec": str(fmt.get("acodec") or "").lower(),
         "vcodec": str(fmt.get("vcodec") or "").lower(), "protocol": str(fmt.get("protocol") or "").strip(),
@@ -435,7 +471,7 @@ def validate_ytdlp_output(path: str, media: str = "", expected_duration: float =
     if any(token in name for token in (".part", ".ytdl", ".tmp", ".temp")):
         raise RuntimeError("yt-dlp output is an intermediate file")
     # yt-dlp's format-specific temporary names look like title.f137.mp4.
-    if ".f" in name and any(part[1:].isdigit() for part in name.split(".") if part.startswith("f")):
+    if any(re.fullmatch(r"f[0-9a-z]+", part) for part in name.split(".")[1:-1]):
         raise RuntimeError("yt-dlp output is an intermediate format file")
     try:
         if os.path.getsize(candidate) <= 0:
@@ -450,6 +486,8 @@ def validate_ytdlp_output(path: str, media: str = "", expected_duration: float =
     wanted = str(media or "").strip().lower()
     if wanted == "audio" and "audio" not in kinds:
         raise RuntimeError("yt-dlp output has no audio stream")
+    if wanted == "audio" and "video" in kinds:
+        raise RuntimeError("yt-dlp Audio Only output still contains video")
     if wanted == "video" and not {"video", "audio"}.issubset(kinds):
         raise RuntimeError("yt-dlp video output is missing audio or video")
     if wanted not in {"audio", "video"} and not (kinds & {"audio", "video"}):
@@ -472,10 +510,13 @@ def validate_ytdlp_output(path: str, media: str = "", expected_duration: float =
         starts = [_yt_number(s.get("start_time")) for s in av]
         if starts and max(starts) - min(starts) > 1.0:
             raise RuntimeError("yt-dlp output audio/video streams are out of sync")
+        track_durations = [_yt_number(s.get("duration")) for s in av if _yt_number(s.get("duration")) > 0]
+        if len(track_durations) >= 2 and max(track_durations) - min(track_durations) > 2.0:
+            raise RuntimeError("yt-dlp output audio/video streams are incomplete")
     return {"probe": probe, "duration": duration, "streams": streams}
 
 
-def _find_existing_output(base_no_ext: str, expected_ext: str = "", media: str = "") -> str:
+def _find_existing_output(base_no_ext: str, expected_ext: str = "", media: str = "", expected_duration: float = 0.0) -> str:
     folder = os.path.dirname(base_no_ext) or "."
     stem = os.path.basename(base_no_ext)
     try:
@@ -483,11 +524,13 @@ def _find_existing_output(base_no_ext: str, expected_ext: str = "", media: str =
         for name in sorted(os.listdir(folder)):
             if not name.startswith(stem + "."):
                 continue
+            if name.count(".") != stem.count(".") + 1:
+                continue
             if ext and os.path.splitext(name)[1].lstrip(".").lower() != ext:
                 continue
             cand = os.path.join(folder, name)
             try:
-                validate_ytdlp_output(cand, media=media)
+                validate_ytdlp_output(cand, media=media, expected_duration=expected_duration)
                 return cand
             except Exception:
                 continue
@@ -501,36 +544,70 @@ def _prepare_youtube_stream_file(url: str, fmt: dict) -> str:
     if not src_url:
         raise RuntimeError("Missing YouTube URL")
     fmt2 = dict(fmt or {})
-    fmt_id = str(fmt2.get("format_id") or fmt2.get("itag") or fmt2.get("file_id") or "").strip()
     media = str(fmt2.get("media") or "").strip().lower()
+    quality_target = str(fmt2.get("quality_target") or "").strip().lower()
+    expected_duration = _yt_number(fmt2.get("duration"))
     out_ext = _yt_selected_output_ext(fmt2)
-    key = sha1_text(src_url + "|" + fmt_id + "|" + media + "|" + out_ext)
+    audio_extract = media == "audio"
+    if audio_extract:
+        # Let yt-dlp retain the source container when it can remux it. The
+        # final path printed after_move is authoritative and is validated.
+        out_ext = ""
+    key = sha1_text(src_url + "|" + quality_target + "|" + media + "|" + out_ext)
     folder = _youtube_stream_cache_dir()
     base_no_ext = os.path.join(folder, key)
-    existing = _find_existing_output(base_no_ext, out_ext, media)
+    existing = _find_existing_output(base_no_ext, out_ext, media, expected_duration)
     if existing:
         return existing
     lock = _youtube_stream_build_lock(key)
     with lock:
-        existing = _find_existing_output(base_no_ext, out_ext, media)
+        existing = _find_existing_output(base_no_ext, out_ext, media, expected_duration)
         if existing:
             return existing
-        selector = _yt_stream_format_selector(fmt2)
-        args = _yt_dlp_base_args() + ["--no-part", "--force-overwrites", "--newline", "-f", selector]
-        if media != "audio":
-            args += ["--merge-output-format", out_ext]
-        args += ["-o", base_no_ext + ".%(ext)s", src_url]
-        code, out, err = _run_ytdlp(args)
-        if code != 0:
-            raise RuntimeError((err or out or "yt-dlp failed").strip())
-        built = _find_existing_output(base_no_ext, out_ext, media)
-        if not built:
-            raise RuntimeError("yt-dlp did not produce a streamable file")
-        return built
+        # Resolve the selector from the normalized target on the server. A
+        # client supplied format ID or selector is never trusted for a fetch.
+        selectors = [_yt_stream_format_selector({"quality_target": quality_target, "media": media, "ext": out_ext})]
+        target_text = quality_target.rstrip("p")
+        try:
+            target_height = int(target_text)
+        except (TypeError, ValueError):
+            target_height = 0
+        if target_height > 0 and media != "audio":
+            fallback = f"bestvideo[height<={target_height}]+bestaudio/best[height<={target_height}]"
+            if fallback not in selectors:
+                selectors.append(fallback)
+        last_error = ""
+        for selector in selectors:
+            args = _yt_dlp_base_args() + ["--no-part", "--force-overwrites", "--newline", "-f", selector]
+            if media != "audio":
+                args += ["--merge-output-format", out_ext]
+            elif audio_extract:
+                args += ["--extract-audio", "--audio-format", "best"]
+            args += ["--print", "after_move:dp:filepath:%(filepath)s", "-o", base_no_ext + ".%(ext)s", src_url]
+            code, out, err = _run_ytdlp(args)
+            if code != 0:
+                last_error = (err or out or "yt-dlp failed").strip()
+                continue
+            printed = ""
+            for line in (out or "").splitlines():
+                if line.strip().startswith("dp:filepath:"):
+                    printed = line.strip().split(":", 2)[2].strip()
+            built = printed if printed and os.path.isfile(printed) else ""
+            if not built:
+                last_error = "yt-dlp produced an invalid or incomplete stream"
+                continue
+            try:
+                validate_ytdlp_output(built, media=media, expected_duration=expected_duration)
+                return built
+            except Exception as exc:
+                last_error = str(exc)
+        raise RuntimeError(last_error or "yt-dlp did not produce a streamable file")
 
 
 def _yt_dlp_base_args() -> List[str]:
-    args = ["--no-playlist", "--no-warnings", "--ignore-config"]
+    # Sort by requested resolution first, then prefer broadly playable H.264
+    # and AAC only among equal-resolution candidates.
+    args = ["--no-playlist", "--no-warnings", "--ignore-config", "-S", "res,vcodec:h264,acodec:aac"]
     ff_loc = _ytdlp_ffmpeg_location()
     if ff_loc:
         args += ["--ffmpeg-location", ff_loc]
@@ -643,20 +720,7 @@ def _yt_quality_text(format_info: dict) -> str:
     if width:
         ext = str(format_info.get("ext") or "").strip().lower()
         return (str(width) + "w" + ((" " + ext) if ext else "")).strip()
-    return str(format_info.get("format_id") or "Format").strip()
-
-
-def _yt_direct_url_for_format(url: str, format_id: str) -> str:
-    info = _yt_dlp_extract_info(url)
-    fid = str(format_id or "").strip()
-    if not fid:
-        return str(info.get("url") or "").strip()
-    for fmt in list(info.get("formats") or []):
-        if not isinstance(fmt, dict):
-            continue
-        if str(fmt.get("format_id") or "").strip() == fid:
-            return str(fmt.get("url") or "").strip()
-    return ""
+    return "Format"
 
 
 def ytdlp_list_formats(url: str) -> List[dict]:
@@ -666,8 +730,7 @@ def ytdlp_list_formats(url: str) -> List[dict]:
     source_url = str(url or "").strip()
     info = _yt_dlp_extract_info(source_url)
     # The extractor's format IDs change over time and are not useful quality
-    # choices. Return one row per available target and retain IDs only as
-    # diagnostic/backwards-compatible metadata for the worker.
+    # choices. Return one row per available target with a stable target ID.
     items = _yt_quality_target_rows(info, source_url)
     if items:
         return items
@@ -679,9 +742,6 @@ def ytdlp_list_formats(url: str) -> List[dict]:
     for fmt in list(info.get("formats") or []):
         if not isinstance(fmt, dict):
             continue
-        fid = str(fmt.get("format_id") or "").strip()
-        if not fid:
-            continue
         ext = str(fmt.get("ext") or "").strip().lower()
         if ext in ("mhtml", "jpg", "jpeg", "png", "webp"):
             continue
@@ -689,9 +749,9 @@ def ytdlp_list_formats(url: str) -> List[dict]:
         vcodec = str(fmt.get("vcodec") or "").strip().lower()
         if acodec in ("", "none") and vcodec in ("", "none"):
             continue
-        direct_url = str(fmt.get("url") or "").strip()
+        media = _yt_guess_media(fmt)
         quality = _yt_quality_text(fmt)
-        name = quality or ("Format " + fid)
+        name = quality or ("Audio Only" if media == "audio" else "Best")
         size = 0
         for key in ("filesize", "filesize_approx"):
             try:
@@ -701,20 +761,19 @@ def ytdlp_list_formats(url: str) -> List[dict]:
                     break
             except Exception:
                 pass
-        media = _yt_guess_media(fmt)
         bitrate = _yt_audio_bitrate_k(fmt) if media == "audio" else ""
-        key = (fid, ext, quality, size)
+        quality_target = "audio" if media == "audio" else "best"
+        key = (quality_target, ext, quality, size)
         if key in seen:
             continue
         seen.add(key)
         items.append({
-            "file_id": fid,
-            "itag": fid,
-            "format_id": fid,
+            "file_id": "quality-" + quality_target,
             "name": name,
             "title": name,
             "ext": ext,
             "quality": quality,
+            "quality_target": quality_target,
             "bitrate": bitrate,
             "size": size,
             "size_text": human_bytes(size) if size > 0 else "",
@@ -722,7 +781,6 @@ def ytdlp_list_formats(url: str) -> List[dict]:
             "selectable": True,
             "media": media,
             "source_url": source_url,
-            "direct_url": direct_url,
             "fps": int(_yt_number(fmt.get("fps"))),
             "height": int(_yt_number(fmt.get("height"))),
             "width": int(_yt_number(fmt.get("width"))),
