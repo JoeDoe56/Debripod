@@ -391,6 +391,7 @@ async function goBack(){
 
 
   async function startVideoFromItem(item, forceShow, resumeTime){
+    if(typeof stopGaplessPlayback === "function")stopGaplessPlayback();
     if(typeof forceShow !== "boolean") forceShow = true;
     try{ preparePlaybackMediaAudio(npVideo); }catch(e){}
     try{ unlockPlaybackMediaAudio(); }catch(e){}
@@ -506,11 +507,12 @@ async function goBack(){
     // Decode the current and next finite tracks before starting them so both
     // sources can share one AudioContext clock. The regular element path is
     // retained as a browser/stream fallback inside the loader.
-    if(!same && state.gaplessEnabled && state.preloadEnabled && typeof startGaplessAudioFromItem === "function"){
+    if(state.preloadEnabled && typeof startGaplessAudioFromItem === "function"){
       try{
-        if(await startGaplessAudioFromItem(item, playlist || state.playlist || [], index, forceShow, resumeTime)) return;
+        if(await startGaplessAudioFromItem(item, playlist || state.playlist || [], index, forceShow, resumeTime, {playbackNav,sourceView})) return;
       }catch(e){}
     }
+    if(typeof stopGaplessPlayback === "function" && gaplessPlaybackActive())stopGaplessPlayback();
     if(same){
       try{
         buildPlaybackSessionUpdate({now:Object.assign({}, state.now, {nav:playbackNav, meta:state.nowMeta || {}}), queue:state.playlist, queueIndex:state.playIndex, nav:playbackNav, sourceView:sourceView, media:"audio"}, "playback-start");
@@ -705,16 +707,6 @@ async function goBack(){
     if(!isVideoActive() && !state.now) return;
     const m = wheelMedia();
     if(!m) return;
-    if(!isVideoActive() && typeof gaplessPlaybackActive === "function" && gaplessPlaybackActive()){
-      const g = window.DebriPod && DebriPod.gaplessAudio;
-      try{
-        if(g && g.snapshot && g.snapshot().playing){ g.pause(); }
-        else if(g && g.resume){ g.resume(); }
-        if(canMediaSession()) navigator.mediaSession.playbackState = g && g.snapshot && g.snapshot().playing ? "playing" : "paused";
-        updateGaplessUi(); syncMediaSessionControls();
-      }catch(e){}
-      return;
-    }
     const transport = window.DebriPod && DebriPod.playbackTransport;
     if(transport){
       try{ transport.toggle(m); }catch(e){}

@@ -9,6 +9,7 @@ var preloadAudioEl = null;
 var preloadRequestNonce = 0;
 var gaplessBufferCache = new Map();
 var gaplessUiTimer = null;
+var gaplessLoadNonce = 0;
 
 function playbackText(value){
   return value == null ? "" : String(value).trim();
@@ -221,12 +222,39 @@ function gaplessItemKey(item){
 
 async function gaplessDecodeItem(item){
   const api = gaplessAudioApi();
-  if(!api || !api.supported || !api.supported()) throw new Error("gapless audio unavailable");
+  if(!api || !api.supported()) throw new Error("gapless audio unavailable");
   const key = gaplessItemKey(item);
-  if(gaplessBufferCache.has(key)) return gaplessBufferCache.get(key);
-  const pending = Promise.resolve(api.decode(item)).catch((e)=>{ gaplessBufferCache.delete(key); throw e; });
-  gaplessBufferCache.set(key, pending);
-  return pending;
+  if(gaplessBufferCache.has(key)) return gaplessBufferCache.get(key).promise;
+  const controller = new AbortController();
+  const entry = {controller, promise:null};
+  entry.promise = Promise.resolve(api.decode(item,controller.signal)).then(buffer=>{entry.buffer=buffer;return buffer;}).catch(error=>{if(gaplessBufferCache.get(key)===entry)gaplessBufferCache.delete(key);throw error;});
+  gaplessBufferCache.set(key,entry);
+  return entry.promise;
+}
+
+function retainGaplessBuffers(items){
+  const keep=new Set(items.filter(Boolean).map(gaplessItemKey));
+  for(const [key,entry] of gaplessBufferCache){if(!keep.has(key)){entry.controller.abort();gaplessBufferCache.delete(key);}}
+}
+
+function stopGaplessPlayback(){
+  gaplessLoadNonce++;
+  const api=gaplessAudioApi();
+  if(api)api.stop();
+  if(activeAudio && activeAudio.__gapless)activeAudio=audioMain;
+  stopGaplessUiTimer();retainGaplessBuffers([]);
+}
+
+function gaplessNextItem(){
+  const queue=window.DebriPod && DebriPod.playbackQueue;
+  if(queue && queue.orderedEntries){
+    const entries=queue.orderedEntries();const pos=entries.findIndex(entry=>entry.canonicalIndex===queue.state.index);
+    const next=entries[pos+1];
+    if(pos<0 || !next)return null;
+    const item=next.item;
+    return Object.assign({},item,{root:item.root || {id:item.root_id},rel:item.rel});
+  }
+  const index=nextIndexPeek();return index==null?null:state.playlist[index];
 }
 
 function gaplessPlaybackSnapshot(){
@@ -242,10 +270,11 @@ function updateGaplessUi(){
   const snap = gaplessPlaybackSnapshot();
   if(!snap) return;
   const d = Number(snap.duration || 0), t = Number(snap.position || 0);
-  if(d > 0 && npSeek){
+  if(d > 0 && npSeek && !npSeekDragging && !seekMode){
     npSeek.value = String(Math.max(0, Math.min(1000, Math.round((t / d) * 1000))));
     try{ updateProgressMeterFill((t / d) * 100); }catch(e){}
   }
+  try{ if(activeAudio && activeAudio.__gapless)activeAudio.tick(); }catch(e){}
   try{ renderInfoPillLabels(); }catch(e){}
   try{ syncMediaSessionPosition(); }catch(e){}
   try{ syncMediaSessionControls(); }catch(e){}
@@ -258,57 +287,64 @@ function startGaplessUiTimer(){
 
 function gaplessPlaybackActive(){ return !!gaplessPlaybackSnapshot(); }
 
-async function startGaplessAudioFromItem(item, playlist, index, forceShow, resumeTime){
-  const api = gaplessAudioApi();
-  if(!api || !state.gaplessEnabled || !state.preloadEnabled) return false;
-  const pl = Array.isArray(playlist) ? playlist : (state.playlist || []);
-  const idx = typeof index === "number" ? index : (state.playIndex || 0);
-  const ni = (state.shuffleEnabled && Array.isArray(state.playOrder)) ? state.playOrder[(state.orderPos || 0) + 1] : idx + 1;
-  const next = ni != null && ni >= 0 && ni < pl.length ? pl[ni] : null;
-  let currentBuffer = null, nextBuffer = null;
+async function startGaplessAudioFromItem(item, playlist, index, forceShow, resumeTime, origin){
+  const api=gaplessAudioApi();
+  if(!api || !state.preloadEnabled)return false;
+  const nonce=++gaplessLoadNonce;
+  const pl=Array.isArray(playlist)?playlist:state.playlist || [];
+  const idx=typeof index === "number"?index:0;
+  const next=gaplessNextItem();
+  const nav=(origin && origin.playbackNav) || currentPlaybackNavContext();
+  const sourceView=(origin && origin.sourceView) || (state.playbackSession && state.playbackSession.sourceView);
+  const metaPromise=apiGet("/api/library/filemeta?root_id="+encodeURIComponent(item.root.id)+"&rel="+encodeURIComponent(item.rel))
+    .then(raw=>normalizePlaybackMetadata(raw,item,item.label)).catch(()=>normalizePlaybackMetadata({},item,item.label));
   try{
-    if(!api.takePrestarted(item)){
-      currentBuffer = await gaplessDecodeItem(item);
-      if(next) nextBuffer = await gaplessDecodeItem(next);
-      if(!api.start(item, currentBuffer, next, nextBuffer, {
-        offset: (resumeTime && Number(resumeTime) > 0) ? Number(resumeTime) : 0,
-        gap: state.gaplessEnabled ? 0 : 0.12,
-        onBoundary: (boundaryItem)=>{
-          const boundaryIndex = pl.findIndex((x)=>gaplessItemKey(x) === gaplessItemKey(boundaryItem));
-          if(boundaryIndex >= 0){
-            if(state.shuffleEnabled && Array.isArray(state.playOrder)) state.orderPos = Math.max(0, state.playOrder.indexOf(boundaryIndex));
-            startGaplessAudioFromItem(boundaryItem, pl, boundaryIndex, false, 0).catch(()=>playNext());
-          }
-        },
-        onEnded: ()=>playNext()
-      })) throw new Error("gapless source could not start");
-    }
-  }catch(e){
-    try{ api.stop(); }catch(err){}
-    return false;
+    const prestarted=api.takePrestarted(item);
+    if(!prestarted){
+      retainGaplessBuffers([item,next]);
+      const bufferPromise=gaplessDecodeItem(item);
+      const nextPromise=next && next.media!=="video"?gaplessDecodeItem(next).catch(()=>null):Promise.resolve(null);
+      const buffer=await bufferPromise;
+      // A prepared skip must never wait for the following track to decode.
+      const nextBuffer=api.snapshot()?.playing ? (next && gaplessBufferCache.get(gaplessItemKey(next))?.buffer || null) : await nextPromise;
+      if(nonce!==gaplessLoadNonce)return true;
+      if(!state.preloadEnabled)return false;
+      if(!await api.resumeContext())throw new Error("Audio output is suspended");
+      if(nonce!==gaplessLoadNonce)return true;
+      try{window.DebriPod.playbackTransport?.cancel(api.media);}catch(e){}
+      api.media.playbackRate=1;api.media.setTransportLevel(1);
+      if(activeAudio && !activeAudio.__gapless){activeAudio.pause();activeAudio.removeAttribute("src");activeAudio.load();}
+      activeAudio=api.media;
+      if(!activeAudio._dpWired){wireAudio(activeAudio);activeAudio._dpWired=true;}
+      preparePlaybackMediaAudio(activeAudio);applyVolume();
+      if(!api.start(item,buffer,next,nextBuffer,{offset:Number(resumeTime)||0,gap:state.gaplessEnabled?0:0.12,
+        onBoundary:(boundaryItem,finished)=>{
+          try{lastfmMaybeScrobble(true);if(finished)playbackMaybePost("audio",finished.item.root.id,finished.item.rel,state.nowMeta || {},finished.duration,finished.duration,false,"ended");}catch(e){}
+          const queue=window.DebriPod && DebriPod.playbackQueue;
+          if(queue){const canonical=queue.state.items.find(entry=>(entry.root_id || entry.root?.id)===boundaryItem.root.id && entry.rel===boundaryItem.rel);if(canonical)queue.setCurrent(canonical.queue_id);}
+          const items=queue?queue.state.items.map(entry=>Object.assign({},entry,{root:entry.root || {id:entry.root_id}})):state.playlist;
+          const bi=items.findIndex(entry=>gaplessItemKey(entry)===gaplessItemKey(boundaryItem));
+          startGaplessAudioFromItem(boundaryItem,items,bi,false,0,{playbackNav:state.nowNavContext,sourceView}).catch(error=>warnMedia("audio",String(error),activeAudio));
+        },onEnded:()=>{lastfmMaybeScrobble(true);playbackMaybePost("audio",state.now.rootId,state.now.rel,state.nowMeta || {},activeAudio.duration,activeAudio.duration,false,"ended");playNext();}
+      }))throw new Error("Audio source could not start");
+    }else if(!api.snapshot().playing){await api.media.play();}
+    if(nonce!==gaplessLoadNonce)return true;
+    const meta=await metaPromise;
+    if(nonce!==gaplessLoadNonce)return true;
+    state.now={rootId:item.root.id,rel:item.rel,media:"audio",streamed:!!item.streamed,nav};
+    state.nowMeta=meta;state.nowNavContext=nav;state.playlist=pl;state.playIndex=idx;
+    buildPlaybackSessionUpdate({now:Object.assign({},state.now,{meta}),queue:pl,queueIndex:idx,nav,sourceView,media:"audio"},"playback-start");
+    if(forceShow)openNowPlayingExplicit();
+    try{loadVisualizerAnalysisForTrack(item.root.id,item.rel,"audio",{streamed:!!item.streamed});finishVisualizerTrackTransition(meta.art || "");}catch(e){}
+    await updateNowPlayingDisplay(meta,item.label || "Track",{animateArt:true});
+    updateMediaSession(meta);syncMediaSessionControls();lastfmOnTrack(meta);
+    playbackMaybePost("audio",item.root.id,item.rel,meta,activeAudio.currentTime,activeAudio.duration,!activeAudio.paused,"start");
+    startGaplessUiTimer();updateGaplessUi();preloadNextAudio();
+    return true;
+  }catch(error){
+    if(nonce!==gaplessLoadNonce)return true;
+    stopGaplessPlayback();return false;
   }
-  try{
-    if(activeAudio){
-      // Keep the regular element as the control and metadata surface. Its
-      // decoder is muted; audible samples come from the scheduled source.
-      activeAudio.muted = true; activeAudio.volume = 0;
-      activeAudio.src = playbackSourceUrl(item.root.id, item.rel);
-      activeAudio.load();
-      try{ const mutedPlay = activeAudio.play(); if(mutedPlay && mutedPlay.catch) mutedPlay.catch(()=>{}); }catch(e){}
-    }
-  }catch(e){}
-  const meta = await apiGet("/api/library/filemeta?root_id=" + encodeURIComponent(item.root.id) + "&rel=" + encodeURIComponent(item.rel))
-    .then((raw)=>normalizePlaybackMetadata(raw, item, item.label || "Track"))
-    .catch(()=>normalizePlaybackMetadata({}, item, item.label || "Track"));
-  state.now = {rootId:item.root.id, rel:item.rel, media:"audio", streamed:!!item.streamed};
-  state.nowMeta = meta; state.playlist = pl; state.playIndex = idx;
-  if(forceShow) openNowPlayingExplicit();
-  try{ loadVisualizerAnalysisForTrack(item.root.id, item.rel, "audio", {streamed:!!item.streamed}); }catch(e){}
-  try{ await updateNowPlayingDisplay(meta, item.label || "Track", {animateArt:false, animatePill:false}); }catch(e){}
-  try{ updateMediaSession({title:meta.title, artist:meta.artist, album:meta.album, art:meta.art}); syncMediaSessionControls(); }catch(e){}
-  try{ lastfmOnTrack(meta); }catch(e){}
-  startGaplessUiTimer(); updateGaplessUi();
-  return true;
 }
 
 function hlsManifestUrl(rootId, rel){
@@ -469,7 +505,19 @@ function loadHlsIntoElement(el, manifestUrl, kind){
 async function preloadNextAudio(){
   state.preloadedIndex = null;
   resetGaplessPrime();
-  if(!state.preloadEnabled) return;
+  if(!state.preloadEnabled){
+    const api=gaplessAudioApi();if(api)api.cancelNext();
+    retainGaplessBuffers([]);return;
+  }
+  if(gaplessPlaybackActive()){
+    const current=gaplessPlaybackSnapshot().item,next=gaplessNextItem(),api=gaplessAudioApi();
+    retainGaplessBuffers([current,next]);
+    if(!next || next.media === "video"){api.cancelNext();return;}
+    const owner=gaplessPlaybackSnapshot().key;
+    const nonce=preloadRequestNonce;
+    try{const buffer=await gaplessDecodeItem(next);if(nonce===preloadRequestNonce && state.preloadEnabled && gaplessPlaybackSnapshot()?.key===owner)api.scheduleNext(next,buffer);}catch(e){}
+    return;
+  }
   if(!state.playlist.length) return;
   var ni = nextIndexPeek();
   if(ni === null) return;
@@ -503,7 +551,3 @@ async function preloadNextAudio(){
     if(nonce === preloadRequestNonce) resetGaplessPrime();
   }
 }
-
-function gaplessPrimeMaybe(d, t){}
-function gaplessEarlyHandoffMaybe(d, t){ return false; }
-function gaplessHandoffToNext(ni){ return false; }

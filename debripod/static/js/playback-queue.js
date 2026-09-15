@@ -363,6 +363,7 @@
       // resumable session. Otherwise an album/playlist opened from History
       // keeps the queue snapshot from before Play After was used.
       if(["append", "insert-next", "remove", "shuffle"].includes(String(reason || ""))){
+        try{if(typeof win.preloadNextAudio === "function")win.preloadNextAudio();}catch(e){}
         const now = appState.now;
         const current = controller.current();
         const queue = serialized.queue.map((item)=>Object.assign({}, item));

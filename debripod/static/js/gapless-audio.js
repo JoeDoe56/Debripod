@@ -1,179 +1,179 @@
 (function(root){
   "use strict";
-
-  // A media element is decoded by the browser on its own clock.  That makes
-  // two elements inherently racy at a track boundary.  This small adapter
-  // decodes finite audio into AudioBuffers and schedules both sources on one
-  // AudioContext clock.  The regular media-element loader remains the
-  // fallback for browsers without Web Audio or for streams that cannot be
-  // decoded.
-  let context = null;
-  let output = null;
-  let volume = 1;
-  let session = null;
-  let token = 0;
-
-  function number(v, fallback){ const n = Number(v); return Number.isFinite(n) ? n : fallback; }
-  function keyFor(item){ return String(item && item.root && item.root.id || "") + "\u0000" + String(item && item.rel || ""); }
+  let context=null, output=null, analyser=null, session=null, volume=1, transportLevel=1, rate=1;
+  let recovering=null;
+  const listeners=new Map();
+  const number=(v,f)=>Number.isFinite(Number(v))?Number(v):f;
+  const keyFor=item=>String(item && item.root && item.root.id || "")+"\u0000"+String(item && item.rel || "");
+  function emit(name){ for(const fn of listeners.get(name)||[]) {try{fn({type:name,target:media});}catch(e){}} }
   function getContext(){
-    if(context) return context;
-    const C = root.AudioContext || root.webkitAudioContext;
+    if(context && context.state !== "closed") return context;
+    const C=root.AudioContext || root.webkitAudioContext;
     if(!C) return null;
-    try{ context = new C(); }catch(e){ context = null; }
-    if(context){
-      try{ output = context.createGain(); output.gain.value = volume; output.connect(context.destination); }catch(e){ output = null; }
-      try{ context.addEventListener("statechange", ()=>{ if(context && (context.state === "interrupted" || context.state === "suspended")) resumeContext(); }); }catch(e){}
-    }
+    try{
+      context=new C();output=context.createGain();output.gain.value=volume*transportLevel;
+      if(context.createAnalyser){analyser=context.createAnalyser();analyser.fftSize=256;analyser.connect(output);}
+      output.connect(context.destination);
+      if(context.addEventListener)context.addEventListener("statechange",()=>{
+        if(session && session.playing && ["interrupted","suspended"].includes(context.state))resumeContext();
+      });
+    }catch(e){context=null;output=null;}
     return context;
   }
-  function supported(){ return !!(getContext() && output && typeof context.decodeAudioData === "function"); }
+  function supported(){return !!(getContext() && output && context.decodeAudioData);}
   function resumeContext(){
-    const ctx = getContext();
-    if(!ctx || typeof ctx.resume !== "function") return Promise.resolve(false);
-    if(ctx.state === "suspended") return Promise.resolve(ctx.resume()).then(()=>true).catch(()=>false);
-    return Promise.resolve(ctx.state !== "closed");
+    const ctx=getContext();
+    if(!ctx)return Promise.resolve(false);
+    if(ctx.state === "running")return Promise.resolve(true);
+    if(recovering)return recovering;
+    try{recovering=Promise.resolve(ctx.resume()).then(()=>ctx.state === "running").catch(()=>false).finally(()=>{recovering=null;});}
+    catch(e){return Promise.resolve(false);}
+    return recovering;
   }
-  function sourceUrl(item){
-    if(!item || !item.root || !item.rel) return "";
-    const enc = (String(item.rel).split("\\").join("/").split("/").map(encodeURIComponent).join("/"));
-    return "/stream/" + encodeURIComponent(item.root.id) + "/" + enc;
-  }
-  async function decode(item, signal){
-    const ctx = getContext();
-    if(!ctx || !root.fetch) throw new Error("gapless audio unavailable");
-    const response = await root.fetch(sourceUrl(item), signal ? {signal} : undefined);
-    if(!response || !response.ok) throw new Error("audio buffer request failed");
-    const data = await response.arrayBuffer();
-    // Safari only supports the callback form for some decoded formats.
-    return await new Promise((resolve, reject)=>{
-      let result;
-      try{ result = ctx.decodeAudioData(data, resolve, reject); }catch(e){ reject(e); }
-      if(result && typeof result.then === "function") result.then(resolve, reject);
+  function sourceUrl(item){return item && item.root && item.rel ? "/stream/"+encodeURIComponent(item.root.id)+"/"+String(item.rel).split("\\").join("/").split("/").map(encodeURIComponent).join("/") : "";}
+  async function decode(item,signal){
+    const ctx=getContext();
+    if(!ctx)throw new Error("Web Audio unavailable");
+    const response=await root.fetch(sourceUrl(item),signal?{signal}:undefined);
+    if(!response.ok)throw new Error("Audio request failed");
+    const bytes=await response.arrayBuffer();
+    return new Promise((resolve,reject)=>{
+      try{const pending=ctx.decodeAudioData(bytes,resolve,reject);if(pending && pending.then)pending.then(resolve,reject);}catch(e){reject(e);}
     });
   }
-  function stopSource(s){ try{ if(s) s.stop(); }catch(e){} try{ if(s) s.disconnect(); }catch(e){} }
-  function currentPosition(now){
-    if(!session) return 0;
-    if(!session.playing) return session.offset;
-    return Math.max(0, Math.min(session.duration, session.offset + (number(now, context ? context.currentTime : 0) - session.startedAt)));
+  function dispose(source,when){
+    if(!source)return;
+    source.onended=null;
+    try{source.stop(when);}catch(e){}
+    // A scheduled stop must remain connected until its last sample plays.
+    if(when != null && context && when>context.currentTime){
+      source.onended=()=>{try{source.disconnect();}catch(e){}};
+    }else try{source.disconnect();}catch(e){}
+  }
+  function position(at){
+    if(!session)return 0;
+    if(!session.playing)return session.offset;
+    return Math.max(0,Math.min(session.duration,session.offset+Math.max(0,number(at,context.currentTime)-session.startedAt)*session.rate));
   }
   function promote(next){
-    if(!session || !next) return;
-    session.current = next.item;
-    session.key = next.key;
-    session.buffer = next.buffer;
-    session.duration = number(next.buffer && next.buffer.duration, 0);
-    session.offset = 0;
-    session.startedAt = next.when;
-    session.source = next.source;
-    session.next = null;
-    try{ if(typeof session.onBoundary === "function") session.onBoundary(session.current); }catch(e){}
+    if(!session || session.next !== next)return;
+    const finished={item:session.current,duration:session.duration};
+    session.current=next.item;session.key=next.key;session.buffer=next.buffer;
+    session.duration=next.buffer.duration;session.offset=0;session.startedAt=next.when;
+    session.source=next.source;session.rate=rate;session.next=null;
+    try{if(session.onBoundary)session.onBoundary(next.item,finished);}catch(e){}
   }
-  function handoffIfCurrent(src){
-    if(!session || session.source !== src || !session.next) return;
-    const next = session.next, delay = Math.max(0, number(session.gap, 0));
-    if(delay > 0){
-      const owner = session;
-      setTimeout(()=>{ if(session === owner && session.source === src && session.next === next) promote(next); }, delay * 1000);
-    }else promote(next);
+  function syncBoundary(){
+    if(session && session.playing && session.next && context.currentTime>=session.next.when)promote(session.next);
   }
-  function scheduleNext(item, buffer){
-    if(!session || !context || !output || !buffer || !item) return false;
-    const when = session.startedAt + Math.max(0, session.duration - session.offset) + Math.max(0, number(session.gap, 0));
-    let src = null;
-    try{
-      src = context.createBufferSource(); src.buffer = buffer; src.connect(output);
-      src.onended = ()=>{
-        if(!session || session.source !== src) return;
-        if(session.next){ handoffIfCurrent(src); return; }
-        session.playing = false; session.offset = session.duration;
-        try{ if(typeof session.onEnded === "function") session.onEnded(session.current); }catch(e){}
-      };
-      src.start(when, 0);
-    }catch(e){ stopSource(src); return false; }
-    session.next = {item, key:keyFor(item), buffer, source:src, when};
-    return true;
+  function ended(source){
+    if(!session || !session.playing || session.source!==source)return;
+    if(session.next){
+      const next=session.next;
+      const delay=Math.max(0,(next.when-context.currentTime)*1000);
+      if(delay)setTimeout(()=>{if(session && session.playing && session.source===source)promote(next);},delay);
+      else promote(next);
+    }else{
+      session.offset=session.duration;session.playing=false;
+      try{if(session.onEnded)session.onEnded(session.current);}catch(e){}
+    }
   }
-  function start(item, buffer, nextItem, nextBuffer, options){
-    const ctx = getContext();
-    if(!ctx || !output || !buffer) return false;
-    stop();
-    const opts = options || {};
-    const offset = Math.max(0, Math.min(number(buffer.duration, 0), number(opts.offset, 0)));
-    const when = number(ctx.currentTime, 0) + 0.025;
-    let src = null;
-    try{
-      src = ctx.createBufferSource(); src.buffer = buffer; src.connect(output);
-      src.start(when, offset);
-    }catch(e){ stopSource(src); return false; }
-    session = {current:item, key:keyFor(item), buffer, duration:number(buffer.duration,0), offset, startedAt:when, source:src, next:null, playing:true, gap:Math.max(0, number(opts.gap, 0)), onBoundary:opts.onBoundary || null, onEnded:opts.onEnded || null};
-    src.onended = ()=>{
-      if(!session || session.source !== src) return;
-      if(session.next){ handoffIfCurrent(src); return; }
-      session.playing = false; session.offset = session.duration;
-      try{ if(typeof session.onEnded === "function") session.onEnded(session.current); }catch(e){}
-    };
-    if(nextItem && nextBuffer) scheduleNext(nextItem, nextBuffer);
-    return true;
+  function makeSource(buffer,when,offset,sourceRate){
+    const source=context.createBufferSource();source.buffer=buffer;
+    if(source.playbackRate)source.playbackRate.value=sourceRate;
+    source.connect(analyser || output);source.onended=()=>ended(source);
+    source.start(when,offset);return source;
   }
-  function stop(){
-    if(session){ stopSource(session.source); if(session.next) stopSource(session.next.source); }
-    session = null;
+  function scheduleNext(item,buffer){
+    if(!session || !buffer || !item)return false;
+    const retained={item,buffer};
+    if(session.next)dispose(session.next.source);
+    session.next=null;
+    if(!session.playing){session.pausedNext=retained;return true;}
+    const when=session.startedAt+(session.duration-session.offset)/session.rate+session.gap;
+    if(when<context.currentTime)return false;
+    try{session.next={item,key:keyFor(item),buffer,when,source:makeSource(buffer,when,0,rate)};return true;}catch(e){return false;}
   }
+  function setGap(value){if(session){session.gap=Math.max(0,number(value,0));const next=session.next;if(next)scheduleNext(next.item,next.buffer);}}
+  function cancelNext(){
+    if(!session)return;
+    if(session.next)dispose(session.next.source);
+    session.next=null;session.pausedNext=null;
+  }
+  function start(item,buffer,nextItem,nextBuffer,options){
+    if(!getContext() || !output || !buffer)return false;
+    const opts=options || {}, old=session;
+    // On a skip the outgoing source stops at precisely the incoming source's
+    // scheduled boundary, even if the JS call is between rendering quanta.
+    const cut=context.currentTime+0.025;
+    const when=cut+(old && old.playing?Math.max(0,number(opts.gap,0)):0);
+    const offset=Math.max(0,Math.min(buffer.duration,number(opts.offset,0)));
+    let source;
+    try{source=makeSource(buffer,when,offset,rate);}catch(e){return false;}
+    if(old){dispose(old.source,cut);if(old.next)dispose(old.next.source);}
+    session={current:item,key:keyFor(item),buffer,duration:buffer.duration,offset,startedAt:when,source,rate,playing:true,next:null,pausedNext:null,gap:Math.max(0,number(opts.gap,0)),onBoundary:opts.onBoundary,onEnded:opts.onEnded};
+    if(nextItem && nextBuffer)scheduleNext(nextItem,nextBuffer);
+    emit("play");return true;
+  }
+  function stop(){const old=session;session=null;if(old){dispose(old.source);if(old.next)dispose(old.next.source);}rate=1;transportLevel=1;applyGain();}
   function pause(){
-    if(!session || !session.playing) return false;
-    session.offset = currentPosition(); session.playing = false; stopSource(session.source);
-    if(session.next){ stopSource(session.next.source); session.pausedNext = {item:session.next.item, buffer:session.next.buffer}; session.next = null; }
-    return true;
+    syncBoundary();if(!session || !session.playing)return false;
+    session.offset=position();session.playing=false;
+    dispose(session.source);session.source=null;
+    if(session.next){session.pausedNext={item:session.next.item,buffer:session.next.buffer};dispose(session.next.source);session.next=null;}
+    emit("pause");return true;
   }
   function resume(){
-    if(!session || session.playing) return false;
-    const item = session.current, key = session.key, duration = session.duration, offset = session.offset;
-    // The current buffer is retained on the session by callers through
-    // resumeBuffer; if unavailable, a subsequent regular media load wins.
-    const buffer = session.buffer;
-    if(!buffer) return false;
-    const queued = session.pausedNext || null;
-    session.pausedNext = null;
-    return resumeWith(item, buffer, offset, queued && queued.item, queued && queued.buffer);
+    if(!session || session.playing)return false;
+    session.startedAt=context.currentTime+0.025;session.rate=rate;
+    session.source=makeSource(session.buffer,session.startedAt,session.offset,rate);session.playing=true;
+    const next=session.pausedNext;session.pausedNext=null;if(next)scheduleNext(next.item,next.buffer);
+    emit("play");return true;
   }
-  function seek(offset){
-    if(!session || !session.buffer) return false;
-    session.offset=Math.max(0,Math.min(session.duration,number(offset,0)));
-    if(session.playing) return resumeAfterSeek();
-    return true;
+  function seek(value){
+    syncBoundary();if(!session)return false;
+    const next=session.next || session.pausedNext;
+    const target=Math.max(0,Math.min(session.duration,number(value,0)));
+    if(session.playing){
+      const when=context.currentTime+0.025;
+      const source=makeSource(session.buffer,when,target,rate);
+      dispose(session.source,when);if(session.next)dispose(session.next.source);
+      session.source=source;session.startedAt=when;
+    }
+    session.offset=target;session.next=null;
+    if(next)scheduleNext(next.item,next.buffer);
+    emit("seeked");return true;
   }
-  function resumeAfterSeek(){
-    const wasPlaying=session.playing; const item=session.current, buffer=session.buffer, off=session.offset;
-    const queued=session.next ? {item:session.next.item,buffer:session.next.buffer} : null;
-    stopSource(session.source); if(session.next) stopSource(session.next.source); session.next=null; session.playing=false;
-    if(!wasPlaying) return true;
-    return resumeWith(item,buffer,off,queued && queued.item,queued && queued.buffer);
+  function setRate(value){
+    syncBoundary();const nextRate=Math.max(.05,number(value,1));
+    if(session && session.playing){
+      const next=session.next;
+      session.offset=position();session.startedAt=Math.max(session.startedAt,context.currentTime);session.rate=nextRate;
+      if(session.source && session.source.playbackRate)session.source.playbackRate.value=nextRate;
+      rate=nextRate;if(next)scheduleNext(next.item,next.buffer);
+    }else{rate=nextRate;if(session)session.rate=rate;}
   }
-  function resumeWith(item,buffer,off,nextItem,nextBuffer){
-    const when=number(context.currentTime,0)+0.025; let src=null;
-    try{src=context.createBufferSource();src.buffer=buffer;src.connect(output);src.start(when,off)}catch(e){stopSource(src);return false}
-    session.source=src;session.startedAt=when;session.offset=off;session.playing=true;
-    src.onended=()=>{if(session&&session.source===src){if(session.next){handoffIfCurrent(src);return;}session.playing=false;session.offset=session.duration;try{if(session.onEnded)session.onEnded(session.current)}catch(e){}}};
-    if(nextItem && nextBuffer) scheduleNext(nextItem, nextBuffer);
-    return true;
-  }
-  function takePrestarted(item){
-    if(!session || session.key !== keyFor(item)) return false;
-    // The boundary callback promotes the already-running source before the
-    // loader updates metadata.  Taking the current source therefore never
-    // restarts it or creates an overlap.
-    return true;
-  }
-  function setVolume(v){ volume=Math.max(0,Math.min(1,number(v,1))); try{if(output) output.gain.value=volume}catch(e){} return volume; }
-  function snapshot(){
-    if(!session) return null;
-    const position=currentPosition(); return {key:session.key,item:session.current,position,duration:session.duration,playing:!!session.playing};
-  }
-  root.DebriPod = root.DebriPod || {};
-  try{
-    if(root.document) root.document.addEventListener("visibilitychange", ()=>{ if(!root.document.hidden) resumeContext(); });
-    root.addEventListener("pageshow", resumeContext);
-  }catch(e){}
-  root.DebriPod.gaplessAudio = {supported,decode,start,stop,pause,resume,resumeContext,seek,scheduleNext,takePrestarted,setVolume,snapshot,sourceUrl,testing:{getContext:()=>context,getSession:()=>session,keyFor}};
+  function applyGain(){if(output)output.gain.value=volume*transportLevel;}
+  function setVolume(value){volume=Math.max(0,Math.min(1,number(value,1)));applyGain();return volume;}
+  function setTransportLevel(value){transportLevel=Math.max(0,Math.min(1,number(value,1)));applyGain();return true;}
+  function snapshot(){syncBoundary();return session?{key:session.key,item:session.current,position:position(),duration:session.duration,playing:session.playing}:null;}
+  function takePrestarted(item){syncBoundary();return !!(session && session.key===keyFor(item));}
+  function getFrequencyData(){if(!analyser)return null;const data=new Uint8Array(analyser.frequencyBinCount);analyser.getByteFrequencyData(data);return data;}
+  function getRms(){if(!analyser)return 0;const data=new Float32Array(analyser.fftSize);analyser.getFloatTimeDomainData(data);return Math.sqrt(data.reduce((sum,v)=>sum+v*v,0)/data.length);}
+  const media={__gapless:true,muted:false,preservesPitch:false,
+    get currentTime(){return snapshot()?.position || 0;},set currentTime(v){seek(v);},
+    get duration(){return session?.duration || 0;},get paused(){return !session?.playing;},get ended(){return !!session && !session.playing && session.offset>=session.duration;},
+    get playbackRate(){return rate;},set playbackRate(v){setRate(v);},
+    get volume(){return volume;},set volume(v){setVolume(v);},
+    get src(){return session?sourceUrl(session.current):"";},get currentSrc(){return this.src;},
+    get readyState(){return session?4:0;},get buffered(){return {length:session?1:0,start:()=>0,end:()=>session?.duration || 0};},
+    play:async()=>{if(!await resumeContext())throw new Error("Audio output is suspended");if(resume())await new Promise(resolve=>setTimeout(resolve,25));},pause,
+    addEventListener:(name,fn)=>{if(!listeners.has(name))listeners.set(name,new Set());listeners.get(name).add(fn);},
+    removeEventListener:(name,fn)=>listeners.get(name)?.delete(fn),
+    setTransportLevel,getFrequencyData,getRms,
+    removeAttribute(){},load(){},tick:()=>emit("timeupdate")
+  };
+  root.DebriPod=root.DebriPod || {};
+  root.DebriPod.gaplessAudio={supported,decode,start,stop,pause,resume,resumeContext,seek,scheduleNext,cancelNext,setGap,takePrestarted,setVolume,snapshot,sourceUrl,media,testing:{getContext:()=>context,getSession:()=>session,keyFor}};
+  try{root.document?.addEventListener("visibilitychange",()=>{if(!root.document.hidden && session?.playing)resumeContext();});root.addEventListener("pageshow",()=>{if(session?.playing)resumeContext();});}catch(e){}
 })(window);

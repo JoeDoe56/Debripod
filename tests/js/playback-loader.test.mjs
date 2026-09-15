@@ -123,3 +123,21 @@ test("readiness rejection is observable and HLS installs its source synchronousl
   await hlsRequest.ready;
   assert.equal(hlsMedia.playCalls, 1);
 });
+
+
+test("preload with gapless disabled uses decoded playback and never plays a second element",async()=>{
+  const c=loadLoader();c.AbortController=AbortController;
+  const events=[];let snap=null;const media={__gapless:true,paused:false,currentTime:0,duration:5,setTransportLevel(){},addEventListener(){},tick(){}};
+  const item={root:{id:"r"},rel:"one",media:"audio"},next={root:{id:"r"},rel:"two",media:"audio"};
+  c.state={preloadEnabled:true,gaplessEnabled:false,playlist:[item,next],playIndex:0,playbackSession:{}};
+  c.npSeek=null;c.npSeekDragging=false;c.seekMode=false;
+  c.audioMain=c.activeAudio={pause(){events.push("native-pause");},removeAttribute(){},load(){},play(){events.push("native-play");}};
+  c.window.DebriPod.gaplessAudio={supported:()=>true,decode:async()=>({duration:5}),resumeContext:async()=>true,takePrestarted:()=>false,media,
+    start:(it,buf,ni,nb,opts)=>{events.push(opts.gap);snap={key:c.gaplessItemKey(it),item:it,position:0,duration:5,playing:true};return true;},snapshot:()=>snap,scheduleNext:()=>events.push("schedule"),stop(){},cancelNext(){}};
+  c.apiGet=async()=>({title:"one"});c.nextIndexPeek=()=>1;c.currentPlaybackNavContext=()=>({kind:"metalist"});
+  for(const name of ["wireAudio","buildPlaybackSessionUpdate","loadVisualizerAnalysisForTrack","finishVisualizerTrackTransition","updateNowPlayingDisplay","updateMediaSession","syncMediaSessionControls","lastfmOnTrack","syncMediaSessionPosition","renderInfoPillLabels"])c[name]=()=>{};
+  c.playbackMaybePost=(...args)=>events.push(args.at(-1));c.setInterval=()=>1;c.clearInterval=()=>{};
+  assert.equal(await c.startGaplessAudioFromItem(item,[item,next],0,false,0),true);
+  assert.equal(c.activeAudio,media);assert.equal(events.includes("native-play"),false);assert.ok(events.includes(.12));assert.ok(events.includes("start"));
+  c.state.preloadEnabled=false;await c.preloadNextAudio();assert.equal(c.gaplessBufferCache.size,0);
+});

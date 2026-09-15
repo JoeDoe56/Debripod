@@ -111,3 +111,13 @@ test("transport gain is independent from the user volume gain", async () => {
   graph.resetTransportLevel(audio);
   assert.equal(record.transportGain.gain.value, 1);
 });
+
+
+test("decoded playback receives volume and transport ramps without a second native source",async()=>{
+  const graph=loadGraph();let level;
+  const decoded={__gapless:true,volume:1,setTransportLevel:v=>{level=v;return true;},getRms:()=>.2,getFrequencyData:()=>[1,2]};
+  graph.setActiveElement(decoded);await graph.unlock();graph.setVolume(.6);graph.setTransportLevel(decoded,.25);
+  assert.equal(graph.testing.getContext().sources.length,0);
+  assert.equal(decoded.volume,.6);assert.equal(level,.25);assert.equal(graph.getRms(decoded),.2);
+  graph.resetTransportLevel(decoded);assert.equal(level,1);
+});

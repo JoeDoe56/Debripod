@@ -18,6 +18,9 @@
     if(!AudioContextClass) return null;
     try{
       audioContext = new AudioContextClass();
+      if(audioContext.addEventListener)audioContext.addEventListener("statechange",()=>{
+        if(activeElement && !activeElement.paused && ["suspended","interrupted"].includes(audioContext.state)) unlock();
+      });
       return audioContext;
     }catch(error){
       return null;
@@ -33,7 +36,7 @@
   }
 
   function ensureRecord(element){
-    if(!element) return null;
+    if(!element || element.__gapless) return null;
     const existing = records.get(element);
     if(existing) return existing;
     const context = getContext();
@@ -72,6 +75,7 @@
     });
     const activeRecord = activeElement ? records.get(activeElement) : null;
     if(activeElement){
+      if(activeElement.__gapless){activeElement.volume=volume;return;}
       if(activeRecord){
         try{
           activeElement.muted = false;
@@ -97,7 +101,9 @@
   }
 
   function setTransportLevel(element, value, immediate){
-    const record = records.get(element || activeElement);
+    const targetElement=element || activeElement;
+    if(targetElement && targetElement.__gapless)return targetElement.setTransportLevel(value);
+    const record = records.get(targetElement);
     if(!record || !record.transportGain) return false;
     try{
       const target = clampVolume(value);
@@ -113,6 +119,8 @@
   }
 
   function resetTransportLevel(element){
+    const target=element || activeElement;
+    if(target && target.__gapless)return target.setTransportLevel(1);
     const record = records.get(element || activeElement);
     if(record && record.transportGain){
       try{
@@ -132,7 +140,7 @@
     if(activeElement) ensureRecord(activeElement);
     applyActiveVolume();
     try{
-      if(context.state === "suspended" && typeof context.resume === "function"){
+      if(["suspended","interrupted"].includes(context.state) && typeof context.resume === "function"){
         return Promise.resolve(context.resume()).then(()=>true).catch(()=>false);
       }
     }catch(error){}
@@ -140,6 +148,8 @@
   }
 
   function getFrequencyData(element){
+    const target=element || activeElement;
+    if(target && target.__gapless)return target.getFrequencyData();
     const record = records.get(element || activeElement);
     if(!record) return null;
     try{
@@ -151,6 +161,8 @@
   }
 
   function getRms(element){
+    const target=element || activeElement;
+    if(target && target.__gapless)return target.getRms();
     const record = records.get(element || activeElement);
     if(!record) return 0;
     try{

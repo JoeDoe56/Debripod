@@ -604,6 +604,10 @@
     const js = await apiGet("/api/library/config", {localFirst:false});
     state.preloadEnabled = !!js.preload_enabled;
     state.gaplessEnabled = !!js.gapless_enabled && state.preloadEnabled;
+    if(typeof gaplessPlaybackActive === "function" && gaplessPlaybackActive()){
+      const audio=gaplessAudioApi();if(audio && audio.setGap)audio.setGap(state.gaplessEnabled?0:0.12);
+      preloadNextAudio();
+    }
     state.preloadBytes = js.preload_bytes || state.preloadBytes;
     state.roots = js.roots || [];
     state.lastfmEnabled = !!js.lastfm_enabled;
