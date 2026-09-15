@@ -684,6 +684,7 @@ async function viewHistory(push, options){
           if(r.quality) pills.push(String(r.quality));
           items.push({
             kind: "history_item",
+            queueSessionId: r.queueSessionId || "",
             label: label || "item",
             pills: pills,
             media: media,

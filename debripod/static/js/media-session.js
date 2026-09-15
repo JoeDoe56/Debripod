@@ -249,28 +249,45 @@
   }
 
   // Server-side playback sync (Now Playing + History)
-  async function playbackPost(payload){
-    try{
-      if(payload && typeof payload === "object"){
+  var playbackWriteQueue = Promise.resolve();
+  function flushPlaybackWrites(){ return playbackWriteQueue; }
+
+  function playbackPost(payload){
+    const wire = Object.assign({}, payload || {});
+    const session = wire.session || state.playbackSession || {};
+    // History is a server-owned result, never an input to a playback update.
+    // Copy now: queued writes must not inherit a later track's session.
+    wire.session = {};
+    for(const key of ["queue", "queueIndex", "queueSessionId", "nav", "sourceView", "revision", "updatedAt"]){
+      if(session[key] != null) wire.session[key] = session[key];
+    }
+    const body = JSON.stringify(wire);
+    const bytes = typeof TextEncoder === "function" ? new TextEncoder().encode(body).length : body.length * 3;
+    const send = async()=>{
+      for(let attempt = 0; attempt < 2; attempt++){
         try{
-          payload.session = state.playbackSession || payload.session || null;
-          if(window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.savePlaybackSession){
-            DebriPod.clientSync.savePlaybackSession(state.playbackSession);
+          const response = await fetch("/api/playback/update", {
+            method:"POST", headers:{"Content-Type":"application/json"},
+            body, cache:"no-store", keepalive:bytes < 60000
+          });
+          if(response.ok === false) throw new Error("Playback update failed: " + response.status);
+          state.playbackSyncError = false;
+          return;
+        }catch(error){
+          if(attempt === 1){
+            state.playbackSyncError = true;
+            try{ console.warn("Playback history update failed", error); }catch(e){}
           }
-        }catch(e){}
+        }
       }
-      await fetch("/api/playback/update", {
-        method: "POST",
-        headers: {"Content-Type": "application/json"},
-        body: JSON.stringify(payload || {}),
-        cache: "no-store",
-        keepalive: true
-      });
-    }catch(e){}
+    };
+    playbackWriteQueue = playbackWriteQueue.then(send, send);
+    return playbackWriteQueue;
   }
 
   async function syncPlaybackFromServer(){
     try{
+      await flushPlaybackWrites();
       const js = await apiGet("/api/playback/snapshot");
       state.serverNow = (js && js.now) ? js.now : null;
       state.serverRecent = (js && Array.isArray(js.recent)) ? js.recent : [];
@@ -314,35 +331,15 @@
   }
 
   function captureNavContext(){
-    const nav = {};
-    try{
-      if(state.root && state.root.id){
-        nav.root_id = state.root.id;
-        nav.root_name = state.root.name || "";
-      }
-      if(state.current && state.current.kind){
-        nav.kind = state.current.kind;
-        nav.label = state.current.label || "";
-        if(state.current.kind === "folder"){
-          nav.rel = state.current.rel || "";
-        }else if(state.current.kind === "metatop"){
-          // nothing extra
-        }else if(state.current.kind === "metalist"){
-          nav.level = state.current.level || "";
-          nav.value = state.current.value || "";
-        }
-      }
-      // if we're on now playing screen, try to use the last non-now view for better restore
-      if(nowPlaying && nowPlaying.style.display === "block" && state.history && state.history.length){
-        const v = state.history[state.history.length - 1];
-        if(v && v.kind){
-          nav.kind = v.kind;
-          nav.label = v.label || nav.label || "";
-          if(v.kind === "folder") nav.rel = v.rel || "";
-          if(v.kind === "metalist"){ nav.level = v.level || ""; nav.value = v.value || ""; }
-        }
-      }
-    }catch(e){}
+    const queue = window.DebriPod && window.DebriPod.playbackQueue;
+    if(queue && queue.isDispatching && queue.isDispatching() && state.nowNavContext) return state.nowNavContext;
+    const breadcrumb = typeof rememberedLibraryBreadcrumb === "function" ? rememberedLibraryBreadcrumb() : {current:state.current, root:state.root, history:state.history};
+    const current = breadcrumb.current || {};
+    const root = current.root || breadcrumb.root || {};
+    const describe = view=>({kind:view.kind || "", label:view.label || "", root_id:(view.root && view.root.id) || root.id || "", rel:view.rel || "", level:view.level || "", value:view.value || ""});
+    const nav = describe(current);
+    nav.root_name = root.name || "";
+    nav.history = (breadcrumb.history || []).filter(view=>view && ["roots","metatop","metalist","folder","folder_sources"].includes(view.kind)).map(describe);
     return nav;
   }
 
@@ -352,16 +349,28 @@
         return;
       }
       const cfg = await loadConfig();
-      const root = (cfg.roots || []).find(r => r.id === nav.root_id);
+      const roots = (cfg.roots || []).concat(cfg.aggregate_root ? [cfg.aggregate_root] : []);
+      const root = roots.find(r => r.id === nav.root_id);
       if(!root) return;
 
       state.root = root;
       const opts = options || {};
+      showNowPlaying(false);
       if(opts.history && Array.isArray(opts.history)) state.history = opts.history.slice();
+      else state.history = (Array.isArray(nav.history) ? nav.history : []).map(desc=>{
+        const parentRoot = roots.find(r=>r.id === desc.root_id) || root;
+        return Object.assign({}, desc, {root:parentRoot, load:async function(){
+          if(desc.kind === "metalist") return viewMetaList(parentRoot, desc.level, desc.value || "", desc.label, false);
+          if(desc.kind === "metatop") return viewMetaTop(parentRoot, false);
+          if(desc.kind === "folder") return viewFolder(parentRoot, desc.rel || "", desc.label, false);
+          if(desc.kind === "folder_sources") return viewFolderSources(false);
+          return showRoots();
+        }});
+      });
 
       if(nav.kind === "folder"){
         const rel = (nav.rel || "").trim();
-        if(rel){
+        if(rel && !state.history.length){
           const segs = rel.split("/");
           state.history.push(folderViewObj(root, "", ""));
           for(let i = 0; i < segs.length - 1; i++){

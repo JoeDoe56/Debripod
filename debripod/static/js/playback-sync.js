@@ -430,9 +430,16 @@
     return new Promise(resolve=> setTimeout(resolve, ms || 220));
   }
 
+  var npPageFadeTarget = null;
+
   function showNowPlaying(on, options){
     const fadeMs = 220;
     const opts = options && typeof options === "object" ? options : {};
+    if(npPageFadeTarget === !!on && !opts.immediate){
+      if(on && Object.prototype.hasOwnProperty.call(opts, "explicit")) state.nowPlayingPathActive = !!opts.explicit;
+      return;
+    }
+    npPageFadeTarget = !!on;
     try{ if(libList) libList.style.display = "block"; }catch(e){}
     try{
       if(npPageFadeTimer){
@@ -479,7 +486,11 @@
           try{
             if(fadeToken !== npPageFadeToken) return;
             nowPlaying.classList.add("npPageActive");
-            if(typeof suspendListRenderingForNowPlaying === "function") suspendListRenderingForNowPlaying();
+            npPageFadeTimer = setTimeout(()=>{
+              if(fadeToken !== npPageFadeToken || !nowPlaying.classList.contains("npPageActive")) return;
+              npPageFadeTimer = null;
+              if(typeof suspendListRenderingForNowPlaying === "function") suspendListRenderingForNowPlaying();
+            }, fadeMs);
             scheduleLiquidGlassSnapshot("now playing active", true);
           }catch(e){}
         });

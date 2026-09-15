@@ -176,7 +176,7 @@
       if(!origin) return false;
       model.state.restoring = true;
       try{
-        if(typeof win.showNowPlaying === "function") win.showNowPlaying(false, {immediate: true, navigationControlled: true});
+        if(typeof win.showNowPlaying === "function") win.showNowPlaying(false, {navigationControlled: true});
         appState.root = origin.rootRef || origin.root || null;
         appState.history = Array.isArray(origin.historyRefs) ? origin.historyRefs.slice() : [];
         if(origin.search && appState.libSearch) Object.assign(appState.libSearch, cloneValue(origin.search));
@@ -238,6 +238,7 @@
 
     async function jumpToCurrentItem(){
       const origin = model.state.origin;
+      model.clear();
       try{
         if(typeof win.openNowFolder === "function") await win.openNowFolder({ordinaryOrigin: origin});
       }finally{

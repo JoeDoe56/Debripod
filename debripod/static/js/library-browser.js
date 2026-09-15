@@ -60,6 +60,7 @@
     try{
       const nav = (state.now && state.now.nav) || state.nowNavContext || (state.playbackSession && state.playbackSession.nav) || null;
       if(nav && nav.root_id && nav.kind){
+        showNowPlaying(false);
         await openNavContext(nav);
         const nowRel = state.now && state.now.rel ? state.now.rel : "";
         const nowRoot = state.now && state.now.rootId ? state.now.rootId : "";
@@ -2124,6 +2125,7 @@ if(it.kind === "root"){
       return;
     }
     if(it.kind === "history_item"){
+      state.restoringQueueSessionId = it.queueSessionId || "";
       // Restore the last browsing context first, then play
       const nav = (it.nav && typeof it.nav === "object") ? it.nav : {};
       if(nav && nav.root_id){
@@ -2151,7 +2153,7 @@ if(it.kind === "root"){
       const sn = state.serverNow;
       const sameAsServer = (sn && sn.root_id === it.rootId && sn.rel === it.rel && (sn.media || "") === it.media);
       if(it.media === "audio"){
-        const itemObj = {kind:"file", media:"audio", root:{id: it.rootId}, rel: it.rel, label: it.label};
+        const itemObj = {kind:"file", media:"audio", root:{id: it.rootId}, rel: it.rel, label: it.label, streamed:!!it.streamed, source:it.source || "", ext:it.ext || "", quality:it.quality || ""};
         let pl = null;
         let idx = -1;
         try{
@@ -2172,7 +2174,7 @@ if(it.kind === "root"){
         }else{
           idx = Math.max(0, Math.min(pl.length - 1, (idx >= 0 ? idx : 0)));
         }
-        const resume = (sameAsServer && state.serverNow && state.serverNow.playing && isFinite(state.serverNow.position)) ? Number(state.serverNow.position) : 0;
+        const resume = (sameAsServer && state.serverNow && state.serverNow.playing && isFinite(state.serverNow.position)) ? Number(state.serverNow.position) : Math.max(0, Number(it.position) || 0);
         const canonicalQueue = window.DebriPod && DebriPod.playbackQueue;
         if(canonicalQueue) canonicalQueue.replaceFromPlayableList(pl, itemObj);
         await startAudioFromItem(itemObj, pl, idx, true, resume);
@@ -2331,7 +2333,10 @@ if(it.kind === "root"){
       }
       // A non-dispatching replace is a new user-selected queue. Natural next
       // and previous calls remain in the current session via isDispatching().
-      if(typeof window.newPlaybackQueueSession === "function") window.newPlaybackQueueSession();
+      if(state.restoringQueueSessionId){
+        ensurePlaybackSession().queueSessionId = state.restoringQueueSessionId;
+        state.restoringQueueSessionId = "";
+      }else if(typeof window.newPlaybackQueueSession === "function") window.newPlaybackQueueSession();
       controller.replaceFromPlayableList(candidates, item);
     }catch(e){}
   }

@@ -247,6 +247,8 @@ def _public_entry(value: Any) -> Any:
         return [_public_entry(x) for x in value]
     if isinstance(value, dict):
         d = dict(value)
+        if d.get("_queue_session"):
+            d["queueSessionId"] = str(d["_queue_session"])
         for key in ("_key", "_sess", "_list", "_queue_key", "_queue_session", "_stream_item"):
             d.pop(key, None)
         return {k: _public_entry(v) for k, v in d.items()}
@@ -384,23 +386,8 @@ def playback_snapshot_public(runtime: PlaybackRuntime | None = None) -> dict:
         now = state.get("now")
         recent = state.get("recent") or []
         version = int(state.get("version") or 0)
-        # remove internal fields from each entry if present
-        rp = []
-        for it in recent:
-            if not isinstance(it, dict):
-                continue
-            d = dict(it)
-            d.pop("_key", None)
-            d.pop("_sess", None)
-            d.pop("_list", None)
-            d.pop("_stream_item", None)
-            rp.append(d)
-        out_now = dict(now) if isinstance(now, dict) else None
-        if isinstance(out_now, dict):
-            out_now.pop("_key", None)
-            out_now.pop("_sess", None)
-            out_now.pop("_list", None)
-            out_now.pop("_stream_item", None)
+        rp = [_public_entry(it) for it in recent if isinstance(it, dict)]
+        out_now = _public_entry(now) if isinstance(now, dict) else None
         session = _sanitize_playback_session(state.get("playback_session"), out_now, rp, version)
         progress = {str(key): dict(value) for key, value in (state.get("media_progress") or {}).items() if isinstance(value, dict)}
         for value in progress.values():
@@ -526,6 +513,13 @@ def playback_update_from_client(payload: dict, runtime: PlaybackRuntime | None =
                 now_entry["playlist_hash"] = playlist_hash
         except Exception:
             pass
+    if "playlist" not in now_entry and isinstance(client_session.get("queue"), list) and client_session["queue"]:
+        try:
+            restored_index = int(client_session.get("queueIndex") or 0)
+        except (TypeError, ValueError):
+            restored_index = 0
+        now_entry["playlist"] = {"items": [_sanitize_session_item(item, media) for item in client_session["queue"][:600]], "index": restored_index}
+        now_entry["playlist"]["items"] = [item for item in now_entry["playlist"]["items"] if item]
     queue_session = str(client_session.get("queueSessionId") or client_session.get("queue_session_id") or js.get("queue_session_id") or "").strip()
     queue_items = playlist_ctx.get("items") if isinstance(playlist_ctx, dict) else None
     if not queue_items and isinstance(client_session.get("queue"), list):
@@ -676,9 +670,10 @@ def playback_update_from_client(payload: dict, runtime: PlaybackRuntime | None =
             if newest and (same_queue_session or same_queue_snapshot or same_legacy_list):
                 recent[0] = dict(now_entry)
             else:
-                if found_by_key is not None:
+                existing_index = found_by_session if found_by_session is not None else found_by_key
+                if existing_index is not None:
                     try:
-                        recent.pop(found_by_key)
+                        recent.pop(existing_index)
                     except Exception:
                         pass
                 recent.insert(0, dict(now_entry))
@@ -688,9 +683,9 @@ def playback_update_from_client(payload: dict, runtime: PlaybackRuntime | None =
                 recent[found_by_session].update(dict(now_entry))
             elif found_by_key is not None and isinstance(recent[found_by_key], dict):
                 recent[found_by_key].update(dict(now_entry))
-            elif recent and isinstance(recent[0], dict) and recent[0].get("_list") == now_entry.get("_list"):
+            elif not queue_session and recent and isinstance(recent[0], dict) and recent[0].get("_list") == now_entry.get("_list"):
                 recent[0].update(dict(now_entry))
-            elif not recent and (ev_s in ("time", "start")) and is_playing_now:
+            elif ev_s == "time" and is_playing_now:
                 recent.insert(0, dict(now_entry))
         state[sess_key] = sess
         state["recent"] = _trim_recent(recent)
