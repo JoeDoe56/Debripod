@@ -998,6 +998,8 @@ async def api_youtube_enqueue(request: web.Request):
             'name': name,
             'title': name,
             'ext': ext,
+            'quality_target': str(it.get('quality_target') or '').strip(),
+            'format_selector': str(it.get('format_selector') or it.get('selector') or '').strip(),
             'media': str(it.get('media') or '').strip().lower(),
             'direct_url': str(it.get('direct_url') or '').strip(),
             'source_url': item_source_url,

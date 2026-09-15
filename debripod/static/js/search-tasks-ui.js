@@ -135,8 +135,10 @@
           rel: String(ff.rel || ""),
           media: String(ff.media || rr.media || ""),
           ext: ext,
-          quality: String(ff.quality || ""),
-          bitrate: String(ff.bitrate || ""),
+           quality: String(ff.quality || ""),
+           quality_target: String(ff.quality_target || ""),
+           format_selector: String(ff.format_selector || ""),
+           bitrate: String(ff.bitrate || ""),
           source_url: String(ff.source_url || rr.source_url || rr.original_url || rr.canonical_url || rr.url || ""),
           direct_url: String(ff.direct_url || ""),
           itag: firstIdentifierText(ff.itag, ff.format_id, ff.file_id),
@@ -145,7 +147,7 @@
           onToggle: ()=>{
             if(dlState) return;
             if(target.selected.has(key)) target.selected.delete(key);
-            else target.selected.set(key, {key:key, remote_path:String(ff.remote_path || ""), file_id:identifierText(ff.file_id), itag:firstIdentifierText(ff.itag, ff.format_id, ff.file_id), format_id:firstIdentifierText(ff.format_id, ff.itag, ff.file_id), size:Number(ff.size || 0), name:name, label:name, source:String(ff.source || src || ""), ext:String(ff.ext || ""), quality:String(ff.quality || ""), bitrate:String(ff.bitrate || ""), media:String(ff.media || rr.media || ""), root_id:String(ff.root_id || rr.root_id || ""), rel:String(ff.rel || ""), source_url:String(ff.source_url || rr.source_url || rr.original_url || rr.canonical_url || rr.url || ""), direct_url:String(ff.direct_url || ""), url:String((target.result && (target.result.url || target.result.original_url || target.result.canonical_url)) || "")});
+            else target.selected.set(key, {key:key, remote_path:String(ff.remote_path || ""), file_id:identifierText(ff.file_id), itag:firstIdentifierText(ff.itag, ff.format_id, ff.file_id), format_id:firstIdentifierText(ff.format_id, ff.itag, ff.file_id), size:Number(ff.size || 0), name:name, label:name, source:String(ff.source || src || ""), ext:String(ff.ext || ""), quality:String(ff.quality || ""), quality_target:String(ff.quality_target || ""), format_selector:String(ff.format_selector || ""), bitrate:String(ff.bitrate || ""), media:String(ff.media || rr.media || ""), root_id:String(ff.root_id || rr.root_id || ""), rel:String(ff.rel || ""), source_url:String(ff.source_url || rr.source_url || rr.original_url || rr.canonical_url || rr.url || ""), direct_url:String(ff.direct_url || ""), url:String((target.result && (target.result.url || target.result.original_url || target.result.canonical_url)) || "")});
           }
         });
       }
@@ -170,7 +172,9 @@
       streamed:!!it.streamed,
       source:String(it.source || ""),
       ext:String(it.ext || ""),
-      quality:String(it.quality || "")
+      quality:String(it.quality || ""),
+      quality_target:String(it.quality_target || ""),
+      format_selector:String(it.format_selector || "")
     })).filter(it=>it.root.id && it.rel && (it.media === "audio" || it.media === "video"));
   }
 

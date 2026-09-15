@@ -10,7 +10,7 @@ from urllib.parse import quote
 
 from ..Library.search_cache import _SEARCH_DISK_LOCK, _disk_cache_get, _disk_cache_set, _make_search_cache_key
 from ..paths import cache_dir
-from ..playback.probe import run_cmd
+from ..playback.probe import ffprobe_json, run_cmd
 from ..utils import human_bytes, sha1_text
 from .http import HttpClient
 
@@ -426,15 +426,71 @@ def _youtube_stream_build_lock(key: str) -> threading.Lock:
         return lk
 
 
-def _find_existing_output(base_no_ext: str) -> str:
+def validate_ytdlp_output(path: str, media: str = "", expected_duration: float = 0.0) -> dict:
+    """Return ffprobe metadata only for a complete, final media artifact."""
+    candidate = str(path or "").strip()
+    name = os.path.basename(candidate).lower()
+    if not candidate or not os.path.isfile(candidate):
+        raise RuntimeError("yt-dlp output is missing")
+    if any(token in name for token in (".part", ".ytdl", ".tmp", ".temp")):
+        raise RuntimeError("yt-dlp output is an intermediate file")
+    # yt-dlp's format-specific temporary names look like title.f137.mp4.
+    if ".f" in name and any(part[1:].isdigit() for part in name.split(".") if part.startswith("f")):
+        raise RuntimeError("yt-dlp output is an intermediate format file")
+    try:
+        if os.path.getsize(candidate) <= 0:
+            raise RuntimeError("yt-dlp output is empty")
+    except OSError as exc:
+        raise RuntimeError("yt-dlp output cannot be read") from exc
+    probe = ffprobe_json(candidate)
+    streams = [s for s in list(probe.get("streams") or []) if isinstance(s, dict)]
+    if not streams:
+        raise RuntimeError("yt-dlp output has no media streams")
+    kinds = {str(s.get("codec_type") or "").lower() for s in streams}
+    wanted = str(media or "").strip().lower()
+    if wanted == "audio" and "audio" not in kinds:
+        raise RuntimeError("yt-dlp output has no audio stream")
+    if wanted == "video" and not {"video", "audio"}.issubset(kinds):
+        raise RuntimeError("yt-dlp video output is missing audio or video")
+    if wanted not in {"audio", "video"} and not (kinds & {"audio", "video"}):
+        raise RuntimeError("yt-dlp output has no playable stream")
+    durations = []
+    for value in [probe.get("format", {}).get("duration") if isinstance(probe.get("format"), dict) else 0] + [s.get("duration") for s in streams]:
+        number = _yt_number(value)
+        if number > 0:
+            durations.append(number)
+    duration = max(durations, default=0.0)
+    if duration <= 0:
+        raise RuntimeError("yt-dlp output has no duration")
+    expected = _yt_number(expected_duration)
+    if expected > 0 and duration + 0.75 < expected:
+        raise RuntimeError("yt-dlp output is shorter than the requested media")
+    # A merged file with wildly divergent track starts/durations is incomplete
+    # even if ffprobe can parse it. Small encoder padding differences are fine.
+    if "video" in kinds and "audio" in kinds:
+        av = [s for s in streams if str(s.get("codec_type") or "").lower() in {"audio", "video"}]
+        starts = [_yt_number(s.get("start_time")) for s in av]
+        if starts and max(starts) - min(starts) > 1.0:
+            raise RuntimeError("yt-dlp output audio/video streams are out of sync")
+    return {"probe": probe, "duration": duration, "streams": streams}
+
+
+def _find_existing_output(base_no_ext: str, expected_ext: str = "", media: str = "") -> str:
     folder = os.path.dirname(base_no_ext) or "."
     stem = os.path.basename(base_no_ext)
     try:
+        ext = str(expected_ext or "").strip().lower().lstrip(".")
         for name in sorted(os.listdir(folder)):
-            if name == stem or name.startswith(stem + "."):
-                cand = os.path.join(folder, name)
-                if os.path.isfile(cand):
-                    return cand
+            if not name.startswith(stem + "."):
+                continue
+            if ext and os.path.splitext(name)[1].lstrip(".").lower() != ext:
+                continue
+            cand = os.path.join(folder, name)
+            try:
+                validate_ytdlp_output(cand, media=media)
+                return cand
+            except Exception:
+                continue
     except Exception:
         return ""
     return ""
@@ -451,12 +507,12 @@ def _prepare_youtube_stream_file(url: str, fmt: dict) -> str:
     key = sha1_text(src_url + "|" + fmt_id + "|" + media + "|" + out_ext)
     folder = _youtube_stream_cache_dir()
     base_no_ext = os.path.join(folder, key)
-    existing = _find_existing_output(base_no_ext)
+    existing = _find_existing_output(base_no_ext, out_ext, media)
     if existing:
         return existing
     lock = _youtube_stream_build_lock(key)
     with lock:
-        existing = _find_existing_output(base_no_ext)
+        existing = _find_existing_output(base_no_ext, out_ext, media)
         if existing:
             return existing
         selector = _yt_stream_format_selector(fmt2)
@@ -467,7 +523,7 @@ def _prepare_youtube_stream_file(url: str, fmt: dict) -> str:
         code, out, err = _run_ytdlp(args)
         if code != 0:
             raise RuntimeError((err or out or "yt-dlp failed").strip())
-        built = _find_existing_output(base_no_ext)
+        built = _find_existing_output(base_no_ext, out_ext, media)
         if not built:
             raise RuntimeError("yt-dlp did not produce a streamable file")
         return built

@@ -100,6 +100,28 @@ def test_format_rows_use_resolution_targets_and_best_stream_selectors(monkeypatc
     assert files[2]["format_selector"] == "bestaudio/best"
 
 
+def test_ytdlp_output_validation_requires_complete_media(monkeypatch, tmp_path):
+    media = tmp_path / "finished.mp4"
+    media.write_bytes(b"media")
+    monkeypatch.setattr(youtube, "ffprobe_json", lambda _path: {
+        "format": {"duration": "12.5"},
+        "streams": [
+            {"codec_type": "video", "start_time": "0"},
+            {"codec_type": "audio", "start_time": "0.04"},
+        ],
+    })
+    result = youtube.validate_ytdlp_output(str(media), media="video", expected_duration=12)
+    assert result["duration"] == 12.5
+    partial = tmp_path / "finished.f137.mp4"
+    partial.write_bytes(b"partial")
+    try:
+        youtube.validate_ytdlp_output(str(partial), media="video")
+    except RuntimeError as exc:
+        assert "intermediate" in str(exc)
+    else:
+        raise AssertionError("format-specific intermediate was accepted")
+
+
 def test_selected_ytdlp_format_uses_source_url_for_stream_preparation():
     source_url = "https://media.example.test/watch/42"
 
