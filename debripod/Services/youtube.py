@@ -299,6 +299,22 @@ def _yt_selected_output_ext(fmt: dict) -> str:
 
 
 def _yt_stream_format_selector(fmt: dict) -> str:
+    explicit = str(fmt.get("format_selector") or fmt.get("selector") or "").strip()
+    if explicit:
+        return explicit
+    target = str(fmt.get("quality_target") or "").strip().lower()
+    if target in {"audio", "audio_only", "audio only"}:
+        return "bestaudio/best"
+    try:
+        target_height = int(target.rstrip("p"))
+    except Exception:
+        target_height = 0
+    if target_height > 0:
+        # Prefer browser-friendly AVC/AAC, then fall back to the best codec
+        # pair and finally a progressive file when a site lacks split streams.
+        return (f"bestvideo[height<={target_height}][vcodec^=avc1]+bestaudio[acodec^=mp4a]/"
+                f"bestvideo[height<={target_height}]+bestaudio/"
+                f"best[height<={target_height}]")
     fid = str(fmt.get("format_id") or fmt.get("itag") or fmt.get("file_id") or "").strip()
     media = str(fmt.get("media") or "").strip().lower()
     if not fid:
@@ -306,6 +322,95 @@ def _yt_stream_format_selector(fmt: dict) -> str:
     if media == "audio":
         return fid
     return f"{fid}+bestaudio/best"
+
+
+YTDLP_QUALITY_TARGETS = (2160, 1440, 1080, 720, 480, 360)
+
+
+def _yt_number(raw: Any, default: float = 0.0) -> float:
+    """Parse the nullable/nonnumeric values emitted by different extractors."""
+    try:
+        value = float(raw)
+        return value if value == value else default
+    except (TypeError, ValueError):
+        return default
+
+
+def _yt_quality_target_rows(info: dict, source_url: str) -> List[dict]:
+    """Collapse yt-dlp's unstable format IDs into six user quality targets."""
+    formats = [f for f in list(info.get("formats") or []) if isinstance(f, dict)]
+    usable = [f for f in formats if str(f.get("ext") or "").lower() not in {"mhtml", "jpg", "jpeg", "png", "webp"}]
+    videos = []
+    audios = []
+    for fmt in usable:
+        vcodec = str(fmt.get("vcodec") or "").lower()
+        acodec = str(fmt.get("acodec") or "").lower()
+        if vcodec not in {"", "none"} and _yt_number(fmt.get("height")) > 0:
+            videos.append(fmt)
+        if vcodec in {"", "none"} and acodec not in {"", "none"}:
+            audios.append(fmt)
+    rows: List[dict] = []
+    used_heights = set()
+    for target in YTDLP_QUALITY_TARGETS:
+        candidates = [f for f in videos if _yt_number(f.get("height")) <= target]
+        if not candidates:
+            continue
+        # Highest resolution at or below target; then prefer AVC and larger
+        # bitrate, which keeps the selector stable across extractor changes.
+        candidates.sort(key=lambda f: (
+            _yt_number(f.get("height")),
+            str(f.get("vcodec") or "").lower().startswith(("avc", "h264")),
+            _yt_number(f.get("tbr")),
+        ), reverse=True)
+        chosen = candidates[0]
+        height = int(_yt_number(chosen.get("height")))
+        if height in used_heights:
+            continue
+        used_heights.add(height)
+        fid = str(chosen.get("format_id") or "").strip()
+        row = _yt_format_row(chosen, source_url, quality_target=f"{height}p")
+        # The displayed row is the selected available height. Once a source
+        # lacks (for example) 2160p, asking yt-dlp for <=2160 would make the
+        # same stream look like a higher target and would duplicate it.
+        row["format_selector"] = _yt_stream_format_selector({"quality_target": f"{height}p"})
+        row["name"] = f"{height}p"
+        row["title"] = row["name"]
+        row["quality"] = row["name"]
+        row["file_id"] = fid or f"quality-{height}p"
+        row["format_id"] = fid
+        row["itag"] = fid
+        rows.append(row)
+    if audios:
+        audios.sort(key=lambda f: (_yt_number(f.get("abr")), _yt_number(f.get("tbr"))), reverse=True)
+        row = _yt_format_row(audios[0], source_url, quality_target="audio")
+        row["name"] = "Audio Only"; row["title"] = "Audio Only"; row["quality"] = "Audio Only"
+        row["format_selector"] = "bestaudio/best"
+        row["file_id"] = "audio-only"; row["format_id"] = ""; row["itag"] = ""
+        rows.append(row)
+    return rows
+
+
+def _yt_format_row(fmt: dict, source_url: str, *, quality_target: str) -> dict:
+    ext = str(fmt.get("ext") or "").strip().lower()
+    media = _yt_guess_media(fmt)
+    fid = str(fmt.get("format_id") or "").strip()
+    size = 0
+    for key in ("filesize", "filesize_approx"):
+        try:
+            if int(fmt.get(key) or 0) > 0: size = int(fmt[key]); break
+        except Exception: pass
+    return {
+        "file_id": fid, "itag": fid, "format_id": fid,
+        "name": _yt_quality_text(fmt), "title": _yt_quality_text(fmt), "ext": ext,
+        "quality": _yt_quality_text(fmt), "quality_target": quality_target,
+        "format_selector": "", "bitrate": _yt_audio_bitrate_k(fmt),
+        "size": size, "size_text": human_bytes(size) if size > 0 else "",
+        "source": "youtube", "selectable": True, "media": media,
+        "source_url": source_url, "direct_url": str(fmt.get("url") or "").strip(),
+        "fps": int(_yt_number(fmt.get("fps"))), "height": int(_yt_number(fmt.get("height"))),
+        "width": int(_yt_number(fmt.get("width"))), "acodec": str(fmt.get("acodec") or "").lower(),
+        "vcodec": str(fmt.get("vcodec") or "").lower(), "protocol": str(fmt.get("protocol") or "").strip(),
+    }
 
 
 _YOUTUBE_STREAM_BUILD_LOCKS: Dict[str, threading.Lock] = {}
@@ -504,6 +609,15 @@ def ytdlp_list_formats(url: str) -> List[dict]:
     # yt-dlp needs the original page URL to re-resolve a format later.
     source_url = str(url or "").strip()
     info = _yt_dlp_extract_info(source_url)
+    # The extractor's format IDs change over time and are not useful quality
+    # choices. Return one row per available target and retain IDs only as
+    # diagnostic/backwards-compatible metadata for the worker.
+    items = _yt_quality_target_rows(info, source_url)
+    if items:
+        return items
+
+    # A few extractors expose only a progressive format without dimensions.
+    # Keep that media usable by returning a single normalized fallback row.
     items: List[dict] = []
     seen = set()
     for fmt in list(info.get("formats") or []):
@@ -553,9 +667,9 @@ def ytdlp_list_formats(url: str) -> List[dict]:
             "media": media,
             "source_url": source_url,
             "direct_url": direct_url,
-            "fps": int(fmt.get("fps") or 0) if str(fmt.get("fps") or "").strip() else 0,
-            "height": int(fmt.get("height") or 0) if str(fmt.get("height") or "").strip() else 0,
-            "width": int(fmt.get("width") or 0) if str(fmt.get("width") or "").strip() else 0,
+            "fps": int(_yt_number(fmt.get("fps"))),
+            "height": int(_yt_number(fmt.get("height"))),
+            "width": int(_yt_number(fmt.get("width"))),
             "acodec": acodec,
             "vcodec": vcodec,
             "protocol": str(fmt.get("protocol") or "").strip(),

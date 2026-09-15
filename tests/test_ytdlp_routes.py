@@ -83,6 +83,23 @@ def test_format_rows_retain_the_durable_inspected_url(monkeypatch):
     assert files[0]["direct_url"] == "https://cdn.example.test/signed-media-url"
 
 
+def test_format_rows_use_resolution_targets_and_best_stream_selectors(monkeypatch):
+    source_url = "https://media.example.test/watch/targeted"
+    monkeypatch.setattr(youtube, "_yt_dlp_extract_info", lambda _url: {
+        "formats": [
+            {"format_id": "137", "ext": "mp4", "vcodec": "avc1.640028", "acodec": "none", "height": 1080, "width": 1920, "tbr": 4200},
+            {"format_id": "136", "ext": "mp4", "vcodec": "avc1.4d401f", "acodec": "none", "height": 720, "width": 1280, "tbr": 2200},
+            {"format_id": "251", "ext": "webm", "vcodec": "none", "acodec": "opus", "abr": 160, "url": "https://cdn.example.test/audio"},
+        ],
+    })
+    files = youtube.ytdlp_list_formats(source_url)
+    assert [row["quality_target"] for row in files] == ["1080p", "720p", "audio"]
+    assert files[0]["format_selector"].startswith("bestvideo[height<=1080]")
+    assert files[1]["format_selector"].startswith("bestvideo[height<=720]")
+    assert files[2]["name"] == "Audio Only"
+    assert files[2]["format_selector"] == "bestaudio/best"
+
+
 def test_selected_ytdlp_format_uses_source_url_for_stream_preparation():
     source_url = "https://media.example.test/watch/42"
 
