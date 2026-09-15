@@ -60,7 +60,8 @@ test("two users on one browser retain separate device settings", () => {
 test("fresh device has the release visual-quality defaults and no server write path", () => {
   const settings = loadUiSettings(makeStorage());
   const fresh = settings.setDeviceSettingsUserId("fresh-user");
-  assert.equal(fresh.glassRenderScale, 1);
+  assert.equal(fresh.glassRenderScale, 1.5);
+  assert.equal(fresh.glassRenderScaleVersion, 1);
   assert.equal(fresh.glassFrostSamples, 8);
   assert.equal(fresh.glassIdleFps, 30);
   assert.equal(fresh.glassInteractionFps, 60);
