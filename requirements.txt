@@ -1,7 +1,7 @@
 # Dependencies are pinned and should be updated intentionally.
 aiohttp==3.14.3
 aioslsk==1.6.3
-yt-dlp==2026.7.4
+yt-dlp==2026.8.19
 webauthn==2.8.0
 keyring==25.7.0
 pywebpush==2.3.0

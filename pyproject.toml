@@ -11,7 +11,7 @@ requires-python = ">=3.10"
 dependencies = [
   "aiohttp>=3.14",
   "aioslsk>=0.7",
-  "yt-dlp>=2025.1.1",
+  "yt-dlp==2026.8.19",
   "keyring>=25.7.0",
   "webauthn>=2.8",
   "pywebpush>=2.3"

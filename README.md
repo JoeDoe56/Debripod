@@ -299,7 +299,7 @@ Pinned Python dependencies are listed in `requirements.txt`.
 ```text
 aiohttp==3.14.1
 aioslsk==1.6.3
-yt-dlp==2026.6.9
+yt-dlp==2026.8.19
 webauthn==2.8.0
 keyring==25.7.0
 pywebpush==2.3.0
