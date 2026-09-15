@@ -94,7 +94,9 @@ Long running work appears in the task panel. Debrid, Soulseek, YouTube, and vide
 
 YouTube discovery and generic pasted-URL inspection use the `yt-dlp` CLI. Any HTTP(S) URL supported by yt-dlp, including a pasted `soundcloud.com` URL, can still be inspected directly. Set `YOUTUBE_DOWNLOAD_DIR` for generic yt-dlp downloads. Soulseek uses `aioslsk`; set `SOULSEEK_USERNAME`, `SOULSEEK_PASSWORD`, and `SOULSEEK_DOWNLOAD_DIR`. Saving changed credentials restarts the long-lived Soulseek client on the application event loop. Configure one supported debrid provider token, select it with `DEBRID_PROVIDER`, and set `DOWNLOAD_DIR` for torrent previews and downloads.
 
-The normal tests are offline. To opt into live yt-dlp smoke tests, run with `DEBRIPOD_RUN_NETWORK_TESTS=1`.
+For every yt-dlp source, media selection shows available resolution choices and one Audio Only choice. These are quality targets: the server chooses streams, prefers compatible codecs at the selected resolution, and lets ffmpeg combine or extract streams without unnecessary re-encoding. Playback and downloads use the completed output path and validate stream presence, duration, and audio/video timing before accepting a file. Failed selections can retry an alternative within the requested resolution. Sources with incomplete quality metadata show a Best choice.
+
+The normal tests are offline. To opt into live yt-dlp smoke tests, run with `DEBRIPOD_RUN_NETWORK_TESTS=1`. The loopback media integration test also runs without external network access when ffmpeg, ffprobe, and yt-dlp are installed; set `FFMPEG_PATH` and `FFPROBE_PATH` if the media tools are outside PATH.
 
 ### Playlists and smart playlists
 

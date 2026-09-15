@@ -320,6 +320,24 @@ def _yt_stream_format_selector(fmt: dict) -> str:
     return "best"
 
 
+def ytdlp_format_selectors(fmt: dict) -> List[str]:
+    """Retry a different stream combination after download or mux failure."""
+    primary = _yt_stream_format_selector(fmt)
+    target = str(fmt.get("quality_target") or "").lower()
+    if target == "audio" or fmt.get("media") == "audio":
+        fallback = "best/bestaudio"
+    else:
+        try:
+            height = int(target.rstrip("p"))
+        except (TypeError, ValueError):
+            height = 0
+        cap = f"[height<={height}]" if height > 0 else ""
+        # A progressive stream avoids the failed merge. If unavailable, try
+        # alternate audio before repeating the preferred codec combination.
+        fallback = f"best{cap}/bestvideo{cap}+bestaudio[acodec!^=mp4a]/bestvideo{cap}+bestaudio"
+    return list(dict.fromkeys([primary, fallback]))
+
+
 YTDLP_QUALITY_TARGETS = (2160, 1440, 1080, 720, 480, 360)
 
 
@@ -566,16 +584,7 @@ def _prepare_youtube_stream_file(url: str, fmt: dict) -> str:
             return existing
         # Resolve the selector from the normalized target on the server. A
         # client supplied format ID or selector is never trusted for a fetch.
-        selectors = [_yt_stream_format_selector({"quality_target": quality_target, "media": media, "ext": out_ext})]
-        target_text = quality_target.rstrip("p")
-        try:
-            target_height = int(target_text)
-        except (TypeError, ValueError):
-            target_height = 0
-        if target_height > 0 and media != "audio":
-            fallback = f"bestvideo[height<={target_height}]+bestaudio/best[height<={target_height}]"
-            if fallback not in selectors:
-                selectors.append(fallback)
+        selectors = ytdlp_format_selectors({"quality_target": quality_target, "media": media, "ext": out_ext})
         last_error = ""
         for selector in selectors:
             args = _yt_dlp_base_args() + ["--no-part", "--force-overwrites", "--newline", "-f", selector]

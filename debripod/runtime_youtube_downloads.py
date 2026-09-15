@@ -4,7 +4,7 @@ import re
 
 from .runtime_state import *
 from .runtime_video_post import *
-from .Services.youtube import validate_ytdlp_output
+from .Services.youtube import validate_ytdlp_output, ytdlp_format_selectors
 
 YTDLP_PROCESS_SEMAPHORE = threading.BoundedSemaphore(2)
 YTDLP_DOWNLOAD_TIMEOUT_SECONDS = 6 * 3600
@@ -202,19 +202,7 @@ def _youtube_run_download(task_id: str, entry: Dict[str, Any], seq: int, total_c
     preferred_out = os.path.join(task.task_dir, title + '.' + ext)
 
     format_spec = {'quality_target': quality_target, 'media': media, 'ext': ext}
-    selector = _yt_stream_format_selector(format_spec)
-    selectors = [selector]
-    # A second invocation gets a less restrictive selector when a provider's
-    # advertised codec pair is unavailable. Each attempt is validated below.
-    target_text = quality_target.lower().rstrip('p')
-    try:
-        target_height = int(target_text)
-    except Exception:
-        target_height = 0
-    if target_height > 0 and media != 'audio':
-        fallback = f'bestvideo[height<={target_height}]+bestaudio/best[height<={target_height}]'
-        if fallback not in selectors:
-            selectors.append(fallback)
+    selectors = ytdlp_format_selectors(format_spec)
 
     initial_total = int(entry.get('total') or 0)
     _update_task_file_entry(task_id, 'youtube_files', file_id, state='downloading', paused=False, canceled=False, error='', out_path=preferred_out, name=os.path.basename(preferred_out), done=0, speed=0.0, total=initial_total)
