@@ -74,6 +74,10 @@ Supported audio formats include MP3, M4A, AAC, WAV, FLAC, OGG, OPUS, WMA, AIFF, 
 
 DebriPod streams media through aiohttp with range request support, so the browser can seek through audio and video. It saves playback state, current item, resume position, recent playback history, and queue context.
 
+Enable **Preload next** in Playback settings to prepare the current and following audio track as decoded buffers. **Enable gapless playback**, immediately below it, schedules their boundaries on the same audio clock with no added silence or overlap. With gapless disabled, prepared transitions add 120 ms of silence. Turning preload off cancels preparation of the next track and disables the gapless setting. Initial preparation can take longer and uses memory proportional to the decoded current and next tracks; live streams and media the browser cannot decode use the regular streaming path. Silence already present in a source recording is preserved.
+
+Playback history restores the last track, position, and queue edits for each listening session. Holding Menu to return to the library restores the original metadata or folder browsing path. Rapidly tap the performance-button area three times to reveal or hide it.
+
 ffmpeg and ffprobe are used for metadata, artwork extraction, muxing, transcoding, HLS output, and browser compatible video output. If the installer configured them correctly, DebriPod should find them automatically. If not, set `FFMPEG_PATH` and `FFPROBE_PATH` in Playback settings. Keep automatic browser compatibility enabled if you want downloaded videos converted or remuxed when needed for browser playback.
 
 ### Search, downloads, and tasks
