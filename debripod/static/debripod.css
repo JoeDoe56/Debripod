@@ -280,7 +280,7 @@
       pointer-events: none !important;
     }
 
-    
+
     @media (max-height: 720px){
       .topbar{padding: calc(6px + env(safe-area-inset-top, 0px)) 10px 6px}
       .topbarInner{gap:8px}
@@ -492,7 +492,7 @@
       gap: 10px;
       pointer-events: auto;
       overflow:visible;
-      translate:var(--dp-parallax-x, 0px) var(--dp-parallax-y, 0px);
+
     }
 .pathPill{
       display:inline-flex;
@@ -518,7 +518,7 @@
       clip-path: inset(0 round 999px);
       opacity: 1;
       transform: translateY(0);
-      transition: opacity var(--playbackPillFadeMs) ease, transform var(--playbackPillFadeMs) ease, height var(--playbackPillFadeMs) cubic-bezier(.22,.8,.24,1), min-height var(--playbackPillFadeMs) cubic-bezier(.22,.8,.24,1);
+      transition: opacity var(--playbackPillFadeMs) ease, transform var(--playbackPillFadeMs) ease;
       will-change: opacity, transform, width;
     }
     .pathPill.pathPillExpanded{
@@ -660,7 +660,7 @@
     }
     .ipodWheelWrap{
       pointer-events:auto;
-      translate:var(--dp-parallax-x, 0px) var(--dp-parallax-y, 0px);
+
     }
     /* The wheel is a touch control, not document content.  Prevent a held
        press from opening the browser's text-selection handles on its labels. */
@@ -692,7 +692,7 @@
       overflow:hidden;
       display:block;
       isolation:isolate;
-      translate:var(--dp-parallax-x, 0px) var(--dp-parallax-y, 0px);
+
     }
 
     .ipodScreenContent{
@@ -835,7 +835,7 @@
       align-items:center;
       margin-left:auto;
     }
-    
+
     .ipodItem.twoLine{
       flex-direction:column;
       align-items:stretch;
@@ -1638,7 +1638,7 @@
       pointer-events: auto;
     }
 
-    
+
 .nowPlaying::before{
   content:"";
   position:absolute;
@@ -1719,7 +1719,7 @@
   transition:opacity var(--playbackPillFadeMs) ease, transform var(--playbackPillFadeMs) ease, visibility 0s linear 0s;
   will-change:opacity, transform;
   pointer-events:auto;
-  translate:var(--dp-parallax-x, 0px) var(--dp-parallax-y, 0px);
+
 }
 .infoPill.infoPillHidden{
   opacity:0;
@@ -2182,3 +2182,11 @@
     }
     .debripodInlineStatus[data-tone="ok"]{ background:rgba(23, 90, 62, .90); }
     .debripodInlineStatus[data-tone="warn"]{ background:rgba(112, 59, 23, .90); }
+
+/* Geometry is authored atomically by the shared motion clock. */
+.pathPill,.pathPill.pathPillExpanded{border-radius:var(--pathPillRenderedRadius,16px);clip-path:inset(0 round var(--pathPillRenderedRadius,16px));}
+.hScrollText.hScrollTextScrollable{padding-inline:0;mask-image:linear-gradient(to right,#000 0,#000 calc(100% - var(--path-text-fade)),transparent 100%);-webkit-mask-image:linear-gradient(to right,#000 0,#000 calc(100% - var(--path-text-fade)),transparent 100%);}
+.hScrollText.hScrollTextScrollable[data-scroll-away="true"]{mask-image:linear-gradient(to right,transparent 0,#000 var(--path-text-fade),#000 calc(100% - var(--path-text-fade)),transparent 100%);-webkit-mask-image:linear-gradient(to right,transparent 0,#000 var(--path-text-fade),#000 calc(100% - var(--path-text-fade)),transparent 100%);}
+
+.pathPill,.pathPill.pathPillExpanded{padding:var(--pathPillRenderedPadY,8px) var(--pathPillRenderedPadX,12px);}
+.pathPill .pathPillRows,.pathPill.pathPillExpanded .pathPillRows{grid-template-rows:1fr var(--pathPillSecondFraction,0fr);transition:none;}

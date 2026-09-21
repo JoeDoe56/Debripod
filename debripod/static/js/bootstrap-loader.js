@@ -1,6 +1,8 @@
 (function(){
   const scripts = [
     "/static/vendor/hls-local.js",
+    "/static/js/glass-motion.js",
+    "/static/js/glass-overlays.js",
     "/static/liquidGL.js",
     "/static/js/platform.js",
     "/static/js/layout-controller.js",

@@ -312,9 +312,12 @@
     const transform = button ? window.getComputedStyle(button).transform : "none";
     const matrix = transform && transform.match(/^matrix\(([^)]+)\)$/);
     const values = matrix ? matrix[1].split(",").map(Number) : [];
-    const scale = values.length === 6 ? Math.hypot(values[0], values[1]) : 1;
-    const width = el.offsetWidth * scale;
-    const height = el.offsetHeight * scale;
+    const transformScale = values.length === 6 ? Math.hypot(values[0], values[1]) : 1;
+    const scaleParts=button?String(window.getComputedStyle(button).scale || "1").split(/\s+/).map(Number):[1];
+    const scaleX=Number.isFinite(scaleParts[0])?scaleParts[0]:1;
+    const scaleY=Number.isFinite(scaleParts[1])?scaleParts[1]:scaleX;
+    const width = el.offsetWidth * transformScale * scaleX;
+    const height = el.offsetHeight * transformScale * scaleY;
     return {left:base.left + (base.width - width) / 2, top:base.top + (base.height - height) / 2, width, height};
   }
 
@@ -863,6 +866,7 @@
     if(motion.settleTimer) clearTimeout(motion.settleTimer);
     motion.settleTimer = setTimeout(()=>{
       motion.settleTimer = 0;
+      motion.rebaseOnReveal = motion.rapidInput;
       motion.rapidInput = false;
       motion.rapidCount = 0;
       updateLibSelectionGlass("input settled");
@@ -929,13 +933,12 @@
       const elapsed = listSelectionMotion.motionStepTs ? Math.max(1, Math.min(64, now - listSelectionMotion.motionStepTs)) : 16.667;
       listSelectionMotion.motionStepTs = now;
       const stiffness = 1 - Math.exp(-elapsed / 40);
-      listSelectionMotion.currentX += (listSelectionMotion.targetX - listSelectionMotion.currentX) * stiffness;
-      listSelectionMotion.currentY += (listSelectionMotion.targetY - listSelectionMotion.currentY) * stiffness;
-      listSelectionMotion.currentWidth += (listSelectionMotion.targetWidth - listSelectionMotion.currentWidth) * stiffness;
-      listSelectionMotion.currentHeight += (listSelectionMotion.targetHeight - listSelectionMotion.currentHeight) * stiffness;
-      listSelectionMotion.currentRadius += (listSelectionMotion.targetRadius - listSelectionMotion.currentRadius) * stiffness;
+      const geometry = window.LiquidGlassMotion.advance(
+        {x:listSelectionMotion.currentX,y:listSelectionMotion.currentY,width:listSelectionMotion.currentWidth,height:listSelectionMotion.currentHeight,radius:listSelectionMotion.currentRadius,stretch:listSelectionMotion.stretch || 0},
+        {x:listSelectionMotion.targetX,y:listSelectionMotion.targetY,width:listSelectionMotion.targetWidth,height:listSelectionMotion.targetHeight,radius:listSelectionMotion.targetRadius,stretch:listSelectionMotion.targetStretch || 0},elapsed,40);
+      for(const [key,field] of Object.entries({x:"X",y:"Y",width:"Width",height:"Height",radius:"Radius"}))listSelectionMotion["current"+field]=geometry[key];
       listSelectionMotion.currentOpacity += (listSelectionMotion.targetOpacity - listSelectionMotion.currentOpacity) * 0.42;
-      listSelectionMotion.stretch += ((listSelectionMotion.targetStretch || 0) - (listSelectionMotion.stretch || 0)) * 0.28;
+      listSelectionMotion.stretch = geometry.stretch;
       if(Math.abs((listSelectionMotion.targetStretch || 0) - (listSelectionMotion.stretch || 0)) < 0.006) listSelectionMotion.stretch = listSelectionMotion.targetStretch || 0;
       listSelectionMotion.direction = listSelectionMotion.targetDirection || listSelectionMotion.direction || 0;
       if(Math.abs(listSelectionMotion.stretch) < 0.006 && !listSelectionMotion.targetStretch) listSelectionMotion.direction = 0;
@@ -990,6 +993,7 @@
 
   function setLibSelectionTarget(x, y, width, height, radius, opacity){
     try{
+      radius = Math.max(0, Math.min(radius, width / 2, height / 2));
       opacity = listSelectionMotion.rapidInput ? 0 : opacity;
       if(listSelectionMotion.initialized && listSelectionMotion.targetX === x && listSelectionMotion.targetY === y &&
          listSelectionMotion.targetWidth === width && listSelectionMotion.targetHeight === height &&
@@ -1002,7 +1006,8 @@
       opacity = listSelectionMotion.rapidInput ? 0 : opacity;
       listSelectionMotion.targetOpacity = opacity;
       listSelectionMotion.targetForegroundProgress = opacity > 0.5 ? 1 : 0;
-      if(!listSelectionMotion.initialized){
+      if(!listSelectionMotion.initialized || (listSelectionMotion.rebaseOnReveal && opacity > 0)){
+        listSelectionMotion.rebaseOnReveal = false;
         listSelectionMotion.currentX = x;
         listSelectionMotion.currentY = y;
         listSelectionMotion.currentWidth = width;
@@ -1128,7 +1133,7 @@
       const host = document.getElementById("ipodScreen");
       const hostRect = host ? host.getBoundingClientRect() : {left:0, top:0};
       const targetHeight = Math.max(1, rowRect.height || (visibleBottom - visibleTop));
-      const radius = targetHeight > 58 ? 16 : 999;
+      const radius = targetHeight > 58 ? 16 : Math.min(right - left, targetHeight) / 2;
       setLibSelectionTarget(left - hostRect.left, rowRect.top - hostRect.top, right - left, targetHeight, radius, 1);
       const renderer = liquidGlassRendererByKey("main");
       if(renderer){

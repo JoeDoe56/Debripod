@@ -82,21 +82,15 @@
       const amount = clampNumber(uiSettings.centerBounceAmount, DEFAULT_UI_SETTINGS.centerBounceAmount, 0, .3);
       const duration = clampNumber(uiSettings.centerBounceDuration, DEFAULT_UI_SETTINGS.centerBounceDuration, 0, 1000);
       const overshoot = clampNumber(uiSettings.centerBounceOvershoot, DEFAULT_UI_SETTINGS.centerBounceOvershoot, 0, 1.4);
-      const pose = scale => "translate(-50%,-50%) scale(" + scale + ")";
-      wheelCenterAnimation = btnCenter.animate([
-        {transform:pose(1), offset:0},
-        {transform:pose(1 + amount), offset:.32},
-        {transform:pose(1 - amount * .28 * overshoot), offset:.66},
-        {transform:pose(1 + amount * .08 * overshoot), offset:.86},
-        {transform:pose(1), offset:1}
-      ], {duration, easing:"cubic-bezier(.35,0,.25,1)"});
-      const animation = wheelCenterAnimation;
-      const sync = ()=>{
-        if(wheelCenterAnimation !== animation) return;
-        markFrameWork({metrics:true, render:true, keepAlive:animation.playState === "running"});
-        if(animation.playState === "running") requestAnimationFrame(sync);
-      };
-      sync();
+      const initialScale=parseFloat(btnCenter.style.scale)||1;
+      const pose=scale=>({scaleX:scale,scaleY:scale});
+      wheelCenterAnimation=window.LiquidGlassMotion.animate({duration,visible:()=>btnCenter.getClientRects().length>0,frames:[
+        {value:pose(initialScale),offset:0},{value:pose(1+amount),offset:.32},
+        {value:pose(1-amount*.28*overshoot),offset:.66},{value:pose(1+amount*.08*overshoot),offset:.86},{value:pose(1),offset:1}
+      ],update:geometry=>{
+        btnCenter.style.scale=geometry.scaleX+" "+geometry.scaleY;
+        markFrameWork({metrics:true,render:true,keepAlive:true});
+      },complete:()=>{btnCenter.style.scale="";markFrameWork({metrics:true,render:true});}});
     }catch(e){}
   }
 

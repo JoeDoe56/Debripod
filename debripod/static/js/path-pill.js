@@ -132,6 +132,7 @@
       const isPathText = el === document.getElementById("libHeaderText") || el === pathPillNowText;
       if(el.classList) el.classList.add(isPathText ? "pathPillTextScrollable" : "hScrollTextScrollable");
       el.scrollLeft = 0;
+      if(!el._liquidEdgeBound){el._liquidEdgeBound=true;el.addEventListener("scroll",()=>{el.dataset.scrollAway=el.scrollLeft>1?"true":"false";},{passive:true});}
       const maxScroll = Math.max(0, el.scrollWidth - el.clientWidth);
       if(maxScroll <= 1) return;
       el._dpHScrollAutoTimer = setTimeout(()=>{
@@ -280,14 +281,6 @@
     return Math.max(1, Math.floor(Math.min(info, cover)));
   }
 
-  function pathPillMotionNextWidth(currentWidth, targetWidth, elapsedMs){
-    const current = Number(currentWidth) || 0;
-    const target = Number(targetWidth) || 0;
-    const elapsed = Math.max(1, Number(elapsedMs) || 16.7);
-    const mix = 1 - Math.exp(-elapsed / 92);
-    return current + ((target - current) * mix);
-  }
-
   function pathPillTextOverflows(scrollWidth, clientWidth){
     return Number(scrollWidth) > Number(clientWidth) + 1;
   }
@@ -329,19 +322,22 @@
         }
         const elapsed = pathPillMotion.lastStepTs ? Math.max(1, now - pathPillMotion.lastStepTs) : interval;
         pathPillMotion.lastStepTs = now;
-        pathPillMotion.currentWidth = pathPillMotionNextWidth(pathPillMotion.currentWidth, pathPillMotion.targetWidth, elapsed);
-        pathPillMotion.currentHeight = pathPillMotionNextWidth(pathPillMotion.currentHeight, pathPillMotion.targetHeight, elapsed);
-        if(Math.abs(pathPillMotion.targetWidth - pathPillMotion.currentWidth) < 0.35){
-          pathPillMotion.currentWidth = pathPillMotion.targetWidth;
-        }
-        if(Math.abs(pathPillMotion.targetHeight - pathPillMotion.currentHeight) < 0.35){
-          pathPillMotion.currentHeight = pathPillMotion.targetHeight;
-        }
-        document.documentElement.style.setProperty("--pathPillRenderedWidth", pathPillMotion.currentWidth.toFixed(2) + "px");
-        document.documentElement.style.setProperty("--pathPillRenderedHeight", pathPillMotion.currentHeight.toFixed(2) + "px");
+        const expanded=libHeader.classList.contains("pathPillExpanded");
+        const targetRadius=expanded?(parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--playbackPillRadius"))||16):pathPillMotion.targetHeight/2;
+        const geometry=window.LiquidGlassMotion.advance(
+          {width:pathPillMotion.currentWidth,height:pathPillMotion.currentHeight,radius:pathPillMotion.currentRadius ?? pathPillMotion.currentHeight/2,padX:pathPillMotion.currentPadX ?? 12,padY:pathPillMotion.currentPadY ?? 8,expansion:pathPillMotion.expansion || 0},
+          {width:pathPillMotion.targetWidth,height:pathPillMotion.targetHeight,radius:targetRadius,padX:pathPillMotion.targetPadX ?? 12,padY:pathPillMotion.targetPadY ?? 8,expansion:expanded?1:0},elapsed,92);
+        pathPillMotion.currentWidth=geometry.width;pathPillMotion.currentHeight=geometry.height;pathPillMotion.currentRadius=geometry.radius;
+        document.documentElement.style.setProperty("--pathPillRenderedWidth", geometry.width.toFixed(3)+"px");
+        document.documentElement.style.setProperty("--pathPillRenderedHeight", geometry.height.toFixed(3)+"px");
+        document.documentElement.style.setProperty("--pathPillRenderedRadius", geometry.radius.toFixed(3)+"px");
+        pathPillMotion.currentPadX=geometry.padX;pathPillMotion.currentPadY=geometry.padY;pathPillMotion.expansion=geometry.expansion;
+        document.documentElement.style.setProperty("--pathPillRenderedPadX",geometry.padX+"px");
+        document.documentElement.style.setProperty("--pathPillRenderedPadY",geometry.padY+"px");
+        document.documentElement.style.setProperty("--pathPillSecondFraction",geometry.expansion+"fr");
         markPathPillWidthChanged();
         updatePathPillScrollingMasks();
-        if(pathPillMotion.currentWidth !== pathPillMotion.targetWidth || pathPillMotion.currentHeight !== pathPillMotion.targetHeight) schedulePathPillMotion();
+        if(pathPillMotion.currentWidth !== pathPillMotion.targetWidth || pathPillMotion.currentHeight !== pathPillMotion.targetHeight || Math.abs(geometry.radius-Math.min(targetRadius,geometry.width/2,geometry.height/2))>.01 || geometry.expansion!==(expanded?1:0)) schedulePathPillMotion();
       }catch(e){}
     };
     try{
@@ -427,12 +423,13 @@
         : 0;
       const expanded = !!(libHeader && libHeader.classList.contains("pathPillExpanded"));
       const targetPad = expanded ? padX : basePadX;
+      pathPillMotion.targetPadX=targetPad;
+      pathPillMotion.targetPadY=expanded?Math.max(0,parseFloat(rootStyle.getPropertyValue("--playbackPillPadY"))||5):8;
       const measured = Math.max(pathWidth, nowWidth) + targetPad * 2;
       const minWidth = Math.min(maxWidth, targetPad * 2 + 1);
       const target = Math.max(1, Math.min(maxWidth, Math.max(minWidth, measured || minWidth)));
       setPathPillTargetWidth(target);
-      const pathStyle = window.getComputedStyle ? getComputedStyle(libHeader) : null;
-      const padY = Math.max(0, parseFloat(pathStyle && pathStyle.paddingTop || "5") || 5);
+      const padY = pathPillMotion.targetPadY;
       const rowGap = Math.max(0, parseFloat(rootStyle.getPropertyValue("--playbackPillRowGap")) || 1);
       const pathHeight = Math.max(14, Math.ceil((pathText && pathText.getBoundingClientRect ? pathText.getBoundingClientRect().height : 14) || 14));
       const nowHeight = expanded && pathPillNowText

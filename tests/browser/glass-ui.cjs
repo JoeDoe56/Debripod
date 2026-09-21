@@ -1,0 +1,42 @@
+const fs=require('node:fs'),assert=require('node:assert/strict');
+const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
+(async()=>{const browser=await chromium.launch({headless:true,channel:process.env.BROWSER_CHANNEL||'msedge'});try{
+ const page=await browser.newPage({viewport:{width:480,height:700}});const errors=[];page.on('pageerror',e=>errors.push(e.message));
+ await page.setContent(`<style>body{margin:20px;font:18px Arial;background:#333;color:white}.label{display:block;width:220px;height:28px;white-space:nowrap;overflow:hidden}.hidden{display:none}#offscreen{position:absolute;top:2000px}.lens{position:absolute;top:250px;left:20px;background:#888}</style><span id="text" class="label">Track 12 - X</span><span id="hidden" class="hidden">Old</span><span id="offscreen">Old</span><div id="lens" class="lens"></div>`);
+ for(const name of ['glass-motion','glass-overlays'])await page.addScriptTag({content:fs.readFileSync('debripod/static/js/'+name+'.js','utf8')});
+ await page.evaluate(()=>{text.textContent='Track 13 - Y';hidden.textContent='New';offscreen.textContent='New';});
+ await page.waitForTimeout(25);
+ const during=await page.evaluate(()=>({changed:Array.from(text.querySelectorAll('[data-liquid-overlay]')).map(x=>x.textContent),hidden:hidden.children.length,offscreen:offscreen.children.length,transforms:Array.from(text.querySelectorAll('span')).map(x=>getComputedStyle(x).transform)}));
+ assert.deepEqual(during.changed,['3','Y']);assert.equal(during.hidden,0);assert.equal(during.offscreen,0);
+ await page.waitForTimeout(180);assert.equal(await page.locator('#text').textContent(),'Track 13 - Y');await page.waitForFunction(()=>document.querySelectorAll('[data-liquid-overlay]').length===0,{},{timeout:1000});
+ // Deletion has an outgoing animation even though it has no inserted glyphs.
+ await page.evaluate(()=>text.textContent='Track 1 - Y');await page.waitForTimeout(15);assert.ok(await page.locator('[data-liquid-overlay]').count()>0);
+ await page.waitForTimeout(160);await page.waitForFunction(()=>document.querySelectorAll('[data-liquid-overlay]').length===0,{},{timeout:1000});
+ // Rapid replacement preserves final text and leaves no abandoned animations.
+ await page.evaluate(()=>text.textContent='Track 2 - Y');await page.waitForTimeout(15);await page.evaluate(()=>text.textContent='Track 3 - Y');await page.waitForTimeout(180);
+ assert.equal(await page.locator('#text').textContent(),'Track 3 - Y');await page.waitForFunction(()=>document.querySelectorAll('[data-liquid-overlay]').length===0,{},{timeout:1000});
+ await page.evaluate(()=>{const mixed=document.createElement('div');mixed.id='mixed';mixed.innerHTML='<strong>Title 1</strong> <em>Album 2</em>';document.body.append(mixed);const rows=document.createElement('div');rows.id='rows';rows.innerHTML='<div data-liquid-key="stable"><span>Row 1</span></div>';document.body.append(rows);});
+ await page.waitForTimeout(20);
+ await page.evaluate(()=>{mixed.innerHTML='<strong>Title 2</strong> <em>Album 2</em>';rows.innerHTML='<div data-liquid-key="stable"><span>Row 2</span></div>';});
+ await page.waitForTimeout(20);
+ assert.equal(await page.locator('#mixed strong [data-liquid-overlay]').textContent(),'2');assert.equal(await page.locator('#mixed em [data-liquid-overlay]').count(),0);
+ assert.equal(await page.locator('#rows [data-liquid-overlay]').textContent(),'2');
+ await page.waitForFunction(()=>document.querySelectorAll('[data-liquid-overlay]').length===0,{},{timeout:1000});
+ const geometry=await page.evaluate(()=>{const g=LiquidGlassMotion.interpolate({width:200,height:44,radius:999},{width:300,height:80,radius:16},.5);LiquidGlassMotion.apply(lens,g);const s=getComputedStyle(lens);return {width:s.width,height:s.height,radius:s.borderRadius};});
+ assert.deepEqual(geometry,{width:'250px',height:'62px',radius:'19px'});
+ await page.addStyleTag({content:fs.readFileSync('debripod/static/debripod.css','utf8').replace(/^\uFEFF/,'')});
+ await page.evaluate(()=>{text.className='hScrollText hScrollTextScrollable';text.style.cssText='display:block;width:180px;font:18px Arial;';text.textContent='A long overflowing title that must align at its leading edge';});
+ await page.waitForTimeout(180);
+ assert.equal(await page.locator('#text').evaluate(el=>getComputedStyle(el).paddingLeft),'0px');
+ await page.emulateMedia({reducedMotion:'reduce'});await page.evaluate(()=>text.textContent='Reduced motion change');await page.waitForTimeout(20);await page.waitForFunction(()=>document.querySelectorAll('[data-liquid-overlay]').length===0,{},{timeout:1000});
+ await page.evaluate(()=>{const header=document.createElement('div');header.id='libHeader';header.className='pathPill pathPillExpanded';header.textContent='Geometry';document.body.append(header);window.pathPillMotion={raf:0,lastStepTs:0,currentWidth:120,currentHeight:26,currentRadius:13,currentPadX:12,currentPadY:8,targetWidth:240,targetHeight:58,targetPadX:10,targetPadY:5,expansion:0};window.markPathPillWidthChanged=()=>{};window.updatePathPillScrollingMasks=()=>{};});
+ const schedule=fs.readFileSync('debripod/static/js/path-pill.js','utf8').match(/function schedulePathPillMotion\(\)\{[\s\S]*?\n  \}/)[0];
+ await page.addScriptTag({content:schedule});
+ const pathSamples=await page.evaluate(async()=>{const samples=[];schedulePathPillMotion();for(let i=0;i<5;i++){await new Promise(requestAnimationFrame);const s=getComputedStyle(libHeader);samples.push({height:parseFloat(s.height),radius:parseFloat(s.borderRadius)});}return samples;});
+ for(const pose of pathSamples)assert.ok(Math.abs((pose.height-26)/32-(pose.radius-13)/7)<.005,JSON.stringify(pose));
+ await page.evaluate(()=>{const c=document.createElement('canvas');c.id='visualizerBg';c.width=480;c.height=700;const g=c.getContext('2d');g.fillStyle='#557799';g.fillRect(0,0,480,700);document.body.prepend(c);c.style.cssText='position:fixed;inset:0;z-index:-1;width:480px;height:700px';});
+ await page.addScriptTag({content:fs.readFileSync('debripod/static/liquidGL.js','utf8')});
+ const gpu=await page.evaluate(()=>{const glass=liquidGL({target:'#lens',shadow:false,reveal:'none'});if(!glass?.updateMetrics)throw new Error('WebGL lens unavailable');const values=[];for(const progress of [0,.25,.5,.75,1]){const g=LiquidGlassMotion.interpolate({width:200,height:44,radius:999},{width:300,height:80,radius:16},progress);LiquidGlassMotion.apply(lens,g);glass.updateMetrics();values.push({height:glass.rectPx.height,radius:glass.radiusCss});}return values;});
+ assert.deepEqual(gpu,[{height:44,radius:22},{height:53,radius:20.5},{height:62,radius:19},{height:71,radius:17.5},{height:80,radius:16}]);
+ assert.deepEqual(errors,[]);console.log('Browser glass: synchronized geometry, isolated character changes, deletion, cancellation, hidden/reduced-motion skipping, flush overflow alignment passed');
+}finally{await browser.close();}})().catch(e=>{console.error(e);process.exit(1)});

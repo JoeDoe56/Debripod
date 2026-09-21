@@ -657,15 +657,7 @@
         vec2 reactiveProjectedUV(vec2 uv, float angle) {
           vec2 backgroundUv = vec2(clamp(uv.x, 0.0, 1.0), 1.0 - clamp(uv.y, 0.0, 1.0));
           vec2 centered = backgroundUv - 0.5;
-          float radius2 = dot(centered, centered);
-          float hemisphere = sqrt(max(0.2, 1.0 - radius2 * 1.4));
-          // Seven CSS pixels per axis is deliberately subtle. The hemisphere
-          // term gives the centre more depth while keeping the rounded edges
-          // from shearing or exposing a hard seam. Express the travel in
-          // screen pixels so portrait and landscape phones behave alike.
-          vec2 projected = centered * (1.0 + 0.035 * radius2);
-          vec2 motion = vec2(u_reactiveParallax.x, -u_reactiveParallax.y);
-          vec2 screen = projected * u_reactiveViewport + motion * (7.0 * (0.28 + 0.72 * hemisphere));
+          vec2 screen = centered * u_reactiveViewport;
           float c = cos(angle);
           float s = sin(angle);
           vec2 rotated = vec2(c * screen.x + s * screen.y, -s * screen.x + c * screen.y);
@@ -4029,4 +4021,6 @@
 
     return { lenis, locomotiveScroll: loco };
   };
+  window.liquidGL.motion = window.LiquidGlassMotion;
+  window.liquidGL.overlays = window.LiquidGlassOverlays;
 })();

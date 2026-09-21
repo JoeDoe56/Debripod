@@ -50,7 +50,7 @@ test("orientation permission is prompted once and a denial keeps pointer fallbac
   assert.equal(fixture.api.state().source, "pointer");
 });
 
-test("direct orientation updates shared parallax and lighting and settles", () => {
+test("direct orientation updates lighting without foreground displacement and settles", () => {
   const fixture = load();
   fixture.windowListeners.get("deviceorientation")({beta:60, gamma:0});
   fixture.windowListeners.get("deviceorientation")({beta:20, gamma:-14});
@@ -59,9 +59,8 @@ test("direct orientation updates shared parallax and lighting and settles", () =
   assert.equal(oriented.source, "orientation");
   assert.ok(oriented.x < -0.16);
   assert.equal(fixture.tilts.length, 0, "device motion does not double-apply wheel tilt");
-  assert.ok(fixture.api.parallax().x < 0);
-  assert.ok(parseFloat(fixture.css.get("--dp-parallax-x")) < 0);
-  assert.ok(parseFloat(fixture.css.get("--dp-parallax-y")) < 0);
+  assert.equal(fixture.api.parallax, undefined);
+  assert.equal(fixture.css.size, 0);
   for(let tick = 40; tick < 1800; tick += 20) fixture.api.testing.step(tick);
   assert.equal(fixture.api.testing.isAnimating(), false);
 });
@@ -80,8 +79,8 @@ test("a remembered grant retries on a gesture and retains pointer fallback until
   fixture.windowListeners.get("deviceorientation")({beta:45, gamma:45});
   fixture.api.testing.step(40);
   assert.equal(fixture.api.state().source, "orientation");
-  assert.ok(fixture.api.parallax().x > 0);
-  assert.ok(parseFloat(fixture.css.get("--dp-parallax-x")) > 0);
+  assert.equal(fixture.api.parallax, undefined);
+  assert.equal(fixture.css.size, 0);
 });
 
 test("explicit motion retry can re-request a saved grant only before valid sensor data", async () => {
@@ -97,7 +96,7 @@ test("explicit motion retry can re-request a saved grant only before valid senso
   assert.equal(fixture.permissionCalls(), 1);
 });
 
-test("the motion-effect multiplier scales device light and shared parallax", () => {
+test("the motion-effect multiplier scales device light without adding displacement", () => {
   const full = load({motionMultiplier:1});
   full.windowListeners.get("deviceorientation")({beta:0, gamma:0});
   full.windowListeners.get("deviceorientation")({beta:22.5, gamma:22.5});
@@ -107,9 +106,10 @@ test("the motion-effect multiplier scales device light and shared parallax", () 
   half.windowListeners.get("deviceorientation")({beta:22.5, gamma:22.5});
   half.api.testing.step(20);
   const lightRatio = Math.abs((half.api.state().x + 0.16) / (full.api.state().x + 0.16));
-  const tiltRatio = Math.abs(half.api.parallax().y / full.api.parallax().y);
+
   assert.ok(Math.abs(lightRatio - 0.5) < 0.01, `lighting ratio was ${lightRatio}`);
-  assert.ok(Math.abs(tiltRatio - 0.5) < 0.01, `parallax ratio was ${tiltRatio}`);
+  assert.equal(full.css.size,0);
+  assert.equal(half.css.size,0);
 });
 
 test("null sensor readings do not disable fallback and activation errors are retryable", async () => {
@@ -133,17 +133,13 @@ test("a prior denial is retried only by an explicit motion action", async () => 
   assert.equal(fixture.permissionCalls(), 1);
 });
 
-test("light uniforms and shared parallax stay independent from wheel interaction tilt", () => {
+test("light uniforms stay independent from wheel interaction tilt", () => {
   assert.match(liquidSource, /u_globalLight/);
   assert.match(liquidSource, /setGlobalLighting\(state\)/);
   assert.match(liquidSource, /_shadowValue\(strength\)/);
   assert.match(glueSource, /wheel\.style\.transform/);
   assert.doesNotMatch(source, /window\.setWheelTiltTarget|getBoundingClientRect/);
-  const fixture=load();
-  fixture.api.testing.setParallaxTarget(0.5,-0.5);
-  for(let t=20;t<1000;t+=20)fixture.api.testing.step(t);
-  assert.ok(Math.abs(parseFloat(fixture.css.get("--dp-parallax-x"))-2.3)<0.01);
-  assert.ok(Math.abs(parseFloat(fixture.css.get("--dp-parallax-y"))+2.3)<0.01);
+  assert.doesNotMatch(source, /setParallaxTarget|--dp-parallax/);
 });
 
 test("device tilt sweeps the light through all quadrants with a short damping time",()=>{

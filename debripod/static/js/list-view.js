@@ -180,6 +180,7 @@
       const metrics = rowViewMetrics();
       let total = 0;
       let count = 0;
+      let heightsChanged = false;
       libList.querySelectorAll(".ipodItem[data-index]").forEach((row)=>{
         const idx = Number(row.dataset.index);
         if(!Number.isFinite(idx) || !state.items[idx]) return;
@@ -191,6 +192,7 @@
           const item = state.items[idx];
           const key = virtualMetricKey(idx, item);
           dpRowHeightCache.set(rowHeightCacheKey(idx, item), safeH);
+          if(Math.abs((metrics.byKey.get(key) || 0)-safeH)>.1)heightsChanged=true;
           metrics.byKey.set(key, safeH);
           metrics.byIndexType.set(String(idx) + "|" + virtualRowType(item), safeH);
           total += safeH;
@@ -199,8 +201,8 @@
       });
       if(count){
         metrics.fallback = Math.max(metrics.fallback || 0, Math.ceil(total / count));
-        state.rowHeightRevision = Number(state.rowHeightRevision || 0) + 1;
-        invalidateVirtualPrefix();
+        if(heightsChanged){state.rowHeightRevision = Number(state.rowHeightRevision || 0) + 1;
+        invalidateVirtualPrefix();}
       }
       while(dpRowHeightCache.size > 600){
         const first = dpRowHeightCache.keys().next();
@@ -576,6 +578,7 @@
       const it = state.items[i];
       const li = document.createElement("li");
       li.dataset.index = String(i);
+      li.dataset.liquidKey = virtualItemIdentity(it, i);
       li.dataset.kind = String((it && it.kind) || "");
       if(it && it.row_layout_key) li.dataset.rowLayoutKey = String(it.row_layout_key);
 
@@ -1323,18 +1326,8 @@
     try{
       if(libList) libList.scrollTop = prevScroll;
     }catch(e){}
-    if(renderOptions.virtualScroll && libList){
-      const wantedScroll = prevScroll;
-      requestAnimationFrame(()=>{
-        try{
-          if(!libList || !libList._dpVirtualized) return;
-          if(Math.abs((libList.scrollTop || 0) - wantedScroll) > 1){
-            libList.scrollTop = wantedScroll;
-            scheduleVirtualListRender("scroll restore");
-          }
-        }catch(e){}
-      });
-    }
+    // The replacement row receives its lens offset before the browser paints.
+    if(typeof applyLibSelectionMotion === "function")applyLibSelectionMotion();
     const selEl = libList.querySelector(".ipodItem.sel");
     if(selEl && !renderOptions.virtualScroll && !renderOptions.preserveEntryAnchor){
       ensureLibItemVisible(selEl);
@@ -1738,7 +1731,9 @@ function vibeTick(){
         return 0;
       }
       const current = Number(currentY);
-      const target = Number(targetY);
+      let target = Number(targetY);
+      const host = typeof document !== "undefined" ? document.getElementById("ipodScreen") : null;
+      if(host && selected.getBoundingClientRect)target=selected.getBoundingClientRect().top-host.getBoundingClientRect().top;
       const offset = Number.isFinite(current) && Number.isFinite(target) ? current - target : 0;
       const value = offset.toFixed(3) + "px";
       if(selected.style.getPropertyValue("--dp-selected-content-offset-y") !== value){

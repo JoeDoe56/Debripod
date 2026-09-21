@@ -40,12 +40,8 @@ test("intrinsic measurement shrinks after shorter text despite a stretched row",
   assert.equal(measure(el), 0);
 });
 
-test("path pill width motion converges and text fades only when it overflows", () => {
-  const nextWidth = loadFunction("pathPillMotionNextWidth");
+test("path pill text fades only when it overflows", () => {
   const overflows = loadFunction("pathPillTextOverflows");
-  let width = 100;
-  for(let i = 0; i < 40; i++) width = nextWidth(width, 260, 16.7);
-  assert.ok(width > 259 && width <= 260);
   assert.equal(overflows(120, 120), false);
   assert.equal(overflows(122, 120), true);
 });
