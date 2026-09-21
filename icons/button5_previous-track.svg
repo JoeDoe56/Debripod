@@ -1,9 +1,10 @@
 <?xml version='1.0' encoding='utf-8'?>
 <!-- Generator: imaengine 6.0   -->
-<svg xmlns:xlink="http://www.w3.org/1999/xlink" xmlns="http://www.w3.org/2000/svg" viewBox="2.52855,6,19.47145,12.3429" version="1.1">
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" xmlns="http://www.w3.org/2000/svg" viewBox="0,0,24,24" style="enable-background:new 0 0 24 24;" version="1.1">
 <defs/>
 <g id="layer0">
-<path d="M22,18.3429L13.2571,12.1714L22,6L22,18.3429L22,18.3429Z" fill="#FFFFFF"/>
-<path d="M4.52855,12.1714L13.2715,18.3429L13.2715,6L4.52855,12.1714L4.52855,12.1714ZM4.52855,12.1714L4.52855,6L2.52855,6L2.52855,18L4.52855,18L4.52855,12.1714L4.52855,12.1714Z" fill-rule="evenodd" fill="#FFFFFF"/>
+<path d="M22.8646,18.1714L14.1217,12L22.8646,5.82855L22.8646,18.1714L22.8646,18.1714L22.8646,18.1714Z" stroke="#FFFFFF" stroke-width="1.2501" stroke-linecap="round" fill="#FFFFFF" stroke-linejoin="round"/>
+<path d="M4.14039,11.9985L12.8833,18.1686L12.8833,5.82855L4.14039,11.9985L4.14039,11.9985L4.14039,11.9985Z" stroke="#FFFFFF" stroke-width="1.2501" stroke-linecap="round" fill="#FFFFFF" stroke-linejoin="round"/>
+<path d="M2.90419,12.1763L2.90419,5.83L0.904187,5.83L0.904187,18.17L2.90419,18.17L2.90419,12.1763L2.90419,12.1763L2.90419,12.1763Z" stroke="#FFFFFF" stroke-width="1.25" stroke-linecap="round" fill="#FFFFFF" stroke-linejoin="round"/>
 </g>
 </svg>

@@ -1,9 +1,10 @@
 <?xml version='1.0' encoding='utf-8'?>
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0.243,3.24,23.238,17.52" version="1.1">
-<defs />
+<!-- Generator: imaengine 6.0   -->
+<svg xmlns:xlink="http://www.w3.org/1999/xlink" xmlns="http://www.w3.org/2000/svg" viewBox="0,0,24,24" style="enable-background:new 0 0 24 24;" version="1.1">
+<defs/>
 <g id="layer0">
-<path d="M1.00335,20L12.3366,12L1.00335,4L1.00335,20L1.00335,20L1.00335,20Z" stroke="#FFFFFF" stroke-width="1.52" stroke-linecap="butt" fill="#FFFFFF" stroke-linejoin="miter" stroke-miterlimit="10" />
-<path d="M18.0034,4L15.3367,4L15.3367,20L18.0034,20L18.0034,4L18.0034,4L18.0034,4Z" stroke="#FFFFFF" stroke-width="1.52" stroke-linecap="butt" fill="#FFFFFF" stroke-linejoin="miter" stroke-miterlimit="10" />
-<path d="M22.7209,4L20.0542,4L20.0542,20L22.7209,20L22.7209,4L22.7209,4L22.7209,4Z" stroke="#FFFFFF" stroke-width="1.52" stroke-linecap="butt" fill="#FFFFFF" stroke-linejoin="miter" stroke-miterlimit="10" />
+<path stroke="#FFFFFF" fill-rule="evenodd" stroke-width="1.55021" d="M12.477,12L3.73411,18.17L3.73411,5.83L12.477,12L12.477,12Z" fill="#FFFFFF" stroke-linecap="round" stroke-linejoin="round"/>
+<path stroke="#FFFFFF" fill-rule="evenodd" stroke-width="1.00467" d="M18.9529,12.1763L18.9529,5.83L20.9529,5.83L20.9529,18.17L18.9529,18.17L18.9529,12.1763L18.9529,12.1763Z" fill="#FFFFFF" stroke-linecap="round" stroke-linejoin="round"/>
+<path stroke="#FFFFFF" fill-rule="evenodd" stroke-width="1.00467" d="M14.725,12.1763L14.725,5.83L16.725,5.83L16.725,18.17L14.725,18.17L14.725,12.1763L14.725,12.1763Z" fill="#FFFFFF" stroke-linecap="round" stroke-linejoin="round"/>
 </g>
 </svg>

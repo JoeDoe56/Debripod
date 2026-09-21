@@ -27,6 +27,7 @@
     label.hidden = !visible;
     if(menu) menu.hidden = !isMenu;
     if(icon){
+      icon.setAttribute("data-liquid-symbol", "");
       icon.hidden = !visible || isMenu || !symbol;
       icon.classList.toggle("seekModeIcon", !!(options && options.seekMode));
       icon.classList.toggle("isInactive", (name === "play" || name === "shuffle") && !active);
