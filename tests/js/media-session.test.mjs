@@ -14,10 +14,13 @@ class FakeMediaMetadata {
 }
 
 function loadSession(){
+  const handlers = {};
   const mediaSession = {
     metadata: null,
     playbackState: "none",
-    setActionHandler: ()=>{}
+    positionState: null,
+    setPositionState: value=>{ mediaSession.positionState = value; },
+    setActionHandler: (name, handler)=>{ handlers[name] = handler; }
   };
   const navigator = {mediaSession};
   const window = {
@@ -47,7 +50,7 @@ function loadSession(){
   };
   vm.createContext(context);
   vm.runInContext(source, context, {filename: sourcePath});
-  return {context, mediaSession};
+  return {context, mediaSession, handlers};
 }
 
 test("MediaSession receives dynamic track metadata and absolute artwork", () => {
@@ -65,6 +68,43 @@ test("MediaSession receives dynamic track metadata and absolute artwork", () => 
   assert.equal(mediaSession.metadata.artwork.length, 1);
   assert.equal(mediaSession.metadata.artwork[0].src, "https://debripod.test/art/root/album/song.flac?v=7");
   assert.equal(mediaSession.metadata.artwork[0].sizes, "512x512");
+});
+
+test("MediaSession exposes seek and queue actions against the real playback clock", () => {
+  const {context:c, handlers} = loadSession();
+  const media = {
+    paused: false, duration: 100, currentTime: 40, playbackRate: 1,
+    currentSrc: "/stream/song.mp3", src: "/stream/song.mp3",
+    play: ()=>Promise.resolve(), pause: ()=>{}
+  };
+  c.activeAudio = media;
+  const calls = [];
+  c.window.DebriPod.playbackQueue = {
+    state: {index: 1, items: [{}, {}, {}]},
+    previous: ()=>{ calls.push("previous"); },
+    next: ()=>{ calls.push("next"); }
+  };
+  c.syncMediaSessionControls();
+
+  handlers.seekbackward({seekOffset: 12});
+  assert.equal(media.currentTime, 28);
+  handlers.seekforward({seekOffset: 7});
+  assert.equal(media.currentTime, 35);
+  handlers.seekto({seekTime: 82});
+  assert.equal(media.currentTime, 82);
+  handlers.previoustrack();
+  handlers.nexttrack();
+  assert.deepEqual(calls, ["previous", "next"]);
+});
+
+test("MediaSession position state follows the decoded gapless clock", () => {
+  const {context:c, mediaSession} = loadSession();
+  c.activeAudio = {paused:false, duration:2, currentTime:0.25, playbackRate:1};
+  c.gaplessPlaybackSnapshot = ()=>({duration:240, position:91.5, playbackRate:1.25, playing:true});
+  c.syncMediaSessionPosition();
+  assert.equal(mediaSession.positionState.duration, 240);
+  assert.equal(mediaSession.positionState.position, 91.5);
+  assert.equal(mediaSession.positionState.playbackRate, 1.25);
 });
 
 

@@ -141,3 +141,17 @@ test("preload with gapless disabled uses decoded playback and never plays a seco
   assert.equal(c.activeAudio,media);assert.equal(events.includes("native-play"),false);assert.ok(events.includes(.12));assert.ok(events.includes("start"));
   c.state.preloadEnabled=false;await c.preloadNextAudio();assert.equal(c.gaplessBufferCache.size,0);
 });
+
+test("gapless UI keeps the actual played fill while seek mode previews a target",()=>{
+  const c=loadLoader();
+  const seek={value:"123"};
+  let fill=null;
+  c.npSeek=seek;c.npSeekDragging=false;c.seekMode=true;
+  c.updateProgressMeterFill=value=>{fill=value;};
+  c.renderInfoPillLabels=()=>{};c.syncMediaSessionPosition=()=>{};c.syncMediaSessionControls=()=>{};
+  c.activeAudio={tick:()=>{}};
+  c.window.DebriPod.gaplessAudio={snapshot:()=>({duration:100,position:20,playing:true})};
+  c.updateGaplessUi();
+  assert.equal(fill,20);
+  assert.equal(seek.value,"123");
+});

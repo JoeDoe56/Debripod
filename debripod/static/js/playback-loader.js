@@ -270,8 +270,8 @@ function updateGaplessUi(){
   const snap = gaplessPlaybackSnapshot();
   if(!snap) return;
   const d = Number(snap.duration || 0), t = Number(snap.position || 0);
-  if(d > 0 && npSeek && !npSeekDragging && !seekMode){
-    npSeek.value = String(Math.max(0, Math.min(1000, Math.round((t / d) * 1000))));
+  if(d > 0 && npSeek && !npSeekDragging){
+    if(!seekMode) npSeek.value = String(Math.max(0, Math.min(1000, Math.round((t / d) * 1000))));
     try{ updateProgressMeterFill((t / d) * 100); }catch(e){}
   }
   try{ if(activeAudio && activeAudio.__gapless)activeAudio.tick(); }catch(e){}

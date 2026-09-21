@@ -160,3 +160,23 @@ test("progress input has an invisible thumb and symmetric time-label alignment",
   assert.match(css, /#npCur\{text-align:left;\}/);
   assert.match(css, /#npDur\{text-align:right;\}/);
 });
+
+test("seek preview marker does not replace the actual played fill", () => {
+  assert.match(nowPlaying, /var step = Math\.max\(2\.5, d \/ 160\)/);
+  const fills = [];
+  const context = {
+    wheelMedia: () => ({duration:100, currentTime:20}),
+    gaplessPlaybackSnapshot: () => null,
+    seekPreview: 80,
+    npSeekIndicator: {style:{}},
+    npProgressWrap: {clientWidth:100},
+    getComputedStyle: () => ({getPropertyValue: () => "0"}),
+    document: {documentElement:{}},
+    updateProgressMeterFill: value => fills.push(value),
+  };
+  vm.createContext(context);
+  vm.runInContext(extractFunction(nowPlaying, "updateSeekIndicator"), context);
+  context.updateSeekIndicator();
+  assert.equal(fills.at(-1), 20);
+  assert.match(context.npSeekIndicator.style.left, /79px/);
+});

@@ -7,6 +7,39 @@
     return !!(navigator.mediaSession && typeof MediaMetadata === "function");
   }
 
+  function mediaSessionGaplessSnapshot(){
+    try{
+      return typeof gaplessPlaybackSnapshot === "function" ? gaplessPlaybackSnapshot() : null;
+    }catch(e){ return null; }
+  }
+
+  function mediaSessionCurrentMedia(){
+    return isVideoActive() ? npVideo : activeAudio;
+  }
+
+  function mediaSessionPositionState(){
+    const snap = mediaSessionGaplessSnapshot();
+    const media = mediaSessionCurrentMedia();
+    const duration = snap ? Number(snap.duration || 0) : Number(media && media.duration || 0);
+    const position = snap ? Number(snap.position || 0) : Number(media && media.currentTime || 0);
+    const rate = snap ? Number(snap.playbackRate || 1) : Number(media && media.playbackRate || 1);
+    return {media, duration, position, rate};
+  }
+
+  function mediaSessionSeekTo(position){
+    const current = mediaSessionPositionState();
+    if(!(current.duration > 0) || !isFinite(current.duration)) return;
+    const target = Math.max(0, Math.min(current.duration, Number(position) || 0));
+    try{
+      const snap = mediaSessionGaplessSnapshot();
+      const api = window.DebriPod && DebriPod.gaplessAudio;
+      if(snap && api && typeof api.seek === "function") api.seek(target);
+      else if(current.media) current.media.currentTime = target;
+    }catch(e){}
+    try{ syncMediaSessionPosition(); }catch(e){}
+    try{ if(typeof updateGaplessUi === "function") updateGaplessUi(); }catch(e){}
+  }
+
   function ensurePlaybackAudioSession(){
     try{
       if("audioSession" in navigator && navigator.audioSession){
@@ -34,11 +67,10 @@
     const ms = navigator.mediaSession;
     if(!ms || typeof ms.setPositionState !== "function") return;
     try{
-      const m = isVideoActive() ? npVideo : activeAudio;
-      if(!m) return;
-      const d = Number(m.duration || 0);
-      const t = Number(m.currentTime || 0);
-      const rate = Number(m.playbackRate || 1) || 1;
+      const current = mediaSessionPositionState();
+      const d = current.duration;
+      const t = current.position;
+      const rate = current.rate || 1;
       if(!(d > 0) || !isFinite(d) || !isFinite(t) || !isFinite(rate)) return;
       ms.setPositionState({
         duration: d,
@@ -91,7 +123,7 @@
         }
       }catch(e){}
       const transport = window.DebriPod && DebriPod.playbackTransport;
-      const currentMedia = isVideoActive() ? npVideo : activeAudio;
+      const currentMedia = mediaSessionCurrentMedia();
       if(transport && transport.resume(currentMedia)) return;
       if(isVideoActive()){
         try{ preparePlaybackMediaAudio(npVideo); }catch(e){}
@@ -123,25 +155,35 @@
         if(m) m.pause();
       }catch(e){}
     });
-    setMediaActionHandler("seekbackward", null);
-    setMediaActionHandler("seekforward", null);
-    setMediaActionHandler("seekto", null);
-    setMediaActionHandler("previoustrack", mediaSessionHasPrev() ? ()=>{
+    setMediaActionHandler("seekbackward", details=>{
+      const current = mediaSessionPositionState();
+      const offset = Number(details && details.seekOffset) > 0 ? Number(details.seekOffset) : 10;
+      mediaSessionSeekTo(current.position - offset);
+    });
+    setMediaActionHandler("seekforward", details=>{
+      const current = mediaSessionPositionState();
+      const offset = Number(details && details.seekOffset) > 0 ? Number(details.seekOffset) : 10;
+      mediaSessionSeekTo(current.position + offset);
+    });
+    setMediaActionHandler("seekto", details=>{
+      if(details && Number.isFinite(Number(details.seekTime))) mediaSessionSeekTo(Number(details.seekTime));
+    });
+    setMediaActionHandler("previoustrack", ()=>{
       try{ ensurePlaybackAudioSession(); }catch(e){}
       try{
         const queue = window.DebriPod && DebriPod.playbackQueue;
         if(queue) queue.previous();
       }catch(e){}
       setTimeout(()=>{ try{ syncMediaSessionControls(); }catch(e){} }, 50);
-    } : null);
-    setMediaActionHandler("nexttrack", mediaSessionHasNext() ? ()=>{
+    });
+    setMediaActionHandler("nexttrack", ()=>{
       try{ ensurePlaybackAudioSession(); }catch(e){}
       try{
         const queue = window.DebriPod && DebriPod.playbackQueue;
         if(queue) queue.next();
       }catch(e){}
       setTimeout(()=>{ try{ syncMediaSessionControls(); }catch(e){} }, 50);
-    } : null);
+    });
   }
   syncMediaSessionControls();
 

@@ -1000,8 +1000,8 @@ async function goBack(){
         // While the wheel or range thumb is being dragged the preview is the
         // source of truth. Media timeupdate events arrive asynchronously and
         // used to pull the fill behind the seek indicator.
-        if((typeof seekMode === "undefined" || !seekMode) && !npSeekDragging){
-          npSeek.value = Math.floor((t / d) * 1000);
+        if(!npSeekDragging){
+          if(typeof seekMode === "undefined" || !seekMode) npSeek.value = Math.floor((t / d) * 1000);
           updateProgressMeterFill((t / d) * 100);
         }
       }

@@ -602,9 +602,9 @@ function ensureVisualizerWebGL(){
     if(!visualizerGl){ visualizerWebglUnavailable = true; return false; }
     var vertex = "attribute vec2 p; varying vec2 uv; void main(){uv=(p+1.0)*0.5;gl_Position=vec4(p,0.0,1.0);}";
     var fragment = [
-      "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif", "varying vec2 uv;", "uniform sampler2D artTex;", "uniform sampler2D previousArtTex;", "uniform float artMix;", "uniform vec2 canvasSize;", "uniform vec2 parallax;", "uniform float previousAngle;", "uniform float incomingAngle;", "uniform float angle;", "uniform float lumaLow;", "uniform float lumaHigh;", "uniform float fade;", "uniform float brightnessCap;", "uniform float energy;", "uniform float beat;", "uniform float bands[9];", "uniform float bandCenters[9];", "uniform float bandWidths[9];", "uniform vec4 frequencyResponse;", "uniform vec4 energyResponse;", "uniform vec4 beatResponse;",
+      "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif", "varying vec2 uv;", "uniform sampler2D artTex;", "uniform sampler2D previousArtTex;", "uniform float artMix;", "uniform vec2 canvasSize;", "uniform float previousAngle;", "uniform float incomingAngle;", "uniform float angle;", "uniform float lumaLow;", "uniform float lumaHigh;", "uniform float fade;", "uniform float brightnessCap;", "uniform float energy;", "uniform float beat;", "uniform float bands[9];", "uniform float bandCenters[9];", "uniform float bandWidths[9];", "uniform vec4 frequencyResponse;", "uniform vec4 energyResponse;", "uniform vec4 beatResponse;",
       "float bandWeight(float l,float center,float width){return max(0.0,1.0-abs(l-center)/max(0.0001,width));}",
-      "vec2 projectedUv(vec2 source,float radians){vec2 centered=source-0.5;float radius2=dot(centered,centered);float hemisphere=sqrt(max(0.2,1.0-radius2*1.4));vec2 curved=centered*(1.0+0.035*radius2);vec2 motion=vec2(parallax.x,-parallax.y);vec2 screen=curved*canvasSize+motion*(7.0*(0.28+0.72*hemisphere));float c=cos(radians);float s=sin(radians);vec2 rotated=vec2(c*screen.x+s*screen.y,-s*screen.x+c*screen.y);return clamp(rotated/max(1.0,length(canvasSize))+0.5,0.0,1.0);}",
+      "vec2 projectedUv(vec2 source,float radians){vec2 centered=(source-0.5)*canvasSize;float c=cos(radians);float s=sin(radians);vec2 rotated=vec2(c*centered.x+s*centered.y,-s*centered.x+c*centered.y);float overscan=1.08;return clamp(rotated/max(1.0,length(canvasSize))*overscan+0.5,0.0,1.0);}",
       "void main(){", "vec2 previousUv=projectedUv(uv,previousAngle);", "vec2 incomingUv=projectedUv(uv,incomingAngle);", "vec3 incoming=texture2D(artTex,incomingUv).rgb;", "vec3 outgoing=texture2D(previousArtTex,previousUv).rgb;", "vec3 rgb=mix(outgoing,incoming,clamp(artMix,0.0,1.0));", "float luma=dot(rgb,vec3(0.2126,0.7152,0.0722));", "float useful=clamp((luma-lumaLow)/max(0.08,lumaHigh-lumaLow),0.0,1.0);", "float bandEligible=smoothstep(0.04,0.10,luma)*(1.0-smoothstep(0.90,0.96,luma));",
       "float w0=bandWeight(useful,bandCenters[0],bandWidths[0]);float w1=bandWeight(useful,bandCenters[1],bandWidths[1]);float w2=bandWeight(useful,bandCenters[2],bandWidths[2]);", "float w3=bandWeight(useful,bandCenters[3],bandWidths[3]);float w4=bandWeight(useful,bandCenters[4],bandWidths[4]);float w5=bandWeight(useful,bandCenters[5],bandWidths[5]);", "float w6=bandWeight(useful,bandCenters[6],bandWidths[6]);float w7=bandWeight(useful,bandCenters[7],bandWidths[7]);float w8=bandWeight(useful,bandCenters[8],bandWidths[8]);", "float total=max(0.0001,w0+w1+w2+w3+w4+w5+w6+w7+w8);", "float frequency=bandEligible*(w0*bands[0]+w1*bands[1]+w2*bands[2]+w3*bands[3]+w4*bands[4]+w5*bands[5]+w6*bands[6]+w7*bands[7]+w8*bands[8])/total;",
       "float brightness=clamp(1.0+frequency*frequencyResponse.x+energy*energyResponse.x+beat*beatResponse.x,0.0,4.0);", "float opacity=clamp(1.0+frequency*frequencyResponse.y+energy*energyResponse.y+beat*beatResponse.y,0.0,1.0);", "float saturation=clamp(1.0+frequency*frequencyResponse.z+energy*energyResponse.z+beat*beatResponse.z,0.0,3.0);", "float contrast=clamp(1.0+frequency*frequencyResponse.w+energy*energyResponse.w+beat*beatResponse.w,0.0,3.0);", "rgb=mix(vec3(luma),rgb,saturation);rgb=(rgb-0.5)*contrast+0.5;rgb=min(clamp(rgb*brightness,0.0,1.0),vec3(brightnessCap));", "float alpha=opacity*fade;gl_FragColor=vec4(rgb*alpha,alpha);", "}"
@@ -629,7 +629,7 @@ function ensureVisualizerWebGL(){
     visualizerGl.texParameteri(visualizerGl.TEXTURE_2D, visualizerGl.TEXTURE_MAG_FILTER, visualizerGl.LINEAR);
     visualizerGl.texImage2D(visualizerGl.TEXTURE_2D, 0, visualizerGl.RGBA, 1, 1, 0, visualizerGl.RGBA, visualizerGl.UNSIGNED_BYTE, new Uint8Array([0,0,0,255]));
     var uniform = name=>visualizerGl.getUniformLocation(visualizerProgram, name);
-    visualizerUniforms = {canvasSize:uniform("canvasSize"), parallax:uniform("parallax"), artTex:uniform("artTex"), previousArtTex:uniform("previousArtTex"), artMix:uniform("artMix"), previousAngle:uniform("previousAngle"), incomingAngle:uniform("incomingAngle"), angle:uniform("angle"), lumaLow:uniform("lumaLow"), lumaHigh:uniform("lumaHigh"), fade:uniform("fade"), brightnessCap:uniform("brightnessCap"), energy:uniform("energy"), beat:uniform("beat"), bands:uniform("bands[0]"), bandCenters:uniform("bandCenters[0]"), bandWidths:uniform("bandWidths[0]"), frequencyResponse:uniform("frequencyResponse"), energyResponse:uniform("energyResponse"), beatResponse:uniform("beatResponse")};
+    visualizerUniforms = {canvasSize:uniform("canvasSize"), artTex:uniform("artTex"), previousArtTex:uniform("previousArtTex"), artMix:uniform("artMix"), previousAngle:uniform("previousAngle"), incomingAngle:uniform("incomingAngle"), angle:uniform("angle"), lumaLow:uniform("lumaLow"), lumaHigh:uniform("lumaHigh"), fade:uniform("fade"), brightnessCap:uniform("brightnessCap"), energy:uniform("energy"), beat:uniform("beat"), bands:uniform("bands[0]"), bandCenters:uniform("bandCenters[0]"), bandWidths:uniform("bandWidths[0]"), frequencyResponse:uniform("frequencyResponse"), energyResponse:uniform("energyResponse"), beatResponse:uniform("beatResponse")};
     visualizerGl.disable(visualizerGl.DEPTH_TEST);
     visualizerGl.disable(visualizerGl.STENCIL_TEST);
     return true;
@@ -720,15 +720,6 @@ function renderVisualizerWebGL(){
     gl.uniform1f(u.previousAngle, visualizerArtTransition.active ? visualizerArtTransition.fromAngle : currentVisualizerAngle());
     gl.uniform1f(u.incomingAngle, visualizerArtTransition.active ? visualizerArtTransition.toAngle : currentVisualizerAngle());
     gl.uniform2f(u.canvasSize, visualizerCanvasCssW || visualizerCanvasW, visualizerCanvasCssH || visualizerCanvasH);
-    var parallaxX = 0;
-    var parallaxY = 0;
-    try {
-      var lighting = window.DebriPod && DebriPod.glassLighting;
-      var motion = lighting && typeof lighting.parallax === "function" ? lighting.parallax() : null;
-      parallaxX = Math.max(-1, Math.min(1, Number(motion && motion.x) || 0));
-      parallaxY = Math.max(-1, Math.min(1, Number(motion && motion.y) || 0));
-    } catch(e) {}
-    if(u.parallax) gl.uniform2f(u.parallax, parallaxX, parallaxY);
     gl.uniform1f(u.angle, currentVisualizerAngle());
     gl.uniform1f(u.lumaLow, visualizerArtField.usefulLumaLow);
     gl.uniform1f(u.lumaHigh, visualizerArtField.usefulLumaHigh);
@@ -765,13 +756,7 @@ function updateVisualizerArtTransition(now){
 function currentVisualizerFrameState(ts){
   var progress = visualizerProgress01(currentVisualizerMediaElement());
   var angle = currentVisualizerAngle();
-  var parallax = {x:0, y:0};
-  try {
-    var lighting = window.DebriPod && DebriPod.glassLighting;
-    var motion = lighting && typeof lighting.parallax === "function" ? lighting.parallax() : null;
-    if(motion){ parallax.x = Math.max(-1, Math.min(1, Number(motion.x) || 0)); parallax.y = Math.max(-1, Math.min(1, Number(motion.y) || 0)); }
-  } catch(e) {}
-  return {kind:"audio", timestamp:Number(ts || performance.now() || 0), active:!!visualizerActive, fade:visualizerFade, brightnessCap:currentVisualizerBrightnessCap(), energy:visualizerEnergy, beat:visualizerBeatPulse, bass:visualizerBass, mid:visualizerMid, treble:visualizerTreble, bands:visualizerBands, bandCenters:visualizerBandCenters, bandWidths:visualizerBandWidths, activeBands:visualizerActiveBands, parallax:parallax, artImage:visualizerArtField.image, artKey:visualizerArtField.artIdentity + ":" + visualizerArtField.algorithmVersion, lumaLow:visualizerArtField.usefulLumaLow, lumaHigh:visualizerArtField.usefulLumaHigh, progress01:progress, angleRadians:angle, responseSettings:currentVisualizerResponseSettings(), sourceRevision:visualizerArtUploadCount, artworkField:{loaded:!!visualizerArtField.loaded, artIdentity:visualizerArtField.artIdentity, normalizedLumaLow:0, normalizedLumaHigh:1, rotationOverscan:visualizerArtRotationOverscan(window.innerWidth || 1, window.innerHeight || 1)}, trackTransition:Object.assign({}, visualizerTrackTransition), artTransition:Object.assign({}, visualizerArtTransition, {fromAngle:Number(visualizerArtTransition.fromAngle || angle), toAngle:Number(visualizerArtTransition.toAngle || angle)}), analysisSource:visualizerAnalysisState.loaded ? "sqlite" : visualizerAnalysisState.source};
+  return {kind:"audio", timestamp:Number(ts || performance.now() || 0), active:!!visualizerActive, fade:visualizerFade, brightnessCap:currentVisualizerBrightnessCap(), energy:visualizerEnergy, beat:visualizerBeatPulse, bass:visualizerBass, mid:visualizerMid, treble:visualizerTreble, bands:visualizerBands, bandCenters:visualizerBandCenters, bandWidths:visualizerBandWidths, activeBands:visualizerActiveBands, parallax:{x:0, y:0}, artImage:visualizerArtField.image, artKey:visualizerArtField.artIdentity + ":" + visualizerArtField.algorithmVersion, lumaLow:visualizerArtField.usefulLumaLow, lumaHigh:visualizerArtField.usefulLumaHigh, progress01:progress, angleRadians:angle, responseSettings:currentVisualizerResponseSettings(), sourceRevision:visualizerArtUploadCount, artworkField:{loaded:!!visualizerArtField.loaded, artIdentity:visualizerArtField.artIdentity, normalizedLumaLow:0, normalizedLumaHigh:1, rotationOverscan:visualizerArtRotationOverscan(window.innerWidth || 1, window.innerHeight || 1)}, trackTransition:Object.assign({}, visualizerTrackTransition), artTransition:Object.assign({}, visualizerArtTransition, {fromAngle:Number(visualizerArtTransition.fromAngle || angle), toAngle:Number(visualizerArtTransition.toAngle || angle)}), analysisSource:visualizerAnalysisState.loaded ? "sqlite" : visualizerAnalysisState.source};
 }
 
 function applySelectedTextContrast(){
@@ -793,6 +778,11 @@ function visualizerShouldShow(){
     var media = currentVisualizerMediaElement();
     if(!visualizerEnabled || currentVisualizerMediaKind() === "video") return false;
     if(visualizerTrackTransition.active) return !!(visualizerArtField.loaded && visualizerArtField.image);
+    var transport = window.DebriPod && DebriPod.playbackTransport;
+    if(transport && media && typeof transport.visualizerLevel === "function" && transport.visualizerLevel(media) != null){
+      return !!(visualizerArtField.loaded && visualizerArtField.image);
+    }
+    var gapless = typeof gaplessPlaybackSnapshot === "function" ? gaplessPlaybackSnapshot() : null;
     return gapless ? !!gapless.playing : !!(media && !media.paused && !media.ended);
   }catch(e){ return false; }
 }

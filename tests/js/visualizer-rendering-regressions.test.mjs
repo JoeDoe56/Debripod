@@ -56,6 +56,33 @@ test("visualizer crossfades the outgoing artwork before releasing its frozen ang
   assert.match(visualizer, /gl\.pixelStorei\(gl\.UNPACK_FLIP_Y_WEBGL, 1\)/);
 });
 
+test("visualizer keeps the cover flat and follows pause/resume transport fades", () => {
+  assert.doesNotMatch(visualizer, /uniform vec2 parallax/);
+  assert.doesNotMatch(visualizer, /hemisphere|curved=|motion=vec2\(parallax/);
+  assert.match(visualizer, /float overscan=1\.08/);
+  const c = loadHelpers(["visualizerShouldShow"]);
+  const media = {paused:true, ended:false};
+  let transportLevel = null;
+  Object.assign(c, {
+    visualizerEnabled:true,
+    currentVisualizerMediaElement:()=>media,
+    currentVisualizerMediaKind:()=>"audio",
+    visualizerTrackTransition:{active:false},
+    visualizerArtField:{loaded:true, image:{}},
+    gaplessPlaybackSnapshot:()=>null,
+    window:{DebriPod:{playbackTransport:{visualizerLevel:()=>transportLevel}}}
+  });
+  c.DebriPod = c.window.DebriPod;
+  assert.equal(c.visualizerShouldShow(), false);
+  media.paused = false;
+  assert.equal(c.visualizerShouldShow(), true);
+  media.paused = true;
+  transportLevel = 0.45;
+  assert.equal(c.visualizerShouldShow(), true);
+  c.visualizerArtField.image = null;
+  assert.equal(c.visualizerShouldShow(), false);
+});
+
 test("glass reactive sampling matches the background transform and stays premultiplied", () => {
   assert.match(liquid, /vec2 backgroundUv = vec2\(clamp\(uv\.x, 0\.0, 1\.0\), 1\.0 - clamp\(uv\.y, 0\.0, 1\.0\)\)/);
   const premultiply = liquid.indexOf("final.rgb *= final.a");

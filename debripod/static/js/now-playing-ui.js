@@ -205,13 +205,16 @@ function updateSeekIndicator(){
     const m = wheelMedia();
     const gapless = (typeof gaplessPlaybackSnapshot === "function") ? gaplessPlaybackSnapshot() : null;
     const d = gapless ? Number(gapless.duration || 0) : ((m && m.duration) ? m.duration : 0);
+    const actualT = gapless ? Number(gapless.position || 0) : Number(m && m.currentTime || 0);
     if(d <= 0){
       npSeekIndicator.style.left = "0%";
       updateProgressMeterFill(0);
       return;
     }
     const pct = Math.max(0, Math.min(1, (seekPreview || 0) / d)) * 100;
-    updateProgressMeterFill(pct);
+    // The marker previews the wheel target; the white fill always reports
+    // the decoder current position until the seek is committed.
+    updateProgressMeterFill(Math.max(0, Math.min(1, actualT / d)) * 100);
     const wrapWidth = npProgressWrap ? Number(npProgressWrap.clientWidth || 0) : 0;
     const inset = Math.max(0, parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--infoBarInsetX")) || 0);
     npSeekIndicator.style.left = Math.round(inset + Math.max(0, wrapWidth - (inset * 2)) * (pct / 100) - 1) + "px";
@@ -331,7 +334,7 @@ function adjustSeekPreview(dir){  var m = wheelMedia();
   var d = gapless ? Number(gapless.duration || 0) : ((m && m.duration) ? m.duration : 0);
   if(d <= 0) return;
   const pillsWereShown = (typeof isPlaybackPillsShown === "function") ? isPlaybackPillsShown() : false;
-  var step = Math.max(2, d / 200);
+  var step = Math.max(2.5, d / 160);
   seekPreview = Math.max(0, Math.min(d, (seekPreview || 0) + (dir * step)));
   seekChanged = true;
   updateSeekPreviewOnly();
