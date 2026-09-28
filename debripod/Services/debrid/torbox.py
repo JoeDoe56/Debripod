@@ -42,7 +42,7 @@ def _task_payload(payload: dict, task_id: str) -> dict:
         for item in data:
             if isinstance(item, dict) and identifiers_equal(first_identifier(item, "id", "torrent_id"), task_id):
                 return item
-        return next((item for item in data if isinstance(item, dict)), {})
+        return {}
     if isinstance(data, dict):
         return data
     return payload
@@ -113,7 +113,7 @@ class TorBoxProvider(DebridProviderBase):
         if not isinstance(payload, dict):
             raise DebridProviderError("Debrid provider returned an invalid torrent response.")
         task = _task_payload(payload, provider_task_id)
-        raw_files = find_torbox_files(task) or find_torbox_files(payload)
+        raw_files = find_torbox_files(task)
         files: list[DebridFile] = []
         for item in raw_files:
             file_id = first_identifier(item, "id", "file_id")
@@ -133,7 +133,14 @@ class TorBoxProvider(DebridProviderBase):
                 raw=dict(item),
             ))
         status = str(task.get("download_state") or task.get("status") or task.get("state") or "")
-        ready = bool(files) and status.lower() not in {"queued", "downloading", "metadl", "checking", "stalled"}
+        # TorBox documents download_present/download_finished as authoritative;
+        # seeding and cached tasks need not have the status "completed".
+        if "download_present" in task:
+            ready = bool(files) and bool(task.get("download_present"))
+        elif "download_finished" in task:
+            ready = bool(files) and bool(task.get("download_finished"))
+        else:
+            ready = bool(files) and status.lower() in {"completed", "cached", "uploading", "seeding"}
         return DebridPreview(
             provider=self.id,
             provider_task_id=provider_task_id,

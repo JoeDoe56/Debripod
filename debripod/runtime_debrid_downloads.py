@@ -5,6 +5,7 @@ import os
 import threading
 import time
 import asyncio
+import aiohttp
 from typing import Any, Dict, List, Optional
 
 from .storage.tasks import save_task_metadata
@@ -67,8 +68,8 @@ async def _download_stream_inner(url: str, out_path: str, task: Task, file_id: O
         raise RuntimeError("Download HTTP service is unavailable")
     try:
         response = await _HTTP.session.get(url, timeout=_HTTP.timeouts.download)
-    except Exception as exc:
-        raise RuntimeError(str(exc)) from exc
+    except (aiohttp.ClientError, asyncio.TimeoutError):
+        raise
     try:
         if response.status >= 400:
             raise DownloadHTTPError(response.status, f"Download failed ({response.status})")
@@ -110,6 +111,10 @@ async def _download_stream_inner(url: str, out_path: str, task: Task, file_id: O
                 set_task(task.id, current_done=done)
                 if file_id:
                     _update_task_file_entry(task.id, "debrid_files", file_id, done=done, speed=speed, state="downloading")
+        if total is not None and done != total:
+            raise aiohttp.ClientPayloadError("The download ended before all bytes arrived.")
+        if done == 0:
+            raise RuntimeError("The provider returned an empty download.")
     finally:
         response.close()
 
@@ -178,6 +183,7 @@ async def _download_from_queue(task_id: str) -> list[str]:
             continue
         _update_task_file_entry(task_id, "debrid_files", file_id, state="requesting", error="")
         file = _file_from_entry(entry)
+        out_path = str(entry.get("out_path") or "")
         try:
             resolved = await provider.resolve_file_url(file)
             filename = sanitize_filename(resolved.filename or file.name or f"file_{entry.get('seq') or 1}")
@@ -191,13 +197,17 @@ async def _download_from_queue(task_id: str) -> list[str]:
                     suffix += 1
                 _update_task_file_entry(task_id, "debrid_files", file_id, out_path=out_path, name=os.path.basename(out_path))
             set_task(task_id, current_file=os.path.basename(out_path), current_done=0, current_total=None)
-            try:
-                await download_stream(resolved.url, out_path, task, file_id=file_id)
-            except DownloadHTTPError as exc:
-                if not resolved.requires_refresh or exc.status_code not in {401, 403, 404}:
-                    raise
-                refreshed = await provider.resolve_file_url(file)
-                await download_stream(refreshed.url, out_path, task, file_id=file_id)
+            for attempt in range(2):
+                try:
+                    await download_stream(resolved.url, out_path, task, file_id=file_id)
+                    break
+                except (DownloadHTTPError, aiohttp.ClientError, asyncio.TimeoutError) as exc:
+                    retryable = not isinstance(exc, DownloadHTTPError) or exc.status_code in {401,403,404,408,429,500,502,503,504}
+                    if attempt or not resolved.requires_refresh or not retryable:
+                        if isinstance(exc, aiohttp.ClientConnectorCertificateError):
+                            raise DebridProviderError("The provider download server has an invalid or expired TLS certificate. A refreshed link also failed; the provider must repair its certificate.") from exc
+                        raise
+                    resolved = await provider.resolve_file_url(file)
             _update_task_file_entry(task_id, "debrid_files", file_id, state="complete", error="")
             enqueue_video_postprocess(task_id, out_path)
         except CancelledFile:
@@ -329,8 +339,8 @@ async def worker(task_id: str) -> None:
         if provider:
             await provider.delete_task_best_effort(getattr(task, "debrid_task_id", None))
         set_task(task_id, state="canceled", message="Canceled", current_file="", current_done=0, current_total=None)
-    except Exception:
-        set_task(task_id, state="error", message="Debrid download failed", current_file="", current_done=0, current_total=None)
+    except Exception as exc:
+        set_task(task_id, state="error", message=str(exc)[:300] or "Debrid download failed", current_file="", current_done=0, current_total=None)
 
 
 __all__ = [name for name in globals() if not name.startswith("__")]
