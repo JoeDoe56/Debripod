@@ -4,7 +4,9 @@
   }
 
   function canMediaSession(){
-    return !!(navigator.mediaSession && typeof MediaMetadata === "function");
+    // Safari can expose Media Session controls before exposing the metadata
+    // constructor. Keep transport actions available in that partial API.
+    return !!(navigator.mediaSession && typeof navigator.mediaSession.setActionHandler === "function");
   }
 
   function mediaSessionGaplessSnapshot(){

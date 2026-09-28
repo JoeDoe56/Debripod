@@ -185,7 +185,9 @@ def _youtube_run_download(task_id: str, entry: Dict[str, Any], seq: int, total_c
         _update_task_file_entry(task_id, 'youtube_files', file_id, state='paused', paused=True, error='')
         return None
 
-    title = sanitize_filename(str(entry.get('name') or entry.get('title') or 'youtube'))
+    title = sanitize_filename(str(entry.get('title') or entry.get('name') or 'youtube'))
+    if total_count > 1:
+        title = f'{seq:03d} - {title}'
     ext = str(entry.get('ext') or '').strip().lower() or 'mp4'
     quality_target = str(entry.get('quality_target') or '').strip()
     media = str(entry.get('media') or '').strip().lower()

@@ -313,11 +313,11 @@ def _yt_stream_format_selector(fmt: dict) -> str:
         # AAC is preferred where available for browser compatibility.
         return (f"bestvideo[height<={target_height}]+bestaudio[acodec^=mp4a]/"
                 f"bestvideo[height<={target_height}]+bestaudio/"
-                f"best[height<={target_height}]")
+                f"best[height<={target_height}]/best[height<=?{target_height}]")
     media = str(fmt.get("media") or "").strip().lower()
     if media == "audio":
         return "bestaudio/best"
-    return "best"
+    return "bestvideo+bestaudio/best"
 
 
 def ytdlp_format_selectors(fmt: dict) -> List[str]:
@@ -335,6 +335,8 @@ def ytdlp_format_selectors(fmt: dict) -> List[str]:
         # A progressive stream avoids the failed merge. If unavailable, try
         # alternate audio before repeating the preferred codec combination.
         fallback = f"best{cap}/bestvideo{cap}+bestaudio[acodec!^=mp4a]/bestvideo{cap}+bestaudio"
+        if height > 0:
+            fallback += f"/best[height<=?{height}]"
     return list(dict.fromkeys([primary, fallback]))
 
 
@@ -623,11 +625,14 @@ def _yt_dlp_base_args() -> List[str]:
     return args
 
 
-def _yt_dlp_extract_info(url: str) -> dict:
+def _yt_dlp_extract_info(url: str, *, flat: bool = False) -> dict:
     u = str(url or "").strip()
     if not u:
         return {}
-    code, out, err = _run_ytdlp(_yt_dlp_base_args() + ["-J", "--skip-download", u])
+    args = _yt_dlp_base_args()
+    if flat:
+        args = [arg for arg in args if arg != "--no-playlist"] + ["--yes-playlist", "--flat-playlist"]
+    code, out, err = _run_ytdlp(args + ["-J", "--skip-download", u])
     if code != 0:
         raise RuntimeError((err or out or "yt-dlp failed").strip())
     try:
@@ -817,8 +822,10 @@ def ytdlp_list_formats(url: str) -> List[dict]:
 def ytdlp_inspect(url: str) -> dict:
     """Inspect any yt-dlp-supported HTTP(S) URL without downloading it."""
     original_url = str(url or "").strip()
-    info = _yt_dlp_extract_info(original_url)
-    files = ytdlp_list_formats(original_url)
+    info = _yt_dlp_extract_info(original_url, flat=True)
+    is_collection = isinstance(info.get("entries"), list) or info.get("_type") in {"playlist", "multi_video"}
+    entries = [entry for entry in info.get("entries", []) if isinstance(entry, dict)] if is_collection else []
+    files = [] if is_collection else _yt_quality_target_rows(info, original_url)
     extractor = str(info.get("extractor_key") or info.get("extractor") or "").strip()
     title = str(info.get("title") or info.get("fulltitle") or original_url).strip()
     media_id = str(info.get("id") or "").strip()
@@ -829,6 +836,9 @@ def ytdlp_inspect(url: str) -> dict:
         "source_label": extractor or "yt-dlp",
         "title": title,
         "directory_title": title,
+        "kind": "playlist" if is_collection else "video",
+        "canonical_url": original_url,
+        "entries": entries,
         "directory": original_url,
         "url": original_url,
         "original_url": original_url,

@@ -529,6 +529,7 @@ function sampleCachedVisualizerAnalysis(media){
   try{
     var analysis = visualizerAnalysisState;
     if(!analysis.loaded || !analysis.bytes || !analysis.frameCount || !media) return null;
+    var gapless = typeof gaplessPlaybackSnapshot === "function" ? gaplessPlaybackSnapshot() : null;
     var mediaTime = gapless && gapless.duration > 0 ? Number(gapless.position || 0) : Number(media.currentTime || 0);
     var position = Math.max(0, Math.min(analysis.frameCount - 1, mediaTime * analysis.rate));
     var firstFrame = Math.floor(position);

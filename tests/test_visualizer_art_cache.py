@@ -1,6 +1,10 @@
 from __future__ import annotations
 
 from debripod.Library import metadata
+import os
+import shutil
+import subprocess
+import pytest
 
 
 def _fake_visualizer_art_builder(calls: list[str]):
@@ -10,6 +14,27 @@ def _fake_visualizer_art_builder(calls: list[str]):
             handle.write(b"fake-jpeg")
         return True
     return build
+
+
+def test_green_artwork_retains_distinct_shades_after_blur(tmp_path, monkeypatch):
+    ffmpeg = os.environ.get('FFMPEG_PATH') or shutil.which('ffmpeg')
+    if not ffmpeg:
+        pytest.skip('requires ffmpeg')
+    monkeypatch.setattr(metadata, '_ffmpeg_path_value', lambda: ffmpeg)
+    source = tmp_path / 'green.ppm'
+    # Several dark/light green regions, like a mostly monochromatic cover.
+    pixels = bytearray()
+    for y in range(128):
+        for x in range(128):
+            pixels.extend(((22,45,10),(72,110,25),(144,182,65),(198,220,105))[(x//16+y//16)%4])
+    source.write_bytes(b'P6\n128 128\n255\n'+pixels)
+    output = tmp_path / 'field.png'
+    assert metadata._build_visualizer_art_image(str(source), str(output))
+    raw = subprocess.check_output([ffmpeg,'-v','error','-i',str(output),'-vf','scale=32:32','-frames:v','1','-f','rawvideo','-pix_fmt','rgb24','pipe:1'])
+    greens = list(raw[1::3])
+    greens.sort()
+    assert greens[int(len(greens)*.9)] - greens[int(len(greens)*.1)] > 45
+    assert len(set(greens)) > 30
 
 
 def test_shared_album_art_generates_one_visualizer_field(tmp_path, monkeypatch):

@@ -870,6 +870,8 @@
                 ? ((state.playlistEdit && typeof state.playlistEdit.editNameValue === "string") ? state.playlistEdit.editNameValue : "")
                 : ((state.libSearch && typeof state.libSearch.editValue === "string") ? state.libSearch.editValue : ((state.libSearch && typeof state.libSearch[field] === "string") ? state.libSearch[field] : ""))));
           inp.placeholder = placeholder;
+          inp.addEventListener("click", ev=>ev.stopPropagation());
+          inp.addEventListener("pointerdown", ev=>ev.stopPropagation());
           if(field === "q" && window.DebriPod && DebriPod.linkIntake){
             inp.addEventListener("paste", DebriPod.linkIntake.onPaste);
           }
@@ -1335,7 +1337,7 @@
     if(editInputToFocus){
       try{
         editInputToFocus.focus();
-        editInputToFocus.click();
+
         const n = editInputToFocus.value.length;
         editInputToFocus.setSelectionRange(n, n);
       }catch(e){}

@@ -13,7 +13,7 @@ from ..media_types import (
     SMART_PLAYLIST_RULES_FILENAME,
     SMART_PLAYLIST_RULES_TEMPLATE,
 )
-from ..utils import is_audio, is_playlist_file, sha1_text
+from ..utils import is_audio, is_video, is_playlist_file, sha1_text
 
 _file_meta_provider: Callable[[str], dict] = lambda _path: {}
 _track_sort_key_provider: Callable[[str], Tuple[int, str]] = lambda track: (10**9, str(track or ""))
@@ -107,7 +107,7 @@ def _playlist_resolve_entry(root_abs: str, playlist_abs: str, entry: str) -> Opt
         seen.add(cand_abs)
         if not os.path.exists(cand_abs) or not os.path.isfile(cand_abs):
             continue
-        if not is_audio(cand_abs):
+        if not (is_audio(cand_abs) or is_video(cand_abs)):
             continue
         rel = _playlist_rel_from_abs(root_abs, cand_abs)
         if rel:
@@ -243,9 +243,8 @@ def playlist_tracks_for_root(root_abs: str, playlist_rel: str) -> List[dict]:
                     badge = str(meta.get('track'))
         except Exception:
             pass
-        items.append({'kind': 'track', 'label': label, 'rel': rel, 'badge': badge})
+        items.append({'kind': 'file' if is_video(abs_track) else 'track', 'media': 'video' if is_video(abs_track) else 'audio', 'label': label, 'rel': rel, 'badge': badge})
 
-    items.sort(key=lambda x: track_sort_key(x.get('badge') or '') + (x.get('label') or '',))
     return items
 
 
@@ -417,7 +416,7 @@ def add_tracks_to_playlist(root_abs: str, playlist_rel: str, rels: List[str]) ->
             abs_track = safe_path_join(root_abs, rp)
         except Exception:
             continue
-        if not os.path.exists(abs_track) or not os.path.isfile(abs_track) or not is_audio(abs_track):
+        if not os.path.exists(abs_track) or not os.path.isfile(abs_track) or not (is_audio(abs_track) or is_video(abs_track)):
             continue
         if rp not in existing:
             existing.append(rp)
@@ -497,7 +496,7 @@ def _smart_playlist_dir_from_name(root_abs: str, name: str) -> Tuple[Optional[st
 
 def _default_smart_playlist_rules(name: str) -> str:
     stem = _normalize_playlist_stem(name) or 'Playlist'
-    body = SMART_PLAYLIST_RULES_TEMPLATE
+    body = SMART_PLAYLIST_RULES_TEMPLATE.replace("[any|all]", "[all]")
     body = re.sub(r'^\[name\]\s*$', f'[{stem}]', body, count=1, flags=re.MULTILINE)
     return body
 
@@ -779,7 +778,7 @@ def smart_playlist_tracks_for_root(root_abs: str, playlist_rel: str, root_id: st
         data = build_index_for_root(root_abs)
         if root_id:
             _set_index_provider(root_id, data)
-    tracks = list((data or {}).get('tracks') or [])
+    tracks = list((data or {}).get('tracks') or []) + list((data or {}).get('videos') or [])
     matched = [t for t in tracks if _smart_group_match(parsed.get('root') or {}, t)]
     matched.sort(key=lambda x: track_sort_key(x.get('track') or '') + ((x.get('artist') or '').lower(), (x.get('album') or '').lower(), (x.get('title') or x.get('name') or '').lower()))
     items: List[dict] = []
@@ -789,7 +788,7 @@ def smart_playlist_tracks_for_root(root_abs: str, playlist_rel: str, root_id: st
             continue
         label = str(t.get('title') or t.get('name') or os.path.splitext(os.path.basename(rel))[0] or 'Track')
         badge = str(t.get('track') or idx)
-        items.append({'kind': 'track', 'label': label, 'rel': rel, 'badge': badge})
+        items.append({'kind': 'file' if is_video(rel) else 'track', 'media': 'video' if is_video(rel) else 'audio', 'label': label, 'rel': rel, 'badge': badge})
     folder_abs, playlist_abs, _, _ = _resolve_smart_playlist_parts(root_abs, playlist_rel)
     if playlist_abs:
         try:

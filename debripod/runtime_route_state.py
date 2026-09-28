@@ -185,7 +185,7 @@ async def _engine_prepare_stream_session(payload: dict, http, runtime: UserRunti
             item_url = _ytdlp_source_url(it)
             if not selected_fallback_url and item_url:
                 selected_fallback_url = item_url
-            stream_source_url = url or item_url
+            stream_source_url = item_url or url
             if not stream_source_url:
                 continue
             item_id = uuid.uuid4().hex[:12]
@@ -194,7 +194,7 @@ async def _engine_prepare_stream_session(payload: dict, http, runtime: UserRunti
                 'queue_index': len(items),
                 'media': media,
                 'name': name,
-                'title': title,
+                'title': name,
                 'artist': str(payload.get('channel') or payload.get('user') or ''),
                 'album': title,
                 'art': str(payload.get('thumbnail') or ''),

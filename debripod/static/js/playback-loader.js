@@ -237,12 +237,13 @@ function retainGaplessBuffers(items){
   for(const [key,entry] of gaplessBufferCache){if(!keep.has(key)){entry.controller.abort();gaplessBufferCache.delete(key);}}
 }
 
-function stopGaplessPlayback(){
+function stopGaplessPlayback(options){
   gaplessLoadNonce++;
   const api=gaplessAudioApi();
   if(api)api.stop();
   if(activeAudio && activeAudio.__gapless)activeAudio=audioMain;
-  stopGaplessUiTimer();retainGaplessBuffers([]);
+  stopGaplessUiTimer();
+  if(!(options && options.preserveBuffers))retainGaplessBuffers([]);
 }
 
 function gaplessNextItem(){
@@ -303,10 +304,39 @@ async function startGaplessAudioFromItem(item, playlist, index, forceShow, resum
     if(!prestarted){
       retainGaplessBuffers([item,next]);
       const bufferPromise=gaplessDecodeItem(item);
-      const nextPromise=next && next.media!=="video"?gaplessDecodeItem(next).catch(()=>null):Promise.resolve(null);
-      const buffer=await bufferPromise;
-      // A prepared skip must never wait for the following track to decode.
-      const nextBuffer=api.snapshot()?.playing ? (next && gaplessBufferCache.get(gaplessItemKey(next))?.buffer || null) : await nextPromise;
+      bufferPromise.catch(()=>{});
+      // Warm the following buffer in parallel, but never make the first
+      // audible sample wait for a second network/decode operation. A cold
+      // album start used to await both promises here, which made a switch to
+      // another list look like a stalled player.
+      if(next && next.media!=="video") gaplessDecodeItem(next).catch(()=>null);
+      let buffer;
+      const slowStart = origin && typeof origin.onSlowStart === "function" ? origin.onSlowStart : null;
+      if(slowStart && origin && origin.nativeFirstStart && !gaplessBufferCache.get(gaplessItemKey(item))?.buffer){
+        if(nonce!==gaplessLoadNonce)return true;
+        if(await slowStart())return "native-started";
+      }
+      if(slowStart){
+        let timeoutId=0;
+        const timeout=new Promise(resolve=>{timeoutId=setTimeout(()=>resolve({timedOut:true}),350);});
+        const first=await Promise.race([bufferPromise.then(value=>({value})),timeout]);
+        if(timeoutId)clearTimeout(timeoutId);
+        if(first && first.timedOut){
+          if(nonce!==gaplessLoadNonce)return true;
+          // Keep the decode alive for cache warming, but let the native
+          // element establish audible playback and the iOS media session.
+          bufferPromise.catch(()=>{});
+          if(await slowStart())return "native-started";
+          // If the native fallback could not start, finish the decoded path
+          // instead of silently dropping the request.
+          buffer=await bufferPromise;
+        }else{
+          buffer=first.value;
+        }
+      }else{
+        buffer=await bufferPromise;
+      }
+      const nextBuffer=next && gaplessBufferCache.get(gaplessItemKey(next))?.buffer || null;
       if(nonce!==gaplessLoadNonce)return true;
       if(!state.preloadEnabled)return false;
       if(!await api.resumeContext())throw new Error("Audio output is suspended");
@@ -329,17 +359,21 @@ async function startGaplessAudioFromItem(item, playlist, index, forceShow, resum
       }))throw new Error("Audio source could not start");
     }else if(!api.snapshot().playing){await api.media.play();}
     if(nonce!==gaplessLoadNonce)return true;
+    // Make the playlist visible before metadata/UI work so the preload
+    // scheduler can attach the decoded successor as soon as it is ready.
+    state.playlist=pl;state.playIndex=idx;
+    preloadNextAudio();
     const meta=await metaPromise;
     if(nonce!==gaplessLoadNonce)return true;
     state.now={rootId:item.root.id,rel:item.rel,media:"audio",streamed:!!item.streamed,nav};
-    state.nowMeta=meta;state.nowNavContext=nav;state.playlist=pl;state.playIndex=idx;
+    state.nowMeta=meta;state.nowNavContext=nav;
     buildPlaybackSessionUpdate({now:Object.assign({},state.now,{meta}),queue:pl,queueIndex:idx,nav,sourceView,media:"audio"},"playback-start");
     if(forceShow)openNowPlayingExplicit();
     try{loadVisualizerAnalysisForTrack(item.root.id,item.rel,"audio",{streamed:!!item.streamed});finishVisualizerTrackTransition(meta.art || "");}catch(e){}
     await updateNowPlayingDisplay(meta,item.label || "Track",{animateArt:true});
     updateMediaSession(meta);syncMediaSessionControls();lastfmOnTrack(meta);
     playbackMaybePost("audio",item.root.id,item.rel,meta,activeAudio.currentTime,activeAudio.duration,!activeAudio.paused,"start");
-    startGaplessUiTimer();updateGaplessUi();preloadNextAudio();
+    startGaplessUiTimer();updateGaplessUi();
     return true;
   }catch(error){
     if(nonce!==gaplessLoadNonce)return true;

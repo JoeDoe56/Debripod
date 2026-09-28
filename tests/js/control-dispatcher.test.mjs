@@ -34,9 +34,9 @@ test("context menus are target-driven and reject nonplayable rows", () => {
   const music = normalizeMediaTarget({kind:"track", media:"audio", root:{id:"r"}, rel:"song.flac"});
   assert.deepEqual(contextMenuRows(music).map((row) => row.label), ["Lyrics", "Add to playlist", "Like"]);
   const movie = normalizeMediaTarget({kind:"movie", media:"video", root:{id:"r"}, rel:"movie.mkv"});
-  assert.deepEqual(contextMenuRows(movie).map((row) => row.label), ["View information", "Like"]);
+  assert.deepEqual(contextMenuRows(movie).map((row) => row.label), ["View information", "Add to playlist", "Like"]);
   const youtube = normalizeMediaTarget({kind:"file", media:"video", root:{id:"r"}, rel:"video.mp4", source:"youtube"});
-  assert.deepEqual(contextMenuRows(youtube).map((row) => row.label), ["View comments", "Like"]);
+  assert.deepEqual(contextMenuRows(youtube).map((row) => row.label), ["View comments", "Add to playlist", "Like"]);
 });
 
 test("collection rows expose queue actions for long press", () => {

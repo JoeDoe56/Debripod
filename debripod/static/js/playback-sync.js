@@ -727,7 +727,7 @@
     const currentMedia = String((selected && selected.media) || (currentNow && currentNow.media) || (isVideoActive() ? "video" : "audio"));
     const rootId = String((selected && selected.root_id) || (currentNow && currentNow.rootId) || "");
     const trackRel = String((selected && selected.rel) || (currentNow && currentNow.rel) || "");
-    if(currentMedia !== "audio" || !rootId || !trackRel){
+    if(!["audio","video"].includes(currentMedia) || !rootId || !trackRel){
       return;
     }
     let root = null;
@@ -791,11 +791,20 @@
     updateWheelLabels();
   }
 
+  async function playlistCreationRoot(){
+    const current=state.current&&state.current.root;
+    const config=await loadConfig();
+    const roots=(config&&config.roots)||state.roots||[];
+    const root=roots.find(r=>current&&r.id===current.id)||roots[0];
+    if(!root||!root.id)throw new Error("Add a library folder before creating a playlist.");
+    return root;
+  }
+
   async function submitPlaylistCreate(rawName){
     try{
       if(!state.playlistCreate) state.playlistCreate = {editing:false, editValue:"", submitting:false};
       const name = String(rawName || "").trim();
-      const root = state.current && state.current.root ? state.current.root : null;
+      const root = await playlistCreationRoot();
       if(!root || !root.id){
         state.playlistCreate.submitting = false;
         return;
@@ -850,7 +859,7 @@
     try{
       if(!state.smartPlaylistCreate) state.smartPlaylistCreate = {editing:false, editValue:"", submitting:false};
       const name = String(rawName || "").trim();
-      const root = state.current && state.current.root ? state.current.root : null;
+      const root = await playlistCreationRoot();
       if(!root || !root.id){
         state.smartPlaylistCreate.submitting = false;
         return;
@@ -1125,10 +1134,10 @@
         for(const e of (js.entries || [])){
           if(e.type === "dir"){
             dirs.push({kind:"playlist_add_dir", label:e.name, rel:e.rel, root: root});
-          }else if(e.type === "file" && e.media === "audio"){
+          }else if(e.type === "file" && (e.media === "audio" || e.media === "video")){
             const relv = String(e.rel || "");
             const added = !!(this._added && this._added.has(relv));
-            songs.push({kind:"playlist_add_file", label:e.name, rel:relv, root:root, media:"audio", selectable:true, selected:added});
+            songs.push({kind:"playlist_add_file", label:e.name, rel:relv, root:root, media:e.media || "audio", selectable:true, selected:added});
           }
         }
         if(songs.length){
@@ -1183,7 +1192,7 @@
         const items = [];
         const tracks = [];
         for(const it of (js.items || [])){
-          if(!it || it.kind !== "track") continue;
+          if(!it || (it.kind !== "track" && !(it.kind === "file" && ["audio","video"].includes(it.media)))) continue;
           const relv = String(it.rel || "");
           tracks.push({kind:"playlist_remove_track", label:String(it.label || "Track"), rel:relv, root:root, badge:String(it.badge || ""), selectable:true, selected:!!(this.selected && this.selected.has(relv))});
         }

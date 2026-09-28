@@ -125,7 +125,7 @@ test("readiness rejection is observable and HLS installs its source synchronousl
 });
 
 
-test("preload with gapless disabled uses decoded playback and never plays a second element",async()=>{
+for (const nativeFirstStart of [false, true]) test(`preload with gapless disabled uses one decoded output (native-first: ${nativeFirstStart})`,async()=>{
   const c=loadLoader();c.AbortController=AbortController;
   const events=[];let snap=null;const media={__gapless:true,paused:false,currentTime:0,duration:5,setTransportLevel(){},addEventListener(){},tick(){}};
   const item={root:{id:"r"},rel:"one",media:"audio"},next={root:{id:"r"},rel:"two",media:"audio"};
@@ -137,7 +137,8 @@ test("preload with gapless disabled uses decoded playback and never plays a seco
   c.apiGet=async()=>({title:"one"});c.nextIndexPeek=()=>1;c.currentPlaybackNavContext=()=>({kind:"metalist"});
   for(const name of ["wireAudio","buildPlaybackSessionUpdate","loadVisualizerAnalysisForTrack","finishVisualizerTrackTransition","updateNowPlayingDisplay","updateMediaSession","syncMediaSessionControls","lastfmOnTrack","syncMediaSessionPosition","renderInfoPillLabels"])c[name]=()=>{};
   c.playbackMaybePost=(...args)=>events.push(args.at(-1));c.setInterval=()=>1;c.clearInterval=()=>{};
-  assert.equal(await c.startGaplessAudioFromItem(item,[item,next],0,false,0),true);
+  if(nativeFirstStart) await c.gaplessDecodeItem(item);
+  assert.equal(await c.startGaplessAudioFromItem(item,[item,next],0,false,0,0,{nativeFirstStart,onSlowStart:()=>{events.push("native-play");return true;}}),true);
   assert.equal(c.activeAudio,media);assert.equal(events.includes("native-play"),false);assert.ok(events.includes(.12));assert.ok(events.includes("start"));
   c.state.preloadEnabled=false;await c.preloadNextAudio();assert.equal(c.gaplessBufferCache.size,0);
 });
@@ -154,4 +155,70 @@ test("gapless UI keeps the actual played fill while seek mode previews a target"
   c.updateGaplessUi();
   assert.equal(fill,20);
   assert.equal(seek.value,"123");
+});
+
+test("cold first playback starts before the following decode completes",async()=>{
+  const c=loadLoader();c.AbortController=AbortController;
+  const events=[];let snap=null;let resolveNext;
+  const media={__gapless:true,paused:false,currentTime:0,duration:5,setTransportLevel(){},addEventListener(){},tick(){}};
+  const item={root:{id:"r"},rel:"one",media:"audio"},next={root:{id:"r"},rel:"two",media:"audio"};
+  c.state={preloadEnabled:true,gaplessEnabled:true,playlist:[item,next],playIndex:0,playbackSession:{}};
+  c.npSeek=null;c.npSeekDragging=false;c.seekMode=false;
+  c.audioMain=c.activeAudio={pause(){},removeAttribute(){},load(){},play(){return Promise.resolve();}};
+  c.window.DebriPod.gaplessAudio={
+    supported:()=>true,
+    decode:async(it)=>it.rel==="one"?{duration:5}:new Promise(resolve=>{resolveNext=resolve;}),
+    resumeContext:async()=>true,takePrestarted:()=>false,media,
+    start:(it)=>{events.push("start:"+it.rel);snap={key:c.gaplessItemKey(it),item:it,position:0,duration:5,playing:true};return true;},
+    snapshot:()=>snap,scheduleNext:(it)=>events.push("schedule:"+it.rel),stop(){},cancelNext(){}
+  };
+  c.apiGet=async()=>({title:"one"});c.nextIndexPeek=()=>1;c.currentPlaybackNavContext=()=>({kind:"metalist"});
+  for(const name of ["wireAudio","buildPlaybackSessionUpdate","loadVisualizerAnalysisForTrack","finishVisualizerTrackTransition","updateNowPlayingDisplay","updateMediaSession","syncMediaSessionControls","lastfmOnTrack","syncMediaSessionPosition","renderInfoPillLabels"])c[name]=()=>{};
+  c.playbackMaybePost=()=>{};c.setInterval=()=>1;c.clearInterval=()=>{};
+  const started=await c.startGaplessAudioFromItem(item,[item,next],0,false,0,0);
+  assert.equal(started,true);
+  assert.deepEqual(events,["start:one"]);
+  resolveNext({duration:5});
+  await new Promise(resolve=>setTimeout(resolve,0));
+  assert.deepEqual(events,["start:one","schedule:two"]);
+});
+
+test("slow current decode hands off to native startup without waiting",async()=>{
+  const c=loadLoader();c.AbortController=AbortController;
+  const events=[];let releaseCurrent;
+  const media={__gapless:true,paused:false,currentTime:0,duration:5,setTransportLevel(){},addEventListener(){},tick(){}};
+  const item={root:{id:"r"},rel:"one",media:"audio"},next={root:{id:"r"},rel:"two",media:"audio"};
+  c.state={preloadEnabled:true,gaplessEnabled:true,playlist:[item,next],playIndex:0,playbackSession:{}};
+  c.npSeek=null;c.npSeekDragging=false;c.seekMode=false;
+  c.audioMain=c.activeAudio={pause(){},removeAttribute(){},load(){},play(){return Promise.resolve();}};
+  c.setTimeout=(fn)=>{fn();return 1;};c.clearTimeout=()=>{};
+  c.window.DebriPod.gaplessAudio={
+    supported:()=>true,
+    decode:async(it)=>it.rel==="one"?new Promise(resolve=>{releaseCurrent=resolve;}):{duration:5},
+    resumeContext:async()=>true,takePrestarted:()=>false,media,
+    start:()=>{throw new Error("decoded start should not be reached");},snapshot:()=>null,scheduleNext(){},stop(){},cancelNext(){}
+  };
+  c.apiGet=async()=>({title:"one"});c.nextIndexPeek=()=>1;c.currentPlaybackNavContext=()=>({kind:"metalist"});
+  const onSlowStart=async()=>{events.push("native-start");return true;};
+  const started=await c.startGaplessAudioFromItem(item,[item,next],0,false,0,{onSlowStart});
+  assert.equal(started,"native-started");
+  assert.deepEqual(events,["native-start"]);
+  releaseCurrent({duration:5});
+  await new Promise(resolve=>setTimeout(resolve,0));
+});
+
+test("a superseded slow decode cannot start a stale native fallback",async()=>{
+  const c=loadLoader();c.AbortController=AbortController;
+  const item={root:{id:"r"},rel:"one",media:"audio"},next={root:{id:"r"},rel:"two",media:"audio"};
+  c.state={preloadEnabled:true,gaplessEnabled:true,playlist:[item,next],playIndex:0,playbackSession:{}};
+  c.window.DebriPod.gaplessAudio={
+    supported:()=>true,decode:async()=>new Promise(()=>{}),resumeContext:async()=>true,takePrestarted:()=>false,
+    media:{__gapless:true,setTransportLevel(){},addEventListener(){},tick(){}},stop(){},cancelNext(){},snapshot:()=>null
+  };
+  c.apiGet=async()=>({title:"one"});c.nextIndexPeek=()=>1;c.currentPlaybackNavContext=()=>({kind:"metalist"});
+  let callbackCount=0;
+  c.setTimeout=(fn)=>{c.stopGaplessPlayback();fn();return 1;};c.clearTimeout=()=>{};
+  const started=await c.startGaplessAudioFromItem(item,[item,next],0,false,0,{onSlowStart:async()=>{callbackCount++;return true;}});
+  assert.equal(started,true);
+  assert.equal(callbackCount,0);
 });

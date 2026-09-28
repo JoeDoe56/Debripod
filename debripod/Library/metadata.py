@@ -34,13 +34,13 @@ META_LOCK = threading.Lock()
 ANALYSIS_LOCK = threading.BoundedSemaphore(1)
 PALETTE_ALGORITHM_VERSION = 4
 PALETTE_COLOR_COUNT = 16
-VISUALIZER_ART_ALGORITHM_VERSION = 2
+VISUALIZER_ART_ALGORITHM_VERSION = 3
 # The field is sampled across the whole viewport after rotation.  A 512px
 # field is under-resolved on tall phones and desktop screens, where one source
 # texel can cover multiple visible pixels.  Keep the blur in the same visual
 # CSS scale while giving the renderer enough source detail.
 VISUALIZER_ART_SIZE = 1024
-VISUALIZER_ART_BLUR_SIGMA = 112
+VISUALIZER_ART_BLUR_SIGMA = 40
 VISUALIZER_BAND_LUMA_MIN = 0.06
 VISUALIZER_BAND_LUMA_MAX = 0.94
 VISUALIZER_MIN_LUMA_SPAN = 0.08

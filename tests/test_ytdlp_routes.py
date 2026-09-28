@@ -59,6 +59,21 @@ def test_generic_ytdlp_directory_route(monkeypatch):
     asyncio.run(scenario())
 
 
+def test_link_inspection_recognizes_generic_multi_item_sources(monkeypatch):
+    calls = []
+    def extract(url, **options):
+        calls.append(options)
+        return {'_type':'multi_video','extractor':'Generic','title':'Collection',
+                'entries':[{'url':'https://media.example.test/a','title':'First'},
+                           {'url':'https://media.example.test/b','title':'Second'}]}
+    monkeypatch.setattr(youtube, '_yt_dlp_extract_info', extract)
+    result = youtube.ytdlp_inspect('https://media.example.test/list')
+    assert calls == [{'flat':True}]
+    assert result['kind'] == 'playlist'
+    assert len(result['entries']) == 2
+    assert result['files'] == []
+
+
 def test_pasted_soundcloud_url_still_uses_generic_ytdlp_inspection(monkeypatch):
     async def scenario():
         client = await _client(monkeypatch)
@@ -228,6 +243,45 @@ def test_selected_ytdlp_format_uses_source_url_for_stream_preparation():
         stream_item = route_state._search_stream_get(prepared["items"][0]["rel"])
         assert stream_item and stream_item["youtube_url"] == source_url
 
+    asyncio.run(scenario())
+
+
+def test_playlist_streams_keep_each_item_url_and_title():
+    async def scenario():
+        prepared = await route_state._engine_prepare_stream_session({
+            'source': 'youtube', 'url': 'https://media.example.test/playlist', 'title': 'Collection',
+            'selected': [{'quality_target':'720p','name':name,'media':'video','source_url':f'https://media.example.test/{name}'} for name in ('First','Second')],
+        }, None)
+        items = [route_state._search_stream_get(row['rel']) for row in prepared['items']]
+        assert [item['youtube_url'] for item in items] == ['https://media.example.test/First','https://media.example.test/Second']
+        assert [item['title'] for item in items] == ['First','Second']
+    asyncio.run(scenario())
+
+
+def test_playlist_downloads_get_distinct_control_ids(tmp_path, monkeypatch):
+    monkeypatch.setattr(routes, '_runtime_settings', lambda _: {'YOUTUBE_DOWNLOAD_DIR':str(tmp_path)})
+    monkeypatch.setattr(routes, '_current_user_id', lambda _: 'test-user')
+    monkeypatch.setattr(routes, 'youtube_worker', lambda _: None)
+    async def validate(_, url):
+        return url
+    monkeypatch.setattr(routes, '_validated_ytdlp_url', validate)
+    async def scenario():
+        app = web.Application()
+        app.router.add_post('/enqueue', routes.api_youtube_enqueue)
+        client = TestClient(TestServer(app))
+        await client.start_server()
+        try:
+            response = await client.post('/enqueue', json={
+                'url':'https://media.example.test/list','selected':[
+                    {'name':'Repeated title','quality_target':'720p','media':'video','source_url':f'https://media.example.test/{index}'} for index in range(2)
+                ]})
+            data = await response.json()
+            assert data['ok']
+            task = routes.TASKS[data['task_id']]
+            assert len({item['file_id'] for item in task.youtube_files}) == 2
+            assert len({item['source_url'] for item in task.youtube_files}) == 2
+        finally:
+            await client.close()
     asyncio.run(scenario())
 
 

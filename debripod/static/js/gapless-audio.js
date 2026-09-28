@@ -1,6 +1,7 @@
 (function(root){
   "use strict";
   let context=null, output=null, analyser=null, session=null, volume=1, transportLevel=1, rate=1;
+  let nativeBridgeAudio=null, nativeBridgeDestination=null, nativeBridgeUnlockAttempted=false, nativeBridgeRouted=false;
   let recovering=null;
   const listeners=new Map();
   const number=(v,f)=>Number.isFinite(Number(v))?Number(v):f;
@@ -20,7 +21,66 @@
     }catch(e){context=null;output=null;}
     return context;
   }
-  function supported(){return !!(getContext() && output && context.decodeAudioData);}
+  function supported(){
+    const ok=!!(getContext() && output && context.decodeAudioData);
+    // Create and unlock the native sink while the initiating gesture is
+    // still on the stack, before network/decode awaits begin.
+    if(ok && ensureNativeBridge() && !nativeBridgeUnlockAttempted){
+      nativeBridgeUnlockAttempted=true;
+      playNativeBridge();
+    }
+    return ok;
+  }
+  function wantsNativeBridge(){
+    try{
+      const nav=root.navigator;
+      const ua=String(nav && nav.userAgent || "");
+      return /iPad|iPhone|iPod/.test(ua) || (nav && nav.platform === "MacIntel" && Number(nav.maxTouchPoints || 0) > 1);
+    }catch(e){return false;}
+  }
+  function routeOutputDirect(){
+    if(!output || !context || !context.destination)return;
+    try{if(nativeBridgeDestination)output.disconnect(nativeBridgeDestination);}catch(e){try{output.disconnect();}catch(_e){}}
+    try{output.connect(context.destination);}catch(e){}
+    nativeBridgeRouted=false;
+  }
+  function routeOutputToBridge(){
+    if(!output || !nativeBridgeDestination)return false;
+    if(nativeBridgeRouted)return true;
+    try{output.disconnect();output.connect(nativeBridgeDestination);nativeBridgeRouted=true;return true;}catch(e){return false;}
+  }
+  function ensureNativeBridge(){
+    if(!wantsNativeBridge() || !context || !output || typeof context.createMediaStreamDestination !== "function")return !!nativeBridgeAudio;
+    if(nativeBridgeAudio && nativeBridgeDestination)return true;
+    const doc=root.document;
+    if(!doc || typeof doc.createElement !== "function")return false;
+    try{
+      const destination=context.createMediaStreamDestination();
+      const element=doc.createElement("audio");
+      element.autoplay=true;element.playsInline=true;element.controls=false;element.muted=false;
+      element.setAttribute("aria-hidden","true");
+      element.style.display="none";
+      element.srcObject=destination.stream;
+      (doc.body || doc.documentElement).appendChild(element);
+      try{output.disconnect(context.destination);}catch(e){try{output.disconnect();}catch(_e){}}
+      output.connect(destination);
+      nativeBridgeDestination=destination;nativeBridgeRouted=true;
+      nativeBridgeAudio=element;
+      return true;
+    }catch(e){
+      nativeBridgeAudio=null;nativeBridgeDestination=null;routeOutputDirect();
+      return false;
+    }
+  }
+  function playNativeBridge(){
+    if(!nativeBridgeAudio)return Promise.resolve(false);
+    routeOutputToBridge();
+    try{
+      const pending=nativeBridgeAudio.play();
+      return Promise.resolve(pending).then(()=>true).catch(()=>{routeOutputDirect();return false;});
+    }catch(e){routeOutputDirect();return Promise.resolve(false);}
+  }
+  function pauseNativeBridge(){try{if(nativeBridgeAudio)nativeBridgeAudio.pause();}catch(e){}}
   function resumeContext(){
     const ctx=getContext();
     if(!ctx)return Promise.resolve(false);
@@ -75,6 +135,7 @@
       else promote(next);
     }else{
       session.offset=session.duration;session.playing=false;
+      pauseNativeBridge();
       try{if(session.onEnded)session.onEnded(session.current);}catch(e){}
     }
   }
@@ -102,6 +163,8 @@
   }
   function start(item,buffer,nextItem,nextBuffer,options){
     if(!getContext() || !output || !buffer)return false;
+    ensureNativeBridge();
+    playNativeBridge();
     const opts=options || {}, old=session;
     // On a skip the outgoing source stops at precisely the incoming source's
     // scheduled boundary, even if the JS call is between rendering quanta.
@@ -115,16 +178,19 @@
     if(nextItem && nextBuffer)scheduleNext(nextItem,nextBuffer);
     emit("play");return true;
   }
-  function stop(){const old=session;session=null;if(old){dispose(old.source);if(old.next)dispose(old.next.source);}rate=1;transportLevel=1;applyGain();}
+  function stop(){const old=session;session=null;if(old){dispose(old.source);if(old.next)dispose(old.next.source);}pauseNativeBridge();rate=1;transportLevel=1;applyGain();}
   function pause(){
     syncBoundary();if(!session || !session.playing)return false;
     session.offset=position();session.playing=false;
     dispose(session.source);session.source=null;
     if(session.next){session.pausedNext={item:session.next.item,buffer:session.next.buffer};dispose(session.next.source);session.next=null;}
+    pauseNativeBridge();
     emit("pause");return true;
   }
   function resume(){
     if(!session || session.playing)return false;
+    ensureNativeBridge();
+    playNativeBridge();
     session.startedAt=context.currentTime+0.025;session.rate=rate;
     session.source=makeSource(session.buffer,session.startedAt,session.offset,rate);session.playing=true;
     const next=session.pausedNext;session.pausedNext=null;if(next)scheduleNext(next.item,next.buffer);
@@ -174,6 +240,6 @@
     removeAttribute(){},load(){},tick:()=>emit("timeupdate")
   };
   root.DebriPod=root.DebriPod || {};
-  root.DebriPod.gaplessAudio={supported,decode,start,stop,pause,resume,resumeContext,seek,scheduleNext,cancelNext,setGap,takePrestarted,setVolume,snapshot,sourceUrl,media,testing:{getContext:()=>context,getSession:()=>session,keyFor}};
+  root.DebriPod.gaplessAudio={supported,decode,start,stop,pause,resume,resumeContext,seek,scheduleNext,cancelNext,setGap,takePrestarted,setVolume,snapshot,sourceUrl,media,testing:{getContext:()=>context,getSession:()=>session,keyFor,nativeBridge:()=>nativeBridgeAudio}};
   try{root.document?.addEventListener("visibilitychange",()=>{if(!root.document.hidden && session?.playing)resumeContext();});root.addEventListener("pageshow",()=>{if(session?.playing)resumeContext();});}catch(e){}
 })(window);

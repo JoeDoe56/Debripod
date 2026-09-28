@@ -9,13 +9,13 @@ const here = path.dirname(fileURLToPath(import.meta.url));
 const sourcePath = path.resolve(here, "../../debripod/static/js/gapless-audio.js");
 const source = fs.readFileSync(sourcePath, "utf8");
 
-function load(){
+function load(options={}){
   const starts = [];
   const context = {
     currentTime: 10,
     state: "running",
     destination: {},
-    createGain(){ return {gain:{value:1},connect(){}}; },
+    createGain(){ const connections=new Set();this.output={gain:{value:1},connections,connect(node){connections.add(node);},disconnect(node){if(node)connections.delete(node);else connections.clear();}};return this.output; },
     createBufferSource(){
       const node = {buffer:null,playbackRate:{value:1},onended:null,connect(){},disconnect(){},stop(){this.stopped=true;},start(when,offset){ starts.push({when,offset,buffer:this.buffer}); }};
       return node;
@@ -23,12 +23,20 @@ function load(){
     decodeAudioData(){ return Promise.resolve({duration:3}); },
     resume(){ this.state="running"; return Promise.resolve(); }
   };
-  const document = {hidden:false,addEventListener(){}};
-  const window = {AudioContext:function(){return context;},document,addEventListener(){},fetch:async()=>({ok:true,arrayBuffer:async()=>new ArrayBuffer(0)})};
+  const bridgeNodes=[];
+  const document = {
+    hidden:false,addEventListener(){},body:{appendChild(node){bridgeNodes.push(node);}},documentElement:{appendChild(node){bridgeNodes.push(node);}},
+    createElement(name){
+      if(name!=="audio")return {style:{},setAttribute(){}};
+      return {style:{},setAttribute(){},playCalls:0,pauseCalls:0,play(){this.playCalls++;return Promise.resolve();},pause(){this.pauseCalls++;}};
+    }
+  };
+  if(options.ios)context.createMediaStreamDestination=()=>({stream:{id:"gapless-stream"}});
+  const window = {AudioContext:function(){return context;},document,navigator:options.ios?{userAgent:"iPhone",platform:"iPhone",maxTouchPoints:5}:{userAgent:"Chrome",platform:"Win32",maxTouchPoints:0},addEventListener(){},fetch:async()=>({ok:true,arrayBuffer:async()=>new ArrayBuffer(0)})};
   const sandbox = {window,Promise,Number,String,Math,encodeURIComponent,setTimeout,clearTimeout};
   vm.createContext(sandbox);
   vm.runInContext(source, sandbox, {filename:sourcePath});
-  return {api:window.DebriPod.gaplessAudio,context,starts};
+  return {api:window.DebriPod.gaplessAudio,context,starts,bridgeNodes};
 }
 
 const item = (rel)=>({root:{id:"root"},rel});
@@ -116,4 +124,25 @@ test("skip cuts the outgoing source on the same clock as the incoming start",()=
 test("interrupted audio contexts are resumed without reloading the app",async()=>{
   const {api,context}=load();context.state="interrupted";
   assert.equal(await api.resumeContext(),true);assert.equal(context.state,"running");
+});
+
+test("iOS gapless output uses a single native media bridge for system controls",async()=>{
+  const {api,bridgeNodes,context}=load({ios:true});
+  assert.equal(api.supported(),true);
+  const unlocked=api.testing.nativeBridge();
+  assert.ok(unlocked);
+  assert.equal(unlocked.playCalls,1);
+  assert.equal(api.start(item("one"),{duration:3}),true);
+  const bridge=api.testing.nativeBridge();
+  assert.ok(bridge);
+  assert.equal(bridge.srcObject.id,"gapless-stream");
+  assert.equal(bridgeNodes.length,1);
+  assert.equal(bridge.playCalls,2);
+  assert.equal(api.pause(),true);
+  assert.equal(bridge.pauseCalls,1);
+  const calls=bridge.playCalls;api.supported();assert.equal(bridge.playCalls,calls,"preloading must not resume a paused sink");
+  assert.equal(context.output.connections.size,1);
+  assert.equal(context.output.connections.has(context.destination),false);
+  assert.equal(api.resume(),true);
+  assert.equal(bridge.playCalls,3);
 });

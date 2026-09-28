@@ -132,12 +132,13 @@
     }
     if(current.type === "music"){
       rows.push({action:"lyrics", label:"Lyrics"});
-      rows.push({action:"add_to_playlist", label:"Add to playlist"});
+
     }else if(current.type === "movie" || current.type === "episode"){
       rows.push({action:"view_information", label:"View information"});
     }else if(current.type === "youtube"){
       rows.push({action:"view_comments", label:"View comments"});
     }
+    if(current.playable && current.root_id && current.rel) rows.push({action:"add_to_playlist", label:"Add to playlist"});
     rows.push({action:"toggle_like", label:liked ? "Unlike" : "Like", heart:liked});
     if(hasCurrent){
       rows.push({action:"play_next", label:"Play Next"});

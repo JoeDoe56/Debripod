@@ -309,7 +309,7 @@ async function goBack(){
   function buildPlaylistFromItems(items){
     const pl = [];
     for(const it of items){
-      if(it.kind === "track" || (it.kind === "file" && it.media === "audio")){
+      if(it.kind === "track" || (it.kind === "file" && (it.media === "audio" || it.media === "video"))){
         pl.push(it);
       }
     }
@@ -319,7 +319,7 @@ async function goBack(){
   function buildVideoPlaylistFromItems(items){
     const pl = [];
     for(const it of items){
-      if(it && it.kind === "file" && it.media === "video"){
+      if(it && (it.kind === "track" || (it.kind === "file" && (it.media === "audio" || it.media === "video")))){
         pl.push(it);
       }
     }
@@ -390,16 +390,23 @@ async function goBack(){
 
 
 
+  function playbackCandidatesForItem(item){
+    const visible=buildPlaylistFromItems(state.items||[]);
+    if(visible.some(candidate=>candidate.rel===item.rel&&candidate.root?.id===item.root?.id))return visible;
+    return state.videoPlaylist&&state.videoPlaylist.length?state.videoPlaylist:[item];
+  }
+
   async function startVideoFromItem(item, forceShow, resumeTime){
+    const requestNonce = ++playbackStartRequestNonce;
     if(typeof stopGaplessPlayback === "function")stopGaplessPlayback();
     if(typeof forceShow !== "boolean") forceShow = true;
     try{ preparePlaybackMediaAudio(npVideo); }catch(e){}
     try{ unlockPlaybackMediaAudio(); }catch(e){}
-    syncCanonicalPlaybackStart(item, state.videoPlaylist && state.videoPlaylist.length ? state.videoPlaylist : (state.items || []), forceShow);
+    syncCanonicalPlaybackStart(item, playbackCandidatesForItem(item), forceShow);
     const visualizerTrackChanged = !!(state.now && (state.now.rootId !== item.root.id || state.now.rel !== item.rel));
     if(visualizerTrackChanged) try{ beginVisualizerTrackTransition(state.nowMeta && state.nowMeta.art); }catch(e){}
     const playbackNav = captureNavContext();
-    const sourceView = captureSourceViewContext(item, state.videoPlaylist && state.videoPlaylist.length ? state.videoPlaylist : (state.items || []), state.videoIndex >= 0 ? state.videoIndex : 0);
+    const sourceView = captureSourceViewContext(item, playbackCandidatesForItem(item), state.videoIndex >= 0 ? state.videoIndex : 0);
     if(forceShow) openNowPlayingExplicit();
 
     try{ if(window.DebriPod && DebriPod.playbackTransport) DebriPod.playbackTransport.cancel(activeAudio); }catch(e){}
@@ -452,6 +459,7 @@ async function goBack(){
       return;
     }
     const [meta] = await Promise.all([metaPromise, loadRequest.ready]);
+    if(requestNonce !== playbackStartRequestNonce) return;
 
     state.now = {rootId: rootId, rel: rel, media: "video", streamed: !!item.streamed, nav: playbackNav};
     state.nowNavContext = playbackNav;
@@ -490,7 +498,9 @@ async function goBack(){
 
 
 
+  var playbackStartRequestNonce = 0;
   async function startAudioFromItem(item, playlist, index, forceShow, resumeTime){
+    const requestNonce = ++playbackStartRequestNonce;
     if(typeof forceShow !== "boolean") forceShow = true;
     try{ preparePlaybackMediaAudio(activeAudio); }catch(e){}
     try{ unlockPlaybackMediaAudio(); }catch(e){}
@@ -502,17 +512,56 @@ async function goBack(){
     stopVideoOverlay();
     const rootId = item.root.id;
     const rel = item.rel;
+    let nativeFallbackStarted = false;
 
     const same = state.now && state.now.rootId === rootId && state.now.rel === rel;
+    const nativeFirstStart = (()=>{
+      try{
+        const nav = window.navigator || {};
+        const ua = String(nav.userAgent || "");
+        return /iPad|iPhone|iPod/.test(ua) || (nav.platform === "MacIntel" && Number(nav.maxTouchPoints || 0) > 1);
+      }catch(e){ return false; }
+    })();
     // Decode the current and next finite tracks before starting them so both
     // sources can share one AudioContext clock. The regular element path is
     // retained as a browser/stream fallback inside the loader.
     if(state.preloadEnabled && typeof startGaplessAudioFromItem === "function"){
       try{
-        if(await startGaplessAudioFromItem(item, playlist || state.playlist || [], index, forceShow, resumeTime, {playbackNav,sourceView})) return;
+        const gaplessResult = await startGaplessAudioFromItem(item, playlist || state.playlist || [], index, forceShow, resumeTime, {
+          playbackNav,sourceView,nativeFirstStart,
+          onSlowStart: async()=>{
+            if(nativeFallbackStarted) return true;
+            try{
+              nativeFallbackStarted = true;
+              // Stop the decoded transport but retain its warming buffers so
+              // the next boundary can still promote a ready PCM track.
+              stopGaplessPlayback({preserveBuffers:true});
+              try{ if(activeAudio) activeAudio.pause(); }catch(e){}
+              try{ destroyHlsController("audio"); }catch(e){}
+              resetGaplessPrime();
+              activeAudio = audioMain;
+              try{ activeAudio.removeAttribute("src"); activeAudio.load(); }catch(e){}
+              const request = beginPlaybackLoad(activeAudio, rootId, rel, "audio");
+              try{ ensurePlaybackAudioSession(); }catch(e){}
+              preparePlaybackMediaAudio(activeAudio);
+              unlockPlaybackMediaAudio();
+              const p = activeAudio.play();
+              if(p && p.catch) p.catch((err)=>{ warnMedia("audio", "play rejected" + (err && err.name ? " (" + err.name + ")" : ""), activeAudio); });
+              // Keep readiness observable for diagnostics without making the
+              // user wait on it before the native element starts.
+              request.ready.catch(()=>{});
+              return true;
+            }catch(e){ nativeFallbackStarted = false; return false; }
+          }
+        });
+        if(gaplessResult === "native-started"){
+          nativeFallbackStarted = true;
+        }else if(gaplessResult){
+          return;
+        }
       }catch(e){}
     }
-    if(typeof stopGaplessPlayback === "function" && gaplessPlaybackActive())stopGaplessPlayback();
+    if(!nativeFallbackStarted && typeof stopGaplessPlayback === "function" && gaplessPlaybackActive())stopGaplessPlayback();
     if(same){
       try{
         buildPlaybackSessionUpdate({now:Object.assign({}, state.now, {nav:playbackNav, meta:state.nowMeta || {}}), queue:state.playlist, queueIndex:state.playIndex, nav:playbackNav, sourceView:sourceView, media:"audio"}, "playback-start");
@@ -589,11 +638,13 @@ async function goBack(){
 
     if(forceShow) openNowPlayingExplicit();
 
-    try{ if(window.DebriPod && DebriPod.playbackTransport) DebriPod.playbackTransport.cancel(activeAudio); }catch(e){}
-    try{ if(activeAudio) activeAudio.pause(); }catch(e){}
-    destroyHlsController("audio");
-    resetGaplessPrime();
-    try{ activeAudio.removeAttribute("src"); activeAudio.load(); }catch(e){}
+    if(!nativeFallbackStarted){
+      try{ if(window.DebriPod && DebriPod.playbackTransport) DebriPod.playbackTransport.cancel(activeAudio); }catch(e){}
+      try{ if(activeAudio) activeAudio.pause(); }catch(e){}
+      destroyHlsController("audio");
+      resetGaplessPrime();
+      try{ activeAudio.removeAttribute("src"); activeAudio.load(); }catch(e){}
+    }
 
     try{ applyVolume(); }catch(e){}
     try{ enforceSingleAudio(); }catch(e){}
@@ -605,18 +656,21 @@ async function goBack(){
       .then((raw)=>normalizePlaybackMetadata(raw, item, item.label || "Track"))
       .catch(()=>normalizePlaybackMetadata({}, item, item.label || "Track"));
     let loadRequest;
-    try{
-      loadRequest = beginPlaybackLoad(activeAudio, rootId, rel, "audio");
-      try{ ensurePlaybackAudioSession(); }catch(e){}
-      preparePlaybackMediaAudio(activeAudio);
-      unlockPlaybackMediaAudio();
-      const p = activeAudio.play();
-      if(p && p.catch) p.catch((err)=>{ warnMedia("audio", "play rejected" + (err && err.name ? " (" + err.name + ")" : ""), activeAudio); });
-    }catch(e){
-      warnMedia("audio", "start failed" + (e && e.name ? " (" + e.name + ")" : ""), activeAudio);
-      throw e;
-    }
+    if(nativeFallbackStarted){
+      loadRequest = {ready:Promise.resolve()};
+    }else try{
+        loadRequest = beginPlaybackLoad(activeAudio, rootId, rel, "audio");
+        try{ ensurePlaybackAudioSession(); }catch(e){}
+        preparePlaybackMediaAudio(activeAudio);
+        unlockPlaybackMediaAudio();
+        const p = activeAudio.play();
+        if(p && p.catch) p.catch((err)=>{ warnMedia("audio", "play rejected" + (err && err.name ? " (" + err.name + ")" : ""), activeAudio); });
+      }catch(e){
+        warnMedia("audio", "start failed" + (e && e.name ? " (" + e.name + ")" : ""), activeAudio);
+        throw e;
+      }
     const [meta] = await Promise.all([metaPromise, loadRequest.ready]);
+    if(requestNonce !== playbackStartRequestNonce) return;
 
     const rt = (resumeTime && isFinite(resumeTime)) ? Number(resumeTime) : 0;
     if(rt > 0){
@@ -1707,6 +1761,13 @@ if(it.kind === "libsearch_history_action"){
 
     if(it.kind === "libsearch_file_action"){
       const view = state.current || {};
+      if(String(it.action||"").startsWith("collection_")&&view._searchResult){
+        const target=view._searchResult;
+        if(it.action==="collection_items"||it.action==="collection_quality")return await viewYtdlpCollectionPage(target,it.action==="collection_items"?"items":"quality",true);
+        if(it.action==="collection_clear")target.selected.clear();
+        if(it.action==="collection_all")for(const entry of target.entries){const item=ytdlpCollectionSelection(entry,target.quality);target.selected.set(item.source_url,item);}
+        target.downloadQueued=false;libSearchRebuildFilesList(target.buildItems());return;
+      }
       if((it.action === "result_selectall" || it.action === "result_clear" || it.action === "result_download" || it.action === "result_browse" || it.action === "result_stream") && view._searchResult){
         const target = view._searchResult;
         const src = String(target.source || "");

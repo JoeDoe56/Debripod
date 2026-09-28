@@ -185,7 +185,8 @@
     const canonical = window.DebriPod && DebriPod.playbackQueue;
     if(canonical) canonical.replaceFromPlayableList(pl, first);
     if(first.media === "video"){
-      await startVideoFromItem(first, true, 0);
+      await startVideoFromItem(first, false, 0);
+      openNowPlayingExplicit();
     }else{
       await startAudioFromItem(first, pl, idx, true, 0);
     }
@@ -316,16 +317,49 @@
     return {result_id:source+":"+id,provider_group:"ytdlp",source:source,source_label:String(parent.source_label||"YouTube"),kind:"video",kind_label:"Videos",title:String(entry.title||entry.name||"Item"),subtitle:String(entry.uploader||entry.channel||""),artist:String(entry.uploader||entry.channel||""),album:"",year:"",duration:Number(entry.duration||0),thumbnail:String(entry.thumbnail||""),canonical_url:url,stable_source_id:id,search_blob:String(entry.title||""),filter_values:{sources:[source],types:["video"],indexers:[],media:["video"]},match_confidence:1,rank_score:0,browse_available:false,stream_available:true,download_available:true,files_loaded:false,file_count:0,size:0,files:[],provider_data:{video_id:id,playlist_id:"",channel_id:"",browse_id:"",youtube_music:false,search_category:"videos"}};
   }
 
+  function ytdlpCollectionSelection(entry, quality){
+    const url=String(entry.webpage_url||entry.canonical_url||entry.url||"");
+    const name=String(entry.title||entry.name||"Item");
+    const audioOnly=entry.media==="audio"||entry.vcodec==="none"||/^(mp3|m4a|aac|flac|wav|ogg|opus)$/i.test(entry.ext||"");
+    if(audioOnly)quality="audio";
+    return {file_id:"item:"+url,source:"youtube",source_url:url,url,name,label:name,title:name,
+      quality_target:quality,quality:quality==="audio"?"Audio Only":quality,
+      media:quality==="audio"?"audio":"video",ext:quality==="audio"?"m4a":"mp4",audio_extract:quality==="audio",duration:Number(entry.duration||0)};
+  }
+
+  async function viewYtdlpCollectionPage(target,page,push){
+    await setView({kind:"libsearch_result_detail",label:page==="items"?"Select items":page==="quality"?"Selected quality":target.result.title||"Items",
+      source:"youtube",_searchResult:target,_ytdlpPage:page,
+      load:async function(){resetList(target.buildItems());}},push);
+  }
+
   async function viewYtdlpResultDirectory(result,push){
     showNowPlaying(false);
-    await setView({kind:"libsearch_result_list",label:result.title||"Directory",source:result.source,load:async function(){
+    const target={source:"youtube",result:Object.assign({},result,{stream_available:true}),selected:new Map(),entries:[],quality:"best",downloadQueued:false};
+    const action=(label,action,badge)=>({kind:"libsearch_file_action",label,action,badge:badge||""});
+    target.buildItems=()=>{
+      const page=state.current&&state.current._ytdlpPage;
+      if(page==="quality")return ["best","2160p","1440p","1080p","720p","480p","360p","audio"].map(quality=>({
+        kind:"libsearch_file",label:quality==="audio"?"Audio Only":quality==="best"?"Best available":quality,selectable:true,selected:target.quality===quality,
+        onToggle:()=>{target.quality=quality;for(const [key,item] of target.selected)target.selected.set(key,ytdlpCollectionSelection(target.entries.find(entry=>String(entry.webpage_url||entry.canonical_url||entry.url||"")===key)||item,quality));target.downloadQueued=false;}
+      }));
+      if(page==="items")return [action("Select all","collection_all"),action("Clear selection","collection_clear"),...target.entries.map(entry=>{
+        const item=ytdlpCollectionSelection(entry,target.quality),key=item.source_url;
+        return Object.assign({},item,{kind:"libsearch_file",selectable:true,selected:target.selected.has(key),onToggle:()=>{if(target.selected.has(key))target.selected.delete(key);else target.selected.set(key,item);target.downloadQueued=false;}});
+      })];
+      return [action("Select items","collection_items",String(target.selected.size)+" / "+target.entries.length),
+        action("Selected quality","collection_quality",target.quality==="audio"?"Audio Only":target.quality==="best"?"Best available":target.quality),
+        action("Stream selected","result_stream",String(target.selected.size)),action("Download selected","result_download",target.downloadQueued?"Queued":String(target.selected.size))];
+    };
+    await setView({kind:"libsearch_result_detail",label:result.title||"Items",source:"youtube",_searchResult:target,_ytdlpPage:"menu",load:async function(){
+      if(target.loaded){resetList(target.buildItems());return;}
       resetList([{kind:"loading",label:"Loading items",loading:true}]);
       try{
-        const js=await apiGet("/api/ytdlp/directory?url="+encodeURIComponent(result.canonical_url||((result.provider_data||{}).permalink_url)||""));
-        if(!js||!js.ok) throw new Error((js&&js.error)||"Failed to load directory");
-        const rows=(js.entries||[]).map(function(entry){ return libUnifiedSearchModel().toRow(canonicalDirectoryEntry(entry,result)); });
-        resetList(rows.length?rows:[{kind:"info",label:"No items found"}]);
-      }catch(error){ resetList([{kind:"info",label:"Failed to load items"}]); reportUiStatus(String(error&&error.message?error.message:error), "warn"); }
+        const js=Array.isArray(result.entries)&&result.entries.length?{ok:true,entries:result.entries}:await apiGet("/api/ytdlp/directory?url="+encodeURIComponent(result.canonical_url||result.url||((result.provider_data||{}).permalink_url)||""));
+        if(!js||!js.ok)throw new Error((js&&js.error)||"Failed to load directory");
+        target.entries=(js.entries||[]).filter(entry=>entry.webpage_url||entry.url).map(entry=>Object.assign({},entry,{media:entry.media||(["album","music_playlist","podcast"].includes(result.kind)?"audio":"")}));target.loaded=true;
+        resetList(target.entries.length?target.buildItems():[{kind:"info",label:"No items found"}]);
+      }catch(error){resetList([{kind:"info",label:"Failed to load items"}]);reportUiStatus(String(error&&error.message?error.message:error),"warn");}
     }},push);
   }
 

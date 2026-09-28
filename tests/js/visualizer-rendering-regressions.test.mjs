@@ -212,3 +212,14 @@ test("manual transport and visualizer share the exact envelope including complet
   c.visualizerFrame(1200);
   assert.equal(c.visualizerFade,1,"completed audio ramp must not leave a visual fade tail");
 });
+
+
+test("cached audio features follow the active decoded clock",()=>{
+  const c=loadHelpers(["clamp01","sampleCachedVisualizerAnalysis"]);
+  c.visualizerAnalysisState={loaded:true,bytes:[0,0,0,255,255,255],frameCount:2,rate:1,stride:3,bandCount:1,activeBands:[true]};
+  c.gaplessPlaybackSnapshot=()=>({position:.5,duration:10});
+  const features=c.sampleCachedVisualizerAnalysis({currentTime:9});
+  assert.equal(features.bands[0],.5);assert.equal(features.energy,.5);
+  c.gaplessPlaybackSnapshot=()=>null;
+  assert.equal(c.sampleCachedVisualizerAnalysis({currentTime:0}).bands[0],0);
+});

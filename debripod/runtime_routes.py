@@ -986,7 +986,7 @@ async def api_youtube_enqueue(request: web.Request):
         quality_target = str(it.get('quality_target') or '').strip().lower()
         if quality_target not in {'2160p', '1440p', '1080p', '720p', '480p', '360p', 'audio', 'best'}:
             return json_response(ok=False, error='Select one of the supported yt-dlp quality targets.', status=400)
-        file_id = 'quality-' + quality_target
+        file_id = 'quality-' + quality_target + '-' + str(i)
         item_source_url = _ytdlp_enqueue_source_url(it) or url
         if item_source_url not in safe_source_urls:
             try:

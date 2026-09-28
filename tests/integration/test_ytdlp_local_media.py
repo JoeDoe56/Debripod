@@ -11,6 +11,7 @@ import threading
 
 import pytest
 from debripod.Services import youtube
+from debripod import runtime_youtube_downloads as downloads
 
 
 def test_generic_media_quality_audio_extraction_and_cache(tmp_path, monkeypatch):
@@ -54,6 +55,19 @@ def test_generic_media_quality_audio_extraction_and_cache(tmp_path, monkeypatch)
             stamp = output.stat().st_mtime_ns
             assert youtube._prepare_youtube_stream_file(url, row) == str(output)
             assert output.stat().st_mtime_ns == stamp, "cache reuse must not redownload media"
+        # A collection may contain repeated titles and a quality target above
+        # the source resolution. Each item must finish independently.
+        monkeypatch.setattr(downloads, 'YTDLP_CMD', str(executable))
+        entries = [{'file_id':str(i), 'title':'Repeated title', 'name':'Repeated title',
+                    'quality_target':'720p', 'media':'video', 'source_url':url, 'state':'queued'} for i in range(2)]
+        task = downloads.Task(id='local-collection', title='Collection', magnet='', task_dir=str(cache), source='youtube', youtube_files=entries)
+        monkeypatch.setitem(downloads.TASKS, task.id, task)
+        outputs = [downloads._youtube_run_download(task.id, entry, i+1, len(entries)) for i, entry in enumerate(entries)]
+        assert len(set(outputs)) == 2
+        for output in outputs:
+            streams = probe(output)['streams']
+            assert {stream['codec_type'] for stream in streams} == {'audio','video'}
+            assert next(stream['height'] for stream in streams if stream['codec_type']=='video') == 180
     finally:
         server.shutdown()
         server.server_close()

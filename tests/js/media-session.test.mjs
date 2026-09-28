@@ -13,8 +13,9 @@ class FakeMediaMetadata {
   constructor(fields){ Object.assign(this, fields); }
 }
 
-function loadSession(){
+function loadSession(options = {}){
   const handlers = {};
+  const metadataConstructor = options.metadata === false ? undefined : FakeMediaMetadata;
   const mediaSession = {
     metadata: null,
     playbackState: "none",
@@ -24,14 +25,14 @@ function loadSession(){
   };
   const navigator = {mediaSession};
   const window = {
-    MediaMetadata: FakeMediaMetadata,
+    MediaMetadata: metadataConstructor,
     DebriPod: {},
     location: {href: "https://debripod.test/"}
   };
   const context = {
     window,
     navigator,
-    MediaMetadata: FakeMediaMetadata,
+    MediaMetadata: metadataConstructor,
     DebriPod: window.DebriPod,
     activeAudio: {paused: true, duration: 0, currentTime: 0, playbackRate: 1},
     audioMain: null,
@@ -68,6 +69,15 @@ test("MediaSession receives dynamic track metadata and absolute artwork", () => 
   assert.equal(mediaSession.metadata.artwork.length, 1);
   assert.equal(mediaSession.metadata.artwork[0].src, "https://debripod.test/art/root/album/song.flac?v=7");
   assert.equal(mediaSession.metadata.artwork[0].sizes, "512x512");
+});
+
+test("MediaSession controls remain registered when Safari omits metadata support", () => {
+  const {context:c, handlers} = loadSession({metadata:false});
+  c.activeAudio = {paused:false, duration:10, currentTime:2, playbackRate:1, play:()=>Promise.resolve(), pause:()=>{}};
+  c.syncMediaSessionControls();
+  assert.equal(typeof handlers.play, "function");
+  assert.equal(typeof handlers.pause, "function");
+  assert.equal(typeof handlers.nexttrack, "function");
 });
 
 test("MediaSession exposes seek and queue actions against the real playback clock", () => {

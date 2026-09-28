@@ -31,7 +31,7 @@ const {chromium}=require(process.env.PLAYWRIGHT_MODULE||'playwright');
  await page.evaluate(()=>text.textContent='Appeared');await page.waitForTimeout(20);
  assert.equal(await page.locator('#text [data-liquid-overlay]').textContent(),'Appeared');
  await page.waitForTimeout(180);
- await page.evaluate(()=>{for(const id of ['npCur','npDur']){const e=document.createElement('span');e.id=id;e.textContent='1:00';document.body.append(e);}const perf=document.createElement('div');perf.className='dpPerfOverlay';perf.textContent='60 FPS';document.body.append(perf);});
+ await page.evaluate(()=>{for(const id of ['npCur','npDur']){const e=document.createElement('span');e.id=id;e.setAttribute('data-liquid-overlay-exempt','');e.textContent='1:00';document.body.append(e);}const perf=document.createElement('div');perf.className='dpPerfOverlay';perf.setAttribute('data-liquid-overlay-exempt','');perf.textContent='60 FPS';document.body.append(perf);});
  await page.waitForTimeout(180);
  await page.evaluate(()=>{npCur.textContent='1:01';npDur.textContent='4:30';document.querySelector('.dpPerfOverlay').textContent='59 FPS';});
  await page.waitForTimeout(20);

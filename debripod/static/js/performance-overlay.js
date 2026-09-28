@@ -55,6 +55,7 @@
       button = document.createElement("button");
       button.type = "button";
       button.className = "dpPerfButton";
+      button.setAttribute("data-liquid-overlay-exempt", "");
       button.textContent = "P";
       button.setAttribute("aria-label", "Performance overlay");
       button.style.touchAction = "manipulation";
@@ -65,6 +66,7 @@
     if(!overlay){
       overlay = document.createElement("div");
       overlay.className = "dpPerfOverlay";
+      overlay.setAttribute("data-liquid-overlay-exempt", "");
       overlay.setAttribute("aria-hidden", "true");
       document.body.appendChild(overlay);
     }
