@@ -10,7 +10,7 @@ function fakeLabel(){
   const icon = {
     attributes: new Map([["src", "/icons/button4_media-paused.svg"]]),
     hidden: false,
-    style: {setProperty(name, value){ this[name] = value; }},
+    style: {getPropertyValue(name){return this[name] || "";},setProperty(name, value){ this[name] = value; }},
     classList: {toggle(name, enabled){ enabled ? classes.add(name) : classes.delete(name); }},
     getAttribute(name){ return this.attributes.get(name) || null; },
     setAttribute(name, value){ this.attributes.set(name, value); }
