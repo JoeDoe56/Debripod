@@ -33,20 +33,19 @@ test("wheel label updates the repository image asset without replacing its image
   const originalIcon = fixture.icon;
 
   wheelIcons.update(fixture.label, "heart", false, {seekMode: true});
-  assert.equal(fixture.icon.getAttribute("src"), "/static/icons/sf/heart.svg");
-  assert.equal(fixture.icon.style["--wheel-icon-mask"], 'url("/static/icons/sf/heart.svg")');
+  assert.equal(fixture.icon.getAttribute("src"), "/static/icons/sf/heart.png");
+  assert.equal(fixture.icon.style["--wheel-icon-mask"], 'url("/static/icons/sf/heart.png")');
   assert.equal(fixture.icon, originalIcon);
   assert.equal(fixture.menu.hidden, true);
   assert.equal(fixture.classes.has("seekModeIcon"), true);
 
   wheelIcons.update(fixture.label, "heart", true, {seekMode: true});
-  assert.equal(fixture.icon.getAttribute("src"), "/static/icons/sf/heart-fill.svg");
+  assert.equal(fixture.icon.getAttribute("src"), "/static/icons/sf/heart.fill.png");
   assert.equal(fixture.icon, originalIcon);
 
   wheelIcons.update(fixture.label, "menu", false);
-  assert.equal(fixture.menu.hidden, true);
-  assert.equal(fixture.icon.hidden, false);
-  assert.equal(fixture.icon.getAttribute("src"), "/static/icons/sf/line-3-horizontal.svg");
+  assert.equal(fixture.menu.hidden, false);
+  assert.equal(fixture.icon.hidden, true);
 });
 
 test("wheel symbol mapping covers every playback state", () => {

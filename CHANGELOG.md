@@ -26,6 +26,11 @@ Commits use Conventional Commits.
 - Persistent metadata/status pills on standard rows, double-height standard rows, the dedicated View Lyrics action, and the separate center-hold action screen.
 
 ### Fixed
+- Lyrics browsing now preserves offscreen reading positions, recenters small scrolls, and supports seeking by click or keyboard. Full-height blur feathers toward the cover's midpoint, leaving right-side artwork taps available to pin playback pills.
+- Short inward pulls from the Next Track region open the information panel without conflicting wheel scrolling.
+- Selected row labels, secondary text, and indicators move together; default and migrated foreground opacity uses 40% normal and 80% emphasis.
+- Neighboring row text retains glass refraction with synchronous native cutouts and cached text textures, avoiding repeatedly decoded SVG masks and clipped glyph edges.
+- Replaced approximate symbol SVGs with the requested upstream SF Symbol glyphs, restored MENU text, and included imported assets in offline shell caching.
 - Pointer capture handoffs, center-origin panel dismissal, action cancellation, and restoration of normal wheel icons.
 - Numeric keyboard input and complete album submission through the playlist picker after the row redesign.
 - Metadata units, zero-value counts, audio quality normalization, and video watch-progress rings.

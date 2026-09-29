@@ -99,7 +99,7 @@ def test_palette_extraction_decodes_one_small_rgb24_frame_with_ffmpeg(monkeypatc
     assert kwargs["timeout"] == 30
 
 
-def test_wheel_uses_repository_svg_assets_and_no_generated_image_markup():
+def test_wheel_uses_upstream_symbol_assets_and_no_generated_image_markup():
     shell = (ROOT / "debripod" / "static" / "shell.html").read_text(encoding="utf-8")
     css = (ROOT / "debripod" / "static" / "debripod.css").read_text(encoding="utf-8")
     now_playing = (ROOT / "debripod" / "static" / "js" / "now-playing-ui.js").read_text(encoding="utf-8")
@@ -107,7 +107,7 @@ def test_wheel_uses_repository_svg_assets_and_no_generated_image_markup():
 
     for symbol in ("forward.end.alt.fill", "backward.end.alt.fill", "heart.fill", "playpause.fill", "gobackward.15", "goforward.15"):
         assert symbol in wheel_icons
-    for filename in ("forward-end-alt-fill.svg", "backward-end-alt-fill.svg", "heart.svg", "heart-fill.svg", "playpause.svg", "playpause-fill.svg"):
+    for filename in ("forward.end.alt.fill.png", "backward.end.alt.fill.png", "heart.png", "heart.fill.png", "playpause.png", "playpause.fill.png"):
         assert (ROOT / "debripod/static/icons/sf" / filename).is_file()
     assert 'file:"shuffleinactivefull-fixed",legacy:true' in wheel_icons
     assert 'file:"shuffleactivefull-fixed",legacy:true' in wheel_icons

@@ -5,6 +5,7 @@ const http = require('node:http');
 const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
+const {PNG} = require('pngjs');
 const base = path.resolve(__dirname, '../..');
 const output = path.join(base, '.pytest_cache');
 const types={'.js':'text/javascript','.css':'text/css','.svg':'image/svg+xml','.ttf':'font/ttf','.woff2':'font/woff2','.png':'image/png','.html':'text/html'};
@@ -14,7 +15,7 @@ function api(url){
   if(url.pathname==='/api/library/config') return {ok:true,roots:[{id:'fixture',name:'Fixture library',mode:'metadata'}],aggregate_root:{id:'__all__',name:'Library',mode:'metadata'}};
   if(url.pathname==='/api/setup/status') return {ok:true,complete:true,required:false};
   if(url.pathname==='/api/settings') return {ok:true,settings:{},connections:{},tools:{},device_settings_user_id:'smoke'};
-  if(url.pathname==='/api/lyrics') return {ok:true,lyrics:{syncedLyrics:'[00:00]First line\n[00:03]A line above the artwork\n[00:07]Following the playback clock'}};
+  if(url.pathname==='/api/lyrics') return {ok:true,lyrics:{syncedLyrics:['[00:00]First line','[00:03]A line above the artwork','[00:07]Following the playback clock',...Array.from({length:27},(_,i)=>`[${String(Math.floor((10+i*3)/60)).padStart(2,'0')}:${String((10+i*3)%60).padStart(2,'0')}]Another lyric line ${i+4}`)].join('\n')}};
   if(url.pathname==='/api/auth/status') return {ok:true,logged_in:false,username:'Fixture'};
   if(url.pathname==='/api/library/metadata') return {ok:true,items:[],categories:[]};
   return {ok:true,items:[],tasks:[],now:null,queue:[],history:[],roots:[],settings:{}};
@@ -26,7 +27,7 @@ const server=http.createServer((req,res)=>{
     res.end('<svg xmlns="http://www.w3.org/2000/svg" width="600" height="600"><defs><linearGradient id="a" x2="1" y2="1"><stop stop-color="#214758"/><stop offset="1" stop-color="#a55536"/></linearGradient></defs><rect width="600" height="600" fill="url(#a)"/><circle cx="360" cy="230" r="160" fill="#d1a279"/><path d="M0 520 280 210 600 500v100H0" fill="#283437"/></svg>');return;
   }
   if(url.pathname.startsWith('/api/')){calls.push(url.pathname);res.setHeader('Content-Type','application/json');res.end(JSON.stringify(api(url)));return;}
-  const file=url.pathname==='/' ? path.join(base,'debripod/static/shell.html') : path.join(base,url.pathname.startsWith('/static/')?'debripod'+url.pathname:url.pathname);
+  const file=url.pathname==='/' ? path.join(base,'debripod/static/shell.html') : path.join(base,url.pathname.startsWith('/icons/') && !url.pathname.endsWith('.svg')?'debripod/static'+url.pathname:url.pathname.startsWith('/static/')?'debripod'+url.pathname:url.pathname);
   if(!file.startsWith(base+path.sep)||!fs.existsSync(file)||!fs.statSync(file).isFile()){res.writeHead(404);res.end();return;}
   res.setHeader('Content-Type',types[path.extname(file)]||'application/octet-stream');
   res.end(fs.readFileSync(file));
@@ -45,7 +46,7 @@ const server=http.createServer((req,res)=>{
     await page.waitForTimeout(350);
   }
   page.on('pageerror',error=>errors.push(error.message));
-  page.on('response',response=>{if(response.status()===404&&/\.(svg|ttf|woff2|css|js)(\?|$)/.test(response.url()))missing.push(response.url());});
+  page.on('response',response=>{if(response.status()===404&&/\.(png|svg|ttf|woff2|css|js)(\?|$)/.test(response.url()))missing.push(response.url());});
   try{
     await page.goto(`http://127.0.0.1:${server.address().port}/`);
     await page.waitForFunction(()=>window.state&&state.items.length>5&&document.querySelector('.dpStandardRow'));
@@ -63,6 +64,11 @@ const server=http.createServer((req,res)=>{
     await page.screenshot({path:path.join(output,'redesign-panel.png')});
     await drag(cx,cy,cx+wheel.width*.39,cy);
     assert.equal(await page.evaluate(()=>DebriPod.rowSystem.isPanelOpen()),false,'center to right closes the panel');
+    const selectionBefore=await page.evaluate(()=>state.sel);
+    await drag(cx+wheel.width*.23,cy,cx,cy+wheel.width*.03);
+    assert.equal(await page.evaluate(()=>DebriPod.rowSystem.isPanelOpen()),true,'short inner Next Track pull opens the panel');
+    assert.equal(await page.evaluate(()=>state.sel),selectionBefore,'edge pull does not also scroll the list');
+    await drag(cx,cy,cx+wheel.width*.39,cy);
     const initial=await page.evaluate(()=>({height:document.querySelector('.dpStandardRow').getBoundingClientRect().height,font:getComputedStyle(document.querySelector('.dpStandardRow')).fontFamily,pills:[...document.querySelectorAll('.dpStandardRow .ipodPills')].filter(x=>getComputedStyle(x).display!=='none').length}));
     assert.equal(initial.pills,0);assert.match(initial.font,/Host Grotesk/);
     await page.evaluate(()=>{
@@ -75,6 +81,35 @@ const server=http.createServer((req,res)=>{
     await page.waitForTimeout(300);
     await page.screenshot({path:path.join(output,'redesign-media.png')});
     assert.equal(await page.locator('.dpStandardRow').count(),3);
+    const rowChecks=await page.evaluate(()=>{
+      const row=document.querySelector('.dpStandardRow.sel');
+      const parts=['.dpRowPrimary','.dpRowSecondary','.dpRowIconArea'].map(s=>row.querySelector(s));
+      const before=parts.map(el=>el.getBoundingClientRect().y);
+      row.style.setProperty('--dp-selected-content-offset-y','13px');
+      const movement=parts.map((el,i)=>el.getBoundingClientRect().y-before[i]);
+      row.style.removeProperty('--dp-selected-content-offset-y');
+      return {movement,base:uiSettings.textOpacity,colors:parts.map(el=>getComputedStyle(el).color),secondaryOpacity:getComputedStyle(parts[1]).opacity};
+    });
+    assert.equal(rowChecks.base,.4);
+    assert.deepEqual(rowChecks.movement,[13,13,13],'all selected row content moves together');
+    assert.ok(rowChecks.colors.every(color=>color==='rgba(255, 255, 255, 0.8)'),JSON.stringify(rowChecks));
+    assert.equal(rowChecks.secondaryOpacity,'1','secondary text retains full stronger foreground alpha');
+    const refraction=await page.evaluate(()=>{
+      const api=DebriPod.rowRefraction;
+      const neighbor=document.querySelectorAll('.dpStandardRow')[1];
+      const rect=neighbor.getBoundingClientRect();
+      const lens={left:rect.left,top:rect.top-5,width:rect.width,height:55};
+      const primary=neighbor.querySelector('.dpRowPrimary');
+      const oldMask=primary.style.maskImage;
+      const source=api.prepare(lens,22);
+      const path=primary.style.clipPath;
+      const moved=api.prepare({...lens,top:lens.top+1},22);
+      const pixels=source.canvas.getContext('2d').getImageData(0,0,source.canvas.width,source.canvas.height).data;
+      const result={hasText:pixels.some((value,index)=>index%4===3&&value>0),stableTexture:source.revision===moved.revision,nativePath:CSS.supports('clip-path',path)&&path.startsWith('path(evenodd'),maskUnchanged:primary.style.maskImage===oldMask};
+      api.clear();
+      return result;
+    });
+    assert.deepEqual(refraction,{hasText:true,stableTexture:true,nativePath:true,maskUnchanged:true},'text refraction retains a stable texture and synchronous native cutout');
     await page.evaluate(()=>{window.testActions=[];DebriPod.mediaActions.executeWheelAction=(action)=>window.testActions.push(action);});
     await touch('touchStart',cx,cy);await page.waitForTimeout(380);
     assert.equal(await page.locator('#wheel.wheelActionMode').count(),1,'hold transforms the wheel');
@@ -96,13 +131,46 @@ const server=http.createServer((req,res)=>{
       setNowPlayingArtSrc('/fixture-art.svg',{animate:false});
     });
     await page.waitForTimeout(300);
-    const artworkBefore=await page.locator('#npArt').boundingBox();
+    const art=page.locator('#nowPlaying');
+    const artworkBefore=await art.boundingBox();
+    const sharpRegion={x:artworkBefore.x+artworkBefore.width*.72,y:artworkBefore.y+artworkBefore.height*.22,width:artworkBefore.width*.2,height:artworkBefore.height*.55};
+    const sharpBefore=PNG.sync.read(await page.screenshot({clip:sharpRegion}));
     await drag(cx-wheel.width*.39,cy,cx+wheel.width*.05,cy);
     await page.waitForFunction(()=>document.querySelector('.npLyrics[data-mode="synced"]'));
     await page.waitForTimeout(300);
     await page.screenshot({path:path.join(output,'redesign-lyrics.png')});
-    assert.equal(await page.locator('.npLyricLine').count(),3);
-    assert.deepEqual(await page.locator('#npArt').boundingBox(),artworkBefore,'lyrics preserve artwork geometry');
+    const sharpAfter=PNG.sync.read(await page.screenshot({clip:sharpRegion}));
+    const rightPixelDifference=sharpAfter.data.reduce((total,value,index)=>total+(index%4===3?0:Math.abs(value-sharpBefore.data[index])),0)/(sharpAfter.width*sharpAfter.height*3);
+    assert.ok(rightPixelDifference<1,'lyrics leave the right cover sharp and unchanged; mean difference '+rightPixelDifference);
+    assert.equal(await page.locator('.npLyricLine').count(),30);
+    assert.deepEqual(await art.boundingBox(),artworkBefore,'lyrics preserve artwork geometry');
+    assert.equal(await page.locator('.npLyricLine.isActive').evaluate(el=>getComputedStyle(el).color),'rgba(255, 255, 255, 0.8)');
+    await page.evaluate(()=>{window.lyricSeek=null;window.originalLyricSeek=DebriPod.gaplessAudio.seek;DebriPod.gaplessAudio.seek=time=>{window.lyricSeek=time;return true;};});
+    await page.locator('.npLyricLine').nth(1).click();
+    assert.equal(await page.evaluate(()=>window.lyricSeek),3,'clicking a lyric seeks to its timestamp');
+    await page.evaluate(()=>{DebriPod.gaplessAudio.seek=window.originalLyricSeek;setPlaybackPillsPinned(false);});
+    await page.touchscreen.tap(artworkBefore.x+artworkBefore.width*.85,artworkBefore.y+artworkBefore.height*.55);
+    await page.waitForTimeout(650);
+    assert.equal(await page.evaluate(()=>playbackPillsPinned),true,'unblurred artwork pins pills');
+    await page.touchscreen.tap(artworkBefore.x+artworkBefore.width*.85,artworkBefore.y+artworkBefore.height*.55);
+    await page.waitForTimeout(650);
+    assert.equal(await page.evaluate(()=>playbackPillsPinned),false,'unblurred artwork unpins pills');
+    await page.evaluate(()=>{wheelMedia().currentTime=40;DebriPod.lyrics.updatePosition();});
+    await page.waitForTimeout(650);
+    const centered=await page.locator('.npLyricsLines').evaluate(el=>el.scrollTop);
+    assert.ok(centered>100,'playback centers a later lyric');
+    const lyricsBounds=await page.locator('.npLyricsLines').boundingBox();
+    await page.mouse.move(lyricsBounds.x+lyricsBounds.width/2,lyricsBounds.y+lyricsBounds.height/2);
+    await page.mouse.wheel(0,25);
+    await page.waitForTimeout(900);
+    assert.ok(Math.abs(await page.locator('.npLyricsLines').evaluate(el=>el.scrollTop)-centered)<2,'small native lyric scroll recenters the visible active line');
+    await page.mouse.wheel(0,600);
+    await page.waitForTimeout(900);
+    const browsed=await page.locator('.npLyricsLines').evaluate(el=>el.scrollTop);
+    assert.ok(browsed>centered+200,'native wheel scroll can browse away from the active line');
+    await page.evaluate(()=>{wheelMedia().currentTime=43;DebriPod.lyrics.updatePosition();});
+    await page.waitForTimeout(650);
+    assert.ok(Math.abs(await page.locator('.npLyricsLines').evaluate(el=>el.scrollTop)-browsed)<2,'offscreen active line does not pull manual browsing back');
     await drag(cx,cy,cx-wheel.width*.39,cy);
     assert.equal(await page.evaluate(()=>DebriPod.lyrics.isOpen()),false,'reverse left gesture dismisses lyrics');
     await page.evaluate(async()=>{showNowPlaying(false,{immediate:true});await viewLibAdvancedCategory('text',false);});
@@ -147,7 +215,8 @@ const server=http.createServer((req,res)=>{
       return sent;
     });
     assert.deepEqual(collectionWrite.body.tracks,['one.flac','two.flac'],'playlist picker submits the complete collection');
-    assert.equal(await page.locator('.wheelLabel:not([hidden]) .wheelIcon:not([hidden])').count(),4,'playlist picker restores the ordinary wheel overlay');
+    assert.equal(await page.locator('.wheelLabel:not([hidden]) .wheelIcon:not([hidden])').count(),3,'playlist picker restores the ordinary wheel overlay');
+    assert.equal(await page.locator('.wlTop .menuWord').isVisible(),true,'normal top button says MENU');
     await page.evaluate(()=>viewLibInfo(false));
     await page.waitForTimeout(300);
     await page.screenshot({path:path.join(output,'redesign-info.png')});

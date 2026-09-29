@@ -82,8 +82,26 @@
   function edgeProgress(start, current, rect, direction) {
     const a = wheelPoint(start, rect);
     const b = wheelPoint(current, rect);
+    const minTravel = rect.width * 0.20;
+    const closeTravel = rect.width * 0.38;
+    const startTravel = Math.max(minTravel, Math.abs(a.x));
+    const travel = direction === "right_close" || direction === "left_close" ? closeTravel : startTravel;
     const delta = direction === "right" ? a.x - b.x : direction === "left" ? b.x - a.x : direction === "left_close" ? a.x - b.x : b.x - a.x;
-    return clamp(delta / (rect.width * 0.50), 0, 1);
+    return clamp(delta / travel, 0, 1);
+  }
+
+  // wheel-controls may transfer capture from the hit target to the wheel when
+  // a drag begins. Safari emits lostpointercapture for the old target during
+  // that transfer; it must not cancel the resolved gesture while the wheel
+  // still owns the pointer.
+  function shouldIgnoreLostPointerCapture(host, event) {
+    try {
+      if (!host || !event) return false;
+      if (event.target && event.target !== host) return true;
+      return !!(typeof host.hasPointerCapture === "function" && event.pointerId != null && host.hasPointerCapture(event.pointerId));
+    } catch (_error) {
+      return false;
+    }
   }
 
   function createInteraction(options) {
@@ -178,7 +196,10 @@
       const isCenter = !!(details && details.isCenter) || target === "center";
       const panelOpen = typeof opts.isPanelOpen === "function" ? !!opts.isPanelOpen() : false;
       const lyricsOpen = typeof opts.isLyricsOpen === "function" ? !!opts.isLyricsOpen() : false;
-      const edgeCandidate = edgeFor(point, rect, nowPlaying(), panelOpen, lyricsOpen);
+      const hintedEdge = details && details.edgeHint;
+      const edgeCandidate = hintedEdge === "right" || hintedEdge === "left"
+        ? ((nowPlaying() && hintedEdge === "left") || (!nowPlaying() && hintedEdge === "right") ? hintedEdge : null)
+        : edgeFor(point, rect, nowPlaying(), panelOpen, lyricsOpen);
       const edge = isCenter ? null : edgeCandidate;
       pointer = {
         start: { x: point.x, y: point.y }, current: { x: point.x, y: point.y }, rect, edge,
@@ -212,15 +233,14 @@
       const dy = point.y - pointer.start.y;
       pointer.moved = pointer.moved || Math.hypot(dx, dy) >= 8;
       if (state === STATES.POTENTIAL_EDGE && pointer.edge && pointer.edgeEligible) {
-        const horizontal = Math.abs(dx) >= Math.abs(dy);
-        const inward = pointer.edge === "right" ? dx < -EDGE_RESOLVE : pointer.edge === "left" ? dx > EDGE_RESOLVE : pointer.edge === "right_close" ? dx > EDGE_RESOLVE : dx < -EDGE_RESOLVE;
-        const angle = Math.abs(Math.atan2(dy, dx) * 180 / Math.PI);
-        const angleOkay = horizontal || Math.abs(angle - 180) <= EDGE_ANGLE_TOLERANCE || Math.abs(angle) <= EDGE_ANGLE_TOLERANCE;
-        if (Math.hypot(dx, dy) >= EDGE_RESOLVE && (!horizontal || !inward)) {
+        const directionWrong = pointer.edge === "right" ? dx >= 0 : pointer.edge === "left" ? dx <= 0 : pointer.edge === "right_close" ? dx <= 0 : dx >= 0;
+        const inward = pointer.edge === "right" ? dx <= -EDGE_RESOLVE : pointer.edge === "left" ? dx >= EDGE_RESOLVE : pointer.edge === "right_close" ? dx >= EDGE_RESOLVE : dx <= -EDGE_RESOLVE;
+        const angleOkay = Math.abs(dy) <= Math.abs(dx) * Math.tan(EDGE_ANGLE_TOLERANCE * Math.PI / 180);
+        if (Math.hypot(dx, dy) >= EDGE_RESOLVE && (directionWrong || !angleOkay)) {
           pointer.edgeEligible = false;
           transition(STATES.NORMAL, { reason: "circular_wheel_motion" });
         }
-        if (horizontal && inward && angleOkay) {
+        if (inward && angleOkay) {
           clearTimer();
           emit("suppress", true);
           const progress = edgeProgress(pointer.start, point, pointer.rect, pointer.edge);
@@ -397,13 +417,19 @@
       wheel.addEventListener(type, event => {
         // Ordinary wheel rotation transfers capture from a directional hit
         // region to the wheel. That is still the same owned interaction.
-        if(type === "lostpointercapture" && wheel.hasPointerCapture && wheel.hasPointerCapture(event.pointerId)) return;
+        if(type === "lostpointercapture" && shouldIgnoreLostPointerCapture(wheel, event)) return;
         const point = { x: event.clientX, y: event.clientY };
         const rect = wheel.getBoundingClientRect();
         const pointerDetails = {pointerId: event.pointerId};
-        if (type === "pointerdown") interaction.begin(point, Object.assign(pointerDetails, {rect, target: event.target && event.target.closest && event.target.closest("#btnCenter") ? "center" : "", isCenter: !!(event.target && event.target.closest && event.target.closest("#btnCenter"))}));
+        if (type === "pointerdown") {
+          const center = !!(event.target && event.target.closest && event.target.closest("#btnCenter"));
+          const right = !!(event.target && event.target.closest && event.target.closest(".hitRight"));
+          const left = !!(event.target && event.target.closest && event.target.closest(".hitLeft"));
+          interaction.begin(point, Object.assign(pointerDetails, {rect, target: center ? "center" : "", isCenter: center, edgeHint: right ? "right" : (left ? "left" : null)}));
+        }
         else if (type === "pointermove") interaction.move(point, pointerDetails);
         else if (type === "pointerup") interaction.end(pointerDetails);
+        else if (type === "lostpointercapture") interaction.cancel("lostpointercapture", pointerDetails);
         else interaction.cancel(type === "lostpointercapture" ? "lostpointercapture" : "pointercancel", pointerDetails);
       }, { passive: false, capture: true });
     });
@@ -411,5 +437,5 @@
     return interaction;
   }
 
-  return { STATES, ACTION_POSITIONS, createInteraction, attach, edgeFor, actionForPoint };
+  return { STATES, ACTION_POSITIONS, createInteraction, attach, edgeFor, actionForPoint, shouldIgnoreLostPointerCapture };
 });

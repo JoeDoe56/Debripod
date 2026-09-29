@@ -25,7 +25,7 @@ DEFAULT_UI_SETTINGS: dict[str, Any] = {
     "visualizerBeatResponse": {"brightness": 0.10, "opacity": 0.0, "saturation": 0.0, "contrast": 0.05},
     "videoAmbient": {"enabled": True, "sampleFps": 8, "brightness": 1.0, "saturation": 1.0, "audioEnergyBrightness": 0.12, "smoothing": 0.82},
     "textModes": {"wheelLabels": "transparent", "pathPill": "transparent", "infoPill": "transparent", "rows": "transparent", "rowPills": "transparent", "selectedRow": "white", "selectedRowPills": "white"},
-    "textTransparency": 0.45,
+    "textTransparency": 0.4,
     "animationFps": {"selectedRow": 60, "wheelTilt": 60, "libraryList": 60, "infoPill": 60, "pathPill": 60, "rowInsertion": 60},
     "performanceOverlayText": False,
     "liquidGlassElements": {

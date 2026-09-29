@@ -3,7 +3,7 @@ import test from "node:test";
 import {createRequire} from "node:module";
 
 const require = createRequire(import.meta.url);
-const {createInteraction, STATES} = require("../../debripod/static/js/wheel-interaction.js");
+const {createInteraction, STATES, shouldIgnoreLostPointerCapture} = require("../../debripod/static/js/wheel-interaction.js");
 const {normalizeMediaTarget, wheelActionsForTarget, createBrowserMediaActions} = require("../../debripod/static/js/media-actions.js");
 
 const rect = {left: 0, top: 0, width: 200, height: 200};
@@ -39,6 +39,38 @@ test("horizontal right edge pull opens the panel and suppresses wheel navigation
   const result = wheel.end();
   assert.equal(result.action, null);
   assert.deepEqual(events.at(-1), ["open", true]);
+});
+
+test("a touch beginning on the Next Track hit region resolves even near its inner edge", () => {
+  const wheel = createInteraction({callbacks: {panelProgress: () => {}}});
+  wheel.begin(point(126, 100), {rect, edgeHint: "right"});
+  wheel.move(point(92, 104));
+  assert.equal(wheel.state(), STATES.RIGHT_PANEL_GESTURE);
+});
+
+test("a shallow inward diagonal remains eligible until it crosses the horizontal threshold", () => {
+  const wheel = createInteraction({callbacks: {panelProgress: () => {}}});
+  wheel.begin(point(190, 100), {rect});
+  wheel.move(point(167, 108));
+  assert.equal(wheel.state(), STATES.POTENTIAL_EDGE);
+  wheel.move(point(160, 110));
+  assert.equal(wheel.state(), STATES.RIGHT_PANEL_GESTURE);
+});
+
+test("an inner Next Track start can reach the panel-open threshold at wheel center", () => {
+  let opened = false;
+  const wheel = createInteraction({callbacks: {panelOpen: value => { opened = value; }}});
+  wheel.begin(point(130, 100), {rect, edgeHint: "right"});
+  wheel.move(point(100, 100));
+  wheel.end();
+  assert.equal(opened, true);
+});
+
+test("capture transfer from Next Track to the wheel does not cancel the gesture", () => {
+  const wheel = {hasPointerCapture: pointerId => pointerId === 7};
+  assert.equal(shouldIgnoreLostPointerCapture(wheel, {pointerId: 7}), true);
+  assert.equal(shouldIgnoreLostPointerCapture(wheel, {pointerId: 8}), false);
+  assert.equal(shouldIgnoreLostPointerCapture(wheel, {pointerId: 9, target: {}}), true);
 });
 
 test("edge gestures are restricted to their screen", () => {

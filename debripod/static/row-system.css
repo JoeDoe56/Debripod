@@ -71,13 +71,21 @@
   min-height:var(--dp-row-height);
   height:var(--dp-row-height);
   max-height:var(--dp-row-height);
-  display:grid !important;
-  grid-template-columns:44px minmax(0, 1fr) auto;
-  align-items:center !important;
-  column-gap:12px !important;
+  display:block !important;
   padding:6px 12px !important;
-  overflow:hidden;
+  overflow:visible;
 }
+.dpRowContent{
+  display:grid;
+  grid-template-columns:44px minmax(0, 1fr) auto;
+  align-items:center;
+  column-gap:12px;
+  height:100%;
+  min-width:0;
+  transform-origin:left center;
+}
+.dpStandardRow.sel .dpRowContent{transform:translate3d(0,var(--dp-selected-content-offset-y,0px),0);}
+.dpStandardRow.sel{z-index:4;}
 .dpStandardRow.twoLine,.dpStandardRow.settingRow,.dpStandardRow.isExpandedRow{height:var(--dp-row-height);min-height:var(--dp-row-height);max-height:var(--dp-row-height);}
 .dpRowIconArea{width:44px;height:44px;display:grid;place-items:center;position:relative;flex:none;}
 .dpRowIconArea{color:var(--dp-text-rows, rgb(255 255 255 / var(--ui-text-opacity)));}
@@ -86,14 +94,16 @@
 .dpRowPrimary{min-width:0;overflow:hidden;text-overflow:clip;white-space:nowrap;font-size:var(--dp-row-primary-size);line-height:1.2;font-weight:500;}
 .dpRowSecondary{min-width:0;overflow:hidden;text-overflow:clip;white-space:nowrap;font-size:var(--dp-row-secondary-size);line-height:1.2;opacity:.74;font-weight:500;}
 .ipodItem.dpStandardRow .dpRowPrimary,.ipodItem.dpStandardRow .dpRowSecondary{margin:0;line-height:1.2;}
-.ipodItem.dpStandardRow .dpRowText{grid-template-rows:18px 14px;gap:3px;}
-.ipodItem.dpStandardRow.sel [data-selected-row-text]{transform-origin:left center;}
+.ipodItem.dpStandardRow .dpRowText{grid-template-rows:20px 16px;gap:2px;}
+.ipodItem.dpStandardRow.sel [data-selected-row-text]{transform:none;}
+.ipodItem.dpStandardRow.sel .dpRowSecondary{opacity:1;}
+.ipodItem.dpStandardRow .dpRowPrimary,.ipodItem.dpStandardRow .dpRowSecondary{overflow:visible;}
 .dpRowText:has(.libInlineInput){overflow:visible;}
 .ipodItem.dpStandardRow .dpRowEditing{grid-template-rows:18px 20px;}
 .dpRowEditing .libInlineInput{min-width:0;width:100%;height:20px;padding:0;border:0;font-size:13px;line-height:20px;}
 .dpPersistentRowPills{display:none !important;}
-.dpStandardRow > .ipodExpandedMain{display:contents;}
-.dpStandardRow > .ipodExpandedSub{display:none;}
+.dpRowContent > .ipodExpandedMain{display:contents;}
+.dpRowContent > .ipodExpandedSub{display:none;}
 .dpRowNumber{font-size:15px;font-weight:500;font-variant-numeric:tabular-nums;line-height:1;}
 .dpRowSymbol{width:22px;height:22px;display:grid;place-items:center;line-height:1;}
 .dpRowSymbol.uiSymbol{background-color:currentColor;mask-size:contain;-webkit-mask-size:contain;}
@@ -108,6 +118,7 @@
   .ipodList,.dpContextPanel{transition:none;}
 }
 @media (max-width:520px){
-  .dpStandardRow{grid-template-columns:40px minmax(0,1fr) auto;column-gap:9px !important;padding-left:8px !important;padding-right:8px !important;}
+  .dpStandardRow{padding-left:8px !important;padding-right:8px !important;}
+  .dpRowContent{grid-template-columns:40px minmax(0,1fr) auto;column-gap:9px;}
   .dpRowIconArea{width:40px;height:40px;}
 }

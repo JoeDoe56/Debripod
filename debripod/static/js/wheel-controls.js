@@ -333,6 +333,8 @@
   function moveWheelRotationPointer(ev){
     if(!wheelPointerDown) return;
     if(wheelInteraction && wheel.classList.contains("wheelInteractionResolved")) return;
+    // Wait for edge intent before allowing the same motion to scroll rows.
+    if(wheelInteraction && wheelInteraction.state() === wheelInteraction.STATES.POTENTIAL_EDGE) return;
     const events = (typeof ev.getCoalescedEvents === "function") ? ev.getCoalescedEvents() : null;
     const moveEvents = (events && events.length) ? events : [ev];
     const latestEv = moveEvents[moveEvents.length - 1] || ev;
@@ -414,6 +416,7 @@
     if(ev.ctrlKey) return;
     const tgt = ev.target;
     if(keyboardInputTarget(tgt)) return;
+    if(tgt && tgt.closest && tgt.closest(".npLyrics")) return;
 
     try{ if(isLibraryTabActive()) pathPillActivity(false); }catch(e){}
 
@@ -435,6 +438,7 @@
 
     // Don't hijack typing inside inputs/textareas/selects/contenteditable elements
     const tgt = ev.target;
+    if(tgt && tgt.closest && tgt.closest(".npLyrics")) return;
     if(keyboardInputTarget(tgt)){
       if(typeof rangeEditorWheelActive === "function" && rangeEditorWheelActive() && (ev.key === "ArrowUp" || ev.key === "ArrowDown")){
         ev.preventDefault();

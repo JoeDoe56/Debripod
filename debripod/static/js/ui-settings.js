@@ -58,8 +58,9 @@
       },
       // Text opacity is the single base foreground value. textTransparency is
       // retained as a read/write migration alias for older saved devices.
-      "textOpacity": 0.45,
-      "textTransparency": 0.45,
+      "textOpacity": 0.4,
+      "textTransparency": 0.4,
+      "textOpacityVersion": 1,
       "animationFps": {
           "selectedRow": 60,
           "wheelTilt": 60,
@@ -131,11 +132,11 @@
   }
 
   function normalizeTextTransparency(value){
-    return clampNumber(value, DEFAULT_UI_SETTINGS && DEFAULT_UI_SETTINGS.textOpacity != null ? DEFAULT_UI_SETTINGS.textOpacity : 0.45, 0, 1);
+    return clampNumber(value, DEFAULT_UI_SETTINGS && DEFAULT_UI_SETTINGS.textOpacity != null ? DEFAULT_UI_SETTINGS.textOpacity : 0.4, 0, 1);
   }
 
   function normalizeTextOpacity(value){
-    return clampNumber(value, DEFAULT_UI_SETTINGS && DEFAULT_UI_SETTINGS.textOpacity != null ? DEFAULT_UI_SETTINGS.textOpacity : 0.45, 0, 1);
+    return clampNumber(value, DEFAULT_UI_SETTINGS && DEFAULT_UI_SETTINGS.textOpacity != null ? DEFAULT_UI_SETTINGS.textOpacity : 0.4, 0, 1);
   }
 
   function strongerForegroundOpacity(value){
@@ -223,6 +224,16 @@
     if(saved.textOpacity != null) out.textOpacity = normalizeTextOpacity(saved.textOpacity);
     else if(saved.textTransparency != null) out.textOpacity = normalizeTextOpacity(saved.textTransparency);
     if(saved.textTransparency != null || saved.textOpacity != null) out.textTransparency = normalizeTextOpacity(saved.textOpacity == null ? saved.textTransparency : saved.textOpacity);
+    if(Number(saved.textOpacityVersion || 0) < 1){
+      // Before the redesign, textTransparency was the canonical value. An
+      // injected new default must not take precedence over that preference.
+      const legacy = saved.textTransparency != null ? saved.textTransparency : saved.textOpacity;
+      if(legacy != null){
+        const value = normalizeTextOpacity(legacy);
+        out.textOpacity = out.textTransparency = value === .45 ? .4 : value;
+      }
+    }
+    out.textOpacityVersion = 1;
     if(saved.animationFps != null) out.animationFps = cloneAnimationFps(saved.animationFps);
     if(saved.performanceOverlayText != null) out.performanceOverlayText = !!saved.performanceOverlayText;
     if(saved.liquidGlassElements != null) out.liquidGlassElements = cloneGlassElementSettings(saved.liquidGlassElements);
@@ -252,6 +263,7 @@
     out.textModes = cloneTextModes(out.textModes);
     out.textOpacity = normalizeTextOpacity(out.textOpacity == null ? out.textTransparency : out.textOpacity);
     out.textTransparency = out.textOpacity;
+    out.textOpacityVersion = 1;
     out.animationFps = cloneAnimationFps(out.animationFps);
     out.visualizerMaxBrightnessPct = normalizeVisualizerMaxBrightnessPct(out.visualizerMaxBrightnessPct);
     out.visualizerRotationsPerTrack = normalizeVisualizerRotationsPerTrack(out.visualizerRotationsPerTrack);

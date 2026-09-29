@@ -93,7 +93,7 @@ test("repeated settings responses preserve the live device object and transparen
   const storage = makeStorage();
   const api = loadUiSettings(storage);
   const initial = api.setDeviceSettingsUserId("alice");
-  assert.equal(initial.textTransparency, .45);
+  assert.equal(initial.textTransparency, .4);
   initial.textTransparency = .42;
   assert.equal(api.setDeviceSettingsUserId("alice"), initial);
   assert.equal(api.settings.textTransparency, .42);
@@ -106,4 +106,22 @@ test("retired contrast settings migrate to white", () => {
   assert.equal(api.normalizeTextMode("contrast"), "white");
   assert.equal(api.normalizeTextMode("engraved"), "white");
   assert.equal(api.settings.textModes.selectedRow, "white");
+});
+
+test("opacity migration preserves legacy transparency ahead of an injected redesign default", () => {
+  for(const [saved, expected] of [
+    [{textTransparency:.4}, .4],
+    [{textOpacity:.45, textTransparency:.4}, .4],
+    [{textOpacity:.45, textTransparency:.45}, .4],
+    [{textTransparency:.31}, .31],
+    [{textOpacity:.45, textTransparency:.45, textOpacityVersion:1}, .45],
+  ]){
+    const storage = makeStorage({debripod_ui_settings:JSON.stringify(saved)});
+    const api = loadUiSettings(storage);
+    const settings = api.setDeviceSettingsUserId("opacity-user");
+    assert.equal(settings.textOpacity, expected);
+    assert.equal(settings.textTransparency, expected);
+    api.saveUiSettings(settings);
+    assert.equal(loadUiSettings(storage).setDeviceSettingsUserId("opacity-user").textOpacity, expected);
+  }
 });

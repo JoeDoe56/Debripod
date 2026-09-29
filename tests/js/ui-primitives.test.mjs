@@ -1,4 +1,6 @@
 import assert from "node:assert/strict";
+import fs from "node:fs";
+import path from "node:path";
 import test from "node:test";
 import {createRequire} from "node:module";
 
@@ -23,4 +25,12 @@ test("uses the requested SF Symbols semantic names", () => {
 test("strong foreground is bounded at twice the configured opacity", () => {
   assert.equal(primitives.foregroundOpacity(.35, 2), .7);
   assert.equal(primitives.foregroundOpacity(.7, 2), 1);
+});
+
+test("every registered symbol resolves to a local upstream glyph", () => {
+  const assetDir = path.resolve(process.cwd(), "debripod/static/icons/sf");
+  for (const [key, descriptor] of Object.entries(primitives.symbols)) {
+    const file = path.join(assetDir, descriptor.file + "." + (descriptor.ext || "png"));
+    assert.equal(fs.existsSync(file), true, `${key} should resolve to ${file}`);
+  }
 });

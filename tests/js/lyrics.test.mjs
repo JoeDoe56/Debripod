@@ -13,22 +13,40 @@ test('LRC supports repeated timestamps, offsets, fractions and seeks in either d
 });
 
 class Element {
-  constructor(){ this.children=[]; this.dataset={}; this.style={setProperty(){}}; this.attrs={}; this.classList={toggle(){}}; this.clientHeight=100; this.offsetTop=0; }
+  constructor(){ this.children=[]; this.dataset={}; this.style={setProperty(){}}; this.attrs={}; this.listeners={}; this.scrollTop=0; this.clientHeight=100; this.offsetTop=0; this.offsetHeight=20; this.classList={toggle(){}}; }
   append(...nodes){this.children.push(...nodes);}
   appendChild(node){this.children.push(node);}
   replaceChildren(){this.children=[];}
   setAttribute(k,v){this.attrs[k]=v;}
   removeAttribute(k){delete this.attrs[k];}
+  addEventListener(name, fn){(this.listeners[name] ||= []).push(fn);}
+  dispatchEvent(event){for(const fn of this.listeners[event.type] || []) fn(event);}
+  scrollTo(options){this.scrollTop=Number(options.top || 0);this.dispatchEvent({type:'scroll'});}
 }
-function fixture(fetch){
+function fixture(fetch, options={}){
   const host=new Element();host.style.display='block';
   const media={currentTime:0,duration:20};let interval;
   const env={document:{getElementById:()=>host,createElement:()=>new Element()},state:{nowMeta:{title:'First',artist:'Artist',album:'Album',duration:20}},
     wheelMedia:()=>media, AbortController,fetch,setTimeout,clearTimeout,setInterval(fn){interval=fn;return 1;},clearInterval(){interval=null;}};
+  if(options.gaplessSeek){env.DebriPod={gaplessAudio:{seek(value){options.gaplessSeek(value);media.currentTime=value;return true;}}};}
   const api=createController(env);
   return {api,env,host,media,tick(){interval?.();},panel:()=>host.children[0]};
 }
 const flush=()=>new Promise(resolve=>setImmediate(resolve));
+test('blur uses the current cover and refreshes only when artwork changes', async()=>{
+  const f=fixture(async()=>({ok:true,json:async()=>({ok:true,lyrics:null})}));
+  let src='/first-cover.jpg';
+  f.env.currentNowPlayingArtSrc=()=>src;
+  f.api.setOpen(true);await flush();
+  const art=f.panel().children[2].children[0];
+  assert.equal(art.attrs.src,src);
+  src='/second-cover.jpg';f.tick();
+  assert.equal(art.attrs.src,src);
+  src='';f.tick();
+  assert.equal(art.hidden,true);
+  assert.equal(art.attrs.src,undefined);
+  f.api.setOpen(false);
+});
 test('visible lyrics follow playback, pause position, backwards seek and new tracks', async()=>{
   let calls=0;
   const f=fixture(async()=>({ok:true,json:async()=>({ok:true,lyrics:{syncedLyrics:`[00:01]Track ${++calls}\n[00:10]Later`}})}));
@@ -60,4 +78,53 @@ test('plain, missing, instrumental and API errors have distinct visible states; 
   const f=fixture(async()=>{calls++;throw new Error('offline');});
   f.api.setOpen(true);await flush();assert.match(f.panel().children[0].textContent,/unavailable/);
   f.api.setOpen(false);f.api.setOpen(true);await flush();assert.equal(calls,2);f.api.setOpen(false);
+});
+
+test('clicking a synchronized line uses the gapless seek path and preserves the reading selection', async()=>{
+  const seeks=[];
+  const f=fixture(async()=>({ok:true,json:async()=>({ok:true,lyrics:{syncedLyrics:'[00:01]One\n[00:10]Two'}})}),{gaplessSeek:value=>seeks.push(value)});
+  f.api.setOpen(true);await flush();
+  const content=f.panel().children[1];
+  content.children[1].dispatchEvent({type:'click'});
+  assert.deepEqual(seeks,[10]);
+  assert.equal(content.children[1].attrs['aria-current'],'true');
+  assert.equal(f.media.currentTime,10);
+  let prevented=false, stopped=false;
+  content.children[0].dispatchEvent({type:'keydown',key:' ',preventDefault(){prevented=true;},stopPropagation(){stopped=true;}});
+  assert.deepEqual(seeks,[10,1]);
+  assert.equal(prevented,true);
+  assert.equal(stopped,true);
+});
+
+test('small manual scroll recenters a still-visible active line after settling', async()=>{
+  const f=fixture(async()=>({ok:true,json:async()=>({ok:true,lyrics:{syncedLyrics:'[00:01]One\n[00:10]Two'}})}));
+  f.api.setOpen(true);await flush();
+  const content=f.panel().children[1];
+  f.media.currentTime=2;f.tick();
+  content.children[0].offsetTop=80;
+  content.scrollTop=20;
+  content.dispatchEvent({type:'wheel'});
+  content.dispatchEvent({type:'scroll'});
+  await new Promise(resolve=>setTimeout(resolve,220));
+  assert.equal(content.scrollTop,48);
+});
+
+test('manual browsing locks line-change autoscroll when the active line leaves the viewport', async()=>{
+  const f=fixture(async()=>({ok:true,json:async()=>({ok:true,lyrics:{syncedLyrics:'[00:01]One\n[00:10]Two'}})}));
+  f.api.setOpen(true);await flush();
+  const content=f.panel().children[1];
+  f.media.currentTime=2;f.tick();
+  content.children[0].offsetTop=300;
+  content.scrollTop=100;
+  content.dispatchEvent({type:'wheel'});
+  content.dispatchEvent({type:'scroll'});
+  f.media.currentTime=11;f.tick();
+  assert.equal(content.scrollTop,100);
+  await new Promise(resolve=>setTimeout(resolve,220));
+  f.media.currentTime=11;f.tick();
+  assert.equal(content.scrollTop,100);
+  f.env.state.nowMeta={title:'Second',artist:'Artist',album:'Album',duration:20};
+  f.api.trackChanged(f.env.state.nowMeta);
+  await flush();
+  assert.equal(content.scrollTop,0);
 });

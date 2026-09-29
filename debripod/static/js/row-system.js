@@ -369,6 +369,12 @@
       }
     }
     row.querySelectorAll(".ipodPills").forEach(pills=>pills.remove());
+    // Move the complete foreground with the selection spring. Keeping layout
+    // on the row and motion on this wrapper avoids individual line clipping.
+    const content = document.createElement("span");
+    content.className = "dpRowContent";
+    while(row.firstChild) content.appendChild(row.firstChild);
+    row.appendChild(content);
     row.setAttribute("data-row-system", "standard");
   }
 
@@ -376,6 +382,7 @@
   const controlKinds = new Set(["smart_playlist_rules_text", "setup_text_input", "settings_text_input"]);
   function decorateList(list, state){
     if(!list) return;
+    list.dataset.rowSystem = "standard";
     const items = state && Array.isArray(state.items) ? state.items : [];
     list.querySelectorAll(":scope > .ipodItem").forEach(row=>{
       const item = items[Number(row.dataset.index)] || {};

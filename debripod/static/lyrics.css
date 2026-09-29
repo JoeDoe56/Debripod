@@ -5,26 +5,40 @@
   z-index: 4;
   padding: var(--panel-safe-zone, 18px);
   opacity: var(--lyrics-progress, 0);
-  color: rgb(255 255 255 / var(--foreground-opacity, .45));
+  color: rgb(255 255 255 / var(--foreground-opacity, var(--ui-text-opacity, .4)));
   border-radius: inherit;
   overflow: hidden;
   isolation: isolate;
   transition: opacity 180ms ease;
+  pointer-events: none;
 }
 .npLyrics[hidden] { display: none; }
-.npLyrics::before {
-  content: "";
+.npLyricsBlur {
   position: absolute;
   inset: 0;
-  z-index: -1;
+  z-index: 0;
   pointer-events: none;
-  background: rgb(0 0 0 / .2);
-  backdrop-filter: blur(6px);
-  -webkit-backdrop-filter: blur(6px);
-  mask-image: linear-gradient(transparent, #000 14%, #000 86%, transparent);
-  -webkit-mask-image: linear-gradient(transparent, #000 14%, #000 86%, transparent);
+  overflow: hidden;
+  mask-image: linear-gradient(90deg, #000 0%, #000 34%, transparent 62%, transparent 100%);
+  -webkit-mask-image: linear-gradient(90deg, #000 0%, #000 34%, transparent 62%, transparent 100%);
+}
+.npLyricsBlurArt {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  height: min(100%, 100vw);
+  width: auto;
+  aspect-ratio: 1;
+  transform: translate(-50%, -50%);
+  object-fit: contain;
+  /* Reuse the cached cover: filter a static image once rather than continually
+     sampling a backdrop. The parent mask feathers the resulting pixels. */
+  filter: blur(6px) brightness(.8);
 }
 .npLyricsLines {
+  position: relative;
+  z-index: 1;
+  width: 56%;
   height: 100%;
   overflow: auto;
   scrollbar-width: none;
@@ -34,6 +48,7 @@
   -webkit-mask-image: linear-gradient(transparent, #000 15%, #000 85%, transparent);
   transform: translateX(calc((1 - var(--lyrics-progress, 0)) * -12%));
   transition: transform 180ms ease;
+  pointer-events: auto;
 }
 .npLyrics[data-dragging="true"], .npLyrics[data-dragging="true"] .npLyricsLines { transition: none; }
 .npLyricsLines::-webkit-scrollbar { display: none; }
@@ -43,14 +58,14 @@
   font-weight: 500;
   letter-spacing: -.025em;
   margin: 0 0 .7em;
-  color: rgb(255 255 255 / var(--foreground-opacity, .45));
+  color: rgb(255 255 255 / var(--foreground-opacity, var(--ui-text-opacity, .4)));
   transition: color 140ms ease;
 }
 .npLyricLine.isPast { opacity: .65; }
 .npLyricLine.isActive {
-  color: rgb(255 255 255 / min(.96, calc(var(--foreground-opacity, .45) * 2)));
+  color: rgb(255 255 255 / var(--foreground-strong-opacity, min(1, calc(var(--foreground-opacity, var(--ui-text-opacity, .4)) * 2))));
   font-weight: 600;
 }
-.npLyricsStatus { position: absolute; inset: 40% var(--panel-safe-zone, 18px) auto; font-size: 16px; text-align: center; }
+.npLyricsStatus { position: absolute; z-index: 1; left: var(--panel-safe-zone, 18px); top: 40%; width: 48%; font-size: 16px; text-align: center; pointer-events: none; }
 .npLyrics[data-mode="plain"] .npLyricsLines { padding-block: 12%; }
 @media (prefers-reduced-motion: reduce) { .npLyricLine, .npLyrics, .npLyricsLines { transition: none; } }

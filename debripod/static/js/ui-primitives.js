@@ -8,41 +8,49 @@
    */
   const ns = root.DebriPod = root.DebriPod || {};
   const symbols = Object.freeze({
-    next: {name:"forward.end.alt.fill", file:"forward-end-alt-fill"},
-    previous: {name:"backward.end.alt.fill", file:"backward-end-alt-fill"},
-    prev: {name:"backward.end.alt.fill", file:"backward-end-alt-fill"},
-    like: {name:"heart", file:"heart"},
-    likeActive: {name:"heart.fill", file:"heart-fill"},
-    playPause: {name:"playpause.fill", file:"playpause-fill"},
-    playPauseOutline: {name:"playpause", file:"playpause"},
-    "play.fill": {name:"play.fill", file:"play-fill"},
-    "slider.horizontal.3": {name:"slider.horizontal.3", file:"slider-horizontal-3"},
-    circle: {name:"circle", file:"circle"},
-    menu: {name:"line.3.horizontal", file:"line-3-horizontal"},
-    info: {name:"info.circle", file:"info-circle"},
-    settings: {name:"gearshape", file:"gearshape"},
-    library: {name:"books.vertical", file:"books-vertical"},
-    artists: {name:"person.2", file:"person-2"},
-    albums: {name:"square.stack", file:"square-stack"},
-    songs: {name:"music.note.list", file:"music-note-list"},
-    genres: {name:"guitars", file:"guitars"},
-    movies: {name:"film", file:"film"},
-    shows: {name:"tv", file:"tv"},
-    search: {name:"magnifyingglass", file:"magnifyingglass"},
-    downloads: {name:"arrow.down.circle", file:"arrow-down-circle"},
-    playlist: {name:"music.note.list", file:"music-note-list"},
-    playNext: {name:"text.line.first.and.arrowtriangle.forward", file:"text-line-first-and-arrowtriangle-forward"},
-    playAfter: {name:"text.line.last.and.arrowtriangle.forward", file:"text-line-last-and-arrowtriangle-forward"},
-    addToPlaylist: {name:"text.badge.plus", file:"text-badge-plus"},
-    music: {name:"music.note", file:"music-note"},
-    video: {name:"play.rectangle", file:"play-rectangle"},
-    podcast: {name:"mic", file:"mic"},
-    folder: {name:"folder", file:"folder"},
-    check: {name:"checkmark", file:"checkmark"},
-    close: {name:"xmark", file:"xmark"},
-    add: {name:"plus", file:"plus"},
-    heart: {name:"heart", file:"heart"},
-    "heart.fill": {name:"heart.fill", file:"heart-fill"}
+    next: {name:"forward.end.alt.fill", file:"forward.end.alt.fill", ext:"png"},
+    previous: {name:"backward.end.alt.fill", file:"backward.end.alt.fill", ext:"png"},
+    prev: {name:"backward.end.alt.fill", file:"backward.end.alt.fill", ext:"png"},
+    like: {name:"heart", file:"heart", ext:"png"},
+    likeActive: {name:"heart.fill", file:"heart.fill", ext:"png"},
+    playPause: {name:"playpause.fill", file:"playpause.fill", ext:"png"},
+    playPauseOutline: {name:"playpause", file:"playpause", ext:"png"},
+    "play.fill": {name:"play.fill", file:"play.fill", ext:"png"},
+    "slider.horizontal.3": {name:"slider.horizontal.3", file:"slider.horizontal.3", ext:"png"},
+    circle: {name:"circle", file:"circle", ext:"png"},
+    menu: {name:"list.bullet", file:"list.bullet", ext:"png"},
+    info: {name:"info.circle", file:"info.circle", ext:"png"},
+    network: {name:"antenna.radiowaves.left.and.right", file:"antenna.radiowaves.left.and.right", ext:"png", note:"network is unavailable upstream"},
+    waveform: {name:"waveform", file:"waveform", ext:"png"},
+    keyboard: {name:"keyboard", file:"keyboard", ext:"png"},
+    bell: {name:"bell", file:"bell", ext:"png"},
+    fullscreen: {name:"rectangle.expand.vertical", file:"rectangle.expand.vertical", ext:"png"},
+    "arrow.up.left.and.arrow.down.right": {name:"arrow.up.left.and.arrow.down.right", file:"arrow.up.left.and.arrow.down.right", ext:"png"},
+    settings: {name:"gear", file:"gear", ext:"png", note:"gearshape is unavailable upstream"},
+    gearshape: {name:"gear", file:"gear", ext:"png", note:"gearshape is unavailable upstream"},
+    library: {name:"rectangle.stack", file:"rectangle.stack", ext:"png", note:"books.vertical is unavailable upstream"},
+    "books.vertical": {name:"rectangle.stack", file:"rectangle.stack", ext:"png", note:"books.vertical is unavailable upstream"},
+    artists: {name:"person.2", file:"person.2", ext:"png"},
+    albums: {name:"square.stack", file:"square.stack", ext:"png"},
+    songs: {name:"music.note.list", file:"music.note.list", ext:"png"},
+    genres: {name:"guitars", file:"guitars", ext:"png"},
+    movies: {name:"film", file:"film", ext:"png"},
+    shows: {name:"tv", file:"tv", ext:"png"},
+    search: {name:"magnifyingglass", file:"magnifyingglass", ext:"png"},
+    downloads: {name:"arrow.down.circle", file:"arrow.down.circle", ext:"png"},
+    playlist: {name:"music.note.list", file:"music.note.list", ext:"png"},
+    playNext: {name:"forward.end.fill", file:"forward.end.fill", ext:"png", note:"text.line.first.and.arrowtriangle.forward is unavailable upstream"},
+    playAfter: {name:"arrowshape.turn.up.right.fill", file:"arrowshape.turn.up.right.fill", ext:"png", note:"text.line.last.and.arrowtriangle.forward is unavailable upstream"},
+    addToPlaylist: {name:"text.badge.plus", file:"text.badge.plus", ext:"png"},
+    music: {name:"music.note", file:"music.note", ext:"png"},
+    video: {name:"play.rectangle", file:"play.rectangle", ext:"png"},
+    podcast: {name:"mic", file:"mic", ext:"png"},
+    folder: {name:"folder", file:"folder", ext:"png"},
+    check: {name:"checkmark", file:"checkmark", ext:"png"},
+    close: {name:"xmark", file:"xmark", ext:"png"},
+    add: {name:"plus", file:"plus", ext:"png"},
+    heart: {name:"heart", file:"heart", ext:"png"},
+    "heart.fill": {name:"heart.fill", file:"heart.fill", ext:"png"}
   });
   const RING_SIZE = 36;
 
@@ -70,14 +78,16 @@
   function symbolDescriptor(name, active){
     if(name === "like" || name === "heart") return active ? symbols.likeActive : symbols.like;
     if(name === "play" || name === "pause" || name === "playpause") return active ? symbols.playPause : symbols.playPauseOutline;
-    return symbols[name] || {name:String(name || ""), file:String(name || "").replace(/[^a-z0-9]+/gi, "-").toLowerCase()};
+    // Keep dotted SF names intact. The upstream glyph repository uses the
+    // symbol name as its filename, so hyphenating here creates false assets.
+    return symbols[name] || {name:String(name || ""), file:String(name || ""), ext:"png", note:"asset must be supplied by the upstream glyph set"};
   }
 
   function symbolUrl(descriptor, version){
     const file = descriptor && descriptor.file ? descriptor.file : "";
     if(!file) return "";
     const query = version == null ? String(root.DEBRIPOD_ASSET_VERSION || root.DEBRIPOD_ICON_VERSION || "") : String(version || "");
-    return "/static/icons/sf/" + file + ".svg" + (query ? "?v=" + encodeURIComponent(query) : "");
+    return "/static/icons/sf/" + file + "." + (descriptor.ext || "png") + (query ? "?v=" + encodeURIComponent(query) : "");
   }
 
   function setSymbol(element, name, options){

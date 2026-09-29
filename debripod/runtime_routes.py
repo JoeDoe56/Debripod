@@ -456,9 +456,9 @@ def _pwa_shell_assets() -> list[str]:
     # Include the shared visual system and its local font/symbol assets in the
     # same versioned shell cache so an offline launch cannot mix generations.
     static_dir = Path(__file__).resolve().parent / "static"
-    for pattern in ("*.css", "css/*.css", "fonts/host-grotesk/*", "icons/sf/*.svg"):
+    for pattern in ("*.css", "css/*.css", "fonts/host-grotesk/*", "icons/sf/*.png"):
         for path in sorted(static_dir.glob(pattern)):
-            if path.suffix.lower() in {".css", ".woff2", ".woff", ".ttf", ".svg"}:
+            if path.suffix.lower() in {".css", ".woff2", ".woff", ".ttf", ".png"}:
                 asset = f"/static/{path.relative_to(static_dir).as_posix()}?v={ASSET_VERSION}"
                 if asset not in base:
                     base.append(asset)

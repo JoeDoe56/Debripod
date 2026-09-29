@@ -127,7 +127,7 @@ Remove the `#` marker from rules you want to activate, then save the smart playl
 
 ### Visualizer, LiquidGL, and client cache
 
-The UI includes a WebGL visualizer, album art color extraction, LiquidGL glass surfaces, a wheel interface, selected row glass, a path pill, and a now playing control pill. Host Grotesk typography, shared circular indicators, and SF Symbols-style SVGs give browsing and settings one visual system. Advanced Settings → Text controls base foreground opacity. Numeric adjustments temporarily reuse the control pill for the exact value and progress bar. Visualizer and glass settings are managed in the UI and stored locally.
+The UI includes a WebGL visualizer, album art color extraction, LiquidGL glass surfaces, a wheel interface, selected row glass, a path pill, and a now playing control pill. Host Grotesk typography, shared circular indicators, and locally bundled SF Symbol glyphs give browsing and settings one visual system. Advanced Settings → Text controls base foreground opacity. Numeric adjustments temporarily reuse the control pill for the exact value and progress bar. Visualizer and glass settings are managed in the UI and stored locally.
 
 The frontend is split into smaller modules for API access, client sync, library browsing, list rendering, LiquidGL, playback, media session handling, now playing UI, path pill behavior, passkeys, search tasks, settings, visualizer behavior, wheel controls, and performance overlay. DebriPod also includes a service worker and cached client mirror so common app state and library views can survive refreshes more cleanly.
 
