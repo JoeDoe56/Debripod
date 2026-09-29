@@ -433,6 +433,10 @@
   var npPageFadeTarget = null;
 
   function showNowPlaying(on, options){
+    if(typeof window !== "undefined" && window.DebriPod){
+      if(!on && DebriPod.lyrics) DebriPod.lyrics.setOpen(false);
+      if(on && DebriPod.rowSystem) DebriPod.rowSystem.setPanelOpen(false);
+    }
     const fadeMs = 220;
     const opts = options && typeof options === "object" ? options : {};
     if(npPageFadeTarget === !!on && !opts.immediate){

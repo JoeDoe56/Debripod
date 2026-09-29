@@ -25,6 +25,7 @@
     "/static/js/video-ambient.js",
     "/static/js/album-art-texture.js",
     "/static/js/wheel-icons.js",
+    "/static/js/lyrics.js",
     "/static/js/now-playing-ui.js",
     "/static/js/media-session.js",
     "/static/js/search-results-worker.js",

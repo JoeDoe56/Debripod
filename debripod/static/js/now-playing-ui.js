@@ -59,6 +59,7 @@ function playbackTitlePlain(meta, fallbackLabel){
 
 function setPlaybackPillMetadata(meta, fallbackLabel){
   var m = meta || {};
+  if(window.DebriPod && DebriPod.lyrics) DebriPod.lyrics.trackChanged(m);
   try{
     const plain = playbackTitlePlain(m, fallbackLabel);
     if(pathPillNowText){

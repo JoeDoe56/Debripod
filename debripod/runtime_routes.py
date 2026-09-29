@@ -43,6 +43,7 @@ from .Library.tvmaze import normalized_episode_information
 from .factory import AppServices, SERVICES_KEY, json_response, security_headers_middleware, session_for, session_middleware
 from .auth import _csrf_token, auth_middleware, current_user, is_owner, register_auth_routes
 from .Routes.notifications import register_notification_routes
+from .Routes.lyrics import register_lyrics_routes
 from .config import _coerce_config_value, ensure_startup_security_config, load_default_app_config_overrides, save_config, save_default_app_config_overrides
 from .Library.library_db import clear_search_history, load_folder_entries, load_palette, load_palette_for_media, load_search_history, load_visualizer_analysis_for_media, record_search_history_row, save_folder_entries, save_palette
 from .Library.index import build_index_for_root, queue_audio_analysis_warm, set_index_cache
@@ -3538,6 +3539,7 @@ async def create_app() -> web.Application:
     register_lastfm_routes(app)
     register_task_routes(app)
     register_notification_routes(app)
+    register_lyrics_routes(app)
     register_auth_routes(app)
     mcp_routes.register_mcp_routes(app)
     static_dir = Path(__file__).resolve().parent / "static"
