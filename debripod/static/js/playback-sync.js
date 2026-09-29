@@ -711,10 +711,10 @@
   async function addCurrentNowPlayingTrackToPlaylist(playlistRel){
     const cur = state.current || {};
     const root = cur.root || null;
-    const trackRel = String(cur.trackRel || "");
+    const tracks = Array.isArray(cur.playlistItems) ? cur.playlistItems.map(item=>item.rel).filter(Boolean) : [String(cur.trackRel || "")].filter(Boolean);
     const rel = String(playlistRel || "");
-    if(!root || !root.id || !trackRel || !rel) return false;
-    const res = await apiPost("/api/library/playlist_add", {root_id: root.id, rel: rel, tracks: [trackRel]});
+    if(!root || !root.id || !tracks.length || !rel) return false;
+    const res = await apiPost("/api/library/playlist_add", {root_id: root.id, rel: rel, tracks});
     const js = (res && res.json) ? res.json : {};
     if(!res || !res.ok || !js.ok){
       if(js && js.error && String(js.error) === "No songs added"){
@@ -727,7 +727,8 @@
 
   async function viewMediaPlaylistAdd(target){
     const currentNow = state.now || null;
-    const selected = target && typeof target === "object" ? target : null;
+    const playlistItems = target && Array.isArray(target.playlistItems) ? target.playlistItems : null;
+    const selected = playlistItems ? playlistItems[0] : target && typeof target === "object" ? target : null;
     const currentMedia = String((selected && selected.media) || (currentNow && currentNow.media) || (isVideoActive() ? "video" : "audio"));
     const rootId = String((selected && selected.root_id) || (currentNow && currentNow.rootId) || "");
     const trackRel = String((selected && selected.rel) || (currentNow && currentNow.rel) || "");
@@ -753,6 +754,7 @@
       label: "Add to playlist",
       root: root,
       trackRel: trackRel,
+      playlistItems: playlistItems,
       _added: existingAdded,
       load: async function(){
         const js = await apiGet("/api/library/metadata?root_id=" + encodeURIComponent(root.id) + "&level=playlists&value=");
@@ -773,7 +775,7 @@
             root:root,
             selectable:true,
             selected:added,
-            pills:[{text: added ? "Ã¢Å“â€œ" : "+", _selectPill:true}]
+            secondary:added ? "Added to playlist" : "Add the selected recordings"
           });
         }
         if(!playlistItems.length){
@@ -827,7 +829,7 @@
         return;
       }
       if(state.current && state.current.kind === "np_playlist_add"){
-        await viewMediaPlaylistAdd({media:"audio", root_id:state.current.root && state.current.root.id, rel:state.current.trackRel});
+        await viewMediaPlaylistAdd({media:"audio", root_id:state.current.root && state.current.root.id, rel:state.current.trackRel, playlistItems:state.current.playlistItems});
         try{
           const wantRel = String(js.rel || "");
           if(wantRel){
@@ -880,7 +882,7 @@
         return;
       }
       if(state.current && state.current.kind === "np_playlist_add"){
-        await viewMediaPlaylistAdd({media:"audio", root_id:state.current.root && state.current.root.id, rel:state.current.trackRel});
+        await viewMediaPlaylistAdd({media:"audio", root_id:state.current.root && state.current.root.id, rel:state.current.trackRel, playlistItems:state.current.playlistItems});
         return;
       }
       await viewMetaList(root, "playlists", "", "Playlists", false);

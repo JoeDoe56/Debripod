@@ -33,19 +33,20 @@ test("wheel label updates the repository image asset without replacing its image
   const originalIcon = fixture.icon;
 
   wheelIcons.update(fixture.label, "heart", false, {seekMode: true});
-  assert.equal(fixture.icon.getAttribute("src"), "/icons/button2_seek-mode_liked-inactive.svg");
-  assert.equal(fixture.icon.style["--wheel-icon-mask"], 'url("/icons/button2_seek-mode_liked-inactive.svg")');
+  assert.equal(fixture.icon.getAttribute("src"), "/static/icons/sf/heart.svg");
+  assert.equal(fixture.icon.style["--wheel-icon-mask"], 'url("/static/icons/sf/heart.svg")');
   assert.equal(fixture.icon, originalIcon);
   assert.equal(fixture.menu.hidden, true);
   assert.equal(fixture.classes.has("seekModeIcon"), true);
 
   wheelIcons.update(fixture.label, "heart", true, {seekMode: true});
-  assert.equal(fixture.icon.getAttribute("src"), "/icons/button2_seek-mode_liked-active.svg");
+  assert.equal(fixture.icon.getAttribute("src"), "/static/icons/sf/heart-fill.svg");
   assert.equal(fixture.icon, originalIcon);
 
   wheelIcons.update(fixture.label, "menu", false);
-  assert.equal(fixture.menu.hidden, false);
-  assert.equal(fixture.icon.hidden, true);
+  assert.equal(fixture.menu.hidden, true);
+  assert.equal(fixture.icon.hidden, false);
+  assert.equal(fixture.icon.getAttribute("src"), "/static/icons/sf/line-3-horizontal.svg");
 });
 
 test("wheel symbol mapping covers every playback state", () => {
@@ -58,11 +59,11 @@ test("wheel symbol mapping covers every playback state", () => {
       wheelIcons.symbolFor("shuffle", false), wheelIcons.symbolFor("shuffle", true)
     ],
     [
-      "button5_previous-track.svg", "button3_next-track.svg",
-      "button5_seek-mode_skip-back.svg", "button3_seek-mode_skip-forward.svg",
-      "button4_media-paused.svg", "button4_media-playing.svg",
-      "button2_seek-mode_liked-inactive.svg", "button2_seek-mode_liked-active.svg",
-      "shuffleinactivefull-fixed.svg", "shuffleactivefull-fixed.svg"
+      "backward.end.alt.fill", "forward.end.alt.fill",
+      "gobackward.15", "goforward.15",
+      "playpause", "playpause.fill", "heart", "heart.fill", "shuffle", "shuffle.fill"
     ]
   );
+  assert.equal(wheelIcons.assetFor("shuffle",false),"/icons/shuffleinactivefull-fixed.svg");
+  assert.equal(wheelIcons.assetFor("shuffle",true),"/icons/shuffleactivefull-fixed.svg");
 });

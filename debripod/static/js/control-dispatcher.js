@@ -44,6 +44,8 @@
   });
 
   const HOLD_TABLE = Object.freeze({
+    // Keep the public hold command name stable for keyboard/accessibility
+    // callers; execution routes center holds into the in-place wheel mode.
     center: "open_context",
     top: "jump_to_item",
     right: "open_queue",
@@ -139,8 +141,25 @@
           return callMaybe("scrollSel", -1);
         case "open_context":
           if(callMaybe("rangeEditorCenterHold")) return true;
-          if(!mediaActions || !mediaActions.openContextMenuForCurrentTarget) return undefined;
-          return mediaActions.openContextMenuForCurrentTarget(details && details.item);
+          if(root.wheelInteraction && root.wheelInteraction.enterActionMode && root.wheelInteraction.isActive && root.wheelInteraction.isActive()) return root.wheelInteraction.enterActionMode();
+          // The old hold-to-open item-action screen was removed. Contextual
+          // actions are now selected in-place on the wheel only.
+          return undefined;
+        case "enter_wheel_action_mode":
+          if(callMaybe("rangeEditorCenterHold")) return true;
+          return root.wheelInteraction && root.wheelInteraction.enterActionMode ? root.wheelInteraction.enterActionMode() : undefined;
+        case "open_info_panel":
+          if(root.rowSystem && typeof root.rowSystem.setPanelOpen === "function") return root.rowSystem.setPanelOpen(true);
+          return undefined;
+        case "close_info_panel":
+          if(root.rowSystem && typeof root.rowSystem.setPanelOpen === "function") return root.rowSystem.setPanelOpen(false);
+          return undefined;
+        case "open_lyrics":
+          if(root.lyrics && typeof root.lyrics.setOpen === "function") return root.lyrics.setOpen(true);
+          return undefined;
+        case "close_lyrics":
+          if(root.lyrics && typeof root.lyrics.setOpen === "function") return root.lyrics.setOpen(false);
+          return undefined;
         case "jump_to_item":
           return nav && nav.jumpToCurrentItem ? nav.jumpToCurrentItem() : undefined;
         case "open_queue":

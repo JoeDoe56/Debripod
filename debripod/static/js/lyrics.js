@@ -39,7 +39,7 @@
   }
 
   function createController(env){
-    let progress = 0, panel, content, status, timer, key = "", generation = 0, abort;
+    let progress = 0, panel, content, status, timer, hideTimer, key = "", generation = 0, abort;
     let lines = [], active = -2, mode = "missing", metadata = {};
     const cache = new Map();
     function ensure(){
@@ -142,7 +142,12 @@
         else node.removeAttribute("aria-current");
       });
       const node = content.children[Math.max(0, next)];
-      if(node) content.scrollTop = Math.max(0, node.offsetTop - content.offsetTop - content.clientHeight * .42 + node.clientHeight / 2);
+      if(node){
+        const top = Math.max(0, node.offsetTop - content.offsetTop - content.clientHeight * .42 + node.clientHeight / 2);
+        const reduced = env.matchMedia && env.matchMedia("(prefers-reduced-motion: reduce)").matches;
+        if(content.scrollTo) content.scrollTo({top, behavior: reduced ? "instant" : "smooth"});
+        else content.scrollTop = top;
+      }
     }
     function tick(){
       if(!progress) return;
@@ -151,11 +156,16 @@
       load(currentMetadata(), false);
       updatePosition();
     }
-    function setProgress(value){
+    function setProgress(value, options){
       const wasOpen = progress > 0;
       progress = clamp(value);
       if(!ensure()) return;
-      panel.hidden = progress === 0;
+      env.clearTimeout(hideTimer);
+      const animate = !!(options && options.animate);
+      panel.dataset.dragging = String(!animate);
+      if(progress > 0) panel.hidden = false;
+      else if(animate) hideTimer = env.setTimeout(() => { if(!progress) panel.hidden = true; }, 200);
+      else panel.hidden = true;
       panel.style.setProperty("--lyrics-progress", progress);
       panel.setAttribute("aria-hidden", String(progress === 0));
       if(progress && !wasOpen){
@@ -166,7 +176,7 @@
         timer = null;
       }
     }
-    function setOpen(value){ setProgress(value ? 1 : 0); }
+    function setOpen(value){ setProgress(value ? 1 : 0, {animate:true}); }
     function trackChanged(meta){
       metadata = {...meta};
       if(progress) load(currentMetadata(), false);

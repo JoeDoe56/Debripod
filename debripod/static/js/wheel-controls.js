@@ -1,6 +1,10 @@
   var btnFwd = document.getElementById("btnFwd");
   var btnPlay = document.getElementById("btnPlay");
   var btnCenter = document.getElementById("btnCenter");
+  // Loaded by bootstrap before this file.  The controller owns edge pulls and
+  // contextual center holds; this file retains the existing click/rotation
+  // plumbing and simply yields once that controller resolves a gesture.
+  var wheelInteraction = (window.DebriPod && window.DebriPod.wheelInteraction) || null;
 
   
   var copyStreamBtn = document.getElementById("copyStreamBtn");
@@ -148,7 +152,12 @@
         active.long = true;
         suppressWheelClicks(700);
         vibeTick();
-        dispatchControl("hold", control).catch(()=>{});
+        if(control === "center" && !(typeof activeRangeEditor === "function" && activeRangeEditor()) && wheelInteraction && typeof wheelInteraction.enterActionMode === "function"){
+          const wheelState = typeof wheelInteraction.state === "function" ? wheelInteraction.state() : "";
+          if(wheelState !== "contextual_wheel_action_mode" && wheelState !== "action_dead_zone" && wheelState !== "action_target_selected") wheelInteraction.enterActionMode();
+        }else{
+          dispatchControl("hold", control).catch(()=>{});
+        }
       }, 320);
     }, {passive:false});
     el.addEventListener("pointermove", (ev)=>{
@@ -167,7 +176,8 @@
     const finish = (ev)=>{
       if(active && active.id === ev.pointerId){
         try{ ev.preventDefault(); ev.stopPropagation(); }catch(e){}
-        const shouldTap = !active.long && !active.moved;
+        const controllerConsumed = wheelInteraction && typeof wheelInteraction.consumePointer === "function" ? wheelInteraction.consumePointer() : false;
+        const shouldTap = !controllerConsumed && !active.long && !active.moved;
         const wasDrag = active.moved;
         clear();
         suppressWheelClicks(500);
@@ -220,8 +230,7 @@
             setSelectionFast(idx);
           }
         }
-        const item = (state.items || [])[state.sel] || null;
-        dispatchControl("hold", "center", {item:item}).catch(()=>{});
+        if(DebriPod.rowSystem && nowPlaying.style.display !== "block") DebriPod.rowSystem.setPanelOpen(true);
       }catch(e){}
     });
   }
@@ -323,6 +332,7 @@
 
   function moveWheelRotationPointer(ev){
     if(!wheelPointerDown) return;
+    if(wheelInteraction && wheel.classList.contains("wheelInteractionResolved")) return;
     const events = (typeof ev.getCoalescedEvents === "function") ? ev.getCoalescedEvents() : null;
     const moveEvents = (events && events.length) ? events : [ev];
     const latestEv = moveEvents[moveEvents.length - 1] || ev;

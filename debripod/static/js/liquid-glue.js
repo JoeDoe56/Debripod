@@ -17,27 +17,30 @@
   }
 
   function textModeColor(mode, group){
-    const alpha = normalizeTextTransparency(uiSettings.textTransparency);
+    const alpha = normalizeTextOpacity(uiSettings.textOpacity == null ? uiSettings.textTransparency : uiSettings.textOpacity);
+    const strong = strongerForegroundOpacity(alpha);
     const key = normalizeTextMode(mode);
-    if(key === "white" || group === "selectedRow" || group === "selectedRowPills") return "#ffffff";
+    if(key === "white" || group === "selectedRow" || group === "selectedRowPills") return "rgba(255,255,255," + strong.toFixed(3) + ")";
     return "rgba(255,255,255," + alpha.toFixed(3) + ")";
   }
 
   function applyTextModeClasses(){
     try{
-      uiSettings.textModes = cloneTextModes(uiSettings.textModes);
-      uiSettings.textTransparency = normalizeTextTransparency(uiSettings.textTransparency);
-      const modes = uiSettings.textModes;
+      uiSettings.textOpacity = normalizeTextOpacity(uiSettings.textOpacity == null ? uiSettings.textTransparency : uiSettings.textOpacity);
+      uiSettings.textTransparency = uiSettings.textOpacity;
       const doc = document.documentElement;
-      doc.style.setProperty("--dp-text-wheel-labels", textModeColor(modes.wheelLabels, "wheelLabels"));
-      doc.style.setProperty("--dp-text-path-pill", textModeColor(modes.pathPill, "pathPill"));
-      doc.style.setProperty("--dp-text-info-pill", textModeColor(modes.infoPill, "infoPill"));
-      doc.style.setProperty("--dp-text-rows", textModeColor(modes.rows, "rows"));
-      doc.style.setProperty("--dp-text-row-pills", textModeColor(modes.rowPills, "rowPills"));
-      doc.style.setProperty("--dp-text-selected-row", textModeColor(modes.selectedRow, "selectedRow"));
-      doc.style.setProperty("--dp-text-selected-row-pills", textModeColor(modes.selectedRowPills, "selectedRowPills"));
+      const normal = textModeColor("transparent", "rows");
+      const strong = textModeColor("white", "selectedRow");
+      doc.style.setProperty("--dp-text-wheel-labels", normal);
+      doc.style.setProperty("--dp-text-path-pill", normal);
+      doc.style.setProperty("--dp-text-info-pill", normal);
+      doc.style.setProperty("--dp-text-rows", normal);
+      doc.style.setProperty("--dp-text-row-pills", normal);
+      doc.style.setProperty("--dp-text-selected-row", strong);
+      doc.style.setProperty("--dp-text-selected-row-pills", strong);
       doc.style.setProperty("--dp-text-transparent-alpha", uiSettings.textTransparency.toFixed(3));
-      Object.keys(modes).forEach((key)=> doc.setAttribute("data-text-mode-" + key.replace(/[A-Z]/g, m=> "-" + m.toLowerCase()), modes[key]));
+      doc.style.setProperty("--ui-text-opacity", uiSettings.textOpacity.toFixed(3));
+      doc.style.setProperty("--foreground-opacity", uiSettings.textOpacity.toFixed(3));
     }catch(e){}
   }
 
@@ -1270,6 +1273,10 @@
       const sharedGlassOptions = Object.assign({}, liquidGlassElementOptions("pathPill"), {
         target: "#libList.liquidGlass, #libListSelectedGlass.liquidGlass, .pathPillGlass.liquidGlass, .infoPillGlass.liquidGlass",
         rendererKey: "main",
+        geometryRect: function(element){
+          const surface = element && element.id === "libList" ? element.parentElement : element;
+          return surface ? surface.getBoundingClientRect() : null;
+        },
         sourceType: "visualizerWebgl",
         sourceElement: "#visualizerReactiveArt"
       });

@@ -14,6 +14,9 @@
   <meta name="apple-mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-title" content="DebriPod">
   <link rel="stylesheet" href="/static/debripod.css?v=__DEBRIPOD_ASSET_VERSION__">
+  <link rel="stylesheet" href="/static/ui-primitives.css?v=__DEBRIPOD_ASSET_VERSION__">
+  <link rel="stylesheet" href="/static/row-system.css?v=__DEBRIPOD_ASSET_VERSION__">
+  <link rel="stylesheet" href="/static/css/wheel-interaction.css?v=__DEBRIPOD_ASSET_VERSION__">
   <link rel="stylesheet" href="/static/lyrics.css?v=__DEBRIPOD_ASSET_VERSION__">
 
 </head>
@@ -101,10 +104,10 @@
             <div class="ipodWheelWrap">
               <div class="wheel" id="wheel">
                 <div class="wheelGlassRing liquidGlass" id="wheelGlassRing" aria-hidden="true"></div>
-                <div class="wheelLabel wlTop" data-liquid-ignore><span class="menuWord glassText" data-text="MENU">MENU</span><span class="wheelIcon" aria-hidden="true" hidden style="--wheel-icon-mask:url('/icons/button2_seek-mode_liked-inactive.svg?v=__DEBRIPOD_ASSET_VERSION__')"></span></div>
-                <div class="wheelLabel wlLeft" data-liquid-ignore><span class="menuWord glassText" data-text="MENU" hidden>MENU</span><span class="wheelIcon" aria-hidden="true" style="--wheel-icon-mask:url('/icons/button5_previous-track.svg?v=__DEBRIPOD_ASSET_VERSION__')"></span></div>
-                <div class="wheelLabel wlRight" data-liquid-ignore><span class="menuWord glassText" data-text="MENU" hidden>MENU</span><span class="wheelIcon" aria-hidden="true" style="--wheel-icon-mask:url('/icons/button3_next-track.svg?v=__DEBRIPOD_ASSET_VERSION__')"></span></div>
-                <div class="wheelLabel wlBottom" data-liquid-ignore><span class="menuWord glassText" data-text="MENU" hidden>MENU</span><span class="wheelIcon" aria-hidden="true" style="--wheel-icon-mask:url('/icons/button4_media-paused.svg?v=__DEBRIPOD_ASSET_VERSION__')"></span></div>
+                <div class="wheelLabel wlTop" data-liquid-ignore><span class="menuWord glassText" data-text="MENU">MENU</span><span class="wheelIcon" aria-hidden="true" hidden style="--wheel-icon-mask:url('/static/icons/sf/line-3-horizontal.svg?v=__DEBRIPOD_ASSET_VERSION__')"></span></div>
+                <div class="wheelLabel wlLeft" data-liquid-ignore><span class="menuWord glassText" data-text="MENU" hidden>MENU</span><span class="wheelIcon" aria-hidden="true" style="--wheel-icon-mask:url('/static/icons/sf/backward-end-alt-fill.svg?v=__DEBRIPOD_ASSET_VERSION__')"></span></div>
+                <div class="wheelLabel wlRight" data-liquid-ignore><span class="menuWord glassText" data-text="MENU" hidden>MENU</span><span class="wheelIcon" aria-hidden="true" style="--wheel-icon-mask:url('/static/icons/sf/forward-end-alt-fill.svg?v=__DEBRIPOD_ASSET_VERSION__')"></span></div>
+                <div class="wheelLabel wlBottom" data-liquid-ignore><span class="menuWord glassText" data-text="MENU" hidden>MENU</span><span class="wheelIcon" aria-hidden="true" style="--wheel-icon-mask:url('/static/icons/sf/playpause.svg?v=__DEBRIPOD_ASSET_VERSION__')"></span></div>
 
                 <div class="wheelHit hitTop wheelBtn" id="btnMenu" title="Menu"></div>
                 <div class="wheelHit hitLeft wheelBtn" id="btnRev" title="Previous track"></div>

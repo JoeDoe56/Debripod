@@ -105,14 +105,12 @@ def test_wheel_uses_repository_svg_assets_and_no_generated_image_markup():
     now_playing = (ROOT / "debripod" / "static" / "js" / "now-playing-ui.js").read_text(encoding="utf-8")
     wheel_icons = (ROOT / "debripod" / "static" / "js" / "wheel-icons.js").read_text(encoding="utf-8")
 
-    for filename in (
-        "button5_previous-track.svg", "button3_next-track.svg",
-        "button5_seek-mode_skip-back.svg", "button3_seek-mode_skip-forward.svg",
-        "button4_media-paused.svg", "button4_media-playing.svg",
-        "button2_seek-mode_liked-inactive.svg", "button2_seek-mode_liked-active.svg",
-        "shuffleinactivefull-fixed.svg", "shuffleactivefull-fixed.svg",
-    ):
-        assert filename in shell or filename in wheel_icons
+    for symbol in ("forward.end.alt.fill", "backward.end.alt.fill", "heart.fill", "playpause.fill", "gobackward.15", "goforward.15"):
+        assert symbol in wheel_icons
+    for filename in ("forward-end-alt-fill.svg", "backward-end-alt-fill.svg", "heart.svg", "heart-fill.svg", "playpause.svg", "playpause-fill.svg"):
+        assert (ROOT / "debripod/static/icons/sf" / filename).is_file()
+    assert 'file:"shuffleinactivefull-fixed",legacy:true' in wheel_icons
+    assert 'file:"shuffleactivefull-fixed",legacy:true' in wheel_icons
     wheel_label_lines = [line for line in shell.splitlines() if 'class="wheelLabel ' in line]
     assert len(wheel_label_lines) == 4
     assert all('class="wheelIcon"' in line and "--wheel-icon-mask:url(" in line and "<img " not in line for line in wheel_label_lines)

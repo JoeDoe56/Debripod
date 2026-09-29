@@ -120,6 +120,7 @@ function infoPillLabelValues(mode, volume, progress){
 }
 
 function renderInfoPillLabels(){
+  if(typeof activeRangeEditor === "function" && activeRangeEditor()) return syncRangeFeedback(activeRangeEditor());
   try{
     var media = (typeof wheelMedia === "function") ? wheelMedia() : null;
     var gapless = (typeof gaplessPlaybackSnapshot === "function") ? gaplessPlaybackSnapshot() : null;
@@ -156,6 +157,7 @@ function updateVolumeFillOnly(){
 }
 
 function updateProgressMeterFill(percent){
+  if(typeof activeRangeEditor === "function" && activeRangeEditor()) return syncRangeFeedback(activeRangeEditor());
   try{
     const value = Math.max(0, Math.min(100, Number(percent) || 0));
     if(npProgressFill) npProgressFill.style.width = value.toFixed(2) + "%";
@@ -279,20 +281,13 @@ function setWheelLabel(el, name, active, options){
 }
 
 function updateWheelLabels(){
+  if(document.getElementById("wheel")?.classList.contains("wheelActionMode")) return;
   try{
     const lMenu = document.querySelector(".wheelLabel.wlTop, .wheelLabel.top");
     const lRev = document.querySelector(".wheelLabel.wlLeft, .wheelLabel.wlRev");
     const lFwd = document.querySelector(".wheelLabel.wlRight, .wheelLabel.wlFwd");
     const lPlay = document.querySelector(".wheelLabel.wlBottom, .wheelLabel.wlPlay");
     if(!lMenu || !lRev || !lFwd || !lPlay) return;
-
-    if(state.current && state.current.kind === "np_playlist_add"){
-      setWheelLabel(lMenu, "");
-      setWheelLabel(lRev, "");
-      setWheelLabel(lFwd, "");
-      setWheelLabel(lPlay, "");
-      return;
-    }
 
     if(nowPlaying.style.display === "block" && seekMode){
       if(!isVideoActive()){

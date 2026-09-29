@@ -60,12 +60,14 @@ def test_owner_server_setting_migration_keeps_meaningful_legacy_value(monkeypatc
     assert writes == [({"YTDLP_CMD": "D:/tools/yt-dlp.exe"}, "")]
 
 
-def test_ui_offers_exactly_white_and_transparent_text_modes():
+def test_ui_offers_one_text_opacity_setting_and_keeps_navigation_stable():
     source = (REPO / "debripod" / "static" / "js" / "settings-ui.js").read_text(encoding="utf-8")
     list_view = (REPO / "debripod" / "static" / "js" / "list-view.js").read_text(encoding="utf-8")
     library_browser = (REPO / "debripod" / "static" / "js" / "library-browser.js").read_text(encoding="utf-8")
     playback_sync = (REPO / "debripod" / "static" / "js" / "playback-sync.js").read_text(encoding="utf-8")
-    assert 'const TEXT_MODE_ORDER = ["white", "transparent"];' in source
+    assert 'label:"Text Opacity"' in source
+    assert 'const TEXT_MODE_ORDER' not in source
+    assert 'label:"Text transparency"' not in source
     assert 'pageTransition' not in source
     assert 'rowExpansion' not in source
     assert 'replaceListItems(arr, {preserveSelection:false, preserveScroll:false' in list_view

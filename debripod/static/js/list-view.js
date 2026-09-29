@@ -286,18 +286,9 @@
   }
 
   function estimatedItemHeight(item){
-    try{
-      if(!item) return 44;
-      if(item.expanded && item.sub_row) return 88;
-      if(item.kind === "smart_playlist_rules_text") return 236;
-      if(item.kind === "range_editor_input" || item.kind === "range_editor_slider") return 76;
-      if(item.sub_label) return 68;
-      if(item.forceTwoLine || item.settingRow || item.kind === "setting_value" || item.kind === "settings_library_folder" || item.kind === "settings_library_remove") return 76;
-      if(item.kind === "libsearch_result" || item.kind === "libsearch_file" || item.kind === "libtask_file") return 76;
-      if(item.kind === "libsearch_status" || item.kind === "libsearch_filter") return 56;
-      if(item.kind === "song" || item.kind === "track" || item.kind === "file" || item.kind === "liked_song" || item.media === "audio") return item.pills && item.pills.length > 2 ? 64 : 56;
-    }catch(e){}
-    return 44;
+    // One standard row estimate; the multiline rule editor is a dedicated
+    // input surface rather than a navigation row.
+    return item && item.kind === "smart_playlist_rules_text" ? 236 : 55;
   }
 
   function replaceListItems(nextItems, options){
@@ -619,6 +610,10 @@
                   editor.rangeValue = next;
                   const config = editor.rangeConfig || {};
                   if(typeof config.onPreview === "function") Promise.resolve(config.onPreview(next)).catch(()=>{});
+                  if(typeof syncRangeFeedback === "function") syncRangeFeedback(editor);
+                  const ring = li.querySelector(".uiRing");
+                  if(ring && DebriPod.uiPrimitives) DebriPod.uiPrimitives.setRing(ring, next, meta.min, meta.max);
+                  if(DebriPod.rowSystem) DebriPod.rowSystem.updatePanel();
                 }
               }
             }catch(e){}
@@ -1091,8 +1086,7 @@
           const artist = String((raw && raw.artist) || "").trim();
           const album = String((raw && raw.album) || "").trim();
           if(artist && album){
-            labelSpan.innerHTML = escapeHtml(album) + '   ' + '<span class="artistStrong">' + escapeHtml(artist) + '</span>';
-            syncGlassText(labelSpan);
+            setGlassText(labelSpan, album);
             rendered = true;
           }
         }catch(e){}
@@ -1173,6 +1167,10 @@
                   editor.rangeValue = next;
                   const config = editor.rangeConfig || {};
                   if(typeof config.onPreview === "function") Promise.resolve(config.onPreview(next)).catch(()=>{});
+                  if(typeof syncRangeFeedback === "function") syncRangeFeedback(editor);
+                  const ring = li.querySelector(".uiRing");
+                  if(ring && DebriPod.uiPrimitives) DebriPod.uiPrimitives.setRing(ring, next, meta.min, meta.max);
+                  if(DebriPod.rowSystem) DebriPod.rowSystem.updatePanel();
                 }
               }catch(e){}
             };
@@ -1311,6 +1309,14 @@
       libList.innerHTML = "";
       libList.appendChild(itemsLayer);
     }
+    // Normalize every rendered item through the shared row system. The
+    // renderer above still owns editing and activation behavior; this pass
+    // owns the universal icon/text geometry and contextual panel metadata.
+    try{
+      if(window.DebriPod && DebriPod.rowSystem && typeof DebriPod.rowSystem.decorateList === "function"){
+        DebriPod.rowSystem.decorateList(libList, state);
+      }
+    }catch(e){}
     measureRenderedRowHeights();
     syncVirtualSpacerHeights(virtual);
     if(libList){

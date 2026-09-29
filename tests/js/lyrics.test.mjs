@@ -39,7 +39,7 @@ test('visible lyrics follow playback, pause position, backwards seek and new tra
   f.media.currentTime=2;f.tick();assert.equal(content.children[0].attrs['aria-current'],'true');
   f.env.state.nowMeta.title='Second';f.tick();await flush();
   assert.equal(content.children[0].textContent,'Track 2');
-  f.api.setOpen(false);assert.equal(f.panel().hidden,true);
+  f.api.setOpen(false);assert.equal(f.panel().attrs['aria-hidden'],'true');
 });
 test('stale track responses cannot overwrite the current recording', async()=>{
   const requests=[];

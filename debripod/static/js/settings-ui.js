@@ -30,6 +30,13 @@
       items.push({kind:"info", label:"No library folders yet. Add one in Library settings or run setup."});
     }
     items.push({kind:"libinfo_entry", label:"Info"});
+    // One top-level index summary enriches every category without issuing a
+    // metadata request on selection or on each wheel frame.
+    try{
+      const summary = await apiGet("/api/library/metadata?root_id=" + encodeURIComponent(aggregateRoot.id) + "&level=top");
+      const counts = new Map((summary.categories || []).map(category=>[category.key,category.count]));
+      items.forEach(item=>{if(item.cat && counts.get(item.cat) != null) item.count=counts.get(item.cat);});
+    }catch(e){}
     resetList(items);
     try{ await maybeStartSetupWizard(); }catch(e){}
   }
@@ -500,19 +507,9 @@
         const debrid = (services && services.debrid) || (state.connectionStatus && state.connectionStatus.DEBRID) || {};
         const activeProvider = String(debrid.active_provider || "");
         const activeInfo = (debrid.providers || {})[activeProvider] || {};
-        const rows = settingRowsForCategory(category).map(r=>({
-          kind:"setting_value",
-          label:r.label,
+        const rows = settingRowsForCategory(category).map(r=>Object.assign(settingRowToListItem(r), {
           sub_label: r.sub_label || (r.advanced ? "Advanced" : ""),
-          key:r.key,
-          settingType:r.type,
-          choices:r.choices || [],
-          value:r.value,
-          tool:r.tool || "",
-          toolStatus:r.toolStatus || null,
-          provider:r.provider || "",
-          disabled:!!r.disabled || !!(r.provider && activeProvider && r.provider !== activeProvider),
-          pills:(settingConnectionPills(r) || [{text:settingValueLabel(r.value)}]).concat([settingSavePill(r)])
+          disabled:!!r.disabled || !!(r.provider && activeProvider && r.provider !== activeProvider)
         }));
         if(category === "services"){
           rows.unshift({kind:"libinfo_action",label:"Torrent Sources",action:"torrent_sources",pills:["Local + 7 remote"]});
@@ -521,7 +518,7 @@
             kind:"debrid_token",
             label:"Debrid token",
             placeholder:"Paste RealDebrid, AllDebrid, Torbox, or Premiumize token",
-            pills:[activeProvider ? {text:"✓ Connected to " + connectedLabel, tone:"ok"} : {text:"× Not connected", tone:"warn"}]
+            pills:[activeProvider ? {text:"Connected to " + connectedLabel, tone:"ok"} : {text:"Not connected", tone:"warn"}]
           });
           const slsk = services.soulseek || {};
           rows.push({kind:"info", label:"Soulseek status", sub_label:[slsk.connected ? "Connected" : "Not connected", slsk.listening_port != null ? ("Listening port " + slsk.listening_port) : "", slsk.obfuscated_port != null ? ("Obfuscated port " + slsk.obfuscated_port) : "", slsk.warning || "", slsk.error || ""].filter(Boolean).join("  "), forceTwoLine:true});
@@ -1614,7 +1611,7 @@ async function libDoSearch(engine, q){
         const hp = [];
         if(host) hp.push(host);
         if(port) hp.push(port);
-        items.push({kind:"info", label:"Host and port", pills: hp});
+        items.push({kind:"info", label:"Host and port", symbol:"network", pills: hp});
 
         items.push({kind:"libinfo_action", label:"Full Screen", action:"force_fullscreen"});
         items.push({kind:"libinfo_action", label:"Binds", action:"binds_menu"});
@@ -1919,44 +1916,18 @@ async function libDoSearch(engine, q){
     ];
   }
 
-  const TEXT_MODE_ORDER = ["white", "transparent"];
   const ANIMATION_FPS_ORDER = [30, 60, 120];
-  const TEXT_MODE_LABELS = {
-    white:"White",
-    transparent:"Transparent"
-  };
-
-  function textModeLabel(value){
-    return TEXT_MODE_LABELS[normalizeTextMode(value)] || "Transparent";
-  }
 
   function textModeRows(){
-    const modes = cloneTextModes(uiSettings.textModes);
-    return [
-      {key:"wheelLabels", label:"Wheel labels"},
-      {key:"pathPill", label:"Path pill"},
-      {key:"infoPill", label:"Info pill"},
-      {key:"rows", label:"Rows"},
-      {key:"rowPills", label:"Row pills"},
-      {key:"selectedRow", label:"Selected row"},
-      {key:"selectedRowPills", label:"Selected row pills"}
-    ].map((row)=>({
+    return [{
       kind:"libui_action",
-      label:row.label,
-      sub_label:"Text color mode",
-      action:"cycle_text_mode:" + row.key,
-      pills:[textModeLabel(modes[row.key])],
+      label:"Text Opacity",
+      sub_label:"Base foreground opacity used to derive text and symbol emphasis",
+      action:"set_text_opacity",
+      pills:[String(Math.round(normalizeTextOpacity(uiSettings.textOpacity == null ? uiSettings.textTransparency : uiSettings.textOpacity) * 100)) + "%"],
       forceTwoLine:true,
       settingRow:true
-    })).concat([{
-      kind:"libui_action",
-      label:"Text transparency",
-      sub_label:"Opacity used by transparent text mode",
-      action:"set_text_transparency",
-      pills:[String(Math.round(normalizeTextTransparency(uiSettings.textTransparency) * 100)) + "%"],
-      forceTwoLine:true,
-      settingRow:true
-    }]);
+    }];
   }
 
   function animationRows(){
@@ -2045,6 +2016,7 @@ async function libDoSearch(engine, q){
   }
 
   function settingRowToListItem(r){
+    const rangeMeta = (r.type === "number" || r.type === "startup_number") ? numberSettingRangeMeta(r.key, r.type) : null;
     return {
       kind:"setting_value",
       label:r.label,
@@ -2053,6 +2025,12 @@ async function libDoSearch(engine, q){
       settingType:r.type,
       choices:r.choices || [],
       value:r.value,
+      active:(r.type === "bool" || r.type === "startup_bool") && !!r.value,
+      provider:r.provider || "",
+      disabled:!!r.disabled,
+      rangeMeta:rangeMeta,
+      min:rangeMeta ? rangeMeta.min : undefined,
+      max:rangeMeta ? rangeMeta.max : undefined,
       tool:r.tool || "",
       toolStatus:r.toolStatus || null,
       pills:(settingConnectionPills(r) || [{text:settingValueLabel(r.value)}]).concat([settingSavePill(r)]),
@@ -2500,6 +2478,111 @@ async function libDoSearch(engine, q){
     return range.integer ? Math.trunc(next) : next;
   }
 
+  // One normalized state drives the persistent row ring, the range editor,
+  // and the temporary precise adjustment feedback. Consumers should use this
+  // helper instead of guessing whether a value is already a percentage.
+  function numericActionState(action){
+    const simple = {
+      set_text_opacity:["textOpacity",0,1,.01], set_text_transparency:["textOpacity",0,1,.01],
+      set_center_bounce_amount:["centerBounceAmount",0,.3,.01], set_center_bounce_duration:["centerBounceDuration",0,1000,1],
+      set_center_bounce_overshoot:["centerBounceOvershoot",0,1.4,.01], set_wheel_click_tilt_amount:["wheelClickTiltAmount",0,1,.01],
+      set_wheel_tilt_ramp_duration:["wheelTiltRampDuration",0,1000,1], set_wheel_tilt_release_duration:["wheelTiltReleaseDuration",0,1200,1],
+      set_info_pill_dark_multiplier:["infoPillDarkMultiplier",0,4,.01], set_info_pill_light_multiplier:["infoPillLightMultiplier",0,4,.01],
+      set_visualizer_max_brightness:["visualizerMaxBrightnessPct",0,200,1], set_visualizer_rotations:["visualizerRotationsPerTrack",1,12,1],
+      cycle_visualizer_fps_lock:["visualizerFpsLock",30,120,30]
+    };
+    const spec = simple[action];
+    if(spec) return {value:uiSettings[spec[0]],rangeMeta:{min:spec[1],max:spec[2],step:spec[3]}};
+    const [kind,key,field] = String(action || "").split(":");
+    if(kind === "cycle_animation_fps") return {value:uiSettings.animationFps[key],rangeMeta:{min:30,max:120,step:30}};
+    if(kind === "set_glass_value") return {value:uiSettings.liquidGlassElements[key][field],rangeMeta:settingRangeMeta(field,0,1)};
+    if(kind === "set_visualizer_response"){
+      const group={frequency:"visualizerFrequencyResponse",energy:"visualizerEnergyResponse",beat:"visualizerBeatResponse"}[key];
+      if(group) return {value:uiSettings[group][field],rangeMeta:{min:["saturation","contrast"].includes(field)?-1:0,max:field==="brightness"?2:1,step:.01}};
+    }
+    const ranges=kind === "set_glass_quality" ? {glassRenderScale:[.5,2,.01],glassFrostSamples:[0,16,1],glassIdleFps:[30,120,30],glassInteractionFps:[30,120,30],glassMotionEffectMultiplier:[0,2,.01]}
+      : kind === "set_video_ambient" ? {sampleFps:[1,30,1],brightness:[0,2,.01],saturation:[0,2,.01],audioEnergyBrightness:[0,2,.01],smoothing:[0,.99,.01]} : {};
+    if(ranges[key]){const [min,max,step]=ranges[key];return {value:kind==="set_video_ambient"?uiSettings.videoAmbient[key]:uiSettings[key],rangeMeta:{min,max,step}};}
+    return null;
+  }
+
+  function numericSettingState(item, index){
+    let source = item && typeof item === "object" ? item : {};
+    const actionState = numericActionState(source.action);
+    if(actionState) source = Object.assign({}, source, actionState);
+    const active = activeRangeEditor();
+    if(active && active.kind === "range_editor" && (index == null || Number(active.itemIndex) === Number(index))){
+      source = Object.assign({}, source, {value:active.rangeValue, rangeMeta:active.rangeMeta,min:active.rangeMeta.min,max:active.rangeMeta.max});
+    }
+    if(!source.rangeMeta && !source.range && !source.numericRange && !(source.min != null && source.max != null)) return null;
+    const meta = source.rangeMeta || source.range || source.numericRange || {};
+    const min = Number.isFinite(Number(source.min)) ? Number(source.min) : (Number.isFinite(Number(meta.min)) ? Number(meta.min) : 0);
+    const max = Number.isFinite(Number(source.max)) ? Number(source.max) : (Number.isFinite(Number(meta.max)) ? Number(meta.max) : 1);
+    let value = Number(source.value);
+    if(!Number.isFinite(value) && Number.isFinite(Number(source.current))) value = Number(source.current);
+    if(!Number.isFinite(value) && Number.isFinite(Number(source.bar))) value = min + Math.max(0, Math.min(1, Number(source.bar))) * (max - min);
+    if(!Number.isFinite(value)) return null;
+    const primitive = window.DebriPod && DebriPod.uiPrimitives;
+    const normalized = primitive ? primitive.normalizeSetting(value,{min,max,step:meta.step||source.step}) : {value:Math.max(min,Math.min(max,value)),min,max,progress:max===min?0:Math.max(0,Math.min(1,(value-min)/(max-min))),step:Number(meta.step || source.step || 0)};
+    return Object.assign(normalized,{integer:!!(meta.integer || source.integer)});
+  }
+
+  function saveRangeFeedbackSnapshot(view){
+    if(view.feedback || typeof document === "undefined") return;
+    const pill = document.getElementById("infoPill");
+    const wrap = document.getElementById("npProgressWrap");
+    const fill = document.getElementById("npProgressFill");
+    const cur = document.getElementById("npCur");
+    const tech = document.getElementById("npTech");
+    const dur = document.getElementById("npDur");
+    view.feedback = {
+      pillClass:pill ? pill.className : "",
+      pillStyle:pill ? pill.getAttribute("style") : null,
+      wrapStyle:wrap ? wrap.getAttribute("style") : null,
+      fillStyle:fill ? fill.getAttribute("style") : null,
+      cur:cur ? cur.textContent : "",
+      tech:tech ? tech.textContent : "",
+      progressText:tech ? tech.dataset.progressText : "",
+      dur:dur ? dur.textContent : ""
+    };
+  }
+
+  function syncRangeFeedback(view){
+    if(!view || view.kind !== "range_editor" || typeof document === "undefined") return;
+    const stateValue = numericSettingState({value:view.rangeValue, rangeMeta:view.rangeMeta}, view.itemIndex);
+    if(!stateValue) return;
+    const pill = document.getElementById("infoPill");
+    const wrap = document.getElementById("npProgressWrap");
+    const fill = document.getElementById("npProgressFill");
+    const cur = document.getElementById("npCur");
+    const tech = document.getElementById("npTech");
+    const dur = document.getElementById("npDur");
+    if(pill){ pill.classList.remove("infoPillHidden"); pill.classList.add("rangeEditorFeedback"); pill.style.pointerEvents = "none"; }
+    if(wrap) wrap.style.display = "block";
+    if(fill) fill.style.width = (stateValue.progress * 100).toFixed(2) + "%";
+    if(cur) cur.textContent = rangeEditorValueLabel(stateValue.value, view.rangeMeta);
+    if(tech){ tech.textContent = String(view.label || "Value"); tech.dataset.progressText = tech.textContent; }
+    if(dur) dur.textContent = rangeEditorValueLabel(stateValue.max, view.rangeMeta);
+    try{ if(typeof forceInfoPillGlassRender === "function") forceInfoPillGlassRender("numeric adjustment", false); }catch(e){}
+  }
+
+  function restoreRangeFeedback(view){
+    const snapshot = view && view.feedback;
+    if(!snapshot || typeof document === "undefined") return;
+    const pill = document.getElementById("infoPill");
+    const wrap = document.getElementById("npProgressWrap");
+    const fill = document.getElementById("npProgressFill");
+    const cur = document.getElementById("npCur");
+    const tech = document.getElementById("npTech");
+    const dur = document.getElementById("npDur");
+    if(pill){ pill.className = snapshot.pillClass; if(snapshot.pillStyle == null) pill.removeAttribute("style"); else pill.setAttribute("style", snapshot.pillStyle); }
+    if(wrap){ if(snapshot.wrapStyle == null) wrap.removeAttribute("style"); else wrap.setAttribute("style", snapshot.wrapStyle); }
+    if(fill){ if(snapshot.fillStyle == null) fill.removeAttribute("style"); else fill.setAttribute("style", snapshot.fillStyle); }
+    if(cur) cur.textContent = snapshot.cur;
+    if(tech){tech.textContent = snapshot.tech;tech.dataset.progressText = snapshot.progressText || "";}
+    if(dur) dur.textContent = snapshot.dur;
+  }
+
   async function viewRangeEditor(config, push){
     const meta = config.meta || settingRangeMeta("", 0, 1);
     const current = rangeEditorClamp(config.current, meta, Number(meta.min || 0));
@@ -2515,6 +2598,7 @@ async function libDoSearch(engine, q){
       itemIndex: state.sel,
       committing:false
     };
+    saveRangeFeedbackSnapshot(state.inlineRangeEditor);
     renderRangeEditor();
   }
 
@@ -2530,7 +2614,7 @@ async function libDoSearch(engine, q){
     const max = Number(meta.max);
     const pct = max > min ? ((value - min) / (max - min)) : 0;
     const armed = !!view.rangeWheelArmed;
-    return [{kind:"range_editor_input", label:view.label || "Value", value:rangeEditorValueLabel(value, meta), bar:Math.max(0, Math.min(1, pct)), pills:[armed ? "Wheel active" : "Click to adjust", rangeEditorValueLabel(value, meta), rangeEditorValueLabel(min, meta) + "-" + rangeEditorValueLabel(max, meta)]}];
+    return [{kind:"range_editor_input", label:view.label || "Value", value:value, rangeMeta:meta, min:min, max:max, normalizedValue:Math.max(0, Math.min(1, pct)), bar:Math.max(0, Math.min(1, pct)), pills:[armed ? "Wheel active" : "Click to adjust", rangeEditorValueLabel(value, meta), rangeEditorValueLabel(min, meta) + "-" + rangeEditorValueLabel(max, meta)]}];
   }
 
   function renderRangeEditor(){
@@ -2539,6 +2623,7 @@ async function libDoSearch(engine, q){
       state.inlineRangeEditor.itemIndex = idx;
       state.sel = idx;
       renderList();
+      syncRangeFeedback(state.inlineRangeEditor);
       return;
     }
     resetList(rangeEditorRows());
@@ -2661,6 +2746,7 @@ async function libDoSearch(engine, q){
     const value = rangeEditorClamp(view.rangeValue, meta, Number(meta.min || 0));
     try{
       if(typeof config.onCommit === "function") await config.onCommit(value);
+      restoreRangeFeedback(view);
       state.inlineRangeEditor = null;
       if(typeof config.onReturn === "function") await config.onReturn();
       else if(state.current && state.current.kind === "range_editor") goBack();
@@ -2683,6 +2769,7 @@ async function libDoSearch(engine, q){
     }catch(e){}
     try{
       state.inlineRangeEditor = null;
+      restoreRangeFeedback(view);
       if(typeof config.onReturn === "function") await config.onReturn();
       else if(state.current && state.current.kind === "range_editor") goBack();
       else if(typeof renderList === "function") renderList();
@@ -2785,14 +2872,7 @@ async function libDoSearch(engine, q){
       }
       default:
         if(String(action || "").indexOf("cycle_text_mode:") === 0){
-          const key = String(action).split(":")[1] || "";
-          const modes = cloneTextModes(uiSettings.textModes);
-          if(!Object.prototype.hasOwnProperty.call(modes, key)) return false;
-          const current = normalizeTextMode(modes[key]);
-          const idx = Math.max(0, TEXT_MODE_ORDER.indexOf(current));
-          modes[key] = TEXT_MODE_ORDER[(idx + 1) % TEXT_MODE_ORDER.length];
-          uiSettings.textModes = cloneTextModes(modes);
-          return await returnAdvancedCategory("text");
+          return false;
         }
         if(String(action || "").indexOf("cycle_animation_fps:") === 0){
           const key = String(action).split(":")[1] || "";
@@ -2890,13 +2970,15 @@ async function libDoSearch(engine, q){
         try{ await apiPost("/api/system/backups/create", {}); }catch(e){}
         await viewLibDatabaseBackups(false);
         return true;
+      case "set_text_opacity":
       case "set_text_transparency":
         await viewRangeEditor({
-          label:"Text transparency",
-          current:normalizeTextTransparency(uiSettings.textTransparency),
+          label:"Text Opacity",
+          current:normalizeTextOpacity(uiSettings.textOpacity == null ? uiSettings.textTransparency : uiSettings.textOpacity),
           meta:{min:0, max:1, step:0.01},
           onCommit: async function(value){
-            uiSettings.textTransparency = normalizeTextTransparency(value);
+            uiSettings.textOpacity = normalizeTextOpacity(value);
+            uiSettings.textTransparency = uiSettings.textOpacity;
             saveUiSettings();
             if(typeof applyUiTuningCss === "function") applyUiTuningCss();
             if(typeof scheduleLiquidGlassRender === "function") scheduleLiquidGlassRender();

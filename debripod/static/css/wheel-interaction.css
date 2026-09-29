@@ -1,0 +1,17 @@
+/* Shared interaction states for the click wheel.  Geometry stays with the
+   existing wheel layout; these rules only express the reversible action mode. */
+.wheelActionMode .wheelLabel {
+  transition: opacity 140ms ease, transform 140ms ease;
+}
+
+.wheelActionMode .wheelLabel.wheelActionDisabled {
+  opacity: .32;
+}
+
+.wheelActionMode .wheelLabel.wheelActionSelected {
+  opacity: 1;
+}
+
+.wheelInteractionResolved {
+  touch-action: none;
+}

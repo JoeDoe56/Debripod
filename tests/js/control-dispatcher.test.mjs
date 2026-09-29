@@ -32,7 +32,8 @@ test("context menus are target-driven and reject nonplayable rows", () => {
   assert.deepEqual(contextMenuRows({kind:"dir", label:"Folder"}), []);
   assert.deepEqual(contextMenuRows({kind:"heading", label:"Heading"}), []);
   const music = normalizeMediaTarget({kind:"track", media:"audio", root:{id:"r"}, rel:"song.flac"});
-  assert.deepEqual(contextMenuRows(music).map((row) => row.label), ["Lyrics", "Add to playlist", "Like"]);
+  // Lyrics are revealed by the Now Playing left-edge gesture, not an action row.
+  assert.deepEqual(contextMenuRows(music).map((row) => row.label), ["Add to playlist", "Like"]);
   const movie = normalizeMediaTarget({kind:"movie", media:"video", root:{id:"r"}, rel:"movie.mkv"});
   assert.deepEqual(contextMenuRows(movie).map((row) => row.label), ["View information", "Add to playlist", "Like"]);
   const youtube = normalizeMediaTarget({kind:"file", media:"video", root:{id:"r"}, rel:"video.mp4", source:"youtube"});

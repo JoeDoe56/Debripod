@@ -60,7 +60,10 @@
   async function status(){
     if(!("serviceWorker" in navigator) || !("PushManager" in window) || !("Notification" in window)) return "unavailable";
     if(Notification.permission === "denied") return "blocked";
-    const registration = await navigator.serviceWorker.ready;
+    // Status is read by Info before a worker may be installed. A ready promise
+    // can wait forever; inspection must not block the entire navigation page.
+    const registration = await navigator.serviceWorker.getRegistration();
+    if(!registration) return "disabled";
     const subscription = await registration.pushManager.getSubscription();
     return subscription ? "enabled" : "disabled";
   }

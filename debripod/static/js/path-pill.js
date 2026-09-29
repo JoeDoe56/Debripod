@@ -584,7 +584,7 @@
 
   function isInfoPillVisible(){
     try{
-      return !!(infoPill && !infoPill.classList.contains("infoPillHidden"));
+      return !!(infoPill && (!infoPill.classList.contains("infoPillHidden") || infoPill.classList.contains("rangeEditorFeedback")));
     }catch(e){
       return false;
     }
@@ -739,7 +739,7 @@
     playbackPillsHideTimer = null;
     playbackPillsVisible = false;
     try{
-      if(infoPill){
+      if(infoPill && !infoPill.classList.contains("rangeEditorFeedback")){
         infoPill.classList.add("infoPillHidden");
         infoPill.style.pointerEvents = "none";
         animateInfoPillGlassTransition(reason || "info pill hide", playbackPillTransitionMs);

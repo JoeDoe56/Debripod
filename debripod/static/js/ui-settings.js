@@ -56,6 +56,9 @@
           "selectedRow": "white",
           "selectedRowPills": "white"
       },
+      // Text opacity is the single base foreground value. textTransparency is
+      // retained as a read/write migration alias for older saved devices.
+      "textOpacity": 0.45,
       "textTransparency": 0.45,
       "animationFps": {
           "selectedRow": 60,
@@ -82,6 +85,7 @@
       "infoPillLightMultiplier": 1.0
   };
   Object.assign(DEFAULT_UI_SETTINGS, BOOTSTRAP_UI_DEFAULTS);
+  if(BOOTSTRAP_UI_DEFAULTS.textOpacity == null && BOOTSTRAP_UI_DEFAULTS.textTransparency != null) DEFAULT_UI_SETTINGS.textOpacity = Number(BOOTSTRAP_UI_DEFAULTS.textTransparency);
   DEFAULT_UI_SETTINGS.textModes = cloneTextModes(DEFAULT_UI_SETTINGS.textModes);
   DEFAULT_UI_SETTINGS.animationFps = cloneAnimationFps(DEFAULT_UI_SETTINGS.animationFps);
   DEFAULT_UI_SETTINGS.liquidGlassElements = cloneGlassElementSettings(DEFAULT_UI_SETTINGS.liquidGlassElements);
@@ -127,7 +131,15 @@
   }
 
   function normalizeTextTransparency(value){
-    return clampNumber(value, DEFAULT_UI_SETTINGS && DEFAULT_UI_SETTINGS.textTransparency != null ? DEFAULT_UI_SETTINGS.textTransparency : 0.45, 0, 1);
+    return clampNumber(value, DEFAULT_UI_SETTINGS && DEFAULT_UI_SETTINGS.textOpacity != null ? DEFAULT_UI_SETTINGS.textOpacity : 0.45, 0, 1);
+  }
+
+  function normalizeTextOpacity(value){
+    return clampNumber(value, DEFAULT_UI_SETTINGS && DEFAULT_UI_SETTINGS.textOpacity != null ? DEFAULT_UI_SETTINGS.textOpacity : 0.45, 0, 1);
+  }
+
+  function strongerForegroundOpacity(value){
+    return Math.min(1, normalizeTextOpacity(value) * 2);
   }
 
   function cloneTextModes(value){
@@ -208,7 +220,9 @@
     if(saved.visualizerBeatResponse != null) out.visualizerBeatResponse = cloneVisualizerResponse(saved.visualizerBeatResponse, out.visualizerBeatResponse);
     if(saved.videoAmbient != null) out.videoAmbient = cloneVideoAmbientSettings(saved.videoAmbient);
     if(saved.textModes != null) out.textModes = cloneTextModes(saved.textModes);
-    if(saved.textTransparency != null) out.textTransparency = normalizeTextTransparency(saved.textTransparency);
+    if(saved.textOpacity != null) out.textOpacity = normalizeTextOpacity(saved.textOpacity);
+    else if(saved.textTransparency != null) out.textOpacity = normalizeTextOpacity(saved.textTransparency);
+    if(saved.textTransparency != null || saved.textOpacity != null) out.textTransparency = normalizeTextOpacity(saved.textOpacity == null ? saved.textTransparency : saved.textOpacity);
     if(saved.animationFps != null) out.animationFps = cloneAnimationFps(saved.animationFps);
     if(saved.performanceOverlayText != null) out.performanceOverlayText = !!saved.performanceOverlayText;
     if(saved.liquidGlassElements != null) out.liquidGlassElements = cloneGlassElementSettings(saved.liquidGlassElements);
@@ -236,7 +250,8 @@
 
   function normalizeUiSettings(out){
     out.textModes = cloneTextModes(out.textModes);
-    out.textTransparency = normalizeTextTransparency(out.textTransparency);
+    out.textOpacity = normalizeTextOpacity(out.textOpacity == null ? out.textTransparency : out.textOpacity);
+    out.textTransparency = out.textOpacity;
     out.animationFps = cloneAnimationFps(out.animationFps);
     out.visualizerMaxBrightnessPct = normalizeVisualizerMaxBrightnessPct(out.visualizerMaxBrightnessPct);
     out.visualizerRotationsPerTrack = normalizeVisualizerRotationsPerTrack(out.visualizerRotationsPerTrack);
@@ -280,7 +295,13 @@
   function setDeviceSettingsUserId(userId){
     const next = String(userId || "").trim();
     if(!next) return root.uiSettings ? root.uiSettings.settings : loadUiSettings();
-    if(next === deviceSettingsUserId && root.uiSettings) return root.uiSettings.settings;
+    if(next === deviceSettingsUserId && root.uiSettings){
+      // Keep the legacy alias live for older modules that still mutate it
+      // directly; the settings screen writes both fields together.
+      const current = root.uiSettings.settings;
+      if(current && current.textTransparency !== current.textOpacity) current.textOpacity = normalizeTextOpacity(current.textTransparency);
+      return current;
+    }
     deviceSettingsUserId = next;
     const targetKey = deviceSettingsKey(next);
     try{
@@ -363,6 +384,8 @@
     normalizeVisualizerRotationsPerTrack,
     normalizeTextMode,
     normalizeTextTransparency,
+    normalizeTextOpacity,
+    strongerForegroundOpacity,
     cloneTextModes,
     normalizeAnimationFps,
     cloneAnimationFps,

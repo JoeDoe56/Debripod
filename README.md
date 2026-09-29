@@ -82,7 +82,7 @@ ffmpeg and ffprobe are used for metadata, artwork extraction, muxing, transcodin
 
 ### Search, downloads, and tasks
 
-DebriPod searches the indexed Library, Local Index, remote torrent sources, Soulseek, and YouTube concurrently, then presents one globally ranked feed. Rows retain visible source and type pills. The text filter row accepts ordinary terms plus `source:`, `type:`, `indexer:`, and `media:` filters; quote values containing spaces. Clicking a result pill toggles the corresponding text-backed filter.
+DebriPod searches the indexed Library, Local Index, remote torrent sources, Soulseek, and YouTube concurrently, then presents one globally ranked feed. Standard rows show identity and a smaller secondary line; source, quality, and other metadata remain available in the contextual information panel. The text filter row accepts ordinary terms plus `source:`, `type:`, `indexer:`, and `media:` filters; quote values containing spaces.
 
 YouTube Music searches Songs, Music Videos, Albums, Artists, Music Playlists, Podcasts, and Episodes. Ordinary YouTube adds Videos, Playlists, and Channels. YouTube Music wins duplicate YouTube identities.
 
@@ -127,7 +127,7 @@ Remove the `#` marker from rules you want to activate, then save the smart playl
 
 ### Visualizer, LiquidGL, and client cache
 
-The UI includes a WebGL visualizer, album art color extraction, LiquidGL glass surfaces, a wheel interface, selected row glass, list pills, a path pill, and a now playing control pill. Visualizer and glass settings are managed in the UI and stored locally.
+The UI includes a WebGL visualizer, album art color extraction, LiquidGL glass surfaces, a wheel interface, selected row glass, a path pill, and a now playing control pill. Host Grotesk typography, shared circular indicators, and SF Symbols-style SVGs give browsing and settings one visual system. Advanced Settings → Text controls base foreground opacity. Numeric adjustments temporarily reuse the control pill for the exact value and progress bar. Visualizer and glass settings are managed in the UI and stored locally.
 
 The frontend is split into smaller modules for API access, client sync, library browsing, list rendering, LiquidGL, playback, media session handling, now playing UI, path pill behavior, passkeys, search tasks, settings, visualizer behavior, wheel controls, and performance overlay. DebriPod also includes a service worker and cached client mirror so common app state and library views can survive refreshes more cleanly.
 
@@ -147,7 +147,7 @@ DebriPod includes optional MCP support. Enable it in Settings and restart DebriP
 
 | Input | Number | Lists | Now Playing | Seek Mode | Hold |
 |---|---:|---|---|---|---|
-| S or Enter | 1 | Interact with item | Enter Seek Mode | Commit seek, or exit Seek Mode when no seek occurred | Open context menu for selected or current item |
+| S or Enter | 1 | Interact with item | Enter Seek Mode | Commit seek, or exit Seek Mode when no seek occurred | Numeric keyboard entry while adjusting; wheel actions use the continuous pointer gesture below |
 | W or Backspace | 2 | Back to previous screen | Back to the preceding special page or originating ordinary page | Toggle like status | Jump to the library list location of the current item |
 | D | 3 | Next track | Next track | Skip forward | Open Queue |
 | Space | 4 | Pause or play | Pause or play | Toggle shuffle | Open Now Playing |
@@ -155,7 +155,13 @@ DebriPod includes optional MCP support. Enable it in Settings and restart DebriP
 | Q or wheel backward | 6 | Scroll backward on list | Decrease volume | Seek backward | No hold action |
 | E or wheel forward | 7 | Scroll forward on list | Increase volume | Seek forward | No hold action |
 
-Desktop right click on a playable row is the same as holding center.
+Outside Now Playing, pull from the right side of the wheel toward its center to reveal the information panel. Push from the center toward the right to dismiss it. Desktop right click on a row also opens its information panel. The panel reclaims list width and supports navigation, settings, search, and media rows.
+
+Inside full Now Playing, pull from the left side toward the center to reveal LRCLIB lyrics over the artwork; reverse the gesture to dismiss them. Synchronized lyrics follow playback and seeking. Plain, instrumental, missing, and failed lookups have dedicated treatments.
+
+Hold the wheel center for 320 ms, keep holding, and drag toward an action: top Like, bottom Add to Playlist, right Play Next, left Play After. Releasing commits the highlighted action; returning to the center before releasing cancels. Individual playable items and bounded collections support this mode; artists and navigation shortcuts do not. Collections apply to their members. Existing playlists are scoped to one library folder, so Add to Playlist is disabled for albums known to span multiple folders.
+
+See [UI system notes](docs/ui-system.md) for shared primitives, quality normalization, and browser validation.
 
 Special pages restore the exact ordinary view, selected row, and scroll position when closed.
 

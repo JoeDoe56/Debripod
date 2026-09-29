@@ -14,6 +14,9 @@
 
   const TYPES = new Set(["music", "movie", "episode", "video", "youtube"]);
   const COLLECTION_TYPES = new Set(["album", "artist", "genre", "playlist", "show", "show_season"]);
+  // These collections have a finite playable boundary.  Artist/genre and
+  // navigation categories deliberately do not inherit hold actions.
+  const BOUNDED_WHEEL_COLLECTIONS = new Set(["album", "playlist", "show", "show_season"]);
 
   function present(value){
     return value !== null && value !== undefined && String(value).trim() !== "";
@@ -49,6 +52,7 @@
         artist: String(item.artist || ""),
         album: String(item.album || ""),
         genre: String(item.genre || ""),
+        collection_root_ids: item.collection_root_ids || [],
       };
     }
     const knownNonPlayable = new Set([
@@ -84,6 +88,7 @@
       streamed: !!item.streamed,
       ext: String(item.ext || ""),
       quality: String(item.quality || ""),
+      liked: !!item.liked,
       year: item.year == null ? null : item.year,
       show_key: String(item.show_key || item.showKey || item.show_title || ""),
       show_title: String(item.show_title || item.showTitle || ""),
@@ -131,8 +136,8 @@
       return rows;
     }
     if(current.type === "music"){
-      rows.push({action:"lyrics", label:"Lyrics"});
-
+      // Lyrics are revealed from the Now Playing left-edge wheel gesture.
+      // They are intentionally not a second navigation action here.
     }else if(current.type === "movie" || current.type === "episode"){
       rows.push({action:"view_information", label:"View information"});
     }else if(current.type === "youtube"){
@@ -147,12 +152,36 @@
     return rows;
   }
 
+  function wheelActionsForTarget(target, options){
+    const current = target && (target.playable === true || target.collection === true) ? target : normalizeMediaTarget(target);
+    if(!current.playable && !(current.collection && BOUNDED_WHEEL_COLLECTIONS.has(current.type))) return {};
+    // Artist/genre "All Songs" rows share the historic album kind but are
+    // navigation shortcuts, not bounded albums.
+    if(current.type === "album" && current.value){
+      try{const value=JSON.parse(current.value);if(value && typeof value === "object" && !value.album) return {};}catch(e){}
+    }
+    const opts = options || {};
+    const canLike = current.playable || BOUNDED_WHEEL_COLLECTIONS.has(current.type);
+    const canPlaylist = current.playable ? !!(current.root_id && current.rel) : (current.collection_root_ids || []).length <= 1;
+    const queueAction = current.collection ? "_collection" : "";
+    return {
+      toggle_like: {action:"toggle_like", enabled: canLike, position:"top", active: !!(opts.liked ?? current.liked)},
+      add_to_playlist: {action:"add_to_playlist", enabled: canPlaylist, position:"bottom"},
+      play_next: {action:"play_next" + queueAction, enabled: true, position:"right"},
+      play_after: {action:"play_after" + queueAction, enabled: true, position:"left"},
+    };
+  }
+
+  function targetObject(raw){
+    return raw && (raw.playable === true || raw.collection === true) ? raw : normalizeMediaTarget(raw);
+  }
+
   function createBrowserMediaActions(win){
     const root = win.DebriPod = win.DebriPod || {};
     let activeTarget = null;
 
     function targetFromCurrent(explicit){
-      const direct = normalizeMediaTarget(explicit);
+      const direct = targetObject(explicit);
       if(direct.playable || direct.collection) return direct;
       try{
         if(win.nowPlaying && win.nowPlaying.style.display === "block" && win.state.now){
@@ -191,40 +220,31 @@
       }
     }
 
-    async function renderContextMenu(){
-      const target = activeTarget;
-      if(!target || (!target.playable && !target.collection)) return;
-      if(typeof win.showNowPlaying === "function") win.showNowPlaying(false, {navigationControlled:true});
-      const liked = target.collection ? false : await likeState(target);
-      const queue = root.playbackQueue;
-      const rows = contextMenuRows(target, {liked, hasCurrentPlayback:!!(queue && queue.hasCurrent())})
-        .map((row) => ({kind:"media_action", label:row.label, action:row.action, target, pills:row.heart ? ["♥"] : []}));
-      await win.setView({
-        kind:"media_context", label:target.label || "Media", mediaTarget:target,
-        load:async function(){ win.resetList(rows); },
-      }, false);
-    }
-
-    async function openContextMenuForCurrentTarget(explicit){
-      const target = targetFromCurrent(explicit);
-      if(!target.playable && !target.collection) return false;
-      activeTarget = target;
-      const nav = root.navigationController;
-      if(nav && nav.openTransient) await nav.openTransient("context_menu", renderContextMenu);
-      else await renderContextMenu();
-      return true;
-    }
-
     async function toggleLike(target){
-      const current = normalizeMediaTarget(target || activeTarget || targetFromCurrent());
+      const current = targetObject(target || activeTarget || targetFromCurrent());
+      if(current.collection && BOUNDED_WHEEL_COLLECTIONS.has(current.type)){
+        const items = await expandCollection(current);
+        if(!items.length) return false;
+        const states = [];
+        for(const item of items) states.push(await likeState(item));
+        const liked = !states.every(Boolean);
+        for(let index=0;index<items.length;index++){
+          if(states[index] !== liked) await setLike(items[index], liked);
+        }
+        return true;
+      }
       if(!current.playable || !root.apiClient) return false;
       const liked = await likeState(current);
+      return setLike(current, !liked);
+    }
+
+    async function setLike(current, liked){
       const response = await root.apiClient.apiPost("/api/library/like", Object.assign({}, current, {
-        media_type:current.type, media_key:mediaKey(current), liked:!liked,
+        media_type:current.type, media_key:mediaKey(current), liked,
       }));
       if(!response || !response.ok) throw new Error((response && response.json && response.json.error) || "Failed to update like");
-      try{ if(typeof win.updateNowPlayingHeartState === "function") win.updateNowPlayingHeartState(!liked); }catch(_error){}
-      return !liked;
+      try{ if(typeof win.updateNowPlayingHeartState === "function") win.updateNowPlayingHeartState(liked); }catch(_error){}
+      return liked;
     }
 
     async function showInformation(target){
@@ -354,8 +374,7 @@
         return false;
       }
       if(action === "toggle_like"){
-        await toggleLike(target);
-        return openContextMenuForCurrentTarget(target);
+        return toggleLike(target);
       }
       if(action === "play_next") return root.playbackQueue && root.playbackQueue.insertNext(target.canonical_queue_item);
       if(action === "play_after") return root.playbackQueue && root.playbackQueue.append(target.canonical_queue_item);
@@ -366,11 +385,37 @@
       return false;
     }
 
+    function wheelActionsForCurrentTarget(explicit, options){
+      return wheelActionsForTarget(targetFromCurrent(explicit), options);
+    }
+
+    async function executeWheelAction(action, explicitTarget){
+      const target = targetFromCurrent(explicitTarget);
+      const command = String(action || "");
+      if(!Object.values(wheelActionsForTarget(target)).some(item=>item.enabled && item.action === command)) return false;
+      if(command === "toggle_like") return toggleLike(target);
+      if(command === "add_to_playlist"){
+        if(typeof win.viewMediaPlaylistAdd !== "function") return false;
+        const items = target.collection ? await expandCollection(target) : [target];
+        if(!items.length) return false;
+        if(new Set(items.map(item=>item.root_id)).size > 1) throw new Error("Playlists currently contain items from one library folder. Choose an album within that folder.");
+        const pickerTarget = target.collection ? Object.assign({}, target, {playlistItems:items}) : target;
+        const nav = root.navigationController;
+        const render = () => win.viewMediaPlaylistAdd(pickerTarget);
+        return nav && nav.openTransient ? nav.openTransient("playlist_picker", render) : render();
+      }
+      if(command === "play_next" || command === "play_next_collection") return target.collection ? enqueueCollection(target, "next") : (root.playbackQueue && root.playbackQueue.insertNext(target.canonical_queue_item));
+      if(command === "play_after" || command === "play_after_collection") return target.collection ? enqueueCollection(target, "after") : (root.playbackQueue && root.playbackQueue.append(target.canonical_queue_item));
+      return false;
+    }
+
     return {
-      normalizeMediaTarget, contextMenuRows, targetFromCurrent, openContextMenuForCurrentTarget,
+      normalizeMediaTarget, contextMenuRows, wheelActionsForTarget, targetFromCurrent,
+      wheelActionsForCurrentTarget: wheelActionsForCurrentTarget,
+      executeWheelAction,
       toggleLikeForCurrentTarget: () => toggleLike(targetFromCurrent()), executeAction,
     };
   }
 
-  return {normalizeMediaTarget, contextMenuRows, createBrowserMediaActions};
+  return {normalizeMediaTarget, contextMenuRows, wheelActionsForTarget, createBrowserMediaActions};
 });
