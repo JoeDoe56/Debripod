@@ -49,3 +49,10 @@ test("quality and watch rings consume actual index fields monotonically",()=>{
   assert.equal(model.itemQuality({}),null);
   assert.equal(model.itemSymbol({kind:"track",media:"audio"}),"");
 });
+
+test("secondary text excludes repeated identity and duplicate fields",()=>{
+  assert.equal(model.distinctSecondary("Album", "Artist \u00b7 Album \u00b7 Artist"),"Artist");
+  assert.equal(model.distinctSecondary("  ALBUM ", "album"),"");
+  assert.equal(model.distinctSecondary("Artist \u2014 Album", "Artist \u00b7 Album \u00b7 2026"),"2026");
+  assert.equal(model.distinctSecondary("Love", "Love Songs \u00b7 3:42"),"Love Songs \u00b7 3:42");
+});

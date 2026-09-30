@@ -6,6 +6,7 @@
   let touched = false;
   let cached = null;
   let revision = 0;
+  let pendingCutouts = null;
 
   function restore(el, previous){
     el.style.clipPath = previous.clip;
@@ -14,6 +15,7 @@
     if(previous.webkitRule !== undefined) el.style.webkitClipRule = previous.webkitRule;
   }
   function clear(){
+    pendingCutouts = null;
     clipped.forEach((previous, el)=>restore(el, previous));
     clipped.clear();
     cached = null;
@@ -115,7 +117,7 @@
     });
     return true;
   }
-  function prepare(lens, radius){
+  function prepare(lens, radius, deferCutouts){
     touched = true;
     const list = document.getElementById("libList");
     if(!list){clear();return null;}
@@ -143,6 +145,15 @@
       if(!drawText(runs,stableBounds)){clear();return null;}
       cached={signature,elements:elements.slice(),result:{canvas,bounds:stableBounds,revision:++revision}};
     }
+    pendingCutouts = {elements, lens, radius};
+    if(!deferCutouts) commit();
+    return cached.result;
+  }
+  // Publish DOM cutouts only after the replacement pixels were submitted.
+  function commit(){
+    if(!pendingCutouts) return;
+    const {elements,lens,radius}=pendingCutouts;
+    pendingCutouts=null;
     const retained=new Set();
     elements.forEach(el=>{
       const rect=el.getBoundingClientRect();
@@ -155,7 +166,6 @@
       el.style.clipRule="evenodd";el.style.webkitClipRule="evenodd";
     });
     clipped.forEach((previous,el)=>{if(!retained.has(el)){restore(el,previous);clipped.delete(el);}});
-    return cached.result;
   }
-  root.rowRefraction={prepare,clear,beginFrame:()=>{touched=false;},endFrame:()=>{if(!touched)clear();},testing:{cutout,textSignature}};
+  root.rowRefraction={prepare,commit,clear,beginFrame:()=>{touched=false;},endFrame:()=>{if(!touched)clear();},testing:{cutout,textSignature}};
 })();

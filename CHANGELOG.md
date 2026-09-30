@@ -6,6 +6,7 @@ Commits use Conventional Commits.
 ## [Unreleased]
 
 ### Added
+- Inward top/bottom wheel pulls enter fullscreen or choose a random eligible item, with gesture cancellation and stable directional controls.
 - Lyrics over Now Playing artwork, with synchronized LRC highlighting, plain lyrics, instrumental and unavailable states, track-change cancellation, and seek-aware playback tracking.
 - Same-origin LRCLIB lookup through the shared HTTP client, with cached exact recording lookup and conservative search matching.
 - Shared standard rows, normalized rounded rings, glyph-cutout activation circles, and adaptive metadata panels across browsing and settings.
@@ -14,6 +15,10 @@ Commits use Conventional Commits.
 - Tests for gestures, collection actions, metadata, numeric normalization, and iPhone 15 Pro Max browser dimensions.
 
 ### Changed
+- Native list scrolling owns touch and momentum, hides the selected glass until settling, and selects the row beneath its previous screen position.
+- Wheel detents are batched per animation frame; virtual rows stay attached and share a measured height instead of rebuilding library-wide measurements during scrolling.
+- Library root rows use a centered single line. Other sparse rows center automatically, and secondary lines omit repeated identities and fields.
+- Wheel glyphs are 12% smaller; MENU retains matching optical height at Host Grotesk weight 800.
 - Standard rows use one 55 px architecture with meaningful left indicators and primary/secondary text hierarchy.
 - Panels reclaim approximately 30% of the screen width with shared safe-zone spacing and fading row text.
 - Advanced Settings exposes Text Opacity; foreground emphasis derives from that value.
@@ -23,10 +28,12 @@ Commits use Conventional Commits.
 - Shared settings-row construction replaces duplicate builders, and offline shell caching includes the new fonts, symbols, and styles.
 
 ### Removed
+- Full Screen settings and Random list rows; their actions now use the wheel edge gestures.
 - Persistent metadata/status pills on standard rows, double-height standard rows, the dedicated View Lyrics action, and the separate center-hold action screen.
 
 ### Fixed
-- Increased MENU to Host Grotesk 700 and matched its visible height to the normal wheel glyphs, with consistent playback-symbol height.
+- Selection/refraction flicker during rapid wheel and finger scrolling: one scroll owner, coordinated geometry, cleared hidden-lens cutouts, and native text replacement committed after glass drawing.
+- Songs Random resolves cached library references for every queue entry, retains its chosen item through async navigation, and prevents overlapping playback starts.
 - Lyrics browsing now preserves offscreen reading positions, recenters small scrolls, and supports seeking by click or keyboard. Full-height blur feathers toward the cover's midpoint, leaving right-side artwork taps available to pin playback pills.
 - Short inward pulls from the Next Track region open the information panel without conflicting wheel scrolling.
 - Selected row labels, secondary text, and indicators move together; default and migrated foreground opacity uses 40% normal and 80% emphasis.

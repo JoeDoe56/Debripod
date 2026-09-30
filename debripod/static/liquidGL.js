@@ -2094,10 +2094,6 @@
       const rect = lens.rectPx;
       gl.uniform1i(this.u.hasUnderText, 0);
       const textLayer = this.rendererKey === "main" && window.DebriPod && window.DebriPod.rowRefraction;
-      if(rect && lens.el.id === "libListSelectedGlass" && textLayer){
-        const textSource = textLayer.prepare(rect,lens.radiusCss);
-        if(textSource) this._bindUnderText(textSource);
-      }
       const forceCanary = this._forceGlassCanary();
       if (forceCanary && !this.texture) {
         const canary = this._ensureDebugCanaryTexture();
@@ -2128,6 +2124,15 @@
           this._debugRenderSkip("_renderLens skipped: albumArtTransition missing source rect");
           return;
         }
+      }
+
+      let textPrepared = false;
+      if(lens.el.id === "libListSelectedGlass" && textLayer){
+        // A translucent reveal must not cut away fully visible native text.
+        if(Number(getComputedStyle(lens.el).opacity) >= .995){
+          const textSource = textLayer.prepare(rect,lens.radiusCss,true);
+          if(textSource){this._bindUnderText(textSource);textPrepared=true;}
+        }else textLayer.clear();
       }
 
       const dpr = this._dpr || Math.min(2, window.devicePixelRatio || 1);
@@ -2268,6 +2273,7 @@
         gl.scissor(left, bottom, Math.max(0, right - left), Math.max(0, top - bottom));
       }
       gl.drawArrays(gl.TRIANGLES, 0, 6);
+      if(textPrepared) textLayer.commit();
       gl.disable(gl.SCISSOR_TEST);
     }
 

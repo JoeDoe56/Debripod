@@ -164,6 +164,17 @@
       .filter(Boolean);
   }
 
+  function distinctSecondary(primary, secondary){
+    const normalize = value=>String(value || "").normalize("NFKC").replace(/\s+/g," ").trim().toLocaleLowerCase();
+    const identity = new Set([normalize(primary), ...String(primary || "").split(/\s+[\u00b7\u2022|\u2013\u2014]\s+/).map(normalize)]);
+    const seen = new Set();
+    return String(secondary || "").split(/\s*[\u00b7\u2022|]\s*/).filter(value=>{
+      const key=normalize(value);
+      if(!key || identity.has(key) || seen.has(key)) return false;
+      seen.add(key); return true;
+    }).map(value=>value.trim()).join(" \u00b7 ");
+  }
+
   function itemSecondary(item, row){
     const direct = item && (item.secondary || item.subtitle || [item.artist, item.album].filter(Boolean).join(" · ") || itemDescription(item));
     if(direct) return String(direct);
@@ -361,6 +372,7 @@
       }else{
         secondary.classList.add("dpRowSecondary");
       }
+      setText(secondary, distinctSecondary(primary && primary.textContent || item.label || item.title, secondary.textContent));
       const numericInput = row.querySelector(".rangeValueEditing .libInlineInput");
       if(numericInput){
         numericInput.classList.add("dpRowSecondary");
@@ -456,7 +468,7 @@
     isPanelOpen,
     getPanelSafeZone: ()=>SAFE_ZONE
   };
-  root.rowSystem.model = {itemNumber,itemProgress,itemQuality,itemDescription,itemSymbol,panelEntries};
+  root.rowSystem.model = {distinctSecondary,itemNumber,itemProgress,itemQuality,itemDescription,itemSymbol,panelEntries};
   if(typeof module !== "undefined" && module.exports) module.exports = root.rowSystem;
   if(global.addEventListener) global.addEventListener("resize", ()=>{ if(isPanelOpen()) updatePanel(); }, {passive:true});
 })(typeof window !== "undefined" ? window : globalThis);

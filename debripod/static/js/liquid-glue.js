@@ -861,6 +861,34 @@
     settleTimer: 0
   };
 
+  function libSelectionDirectScrolling(){
+    const scroll = window.DebriPod && window.DebriPod.listScroll;
+    return !!(scroll && scroll.isDirectScrolling());
+  }
+
+  // Suspend presentation as one operation. Fading a live text cutout while
+  // its canvas and the native scroller move independently produces ghosting.
+  function suspendLibSelectionVisual(){
+    if(listSelectionMotion.suppressed) return;
+    listSelectionMotion.suppressed = true;
+    cancelLibSelectionMotion();
+    listSelectionMotion.initialized = false;
+    listSelectionMotion.motionStepTs = 0;
+    const list = document.getElementById("libList");
+    if(list) list.classList.add("dpSelectionSuppressed");
+    const el = document.getElementById("libListSelectedGlass");
+    if(el){
+      el.style.visibility = "hidden";
+      el.style.opacity = "0";
+      el.classList.remove("isVisible");
+    }
+    if(typeof setSelectedRowContentOffset === "function") setSelectedRowContentOffset(null, null);
+    const refraction = window.DebriPod && window.DebriPod.rowRefraction;
+    if(refraction) refraction.clear();
+    applyLibSelectionForeground();
+    markFrameWork({metrics:true, render:true});
+  }
+
   function noteLibSelectionInput(now){
     const motion = listSelectionMotion;
     motion.rapidCount = motion.lastInputAt && now - motion.lastInputAt < 110 ? motion.rapidCount + 1 : 1;
@@ -887,6 +915,7 @@
 
   function applyLibSelectionMotion(){
     try{
+      if(listSelectionMotion.suppressed) return;
       const el = document.getElementById("libListSelectedGlass");
       if(!el) return;
       const stretchPx = Math.abs(listSelectionMotion.stretch || 0) * Math.min(18, Math.max(8, listSelectionMotion.currentHeight * 0.24));
@@ -926,6 +955,7 @@
   function stepLibSelectionMotion(frameState){
     listSelectionMotion.raf = 0;
     try{
+      if(listSelectionMotion.suppressed) return;
       const now = (frameState && frameState.timestamp) || (performance && performance.now ? performance.now() : Date.now());
       const interval = animationFrameIntervalMs("selectedRow");
       if(listSelectionMotion.lastStepTs && now - listSelectionMotion.lastStepTs < interval - 1){
@@ -982,6 +1012,7 @@
 
   function scheduleLibSelectionMotion(){
     try{
+      if(listSelectionMotion.suppressed) return;
       if(listSelectionMotion.raf) return;
       const scheduler = frameScheduler();
       if(scheduler && scheduler.request){
@@ -997,7 +1028,6 @@
   function setLibSelectionTarget(x, y, width, height, radius, opacity){
     try{
       radius = Math.max(0, Math.min(radius, width / 2, height / 2));
-      opacity = listSelectionMotion.rapidInput ? 0 : opacity;
       if(listSelectionMotion.initialized && listSelectionMotion.targetX === x && listSelectionMotion.targetY === y &&
          listSelectionMotion.targetWidth === width && listSelectionMotion.targetHeight === height &&
          listSelectionMotion.targetRadius === radius && listSelectionMotion.targetOpacity === opacity) return;
@@ -1006,20 +1036,21 @@
       listSelectionMotion.targetWidth = width;
       listSelectionMotion.targetHeight = height;
       listSelectionMotion.targetRadius = radius;
-      opacity = listSelectionMotion.rapidInput ? 0 : opacity;
       listSelectionMotion.targetOpacity = opacity;
       listSelectionMotion.targetForegroundProgress = opacity > 0.5 ? 1 : 0;
       if(!listSelectionMotion.initialized || (listSelectionMotion.rebaseOnReveal && opacity > 0)){
+        const reveal = listSelectionMotion.rebaseOnReveal && opacity > 0;
         listSelectionMotion.rebaseOnReveal = false;
         listSelectionMotion.currentX = x;
         listSelectionMotion.currentY = y;
         listSelectionMotion.currentWidth = width;
         listSelectionMotion.currentHeight = height;
         listSelectionMotion.currentRadius = radius;
-        listSelectionMotion.currentOpacity = opacity;
+        listSelectionMotion.currentOpacity = reveal ? 0 : opacity;
         listSelectionMotion.foregroundProgress = listSelectionMotion.targetForegroundProgress;
         listSelectionMotion.initialized = true;
         applyLibSelectionMotion();
+        if(reveal) scheduleLibSelectionMotion();
         return;
       }
       scheduleLibSelectionMotion();
@@ -1103,6 +1134,16 @@
         destroyLibSelectionGlass(reason || "now playing visible");
         return;
       }
+      const directScrolling = libSelectionDirectScrolling();
+      const selectedKey = String(state.itemsVersion || 0) + ":" + String(state.sel);
+      if(listSelectionMotion.selectedKey !== selectedKey){
+        listSelectionMotion.selectedKey = selectedKey;
+        if(!directScrolling && reason !== "direct scroll settled") noteLibSelectionInput(performance.now());
+      }
+      if(directScrolling || listSelectionMotion.rapidInput){
+        suspendLibSelectionVisual();
+        return;
+      }
       const settings = glassElementSettings("selectedRow");
       let selectionRenderer = liquidGlassRendererByKey("main");
       if(selectionRenderer && selectionRenderer.canvas) selectionRenderer.canvas.style.visibility = "";
@@ -1110,19 +1151,8 @@
       const row = list.querySelector(".ipodItem.sel");
       const inner = selectedListInnerRect();
       if(!row || !inner){
-        setLibSelectionTarget(listSelectionMotion.targetX, listSelectionMotion.targetY, listSelectionMotion.targetWidth, listSelectionMotion.targetHeight, listSelectionMotion.targetRadius, 0);
+        suspendLibSelectionVisual();
         return;
-      }
-      const selectedKey = String(state.itemsVersion || 0) + ":" + String(state.sel);
-      if(listSelectionMotion.selectedKey !== selectedKey){
-        listSelectionMotion.selectedKey = selectedKey;
-        const changedAt = performance.now();
-        noteLibSelectionInput(changedAt);
-        if(!listSelectionMotion.selectionChangedAt || changedAt - listSelectionMotion.selectionChangedAt > 180) listSelectionMotion.foregroundProgress = 0;
-        listSelectionMotion.selectionChangedAt = changedAt;
-        listSelectionMotion.targetForegroundProgress = 1;
-        applyLibSelectionForeground();
-        scheduleLibSelectionMotion();
       }
       const rowRect = row.getBoundingClientRect();
       const left = Math.max(rowRect.left, inner.left);
@@ -1130,8 +1160,14 @@
       const visibleTop = Math.max(rowRect.top, inner.top);
       const visibleBottom = Math.min(rowRect.bottom, inner.bottom);
       if(right <= left || visibleBottom <= visibleTop){
-        setLibSelectionTarget(listSelectionMotion.targetX, listSelectionMotion.targetY, listSelectionMotion.targetWidth, listSelectionMotion.targetHeight, listSelectionMotion.targetRadius, 0);
+        suspendLibSelectionVisual();
         return;
+      }
+      if(listSelectionMotion.suppressed){
+        listSelectionMotion.suppressed = false;
+        listSelectionMotion.rebaseOnReveal = true;
+        list.classList.remove("dpSelectionSuppressed");
+        el.style.visibility = "";
       }
       const host = document.getElementById("ipodScreen");
       const hostRect = host ? host.getBoundingClientRect() : {left:0, top:0};

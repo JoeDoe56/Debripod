@@ -32,6 +32,11 @@
     ACTION_DEAD_ZONE: "action_dead_zone",
     ACTION_CONFIRMED: "action_confirmed",
     ACTION_CANCELLED: "action_cancelled",
+    POTENTIAL_VERTICAL: "potential_vertical_gesture",
+    FULLSCREEN_GESTURE: "fullscreen_gesture",
+    RANDOM_GESTURE: "random_gesture",
+    FULLSCREEN_CONFIRMED: "fullscreen_confirmed",
+    RANDOM_CONFIRMED: "random_confirmed",
   });
 
   const ACTION_POSITIONS = Object.freeze({
@@ -47,6 +52,8 @@
   const EDGE_ANGLE_TOLERANCE = 42;
   const DEAD_ZONE = 0.30;
   const ACTION_ZONE = 0.52;
+  const VERTICAL_RESOLVE = 24;
+  const VERTICAL_ANGLE_TOLERANCE = 42;
 
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, Number(value) || 0));
@@ -102,6 +109,20 @@
     } catch (_error) {
       return false;
     }
+  }
+
+  function requestFullscreen(win){
+    try{
+      if(win && typeof win.forceFullscreenOn === "function") return Promise.resolve(win.forceFullscreenOn()).catch(()=>false);
+      const element=win && win.document && win.document.documentElement;
+      if(element && typeof element.requestFullscreen === "function") return Promise.resolve(element.requestFullscreen()).catch(()=>false);
+    }catch(_error){}
+    return Promise.resolve(false);
+  }
+
+  function triggerRandom(win){
+    return Promise.resolve().then(()=>win && typeof win.randomFromCurrentList === "function" ? win.randomFromCurrentList() : false)
+      .catch(error=>{ if(win && typeof win.reportUiStatus === "function") win.reportUiStatus(String(error.message || error), "warn"); return false; });
   }
 
   function createInteraction(options) {
@@ -197,6 +218,8 @@
       const panelOpen = typeof opts.isPanelOpen === "function" ? !!opts.isPanelOpen() : false;
       const lyricsOpen = typeof opts.isLyricsOpen === "function" ? !!opts.isLyricsOpen() : false;
       const hintedEdge = details && details.edgeHint;
+      const location = wheelPoint(point, rect);
+      const hintedVertical = details && details.verticalHint || (Math.abs(location.x / location.radius) <= .55 && Math.abs(location.y / location.radius) >= .55 ? (location.y < 0 ? "top" : "bottom") : null);
       const edgeCandidate = hintedEdge === "right" || hintedEdge === "left"
         ? ((nowPlaying() && hintedEdge === "left") || (!nowPlaying() && hintedEdge === "right") ? hintedEdge : null)
         : edgeFor(point, rect, nowPlaying(), panelOpen, lyricsOpen);
@@ -204,6 +227,7 @@
       pointer = {
         start: { x: point.x, y: point.y }, current: { x: point.x, y: point.y }, rect, edge,
         edgeCandidate: isCenter ? edgeCandidate : null,
+        verticalCandidate: isCenter || (hintedVertical !== "top" && hintedVertical !== "bottom") ? null : hintedVertical,
         isCenter, moved: false, edgeEligible: !!edge,
         pointerId: details && details.pointerId != null ? details.pointerId : null,
         panelInitial: panelOpen ? 1 : 0, lyricsInitial: lyricsOpen ? 1 : 0,
@@ -212,6 +236,8 @@
       emit("suppress", false);
       if (edge) {
         transition(STATES.POTENTIAL_EDGE, { edge });
+      } else if (!isCenter && (hintedVertical === "top" || hintedVertical === "bottom")) {
+        transition(STATES.POTENTIAL_VERTICAL, { vertical: hintedVertical });
       } else if (isCenter) {
         transition(STATES.CENTER_HOLD_PENDING);
         clearTimer();
@@ -232,7 +258,30 @@
       const dx = point.x - pointer.start.x;
       const dy = point.y - pointer.start.y;
       pointer.moved = pointer.moved || Math.hypot(dx, dy) >= 8;
-      if (state === STATES.POTENTIAL_EDGE && pointer.edge && pointer.edgeEligible) {
+      if (state === STATES.POTENTIAL_VERTICAL && pointer.verticalCandidate) {
+        const vertical = pointer.verticalCandidate;
+        const directionWrong = vertical === "top" ? dy <= 0 : dy >= 0;
+        const angleOkay = Math.abs(dx) <= Math.abs(dy) * Math.tan(VERTICAL_ANGLE_TOLERANCE * Math.PI / 180);
+        const thresholdCrossed = vertical === "top" ? dy >= VERTICAL_RESOLVE : dy <= -VERTICAL_RESOLVE;
+        // Keep the candidate alive while the user is still moving in the
+        // intended direction, even if the first move is below the threshold.
+        // This avoids cancelling shallow diagonal pulls at 23px/8px.
+        if (Math.hypot(dx, dy) >= VERTICAL_RESOLVE && (directionWrong || !angleOkay)) {
+          pointer.verticalCandidate = null;
+          transition(STATES.NORMAL, { reason: "circular_wheel_motion" });
+        } else if (thresholdCrossed && !directionWrong && angleOkay) {
+          clearTimer();
+          emit("suppress", true);
+          pointer.verticalProgress = clamp((vertical === "top" ? dy : -dy) / Math.max(VERTICAL_RESOLVE, pointer.rect.height * 0.22), 0, 1);
+          transition(vertical === "top" ? STATES.FULLSCREEN_GESTURE : STATES.RANDOM_GESTURE, { vertical });
+          emit("verticalProgress", vertical, pointer.verticalProgress);
+        }
+      } else if (state === STATES.FULLSCREEN_GESTURE || state === STATES.RANDOM_GESTURE) {
+        const vertical = state === STATES.FULLSCREEN_GESTURE ? "top" : "bottom";
+        const dy = point.y - pointer.start.y;
+        pointer.verticalProgress = clamp((vertical === "top" ? dy : -dy) / Math.max(VERTICAL_RESOLVE, pointer.rect.height * 0.22), 0, 1);
+        emit("verticalProgress", vertical, pointer.verticalProgress);
+      } else if (state === STATES.POTENTIAL_EDGE && pointer.edge && pointer.edgeEligible) {
         const directionWrong = pointer.edge === "right" ? dx >= 0 : pointer.edge === "left" ? dx <= 0 : pointer.edge === "right_close" ? dx <= 0 : dx >= 0;
         const inward = pointer.edge === "right" ? dx <= -EDGE_RESOLVE : pointer.edge === "left" ? dx >= EDGE_RESOLVE : pointer.edge === "right_close" ? dx >= EDGE_RESOLVE : dx <= -EDGE_RESOLVE;
         const angleOkay = Math.abs(dy) <= Math.abs(dx) * Math.tan(EDGE_ANGLE_TOLERANCE * Math.PI / 180);
@@ -286,6 +335,7 @@
       clearTimer();
       const finished = state;
       let action = null;
+      let gesture = null;
       if (finished === STATES.RIGHT_PANEL_GESTURE) {
         const progress = edgeProgress(pointer.start, pointer.current, pointer.rect, pointer.edge);
         const amount = pointer.edge === "right_close" ? 1 - progress : progress;
@@ -300,9 +350,17 @@
         emit("action", action && (action.action || ACTION_POSITIONS[selectedPosition]), actionTarget, action);
       } else if (finished === STATES.ACTION_DEAD_ZONE || finished === STATES.ACTION_MODE) {
         transition(STATES.ACTION_CANCELLED, { reason: "dead_zone" });
+      } else if (finished === STATES.FULLSCREEN_GESTURE && pointer.verticalProgress >= .5) {
+        gesture = "fullscreen";
+        transition(STATES.FULLSCREEN_CONFIRMED, { vertical: "top" });
+        emit("fullscreen");
+      } else if (finished === STATES.RANDOM_GESTURE && pointer.verticalProgress >= .5) {
+        gesture = "random";
+        transition(STATES.RANDOM_CONFIRMED, { vertical: "bottom" });
+        emit("random");
       }
-      const result = { state, action, position: selectedPosition, target: actionTarget };
-      consumedLastPointer = !!pointer.holdResolved || finished === STATES.RIGHT_PANEL_GESTURE || finished === STATES.LYRICS_GESTURE || finished === STATES.ACTION_TARGET_SELECTED || finished === STATES.ACTION_DEAD_ZONE || finished === STATES.ACTION_MODE;
+      const result = { state, action, gesture, position: selectedPosition, target: actionTarget };
+      consumedLastPointer = !!pointer.holdResolved || finished === STATES.RIGHT_PANEL_GESTURE || finished === STATES.LYRICS_GESTURE || finished === STATES.ACTION_TARGET_SELECTED || finished === STATES.ACTION_DEAD_ZONE || finished === STATES.ACTION_MODE || finished === STATES.FULLSCREEN_GESTURE || finished === STATES.RANDOM_GESTURE;
       emit("actionMode", false, actions, actionTarget);
       emit("suppress", false);
       pointer = null;
@@ -329,6 +387,9 @@
         emit("lyricsProgress", pointer.lyricsInitial);
         emit("lyricsOpen", pointer.lyricsInitial >= 1);
       }
+      if (pointer.verticalCandidate) {
+        emit("verticalProgress", pointer.verticalCandidate, 0);
+      }
       emit("suppress", false);
       pointer = null;
       selectedPosition = null;
@@ -336,13 +397,15 @@
       actionTarget = null;
       transition(STATES.NORMAL);
     }
-    return {
+      return {
       STATES, ACTION_POSITIONS, begin, move, end, cancel, enterActionMode,
       state: () => state,
       isActive: () => !!pointer,
       selectedPosition: () => selectedPosition,
       actions: () => Object.assign({}, actions),
       consumePointer: () => { const result = consumedLastPointer; consumedLastPointer = false; return result; },
+      requestFullscreen: () => requestFullscreen(opts.window),
+      triggerRandom: () => triggerRandom(opts.window),
     };
   }
 
@@ -356,6 +419,7 @@
     const lyrics = root.lyrics || {};
     const labels = { top: ".wlTop", right: ".wlRight", bottom: ".wlBottom", left: ".wlLeft" };
     const interaction = createInteraction({
+      window: win,
       isNowPlaying: () => !!(win.nowPlaying && win.nowPlaying.style.display === "block"),
       isPanelOpen: () => typeof rowSystem.isPanelOpen === "function" && rowSystem.isPanelOpen(),
       isLyricsOpen: () => typeof lyrics.isOpen === "function" && lyrics.isOpen(),
@@ -366,6 +430,8 @@
         panelOpen: value => typeof rowSystem.setPanelOpen === "function" && rowSystem.setPanelOpen(value, {animate: true}),
         lyricsProgress: value => typeof lyrics.setProgress === "function" && lyrics.setProgress(value, {immediate: true}),
         lyricsOpen: value => typeof lyrics.setOpen === "function" && lyrics.setOpen(value, {animate: true}),
+        fullscreen: () => requestFullscreen(win),
+        random: () => triggerRandom(win),
         actionMode: (active, actions) => {
           wheel.classList.toggle("wheelActionMode", !!active);
           const actionSymbols = {toggle_like: "heart", add_to_playlist: "addToPlaylist", play_next: "playNext", play_after: "playAfter"};
@@ -425,7 +491,9 @@
           const center = !!(event.target && event.target.closest && event.target.closest("#btnCenter"));
           const right = !!(event.target && event.target.closest && event.target.closest(".hitRight"));
           const left = !!(event.target && event.target.closest && event.target.closest(".hitLeft"));
-          interaction.begin(point, Object.assign(pointerDetails, {rect, target: center ? "center" : "", isCenter: center, edgeHint: right ? "right" : (left ? "left" : null)}));
+          const top = !!(event.target && event.target.closest && event.target.closest(".hitTop"));
+          const bottom = !!(event.target && event.target.closest && event.target.closest(".hitBottom"));
+          interaction.begin(point, Object.assign(pointerDetails, {rect, target: center ? "center" : "", isCenter: center, edgeHint: right ? "right" : (left ? "left" : null), verticalHint: top ? "top" : (bottom ? "bottom" : null)}));
         }
         else if (type === "pointermove") interaction.move(point, pointerDetails);
         else if (type === "pointerup") interaction.end(pointerDetails);
@@ -437,5 +505,5 @@
     return interaction;
   }
 
-  return { STATES, ACTION_POSITIONS, createInteraction, attach, edgeFor, actionForPoint, shouldIgnoreLostPointerCapture };
+  return { STATES, ACTION_POSITIONS, createInteraction, attach, edgeFor, actionForPoint, shouldIgnoreLostPointerCapture, requestFullscreen, triggerRandom };
 });

@@ -307,13 +307,36 @@ async function goBack(){
   }
 
   function buildPlaylistFromItems(items){
-    const pl = [];
-    for(const it of items){
-      if(it.kind === "track" || (it.kind === "file" && (it.media === "audio" || it.media === "video"))){
-        pl.push(it);
-      }
-    }
-    return pl;
+    // Cached/aggregate Songs rows may carry root_id instead of a root object.
+    // Resolve every candidate, not only the track that starts playback.
+    const roots = new Map((state.roots || []).map(root=>[root.id, root]));
+    const fallback = state.current && state.current.root;
+    return (items || []).filter(it=>it && !it.disabled && (it.kind === "track" || (it.kind === "file" && ["audio","video"].includes(it.media))))
+      .map(it=>{
+        const id = it.root && it.root.id || it.root_id || (fallback && fallback.id);
+        const root = it.root || roots.get(id) || (id ? {id, name:"Library", mode:"metadata"} : null);
+        return Object.assign({}, it, {root, media:it.media || "audio"});
+      }).filter(it=>it.root && it.root.id && it.rel);
+  }
+
+  let randomSelectionPending = false;
+  async function randomFromCurrentList(){
+    if(randomSelectionPending || (nowPlaying && nowPlaying.style.display === "block") || !_shouldAddRandom(state.items)) return false;
+    const queueApi = window.DebriPod && DebriPod.playbackQueueApi;
+    const eligible = queueApi.randomEligibleIndexes(state.items).filter(index=>!state.items[index].disabled && state.items[index].kind !== "loading");
+    if(!eligible.length) return false;
+    const index = eligible[Math.floor(Math.random() * eligible.length)];
+    const item = state.items[index];
+    randomSelectionPending = true;
+    try{
+      setSelectionFast(index);
+      // Explicit ownership survives renders and async metadata loading.
+      await selectItem(item);
+      return true;
+    }catch(error){
+      reportUiStatus(String(error && error.message || error), "warn");
+      return false;
+    }finally{ randomSelectionPending = false; }
   }
 
   function buildVideoPlaylistFromItems(items){
@@ -1568,19 +1591,9 @@ if(!it) return;
     }
 
     if(it.kind === "random"){
-      const queueApi = window.DebriPod && DebriPod.playbackQueueApi;
-      const idxs = queueApi && typeof queueApi.randomEligibleIndexes === "function"
-        ? queueApi.randomEligibleIndexes(state.items)
-        : state.items.reduce((out, cand, index)=>{ if(_randomEligibleItem(cand)) out.push(index); return out; }, []);
-      if(!idxs.length) return;
-      const ri = idxs[Math.floor(Math.random() * idxs.length)];
-      state.sel = ri;
-      renderList();
-      try{ await new Promise(r=>setTimeout(r, 20)); }catch(e){}
-      await selectItem();
+      await randomFromCurrentList();
       return;
     }
-
 
     if(it.kind === "up"){
       await goBack();
@@ -2376,7 +2389,7 @@ if(it.kind === "root"){
     }
     if(it.kind === "track"){
       const pl = buildPlaylistFromItems(state.items);
-      const idx = pl.findIndex(x => x.rel === it.rel && x.root.id === it.root.id);
+      const idx = pl.findIndex(x => x.rel === it.rel && x.root.id === (it.root && it.root.id || it.root_id));
       await startAudioFromItem(it, pl, idx >= 0 ? idx : 0, true);
       return;
     }
@@ -2387,7 +2400,7 @@ if(it.kind === "root"){
       }
       if(it.media === "audio"){
         const pl = buildPlaylistFromItems(state.items);
-        const idx = pl.findIndex(x => x.rel === it.rel && x.root.id === it.root.id);
+        const idx = pl.findIndex(x => x.rel === it.rel && x.root.id === (it.root && it.root.id || it.root_id));
         await startAudioFromItem(it, pl, idx >= 0 ? idx : 0, true);
         return;
       }

@@ -56,15 +56,32 @@ test("actual playback queue builder renders shuffled order with canonical click 
   assert.equal(rows[1].pills[0], "Now");
 });
 
-test("library Random keeps the chosen logical index through render and selection", () => {
-  const source = readFileSync("debripod/static/js/library-browser.js", "utf8");
-  const start = source.indexOf('if(it.kind === "random")');
-  const end = source.indexOf('if(it.kind === "up")', start);
-  assert.ok(start >= 0 && end > start, "random handler must remain present");
-  const branch = source.slice(start, end);
-  assert.match(branch, /randomEligibleIndexes\(state\.items\)/);
-  assert.match(branch, /state\.sel = ri;\s*renderList\(\);[\s\S]*selectItem\(\)/);
-  assert.doesNotMatch(branch, /rowAt|rendered|virtualWindow|visibleIndexes/);
+test("Random owns its chosen Songs item across render changes and blocks overlapping starts", async () => {
+  const source=readFileSync("debripod/static/js/library-browser.js","utf8");
+  const chosen={kind:"track",root_id:"r",rel:"last.flac"};
+  let release;const pending=new Promise(resolve=>release=resolve);
+  const items=[{kind:"info"},chosen];const calls=[];
+  const sandbox={state:{items},nowPlaying:{style:{display:"none"}},_shouldAddRandom:()=>true,
+    window:{DebriPod:{playbackQueueApi:{randomEligibleIndexes:()=>[1]}}},
+    setSelectionFast:index=>{calls.push(index);sandbox.state.items=[];},
+    selectItem:async item=>{calls.push(item);await pending;},reportUiStatus:()=>{}};
+  sandbox.DebriPod=sandbox.window.DebriPod;
+  vm.runInNewContext("let randomSelectionPending=false;"+extractFunction(source,"async function randomFromCurrentList()"),sandbox);
+  const first=sandbox.randomFromCurrentList();
+  assert.equal(await sandbox.randomFromCurrentList(),false);
+  release();assert.equal(await first,true);
+  assert.deepEqual(calls,[1,chosen]);
+});
+
+test("Songs playback normalizes root_id on every cached queue entry",()=>{
+  const source=readFileSync("debripod/static/js/library-browser.js","utf8");
+  const sandbox={state:{roots:[{id:"r",name:"Music"}],current:{root:{id:"fallback"}}}};
+  vm.runInNewContext(extractFunction(source,"function buildPlaylistFromItems(items)"),sandbox);
+  const rows=[{kind:"track",root_id:"r",rel:"a.flac"},{kind:"track",root_id:"s",rel:"a.flac"},{kind:"file",media:"audio",rel:"b.flac"},null,{kind:"track",disabled:true,rel:"c.flac"}];
+  const playlist=sandbox.buildPlaylistFromItems(rows);
+  assert.deepEqual(Array.from(playlist,it=>it.root.id),["r","s","fallback"]);
+  assert.equal(playlist[0].media,"audio");
+  assert.equal(rows[0].root,undefined,"do not mutate cached input");
 });
 
 test("actual shuffle toggle refreshes Queue rows by canonical index and preserves selection", () => {

@@ -3,7 +3,7 @@ import test from "node:test";
 import {createRequire} from "node:module";
 
 const require = createRequire(import.meta.url);
-const {createInteraction, STATES, shouldIgnoreLostPointerCapture} = require("../../debripod/static/js/wheel-interaction.js");
+const {createInteraction, STATES, shouldIgnoreLostPointerCapture, requestFullscreen, triggerRandom} = require("../../debripod/static/js/wheel-interaction.js");
 const {normalizeMediaTarget, wheelActionsForTarget, createBrowserMediaActions} = require("../../debripod/static/js/media-actions.js");
 
 const rect = {left: 0, top: 0, width: 200, height: 200};
@@ -17,6 +17,80 @@ function allActions() {
     play_after: {action: "play_after", enabled: true},
   };
 }
+
+test("top downward swipe resolves fullscreen exactly once", () => {
+  let fullscreen = 0;
+  const wheel = createInteraction({callbacks: {fullscreen: () => { fullscreen++; }}});
+  wheel.begin(point(100, 10), {rect, verticalHint: "top"});
+  wheel.move(point(108, 33));
+  assert.equal(wheel.state(), STATES.POTENTIAL_VERTICAL);
+  wheel.move(point(110, 42));
+  assert.equal(wheel.state(), STATES.FULLSCREEN_GESTURE);
+  const result = wheel.end();
+  assert.equal(result.gesture, "fullscreen");
+  assert.equal(fullscreen, 1);
+  wheel.end();
+  assert.equal(fullscreen, 1);
+});
+
+test("bottom upward swipe resolves the existing random action", () => {
+  let random = 0;
+  const wheel = createInteraction({callbacks: {random: () => { random++; }}});
+  wheel.begin(point(100, 190), {rect, verticalHint: "bottom"});
+  wheel.move(point(92, 167));
+  assert.equal(wheel.state(), STATES.POTENTIAL_VERTICAL);
+  wheel.move(point(90, 156));
+  assert.equal(wheel.state(), STATES.RANDOM_GESTURE);
+  assert.equal(wheel.end().gesture, "random");
+  assert.equal(random, 1);
+});
+
+test("vertical gesture arbitration keeps a shallow diagonal alive below threshold", () => {
+  const wheel = createInteraction({callbacks: {fullscreen: () => {}}});
+  wheel.begin(point(100, 10), {rect, verticalHint: "top"});
+  wheel.move(point(108, 33));
+  assert.equal(wheel.state(), STATES.POTENTIAL_VERTICAL);
+  wheel.move(point(110, 42));
+  assert.equal(wheel.state(), STATES.FULLSCREEN_GESTURE);
+});
+
+test("wrong-axis vertical movement restores normal wheel handling", () => {
+  const wheel = createInteraction();
+  wheel.begin(point(100, 10), {rect, verticalHint: "top"});
+  wheel.move(point(140, 18));
+  assert.equal(wheel.state(), STATES.NORMAL);
+  assert.equal(wheel.end().gesture, null);
+});
+
+test("fullscreen request stays in the pointer activation call", async () => {
+  const calls = [];
+  await requestFullscreen({forceFullscreenOn: () => { calls.push("fullscreen"); return true; }});
+  assert.deepEqual(calls, ["fullscreen"]);
+});
+
+test("random gesture delegates once and handles rejected playback", async () => {
+  let calls=0;
+  assert.equal(await triggerRandom({randomFromCurrentList:()=>{calls++;return true;}}),true);
+  assert.equal(calls,1);
+  const warnings=[];
+  assert.equal(await triggerRandom({randomFromCurrentList:()=>Promise.reject(new Error("unavailable")),reportUiStatus:message=>warnings.push(message)}),false);
+  assert.deepEqual(warnings,["unavailable"]);
+});
+
+test("vertical pulls can be reversed or cancelled without executing",()=>{
+  let actions=0;
+  for(const start of [point(100,10),point(100,190)]){
+    const wheel=createInteraction({callbacks:{fullscreen:()=>actions++,random:()=>actions++}});
+    wheel.begin(start,{rect});
+    wheel.move(point(100,100));
+    wheel.move(start);
+    assert.equal(wheel.end().gesture,null);
+    assert.equal(wheel.consumePointer(),true);
+    wheel.begin(start,{rect});wheel.move(point(100,100));wheel.cancel("pointercancel");
+    assert.equal(wheel.end().gesture ?? null,null);
+  }
+  assert.equal(actions,0);
+});
 
 test("vertical/circular movement does not resolve an edge pull", () => {
   const progress = [];

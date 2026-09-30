@@ -86,6 +86,10 @@
 }
 .dpStandardRow.sel .dpRowContent{transform:translate3d(0,var(--dp-selected-content-offset-y,0px),0);}
 .dpStandardRow.sel{z-index:4;}
+#libList.dpSelectionSuppressed .sel .dpRowContent{transform:none;}
+#libList.dpSelectionSuppressed .sel .glassText,
+#libList.dpSelectionSuppressed .sel .dpRowIconArea{color:var(--dp-text-rows);}
+#libList.dpSelectionSuppressed .sel .dpRowSecondary{opacity:.74;}
 .dpStandardRow.twoLine,.dpStandardRow.settingRow,.dpStandardRow.isExpandedRow{height:var(--dp-row-height);min-height:var(--dp-row-height);max-height:var(--dp-row-height);}
 .dpRowIconArea{width:44px;height:44px;display:grid;place-items:center;position:relative;flex:none;}
 .dpRowIconArea{color:var(--dp-text-rows, rgb(255 255 255 / var(--ui-text-opacity)));}
@@ -122,3 +126,11 @@
   .dpRowContent{grid-template-columns:40px minmax(0,1fr) auto;column-gap:9px;}
   .dpRowIconArea{width:40px;height:40px;}
 }
+
+/* Library categories use one centered identity line; context stays in the panel. */
+#libList.dpLibraryRoot .dpRowSecondary { display: none; }
+#libList.dpLibraryRoot .dpRowText { grid-template-rows: auto; align-content: center; }
+
+/* Sparse identities stay vertically centered instead of reserving a blank line. */
+#libList .dpRowText:has(> .dpRowSecondary:empty):not(.dpRowEditing) { grid-template-rows: auto; align-content: center; }
+#libList .dpRowText:not(.dpRowEditing) > .dpRowSecondary:empty { display: none; }

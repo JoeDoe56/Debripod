@@ -1613,7 +1613,6 @@ async function libDoSearch(engine, q){
         if(port) hp.push(port);
         items.push({kind:"info", label:"Host and port", symbol:"network", pills: hp});
 
-        items.push({kind:"libinfo_action", label:"Full Screen", action:"force_fullscreen"});
         items.push({kind:"libinfo_action", label:"Binds", action:"binds_menu"});
 
         try{

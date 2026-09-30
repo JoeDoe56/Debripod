@@ -35,48 +35,29 @@
     }
   }
 
-  // Pointer, wheel, and keyboard repeat can all arrive faster than a row can
-  // settle. Keep one pending direction and release at most 18 row steps per
-  // second. Coalescing the direction prevents a stale backlog after a fast
-  // gesture or a page transition.
-  const SELECTION_STEP_INTERVAL_MS = 1000 / 18;
-  let selectionStepTimer = 0;
-  let selectionStepPending = "";
-  let selectionStepLastTs = 0;
-  let selectionStepGeneration = 0;
+  // Preserve every wheel detent, but apply at most one selection update per
+  // paint. A direction reversal cancels pending distance rather than leaving
+  // a timed backlog that continues after the finger lifts.
+  let selectionStepFrame=0, selectionStepDelta=0;
   function cancelSelectionStepQueue(){
-    selectionStepGeneration += 1;
-    if(selectionStepTimer) clearTimeout(selectionStepTimer);
-    selectionStepTimer = 0;
-    selectionStepPending = "";
+    if(selectionStepFrame) cancelAnimationFrame(selectionStepFrame);
+    selectionStepFrame=0;selectionStepDelta=0;
+  }
+  function flushSelectionStepQueue(){
+    const delta=selectionStepDelta;
+    cancelSelectionStepQueue();
+    if(delta) dispatchControl("wheel_step",delta>0?"scroll_forward":"scroll_back",{steps:Math.abs(delta)}).catch(()=>{});
   }
   function queueSelectionStep(control){
-    const value = String(control || "");
-    if(value !== "scroll_forward" && value !== "scroll_back") return dispatchControl("wheel_step", value);
-    if(nowPlaying && nowPlaying.style.display === "block" && seekMode) return dispatchControl("wheel_step", value);
-    const now = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
-    const elapsed = now - selectionStepLastTs;
-    if(!selectionStepPending && (selectionStepLastTs <= 0 || elapsed >= SELECTION_STEP_INTERVAL_MS)){
-      selectionStepLastTs = now;
-      return dispatchControl("wheel_step", value);
-    }
-    selectionStepPending = value;
-    if(!selectionStepTimer){
-      const generation = selectionStepGeneration;
-      const wait = Math.max(1, SELECTION_STEP_INTERVAL_MS - Math.max(0, elapsed));
-      selectionStepTimer = setTimeout(()=>{
-        selectionStepTimer = 0;
-        if(generation !== selectionStepGeneration) return;
-        const pending = selectionStepPending;
-        selectionStepPending = "";
-        if(!pending) return;
-        selectionStepLastTs = (typeof performance !== "undefined" && performance.now) ? performance.now() : Date.now();
-        dispatchControl("wheel_step", pending).catch(()=>{});
-      }, wait);
-    }
+    if(control!=="scroll_forward" && control!=="scroll_back") return dispatchControl("wheel_step",control);
+    if(nowPlaying && nowPlaying.style.display==="block") return dispatchControl("wheel_step",control);
+    const direction=control==="scroll_forward"?1:-1;
+    if(selectionStepDelta && Math.sign(selectionStepDelta)!==direction) selectionStepDelta=0;
+    selectionStepDelta+=direction;
+    if(!selectionStepFrame) selectionStepFrame=requestAnimationFrame(flushSelectionStepQueue);
     return Promise.resolve();
   }
-  try{ window.cancelSelectionStepQueue = cancelSelectionStepQueue; }catch(e){}
+  window.cancelSelectionStepQueue=cancelSelectionStepQueue;
 
   var wheelCenterAnimation = null;
   function pulseWheelCenter(){
@@ -186,7 +167,7 @@
       }
     };
     el.addEventListener("pointerup", finish, {passive:false});
-    el.addEventListener("pointercancel", (ev)=>{ try{ ev.stopPropagation(); }catch(e){} clear(); wheelPointerEnd(); }, {passive:false});
+    el.addEventListener("pointercancel", (ev)=>{ try{ ev.stopPropagation(); }catch(e){} clear(); wheelPointerEnd(ev); }, {passive:false});
     el.addEventListener("click", (ev)=>{
       if(isWheelClickSuppressed()){
         try{ ev.preventDefault(); ev.stopPropagation(); }catch(e){}
@@ -334,7 +315,7 @@
     if(!wheelPointerDown) return;
     if(wheelInteraction && wheel.classList.contains("wheelInteractionResolved")) return;
     // Wait for edge intent before allowing the same motion to scroll rows.
-    if(wheelInteraction && wheelInteraction.state() === wheelInteraction.STATES.POTENTIAL_EDGE) return;
+    if(wheelInteraction && [wheelInteraction.STATES.POTENTIAL_EDGE,wheelInteraction.STATES.POTENTIAL_VERTICAL].includes(wheelInteraction.state())) return;
     const events = (typeof ev.getCoalescedEvents === "function") ? ev.getCoalescedEvents() : null;
     const moveEvents = (events && events.length) ? events : [ev];
     const latestEv = moveEvents[moveEvents.length - 1] || ev;
@@ -397,8 +378,9 @@
     moveWheelRotationPointer(ev);
   }, {passive:false});
 
-  function wheelPointerEnd(){
-    cancelSelectionStepQueue();
+  function wheelPointerEnd(event){
+    if(event && event.type === "pointercancel") cancelSelectionStepQueue();
+    else flushSelectionStepQueue();
     wheelPointerDown = false;
     dragging = false;
     wheelDownOnButton = false;

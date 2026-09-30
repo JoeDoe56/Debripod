@@ -65,3 +65,12 @@ test("cutout uses actual lens geometry and no data SVG",()=>{
   assert.doesNotMatch(value,/data:image\/svg/);
   assert.match(value,/Q/);
 });
+
+test("deferred cutouts are committed only with replacement pixels and cleared on cancellation",()=>{
+  const {api,style}=fixture();
+  api.prepare({left:10,top:50,width:200,height:44},22,true);
+  assert.equal(style.clipPath,"");
+  api.commit();assert.match(style.clipPath,/^path/);
+  api.prepare({left:20,top:50,width:200,height:44},22,true);
+  api.clear();api.commit();assert.equal(style.clipPath,"");
+});

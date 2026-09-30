@@ -34,6 +34,7 @@
     "/static/js/playback-sync.js",
     "/static/js/row-transitions.js",
     "/static/js/row-system.js",
+    "/static/js/list-scroll.js",
     "/static/js/list-view.js",
     "/static/js/row-refraction.js",
     "/static/js/settings-ui.js",

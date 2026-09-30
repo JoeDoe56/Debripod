@@ -140,11 +140,11 @@ html, body, button, input, select, textarea {
 .uiSelectedStateActive > .uiSymbol, .uiSelectedStateActive > [data-sf-symbol], .uiSelectedStateActive > .wheelIcon { opacity: 0 !important; }
 .wheelLabel.uiSelectedState { position: absolute; width: var(--ui-ring-size); height: var(--ui-ring-size); }
 .wheelLabel{width:var(--ui-ring-size);height:var(--ui-ring-size);display:grid;place-items:center;}
-.wheelLabel .wheelIcon,.wheelLabel .wheelIcon.seekModeIcon{width:24px;height:24px;}
-/* These SF assets have 28px of ink on a 32px-tall canvas. A 16px mask
-   gives 14px of visible height, matching Host Grotesk 700 MENU at 18px. */
-.wheel:not(.wheelActionMode) .wheelLabel .wheelIcon:not(.seekModeIcon){width:32px;height:16px;}
-.wheelLabel .menuWord:not([hidden]){display:block;font-weight:700;font-size:18px;line-height:1;letter-spacing:.025em;}
+.wheelLabel .wheelIcon,.wheelLabel .wheelIcon.seekModeIcon{width:21.12px;height:21.12px;}
+/* These SF assets have 28px of ink on a 32px-tall canvas. The navigation masks and MENU
+   retain that optical match at 88% of their original size. */
+.wheel:not(.wheelActionMode) .wheelLabel .wheelIcon:not(.seekModeIcon){width:28.16px;height:14.08px;}
+.wheelLabel .menuWord:not([hidden]){display:block;font-weight:800;font-size:15.84px;line-height:1;letter-spacing:.025em;}
 .npTime,.npTechInline,.rangeEditorFeedback{font-variant-numeric:tabular-nums lining-nums;}
 .npMeterFill{background:rgb(255 255 255 / var(--ui-text-strong-opacity));}
 .infoPill.rangeEditorFeedback{opacity:1;visibility:visible;transform:translateY(0);}
@@ -154,3 +154,5 @@ html, body, button, input, select, textarea {
 @media (prefers-reduced-motion: reduce) {
   .uiRingValue, .uiSelectedState::before { transition: none; }
 }
+
+.wheelLabel.uiSelectedStateActive::before{mask-size:100% 100%,15.84px 15.84px;-webkit-mask-size:100% 100%,15.84px 15.84px;}

@@ -36,6 +36,14 @@ Collections are expanded before mutation. Queue-next insertion reverses the inse
 
 Lyrics use the same-origin LRCLIB endpoint, cancellable requests, a bounded cache, binary timestamp lookup, and the actual media/gapless position. Only a visible lyrics panel runs the 100 ms synchronization check; the DOM changes when the active line changes. Scrolling uses native smooth scrolling. A small manual scroll recenters the visible active line; scrolling it out of view suspends following until it is visible again or a timestamp is selected. Click, Enter, and Space seek to synchronized lines without changing playback state. Blur stays fixed at 6 px on one horizontally feathered layer with full artwork height; the unblurred right side remains available for pinning playback pills. Reveal transitions change opacity and transform. The panel batches pointer updates with animation frames and keeps its contents stable during reflow. Reduced-motion preferences disable transitions.
 
+`list-scroll.js` owns native touch/momentum lifecycle without writing viewport position. `list-view.js` captures a screen anchor, picks the nearest row on settle without scrolling again, and owns one retargetable wheel scroll animation. Visible virtual rows remain attached; only the window edges change. Standard rows share one measured height, so scrolling does not rebuild a library-wide prefix sum for each newly exposed item. Wheel detents are accumulated once per frame instead of throttled into a delayed input backlog.
+
+Rapid wheel navigation and native scrolling suspend the selected lens, foreground displacement, and native text cutouts together. The lens rebases at its final row before returning. Refraction textures are still cached while the visible lens moves; cutouts are committed only after the replacement pixels have been submitted, and translucent reveals leave native text intact.
+
+Top-inward wheel pulls request browser fullscreen; bottom-inward pulls invoke Random in the same folder/category contexts that previously offered a Random row. Reversing a pull cancels it. Fullscreen remains subject to browser support. Random owns the selected object through asynchronous loading and normalizes cached root references for the complete playback queue.
+
+Library root identities are single-line. Elsewhere, empty secondary lines collapse and the primary is centered. Secondary fields are compared as complete normalized values, so an album title is omitted from its own subtitle without stripping useful partial matches. MENU uses weight 800; navigation, action, and seek glyphs retain their common optical proportions at 88% of their previous size.
+
 ## Validation
 
 Run Python tests with `.venv/Scripts/python.exe -m pytest -q` and JavaScript tests with `node --test tests/js/*.test.mjs`.
@@ -43,3 +51,5 @@ Run Python tests with `.venv/Scripts/python.exe -m pytest -q` and JavaScript tes
 `tests/browser/redesign-smoke.cjs` uses an existing Playwright installation and Edge (`DEBRIPOD_TEST_BROWSER` can select another installed channel). It serves deterministic API fixtures and never alters a real library or account. Its primary viewport is iPhone 15 Pro Max: **430 × 932 CSS pixels at 3× scale**, equivalent to 1290 × 2796 physical pixels. It also checks narrower/wider layouts.
 
 The browser checks real touch events for panel/lyrics gestures and hold-drag actions, dead-zone cancellation, action-overlay stability, row geometry, missing assets, keyboard numeric entry, rendered ring/bar agreement, and collection playlist submission. Screenshots and logs are written under `.pytest_cache`. Frame sampling records desktop browser animation timing; it does not certify 60 fps on physical iPhone hardware or Safari. Device performance remains a manual verification step.
+
+The scrolling stress checks use a 10,000-song fixture, native touch momentum, fast wheel detents, top/bottom edge pulls, sparse-row centering, and cached Songs queue references. Playback startup is captured at the media boundary so these tests do not stream real files.

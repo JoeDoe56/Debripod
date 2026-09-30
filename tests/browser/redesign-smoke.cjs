@@ -71,6 +71,7 @@ const server=http.createServer((req,res)=>{
     await drag(cx,cy,cx+wheel.width*.39,cy);
     const initial=await page.evaluate(()=>({height:document.querySelector('.dpStandardRow').getBoundingClientRect().height,font:getComputedStyle(document.querySelector('.dpStandardRow')).fontFamily,pills:[...document.querySelectorAll('.dpStandardRow .ipodPills')].filter(x=>getComputedStyle(x).display!=='none').length}));
     assert.equal(initial.pills,0);assert.match(initial.font,/Host Grotesk/);
+    await require('./scrolling-checks.cjs')(page,touch,drag,wheel);
     await page.evaluate(()=>{
       DebriPod.rowSystem.setPanelOpen(false);
       state.current={kind:'metalist',label:'Album',level:'tracks'};
@@ -81,6 +82,14 @@ const server=http.createServer((req,res)=>{
     await page.waitForTimeout(300);
     await page.screenshot({path:path.join(output,'redesign-media.png')});
     assert.equal(await page.locator('.dpStandardRow').count(),3);
+    const sparse=await page.evaluate(()=>{
+      const row=libList.querySelectorAll('.dpStandardRow')[1],primary=row.querySelector('.dpRowPrimary');
+      const a=row.getBoundingClientRect(),b=primary.getBoundingClientRect();
+      return {offset:Math.abs(a.top+a.height/2-b.top-b.height/2),secondary:getComputedStyle(row.querySelector('.dpRowSecondary')).display,menuWeight:getComputedStyle(document.querySelector('.menuWord')).fontWeight};
+    });
+    assert.ok(sparse.offset<1,'rows without secondary information center their primary line');
+    assert.equal(sparse.secondary,'none');assert.equal(sparse.menuWeight,'800');
+
     const rowChecks=await page.evaluate(()=>{
       const row=document.querySelector('.dpStandardRow.sel');
       const parts=['.dpRowPrimary','.dpRowSecondary','.dpRowIconArea'].map(s=>row.querySelector(s));

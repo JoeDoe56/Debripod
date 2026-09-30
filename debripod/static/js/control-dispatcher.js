@@ -134,11 +134,11 @@
         case "seek_back":
           return callMaybe("adjustSeekPreview", -1);
         case "scroll_forward":
-          if(callMaybe("rangeEditorWheelActive")) return callMaybe("adjustRangeEditor", 1);
-          return callMaybe("scrollSel", 1);
+          if(callMaybe("rangeEditorWheelActive")) return callMaybe("adjustRangeEditor", Math.max(1,Number(details && details.steps)||1));
+          return callMaybe("scrollSel", Math.max(1,Number(details && details.steps)||1));
         case "scroll_back":
-          if(callMaybe("rangeEditorWheelActive")) return callMaybe("adjustRangeEditor", -1);
-          return callMaybe("scrollSel", -1);
+          if(callMaybe("rangeEditorWheelActive")) return callMaybe("adjustRangeEditor", -Math.max(1,Number(details && details.steps)||1));
+          return callMaybe("scrollSel", -Math.max(1,Number(details && details.steps)||1));
         case "open_context":
           if(callMaybe("rangeEditorCenterHold")) return true;
           if(root.wheelInteraction && root.wheelInteraction.enterActionMode && root.wheelInteraction.isActive && root.wheelInteraction.isActive()) return root.wheelInteraction.enterActionMode();
