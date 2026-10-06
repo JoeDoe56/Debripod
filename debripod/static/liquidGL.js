@@ -4,6 +4,8 @@
  *
  * Author: NaughtyDuk© – https://liquidgl.naughtyduk.com
  * Licence: MIT
+ * Optical material adapted from medfa12/liquid-glass-react (MIT).
+ * See static/vendor/liquid-glass/NOTICE.md for provenance and adaptations.
  */
 
 (() => {
@@ -40,6 +42,26 @@
 
   function clamp(value, min, max) {
     return Math.max(min, Math.min(max, value));
+  }
+
+  const glassContact = { x: -100000, y: -100000, down: false, attached: false };
+  function fsTime(frame) {
+    return frame && Number.isFinite(frame.timestamp) ? frame.timestamp : performance.now();
+  }
+  function attachGlassContact() {
+    if (glassContact.attached) return;
+    glassContact.attached = true;
+    const update = event => {
+      if (Number.isFinite(event.clientX)) glassContact.x = event.clientX;
+      if (Number.isFinite(event.clientY)) glassContact.y = event.clientY;
+      if (event.type === "pointerdown") glassContact.down = true;
+      if (["pointerup", "pointercancel", "blur"].includes(event.type)) glassContact.down = false;
+      if (event.type === "pointermove" && !glassContact.down) return;
+      const renderers = window.__liquidGLRenderers__ || {};
+      Object.values(renderers).forEach(renderer => renderer.requestRender());
+    };
+    ["pointerdown", "pointermove", "pointerup", "pointercancel", "blur"].forEach(name =>
+      window.addEventListener(name, update, { passive: true }));
   }
 
   function finiteNumber(value, fallback) {
@@ -307,6 +329,7 @@
    * ------------------------------------------------*/
   class liquidGLRenderer {
     constructor(snapshotSelector, snapshotResolution = 1.0, rendererKey = "default", sourceOptions = {}) {
+      attachGlassContact();
       this.canvas = document.createElement("canvas");
       this.canvas.style.cssText = `position:fixed;top:0;left:0;width:100%;height:100%;pointer-events:none;z-index:0;`;
       this.canvas.setAttribute("data-liquid-ignore", "");
@@ -514,6 +537,9 @@
       const isWebGL2 = typeof WebGL2RenderingContext !== "undefined" && this.gl instanceof WebGL2RenderingContext;
       const hasDerivatives = !!(this.gl && (isWebGL2 || this.gl.getExtension("OES_standard_derivatives")));
       this._hasStandardDerivatives = hasDerivatives;
+      // Keep the existing WebGL1/shared-renderer architecture. Explicit LOD
+      // enables upstream's mip blur without requiring a context per control.
+      this._hasTextureLod = !!this.gl.getExtension("EXT_shader_texture_lod");
       const vsSource = `
         attribute vec2 a_position;
         varying vec2 v_uv;
@@ -522,7 +548,7 @@
           gl_Position = vec4(a_position, 0.0, 1.0);
         }`;
 
-      const fsSource = `${hasDerivatives ? `${isWebGL2 ? "" : "#extension GL_OES_standard_derivatives : enable\n"}#define DP_HAS_DERIVATIVES 1\n` : ""}
+      const fsSource = `${this._hasTextureLod ? "#extension GL_EXT_shader_texture_lod : enable\n#define DP_HAS_TEXTURE_LOD 1\n" : ""}${hasDerivatives ? `${isWebGL2 ? "" : "#extension GL_OES_standard_derivatives : enable\n"}#define DP_HAS_DERIVATIVES 1\n` : ""}
         #ifdef GL_FRAGMENT_PRECISION_HIGH
         precision highp float;
         #else
@@ -573,6 +599,7 @@
         uniform bool  u_useAlbumTransitionSource;
         uniform bool  u_debugAlbumSourceFlat;
         uniform bool  u_reactiveArtSource;
+        uniform bool u_wallpaperSource;
         uniform sampler2D u_reactivePreviousTex;
         uniform float u_reactiveArtMix;
         uniform float u_reactivePreviousAngle;
@@ -593,6 +620,12 @@
         uniform vec4  u_reactiveBeatResponse;
         uniform vec2  u_globalLight;
         uniform float u_globalLightIntensity;
+        uniform sampler2D u_opticalSource;
+        uniform vec2 u_opticalSize;
+        uniform bool u_prepareOpticalSource;
+        uniform bool u_hasOpticalSource;
+        uniform vec4 u_contact;
+        uniform float u_scrollEdge;
 
         float udRoundBox( vec2 p, vec2 b, float r ) {
           vec2 q = abs(p) - b + r;
@@ -665,6 +698,16 @@
         }
 
         vec4 sampleBaseLiquidSource(vec2 uv) {
+          if (u_wallpaperSource) {
+            // Match the wallpaper element's centered object-fit:cover exactly.
+            float viewAspect = u_reactiveViewport.x / max(1.0, u_reactiveViewport.y);
+            float imageAspect = u_textureResolution.x / max(1.0, u_textureResolution.y);
+            vec2 coverUV = uv;
+            if (viewAspect > imageAspect) coverUV.y = (uv.y - 0.5) * imageAspect / viewAspect + 0.5;
+            else coverUV.x = (uv.x - 0.5) * viewAspect / imageAspect + 0.5;
+            vec4 color = texture2D(u_tex, clamp(coverUV, 0.0, 1.0));
+            return vec4(color.rgb * color.a, 1.0);
+          }
           if (u_reactiveArtSource) {
             // Lens bounds are CSS top-left UVs; the visualizer background is
             // rendered with bottom-left WebGL UVs. Keep both paths identical.
@@ -728,99 +771,100 @@
           return base;
         }
 
-        void main(){
-          vec2 localUV = (v_uv - 0.5) / u_magnify + 0.5;
-          vec2 flippedUV = vec2(localUV.x, 1.0 - localUV.y);
-          vec2 mapped = u_bounds.xy + flippedUV * u_bounds.zw;
-
-          if (u_debugAlbumSourceFlat) {
-            vec4 albumCol = sampleAlbumArtSource(mapped);
-            if (albumCol.a < 0.01) {
-              albumCol = vec4(1.0, 0.0, 1.0, 1.0);
+        // Adapted from liquid-glass-react's QuartzCore reconstruction. Shapes
+        // remain DebriPod's DOM-aligned rounded rectangles and hollow wheel.
+        float lensCurve(float t) {
+          t = clamp(t, 0.0, 1.0);
+          return sqrt(max(0.0, (2.0 - t) * t));
+        }
+        float refractLobe(float dist, float amount, float height) {
+          return amount * (1.0 - lensCurve(-dist / max(height, 0.001)));
+        }
+        float shadowFalloff(float d, float invRadius) {
+          float x = 4.0 * clamp(0.25 * d * invRadius + 0.5, 0.0, 1.0) - 2.0;
+          float x2 = x * x;
+          return (((0.002954 * x2 - 0.034460) * x2 + 0.168210) * x2 - 0.560550) * x + 0.5;
+        }
+        vec2 shapeNormal(vec2 p, vec2 b, float r) {
+          vec2 q = abs(p) - b + r;
+          vec2 outside = max(q, 0.0);
+          if (dot(outside, outside) > 0.00001) return normalize(outside) * sign(p);
+          return q.x > q.y ? vec2(sign(p.x), 0.0) : vec2(0.0, sign(p.y));
+        }
+        vec4 compositeOpticalLayers(vec4 base, vec2 uv) {
+          // The same lower-glass and text layers are sampled at displaced UVs.
+          // They are not baked into every pill's backdrop or uploaded per frame.
+          if (u_hasUnderGlass) {
+            vec4 under = texture2D(u_underGlass, vec2(clamp(uv.x, 0.0, 1.0), 1.0 - clamp(uv.y, 0.0, 1.0)));
+            base = vec4(under.rgb + base.rgb * (1.0 - under.a), under.a + base.a * (1.0 - under.a));
+          }
+          if (u_hasUnderText) {
+            vec2 textUV = (uv - u_underTextBounds.xy) / u_underTextBounds.zw;
+            if (textUV.x >= 0.0 && textUV.y >= 0.0 && textUV.x <= 1.0 && textUV.y <= 1.0) {
+              vec4 text = texture2D(u_underText, textUV);
+              base = vec4(text.rgb + base.rgb * (1.0 - text.a), text.a + base.a * (1.0 - text.a));
             }
-            gl_FragColor = albumCol;
+          }
+          return base;
+        }
+        vec4 opticalSample(vec2 uv, float radiusCss) {
+          #ifdef DP_HAS_TEXTURE_LOD
+            if (u_hasOpticalSource) {
+              vec2 cssSize = u_textureResolution / max(u_sourceTexelsPerCssPixel, vec2(0.001));
+              float radius = radiusCss * min(u_opticalSize.x / cssSize.x, u_opticalSize.y / cssSize.y);
+              float lod = max(0.0, log2(max(1.0, radius < 2.0 ? radius * 0.5 + 1.0 : radius)));
+              vec4 base = texture2DLodEXT(u_opticalSource, clamp(vec2(uv.x, 1.0 - uv.y), 0.0, 1.0), lod);
+              return compositeOpticalLayers(base, uv);
+            }
+          #endif
+          // Older GPUs: bounded kernel with a real exit, not masked reads.
+          // Dispersive/bleed samples use the sharp fallback; only the face
+          // evaluates this kernel, keeping reactive-art ALU work bounded.
+          return sampleLiquidSource(uv);
+        }
+        vec4 frostedFace(vec2 uv, float radiusCss) {
+          #ifdef DP_HAS_TEXTURE_LOD
+            if (u_hasOpticalSource) return opticalSample(uv, radiusCss);
+          #endif
+          if (radiusCss <= 0.01 || u_frostSamples < 0.5) return sampleLiquidSource(uv);
+          vec4 sum = vec4(0.0);
+          float count = clamp(u_frostSamples, 1.0, 16.0);
+          const int MAX_FROST_SAMPLES = 16;
+          for (int i = 0; i < MAX_FROST_SAMPLES; ++i) {
+            if (float(i) >= count) break;
+            float angle = float(i) * 2.39996323;
+            float reach = sqrt((float(i) + 0.5) / count) * radiusCss;
+            vec2 offsetUv = vec2(cos(angle), sin(angle)) * reach * u_sourceTexelsPerCssPixel / u_textureResolution;
+            sum += sampleLiquidSource(uv + offsetUv);
+          }
+          return sum / count;
+        }
+        vec3 gradeGlass(vec3 rgb) {
+          // GLASS_RECIPE / GLASS_RECIPE_DARK from upstream glass.ts. Interpolate
+          // from identity so the existing signed material's zero stays clear.
+          float bias = u_materialSign < 0.0 ? 0.0813 : 0.235;
+          vec3 grade = vec3(dot(rgb, vec3(0.921, -0.265, -0.027)),
+                            dot(rgb, vec3(-0.079, 0.735, -0.027)),
+                            dot(rgb, vec3(-0.079, -0.265, 0.973))) + bias;
+          float recipe = smoothstep(0.0, 0.52, u_materialDensity);
+          return mix(rgb, grade, recipe);
+        }
+        void main(){
+          if (u_prepareOpticalSource) {
+            gl_FragColor = sampleBaseLiquidSource(vec2(v_uv.x, 1.0 - v_uv.y));
             return;
           }
-
-          vec2 p = v_uv - 0.5;
-          p.x *= u_resolution.x / u_resolution.y;
-
-          float edge = edgeFactor(v_uv, u_radius);
-          float min_dimension = min(u_resolution.x, u_resolution.y);
-          float centreDistance = length(p);
-          float fill = clamp(u_refractionFill, 0.0, 1.0);
-          float refractionField = mix(edge, max(edge, 0.34), fill);
-          float offsetAmt = (refractionField * u_refraction + pow(edge, 10.0) * u_bevelDepth);
-          float edgeCentreBlend = smoothstep(0.15, 0.45, centreDistance);
-          float centreBlend = mix(edgeCentreBlend, 1.0, fill);
-          vec2 refractDirection = centreDistance > 0.0001 ? p / centreDistance : vec2(0.0);
-          float lensMinorCss = min(u_lensCssSize.x, u_lensCssSize.y);
-          vec2 lensMinorDimensionInSourceUV = vec2(
-            (lensMinorCss / max(1.0, u_lensCssSize.x)) * u_bounds.z,
-            (lensMinorCss / max(1.0, u_lensCssSize.y)) * u_bounds.w
-          );
-          vec2 offset = refractDirection * offsetAmt * centreBlend * lensMinorDimensionInSourceUV;
-
-          float tiltRefractionScale = 0.05;
-          vec2 tiltOffset = vec2(tan(radians(u_tiltY)), -tan(radians(u_tiltX))) *
-            tiltRefractionScale * lensMinorDimensionInSourceUV;
-
-          vec2 refracted = mapped + offset - tiltOffset;
-
-          float oob = max(max(-refracted.x, refracted.x - 1.0), max(-refracted.y, refracted.y - 1.0));
-          float blend = 1.0 - smoothstep(0.0, 0.01, oob);
-          vec2 sampleUV = mix(mapped, refracted, blend);
-
-          if (u_hollowInset > 0.0 && u_hollowMaskContent) {
-            float sampledInnerShape = hollowInnerShapeAtTextureUV(sampleUV);
-            if (sampledInnerShape > 0.01) {
-              float innerEdgeFade = smoothstep(0.01, 0.30, sampledInnerShape);
-              sampleUV = mix(sampleUV, mapped, innerEdgeFade);
-            }
+          vec2 localUV = (v_uv - 0.5) / u_magnify + 0.5;
+          vec2 mapped = u_bounds.xy + vec2(localUV.x, 1.0 - localUV.y) * u_bounds.zw;
+          if (u_debugAlbumSourceFlat) {
+            gl_FragColor = sampleAlbumArtSource(mapped);
+            return;
           }
-
-          vec4 baseCol   = sampleLiquidSource(mapped);
-
-          vec2 texel = 1.0 / u_textureResolution;
-          vec4 refrCol;
-
-          if (u_frost > 0.0 && u_frostSamples > 0.5) {
-              float radiusCss = u_frost * 2.0;
-              vec4 sum = vec4(0.0);
-              const int MAX_FROST_SAMPLES = 16;
-              float sampleCount = clamp(u_frostSamples, 1.0, 16.0);
-
-              for (int i = 0; i < MAX_FROST_SAMPLES; i++) {
-                float enabled = 1.0 - step(sampleCount, float(i));
-                float angle = (float(i) + 0.5) * 0.78539816339;
-                  float distCss = (0.35 + 0.65 * mod(float(i) * 0.61803398875, 1.0)) * radiusCss;
-                  vec2 offsetUv = vec2(cos(angle), sin(angle)) *
-                    distCss * u_sourceTexelsPerCssPixel * texel;
-                  sum += sampleLiquidSource(sampleUV + offsetUv) * enabled;
-              }
-              refrCol = sum / sampleCount;
-          } else {
-              refrCol = sampleLiquidSource(sampleUV);
-              refrCol += sampleLiquidSource(sampleUV + vec2( texel.x, 0.0));
-              refrCol += sampleLiquidSource(sampleUV + vec2(-texel.x, 0.0));
-              refrCol += sampleLiquidSource(sampleUV + vec2(0.0,  texel.y));
-              refrCol += sampleLiquidSource(sampleUV + vec2(0.0, -texel.y));
-              refrCol /= 5.0;
-          }
-
-          if (refrCol.a < 0.1) {
-              refrCol = baseCol;
-          }
-
-          float diff = clamp(length(refrCol.rgb - baseCol.rgb) * 4.0, 0.0, 1.0);
-
-          float antiHalo = (1.0 - centreBlend) * diff;
-
-          vec4 final    = refrCol;
-
+          // Reject outside/hollow pixels BEFORE any optical sampling.
           vec2 p_px = (v_uv - 0.5) * u_resolution;
           vec2 b_px = 0.5 * u_resolution;
           float dmask = udRoundBox(p_px, b_px, u_radius);
+          vec2 normal = shapeNormal(p_px, b_px, u_radius);
           float fallbackAA = max(0.75, 1.0 / max(1.0, u_devicePixelRatio));
           #ifdef DP_HAS_DERIVATIVES
             float edgeAA = max(fwidth(dmask), fallbackAA);
@@ -828,66 +872,119 @@
             float edgeAA = fallbackAA;
           #endif
           float inShape = 1.0 - smoothstep(-edgeAA, edgeAA, dmask);
+          float opticalDistance = dmask;
           if (u_hollowInset > 0.0) {
             vec2 innerB = max(vec2(0.0), b_px - vec2(u_hollowInset));
             float innerRadius = max(0.0, u_radius - u_hollowInset);
             float innerD = udRoundBox(p_px, innerB, innerRadius);
-            #ifdef DP_HAS_DERIVATIVES
-              float innerAA = max(fwidth(innerD), fallbackAA);
-            #else
-              float innerAA = fallbackAA;
-            #endif
-            float innerShape = 1.0 - smoothstep(-innerAA, innerAA, innerD);
-            inShape *= (1.0 - innerShape);
+            float innerShape = 1.0 - smoothstep(-edgeAA, edgeAA, innerD);
+            inShape *= 1.0 - innerShape;
+            if (-innerD > opticalDistance) {
+              opticalDistance = -innerD;
+              normal = -shapeNormal(p_px, innerB, innerRadius);
+            }
           }
           if (inShape <= 0.0001) discard;
-
-          float sourceLuma = dot(final.rgb, vec3(0.2126, 0.7152, 0.0722));
-          vec3 sourceChroma = final.rgb - vec3(sourceLuma);
-          float sourceTransmission = 1.0 - u_materialAlpha;
-          float chromaTransmission = max(0.0, 1.0 - u_materialDensity * 0.92);
-          final.rgb = vec3(sourceLuma) * sourceTransmission +
-            sourceChroma * chromaTransmission +
-            u_materialTone * u_materialAlpha;
-
+          float d = opticalDistance / max(0.5, u_devicePixelRatio);
+          float insideCss = max(0.0, -d);
+          float diffusion = u_revealType == 1 ? clamp(u_revealProgress, 0.0, 1.0) : 1.0;
+          float dRefract = pow(diffusion, 0.55);
+          float dBlur = pow(diffusion, 1.30);
+          float dBody = pow(diffusion, 1.60);
+          float press = u_contact.z;
+          float scale = clamp(min(u_lensCssSize.x, u_lensCssSize.y) / 150.0, 0.35, 1.5);
+          vec2 cssToUV = u_sourceTexelsPerCssPixel / u_textureResolution;
+          vec2 direction = vec2(normal.x, -normal.y);
+          vec2 tilt = vec2(tan(radians(u_tiltY)), -tan(radians(u_tiltX))) * 2.0;
+          float opticalStrength = clamp(u_refraction / 0.045, 0.0, 2.5);
+          float inner = refractLobe(d, 4.0 * scale, 18.0 * scale) * opticalStrength * dRefract;
+          float outer = refractLobe(d, -13.0 * scale, 10.0 * scale) * opticalStrength * dRefract;
+          vec2 innerUV = mapped + (direction * inner - tilt) * cssToUV;
+          vec2 outerUV = mapped + (direction * outer - tilt) * cssToUV;
+          if (u_hollowInset > 0.0 && u_hollowMaskContent) {
+            innerUV = mix(innerUV, mapped, smoothstep(0.01, 0.30, hollowInnerShapeAtTextureUV(innerUV)));
+            outerUV = mix(outerUV, mapped, smoothstep(0.01, 0.30, hollowInnerShapeAtTextureUV(outerUV)));
+          }
+          // Blur rises into the body; the bevel stays optically sharp.
+          float blur = u_frost * dBlur * (1.0 + 0.20 * press) * mix(0.18, 1.0, smoothstep(0.0, 20.0 * scale, insideCss));
+          float edgeMask = u_scrollEdge * (1.0 - smoothstep(0.0, 22.0, min(v_uv.y, 1.0-v_uv.y) * u_lensCssSize.y));
+          blur = max(blur, edgeMask * u_frost * 1.4);
+          if (u_frostSamples < 0.5) blur = 0.0;
+          vec4 face = frostedFace(innerUV, blur);
+          float crossover = clamp((d + 30.0 * scale) / (30.0 * scale), 0.0, 1.0) * 0.65;
+          face = mix(face, opticalSample(outerUV, blur), crossover);
+          // Opposing spectral taps concentrate dispersion at the bevel.
+          float dispersion = refractLobe(d, 3.0 * scale, 14.0 * scale) * dRefract;
+          if (dispersion > 0.02) {
+            vec2 chroma = direction * dispersion * cssToUV;
+            vec3 acc = vec3(0.0);
+            for (int i = 0; i < 3; ++i) {
+              float w = 1.0 - float(i) / 3.0;
+              vec3 tap = opticalSample(innerUV + chroma * w, blur).rgb;
+              acc.r += tap.r * w;
+              acc.g += tap.g * (1.0 - w);
+            }
+            for (int i = 0; i < 4; ++i) {
+              float w = float(i) / 3.0;
+              vec3 tap = opticalSample(innerUV - chroma * w, blur).rgb;
+              acc.g += tap.g * (1.0 - w);
+              acc.b += tap.b * w;
+            }
+            face.rgb = mix(face.rgb, acc * vec3(0.5, 1.0/3.0, 0.5), 0.75);
+          }
+          float bleedBand = 1.0 - smoothstep(0.0, 14.0 * scale, insideCss);
+          float bleedMag = refractLobe(d, 24.0 * scale, 12.0 * scale);
+          vec3 bleed = opticalSample(mapped + direction * bleedMag * cssToUV, max(blur, u_frost * 1.3)).rgb * 0.92;
+          vec3 rgb = mix(face.rgb, bleed, bleedBand * mix(0.08, 0.15, u_materialDensity));
+          // Ring shadow uses the difference of two analytic soft edges.
+          float ring = shadowFalloff(insideCss * 0.70710678, 1.0 / (30.0 * scale))
+                     - shadowFalloff((insideCss + 9.0 * scale) * 0.70710678, 1.0 / (30.0 * scale));
+          rgb *= 1.0 - max(0.0, ring) * 0.30;
+          rgb = gradeGlass(rgb);
+          // Independent blur fill, with lighten/darken/normal contributions.
+          if (u_materialDensity > 0.005 && u_frostSamples > 0.5) {
+            vec3 fill = gradeGlass(opticalSample(mapped, u_frost * 1.7).rgb);
+            vec3 mixed = 0.30 * max(rgb, fill) + 0.22 * min(rgb, fill) + 0.48 * rgb;
+            rgb = mix(rgb, mix(mixed, fill, 0.15), min(1.0, u_materialDensity / 0.52));
+          }
+          // Local adaptive material tone uses a mip that already exists. No
+          // readPixels, CPU reduction, or automatic changes to text settings.
+          #ifdef DP_HAS_TEXTURE_LOD
+            if (u_hasOpticalSource && u_materialDensity > 0.005) {
+              vec3 average = texture2DLodEXT(u_opticalSource, vec2(0.5), log2(max(u_opticalSize.x, u_opticalSize.y))).rgb;
+              float luma = dot(average, vec3(0.212646, 0.715332, 0.072205));
+              float chameleon = 1.0 / (1.0 + exp(-10.25 * (luma - 0.5)));
+              rgb += (0.5 - chameleon) * 0.04 * min(1.0, u_materialDensity / 0.52);
+            }
+          #endif
+          // Preserve the signed slider's endpoints and its clear zero.
+          float opaque = clamp((u_materialDensity - 0.52) / 0.48, 0.0, 1.0);
+          rgb = mix(rgb, u_materialTone, opaque * dBody);
           if (u_specular) {
-            float normalStep = max(0.75, u_devicePixelRatio);
-            float sdfXp = udRoundBox(p_px + vec2(normalStep, 0.0), b_px, u_radius);
-            float sdfXm = udRoundBox(p_px - vec2(normalStep, 0.0), b_px, u_radius);
-            float sdfYp = udRoundBox(p_px + vec2(0.0, normalStep), b_px, u_radius);
-            float sdfYm = udRoundBox(p_px - vec2(0.0, normalStep), b_px, u_radius);
-            vec2 n2 = normalize(vec2(sdfXp - sdfXm, sdfYp - sdfYm) + vec2(0.00001));
-            float insideCss = max(0.0, -dmask / max(0.5, u_devicePixelRatio));
-            float outerPeak = 1.0 - smoothstep(0.0, 1.15, insideCss);
-            float innerRim = 1.0 - smoothstep(0.5, 5.5, insideCss);
-            float rimSlope = mix(0.58, 1.35, outerPeak);
-            vec3 N = normalize(vec3(n2 * rimSlope, 0.62));
-            vec2 tiltNormal = vec2(sin(radians(u_tiltY)), -sin(radians(u_tiltX))) * 0.34;
-            N = normalize(vec3(N.xy + tiltNormal, N.z));
+            // ShatteredGlass's backdrop/body and two opposing highlight layers
+            // share one shape. Here they are fused in a draw, after tinting.
             vec2 globalLight = mix(vec2(-0.48, 0.76), vec2(u_globalLight.x, -u_globalLight.y) * 1.4, u_globalLightIntensity);
-            vec3 primaryLight = normalize(vec3(globalLight, 0.52));
-            vec3 secondaryLight = normalize(vec3(-globalLight, 0.46));
-            float primaryFacing = max(dot(N, primaryLight), 0.0);
-            float secondaryFacing = max(dot(N, secondaryLight), 0.0);
-            float sharp = outerPeak * pow(primaryFacing, 7.0) * u_specularPrimary;
-            float soft = innerRim * pow(primaryFacing, 2.2) * u_specularPrimary * 0.62;
-            float opposite = (outerPeak * 0.65 + innerRim * 0.42) *
-              pow(secondaryFacing, 2.8) * u_specularSecondary;
-            vec3 softRimColor = mix(vec3(1.0), refrCol.rgb, 0.08);
-            final.rgb += sharp * vec3(1.0) + (soft + opposite) * softRimColor;
+            vec2 lightDir = normalize(globalLight + vec2(0.00001));
+            float facing = dot(normal, lightDir);
+            float primary = clamp((facing - 0.35) / 0.65, 0.0, 1.0);
+            float secondary = clamp((-facing - 0.35) / 0.65, 0.0, 1.0);
+            float outerPeak = exp(-insideCss / (1.5 * scale));
+            float innerRim = 1.0 - smoothstep(0.5, 10.0 * scale, insideCss);
+            float glint = (outerPeak + innerRim * 0.45) * (primary * u_specularPrimary + secondary * u_specularSecondary);
+            float heightMask = 1.0 - smoothstep(0.0, 70.0 * scale, insideCss);
+            vec2 lobes = clamp((vec2(facing, -facing) - 0.55) / 0.45, 0.0, 1.0) * heightMask;
+            vec2 key = lobes / (0.7 * (1.0 - lobes) + 1.0);
+            vec2 contactPx = (v_uv - u_contact.xy) * u_lensCssSize;
+            float contactLight = exp(-dot(contactPx, contactPx) / 3200.0) * press * 0.065;
+            rgb += vec3(glint * (1.0 + 0.45 * press) + (key.x + key.y) * 0.035 + contactLight);
           }
-
-          if (u_revealType == 1) {
-              // Reveal is applied to alpha; RGB is premultiplied once below.
-              final.a  *= u_revealProgress;
-          }
-
-          // The renderer is created with premultipliedAlpha:true. Without
-          // this multiplication fade/AA pixels can retain dark opaque edges.
+          // SDR holding tone preserves hue at luminous rims.
+          rgb = max(rgb, vec3(0.0));
+          rgb /= max(1.0, max(rgb.r, max(rgb.g, rgb.b)));
+          vec4 final = vec4(rgb, face.a * dBody);
           final.rgb *= final.a;
           final.rgb *= inShape;
-          final.a   *= inShape;
-
+          final.a *= inShape;
           gl_FragColor = final;
         }`;
 
@@ -908,6 +1005,12 @@
       gl.vertexAttribPointer(posLoc, 2, gl.FLOAT, false, 0, 0);
 
       this.u = {
+        opticalSource: gl.getUniformLocation(this.program, "u_opticalSource"),
+        opticalSize: gl.getUniformLocation(this.program, "u_opticalSize"),
+        prepareOpticalSource: gl.getUniformLocation(this.program, "u_prepareOpticalSource"),
+        hasOpticalSource: gl.getUniformLocation(this.program, "u_hasOpticalSource"),
+        contact: gl.getUniformLocation(this.program, "u_contact"),
+        scrollEdge: gl.getUniformLocation(this.program, "u_scrollEdge"),
         tex: gl.getUniformLocation(this.program, "u_tex"),
         underGlass: gl.getUniformLocation(this.program, "u_underGlass"),
         hasUnderGlass: gl.getUniformLocation(this.program, "u_hasUnderGlass"),
@@ -955,6 +1058,7 @@
         useAlbumTransitionSource: gl.getUniformLocation(this.program, "u_useAlbumTransitionSource"),
         debugAlbumSourceFlat: gl.getUniformLocation(this.program, "u_debugAlbumSourceFlat"),
         reactiveArtSource: gl.getUniformLocation(this.program, "u_reactiveArtSource"),
+        wallpaperSource: gl.getUniformLocation(this.program, "u_wallpaperSource"),
         reactivePreviousTex: gl.getUniformLocation(this.program, "u_reactivePreviousTex"),
         reactiveArtMix: gl.getUniformLocation(this.program, "u_reactiveArtMix"),
         reactivePreviousAngle: gl.getUniformLocation(this.program, "u_reactivePreviousAngle"),
@@ -982,6 +1086,103 @@
       // edge pixels.
       gl.enable(gl.BLEND);
       gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+    }
+
+    _prepareOpticalBackdrop(frame) {
+      const gl = this.gl;
+      gl.uniform1i(this.u.hasOpticalSource, 0);
+      gl.uniform2f(this.u.textureResolution, this.textureWidth, this.textureHeight);
+      if (!this._hasTextureLod || this._opticalUnavailable || this._forceGlassCanary()) return;
+      // Prepare the audio-reactive artwork once per renderer, then reuse it
+      // for every lens and every blur/dispersion tap. No canvas uploads.
+      const sourceRect = this._sourceCssRect || {width:window.innerWidth, height:window.innerHeight};
+      const cap = Math.min(1024, gl.getParameter(gl.MAX_TEXTURE_SIZE));
+      const pot = value => Math.min(cap, Math.pow(2, Math.ceil(Math.log2(Math.max(2, value)))));
+      const scale = Math.min(1, this._dpr || 1, cap / Math.max(sourceRect.width, sourceRect.height, 1));
+      const width = pot(sourceRect.width * scale), height = pot(sourceRect.height * scale);
+      const fs = frame || {};
+      const art = fs.artTransition || {};
+      const signature = JSON.stringify([this._sourceUploadRevision, this.textureWidth, this.textureHeight,
+        this._reactiveArtActive, this._albumMix, this._reactiveArtKey,
+        this._reactiveArtActive ? [fs.angleRadians, fs.lumaLow, fs.lumaHigh, fs.fade, fs.active, fs.brightnessCap,
+          fs.energy, fs.beat, fs.bands, fs.bandCenters, fs.bandWidths, fs.responseSettings,
+          art.active, art.progress, art.fromKey, art.fromAngle, art.toAngle] : null, width, height,
+        sourceRect.width, sourceRect.height, this._wallpaperActive]);
+      try {
+        gl.activeTexture(gl.TEXTURE6);
+        // A sampler may not reference the texture attached to the framebuffer,
+        // even when a uniform branch would skip that sample.
+        gl.bindTexture(gl.TEXTURE_2D, this.texture);
+        gl.uniform1i(this.u.opticalSource, 6);
+        if (!this._opticalTexture) {
+          this._opticalTexture = gl.createTexture();
+          this._opticalFramebuffer = gl.createFramebuffer();
+        }
+        if (this._opticalWidth !== width || this._opticalHeight !== height) {
+          gl.bindTexture(gl.TEXTURE_2D, this._opticalTexture);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.LINEAR);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
+          gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, width, height, 0, gl.RGBA, gl.UNSIGNED_BYTE, null);
+          gl.bindTexture(gl.TEXTURE_2D, this.texture);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, this._opticalFramebuffer);
+          gl.framebufferTexture2D(gl.FRAMEBUFFER, gl.COLOR_ATTACHMENT0, gl.TEXTURE_2D, this._opticalTexture, 0);
+          if (gl.checkFramebufferStatus(gl.FRAMEBUFFER) !== gl.FRAMEBUFFER_COMPLETE) throw new Error("Optical framebuffer unavailable");
+          this._opticalWidth = width;
+          this._opticalHeight = height;
+          this._opticalSignature = null;
+        }
+        if (signature !== this._opticalSignature) {
+          gl.bindFramebuffer(gl.FRAMEBUFFER, this._opticalFramebuffer);
+          gl.disable(gl.SCISSOR_TEST);
+          gl.disable(gl.BLEND);
+          gl.viewport(0, 0, width, height);
+          gl.uniform1i(this.u.prepareOpticalSource, 1);
+          gl.drawArrays(gl.TRIANGLES, 0, 6);
+          gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+          gl.bindTexture(gl.TEXTURE_2D, this._opticalTexture);
+          gl.generateMipmap(gl.TEXTURE_2D);
+          gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
+          this._opticalSignature = signature;
+          this._opticalPrepareCount = (this._opticalPrepareCount || 0) + 1;
+        }
+        gl.bindTexture(gl.TEXTURE_2D, this._opticalTexture);
+        gl.uniform2f(this.u.opticalSize, width, height);
+        gl.uniform1i(this.u.hasOpticalSource, 1);
+      } catch (error) {
+        this._opticalUnavailable = true;
+        if (this._opticalTexture) gl.deleteTexture(this._opticalTexture);
+        if (this._opticalFramebuffer) gl.deleteFramebuffer(this._opticalFramebuffer);
+        this._opticalTexture = this._opticalFramebuffer = null;
+        gl.bindTexture(gl.TEXTURE_2D, this.texture);
+        liquidGLLog("warn", "liquidGL: using bounded optical blur fallback", error);
+      } finally {
+        gl.bindFramebuffer(gl.FRAMEBUFFER, null);
+        gl.uniform1i(this.u.prepareOpticalSource, 0);
+        gl.enable(gl.BLEND);
+        gl.blendFunc(gl.ONE, gl.ONE_MINUS_SRC_ALPHA);
+        gl.activeTexture(gl.TEXTURE0);
+        gl.bindTexture(gl.TEXTURE_2D, this.texture);
+      }
+    }
+
+    _lensContact(lens, now) {
+      const rect = lens.rectPx;
+      const state = lens._opticalContact || (lens._opticalContact = { press: 0, time: now, x: 0.5, y: 0.5 });
+      const inside = rect && glassContact.x >= rect.left && glassContact.x <= rect.left + rect.width && glassContact.y >= rect.top && glassContact.y <= rect.top + rect.height;
+      const target = inside && glassContact.down ? 1 : 0;
+      if (inside) {
+        state.x = (glassContact.x - rect.left) / Math.max(1, rect.width);
+        state.y = 1 - (glassContact.y - rect.top) / Math.max(1, rect.height);
+      }
+      const reduced = window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+      const elapsed = Math.max(1, Math.min(64, now - state.time));
+      state.press += (target - state.press) * (reduced ? 1 : 1 - Math.exp(-elapsed / 55));
+      state.time = now;
+      if (Math.abs(target - state.press) < 0.005) state.press = target;
+      else this.requestRender();
+      return state;
     }
 
     /* ----------------------------- */
@@ -1140,6 +1341,9 @@
         visibleLensCount: (this.lenses || []).filter((lens) => this._lensVisible(lens)).length,
         sourceRefreshCount: this.sourceRefreshCount || 0,
         frostSamples: this._configuredFrostSamples(),
+        opticalBackend: this._hasTextureLod && !this._opticalUnavailable ? "shared-mip" : "bounded-kernel",
+        opticalPrepareCount: this._opticalPrepareCount || 0,
+        opticalTextureSize: [this._opticalWidth || 0, this._opticalHeight || 0],
         renderScale: this._dpr || 1,
         averageRenderSubmissionMs: this._renderSubmissionSamples && this._renderSubmissionSamples.length
           ? this._renderSubmissionTotalMs / this._renderSubmissionSamples.length
@@ -1301,6 +1505,8 @@
       const widthFallback = [.125, .125, .125, .125, .125, .125, .125, .125, .125];
       const response = (kind) => ["brightness", "opacity", "saturation", "contrast"].map((channel) => finite(fs.responseSettings && fs.responseSettings[kind] && fs.responseSettings[kind][channel], 0));
       if (this.u.reactiveArtSource) gl.uniform1i(this.u.reactiveArtSource, reactive ? 1 : 0);
+      if (this.u.wallpaperSource) gl.uniform1i(this.u.wallpaperSource, this._wallpaperActive ? 1 : 0);
+      if (this.u.reactiveViewport) gl.uniform2f(this.u.reactiveViewport, window.innerWidth || 1, window.innerHeight || 1);
       if (!reactive) return;
       const transition = fs.artTransition || {};
       let artMix = 1;
@@ -1384,10 +1590,11 @@
           typeof window.DebriPod.visualizerRenderer.sourceForLiquidGL === "function"
             ? window.DebriPod.visualizerRenderer.sourceForLiquidGL()
             : null;
+        this._wallpaperActive = !!(adapter && adapter.ready && adapter.wallpaper);
         if (adapter && adapter.ready && adapter.image) {
           const artKey = String(adapter.artKey || adapter.sourceRevision || adapter.image.currentSrc || adapter.image.src || "reactive-art");
           const sourceRect = adapter.sourceRect || { left: 0, top: 0, width: window.innerWidth || 1, height: window.innerHeight || 1 };
-          this._reactiveArtActive = true;
+          this._reactiveArtActive = !this._wallpaperActive;
           this._sourceCssRect = sourceRect;
           if (artKey === this._reactiveArtKey && this.texture && !this._sourceIsSolidFallback) return true;
           const uploaded = this.updateTextureFromImage(adapter.image, { reason: reason || "reactive artwork", sourceRect });
@@ -1729,6 +1936,7 @@
       }
 
       this.staticSnapshotCanvas = source instanceof HTMLCanvasElement ? source : null;
+      this._sourceUploadRevision = (this._sourceUploadRevision || 0) + 1;
       this.textureWidth = width;
       this.textureHeight = height;
       this.scaleFactor = Number(options.scaleFactor) || 1;
@@ -1959,6 +2167,7 @@
       this._bindAlbumTransitionUniforms();
       this._bindReactiveVisualizerUniforms(fs);
       this._bindGlobalLightingUniforms(this._globalLightingState());
+      this._prepareOpticalBackdrop(fs);
 
       const time = Number.isFinite(fs.timestamp) ? fs.timestamp / 1000 : (Date.now() - this.startTime) / 1000;
       gl.uniform1f(this.u.time, time);
@@ -2247,6 +2456,9 @@
       gl.uniform1f(this.u.materialAlpha, resolved.materialAlpha);
       gl.uniform1f(this.u.specularPrimary, resolved.specularPrimary);
       gl.uniform1f(this.u.specularSecondary, resolved.specularSecondary);
+      const contact = this._lensContact(lens, fsTime(this._externalFrameState));
+      gl.uniform4f(this.u.contact, contact.x, contact.y, contact.press, 0);
+      gl.uniform1f(this.u.scrollEdge, lens.el.id === "libList" && lens.el.scrollTop > 0 ? 1 : 0);
 
       if (forceCanary) {
         const canary = this._ensureDebugCanaryTexture();

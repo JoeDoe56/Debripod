@@ -747,6 +747,19 @@
     }
     .visualizerBg.active{ opacity:1; }
     .visualizerBg.off{ opacity:0; }
+    #debripodWallpaper{
+      position:fixed;
+      inset:0;
+      width:100%;
+      height:100%;
+      object-fit:cover;
+      object-position:center;
+      z-index:1;
+      pointer-events:none;
+      background:#000;
+    }
+    html.dpTestingWallpaper #visualizerBg,
+    html.dpTestingWallpaper #videoAmbientBg{ opacity:0 !important; }
     #videoAmbientBg{
       position:fixed;
       inset:0;
@@ -1345,6 +1358,14 @@
     }
 
         .ipodWheelWrap{width:auto; flex: 0 0 auto; margin-top: 0;}
+    /* The global squircle rule must not reshape the circular wheel's CSS
+       shadow into a second silhouette around the circular WebGL surface. */
+    .wheel, .wheel::before, .wheel::after,
+    .wheelGlassRing, .wheelGlassRing::before, .wheelGlassRing::after,
+    .wheelCenter, .wheelCenter::before, .wheelCenter::after,
+    .wheelCenterGlass, .wheelCenterGlass::before, .wheelCenterGlass::after{
+      corner-shape:round;
+    }
     .wheel{
       position: relative;
       z-index:30;

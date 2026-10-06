@@ -1824,6 +1824,7 @@ async function libDoSearch(engine, q){
         const vizOn = (typeof visualizerEnabled === "boolean") ? visualizerEnabled : !!uiSettings.visualizer;
         const fps = (typeof visualizerFpsLock !== "undefined") ? visualizerFpsLock : uiSettings.visualizerFpsLock;
         items.push({kind:"libui_action", label:"Visualizer", action:"toggle_visualizer", pills:[vizOn ? "On" : "Off"]});
+        items.push({kind:"libui_action", label:"Upload Wallpaper", action:"upload_test_wallpaper", sub_label:"Choose a photo for glass comparison. Turning Visualizer on clears it.", forceTwoLine:true});
         items.push({
           kind:"libui_action",
           label:"Max visualizer brightness",
@@ -2941,6 +2942,9 @@ async function libDoSearch(engine, q){
       case "cycle_visualizer_fps_lock":
         cycleVisualizerFpsLock();
         await viewLibUiSettings(false);
+        return true;
+      case "upload_test_wallpaper":
+        if(window.DebriPod && DebriPod.wallpaper) DebriPod.wallpaper.choose();
         return true;
       case "set_visualizer_rotations":
         await viewRangeEditor({

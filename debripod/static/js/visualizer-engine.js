@@ -742,6 +742,8 @@ function renderVisualizerWebGL(){
 }
 
 function visualizerSourceForLiquidGL(){
+  var wallpaper = window.DebriPod && window.DebriPod.wallpaper;
+  if(wallpaper && wallpaper.active()) return wallpaper.source();
   return {image:visualizerArtField.image, artKey:visualizerArtField.artIdentity + ":" + visualizerArtField.algorithmVersion, width:visualizerArtField.image && visualizerArtField.image.naturalWidth || 0, height:visualizerArtField.image && visualizerArtField.image.naturalHeight || 0, sourceRect:{left:0, top:0, width:window.innerWidth || 1, height:window.innerHeight || 1}, ready:!!(visualizerArtField.loaded && visualizerArtField.image && visualizerArtField.artIdentity)};
 }
 
@@ -902,6 +904,7 @@ function updateVisualizerState(){
 
 function setVisualizerEnabled(on){
   visualizerEnabled = !!on;
+  if(visualizerEnabled && window.DebriPod && window.DebriPod.wallpaper) window.DebriPod.wallpaper.clear();
   uiSettings.visualizer = visualizerEnabled;
   saveUiSettings();
   updateVisualizerState();

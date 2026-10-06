@@ -23,6 +23,7 @@
     "/static/js/playback-loader.js",
     "/static/js/palette-utils.js",
     "/static/js/visualizer-engine.js",
+    "/static/js/wallpaper.js",
     "/static/js/video-ambient.js",
     "/static/js/album-art-texture.js",
     "/static/js/wheel-icons.js",
