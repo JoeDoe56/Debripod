@@ -28,6 +28,11 @@ module.exports = async function checkGlassLayout(page) {
         icon: [icon.width, icon.height],
         frame: style('#libList').paddingLeft,
         infoInset: (rect('.ipodScreenContent').width - rect('#infoPill').width) / 2,
+        seekWidth: rect('.npMeterTrack').width,
+        seekX: rect('.npMeterTrack').x,
+        pathMax: parseFloat(getComputedStyle(document.documentElement).getPropertyValue('--pathPillMaxWidth')),
+        infoWidth: rect('#infoPill').width,
+        expectedSeekWidth: Math.floor(rect('.ipodScreenContent').width - 24) - 24,
       };
     });
     assert.equal(geometry.pathHeight, 48);
@@ -40,6 +45,9 @@ module.exports = async function checkGlassLayout(page) {
     assert.deepEqual(geometry.icon, [36, 36]);
     assert.equal(geometry.frame, '12px');
     assert.equal(geometry.infoInset, 12);
+    assert.equal(geometry.seekWidth, geometry.expectedSeekWidth);
+    assert.equal(geometry.seekX, 30);
+    assert.equal(geometry.pathMax, geometry.infoWidth);
   }
   await page.evaluate(() => DebriPod.rowSystem.setPanelOpen(true));
   await page.waitForTimeout(350);

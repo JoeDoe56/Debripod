@@ -79,7 +79,7 @@
       --pathPillRenderedHeight: var(--pathPillCollapsedHeight);
       --path-text-fade: 12px;
       --infoBarThickness: 8.4px;
-      --infoBarInsetX: 9px;
+      --infoBarInsetX: calc(2 * var(--stageGap));
       --infoPillWidth: var(--pathPillMaxWidth, calc(100vw - 24px));
       --infoPillHeight: 48px;
       --wheelZoneHeight: calc(var(--wheelSize) + (var(--wheelGap) * 2));
@@ -2217,3 +2217,8 @@
 .pathPill.pathPillExpanded .pathPillRows{grid-template-rows:auto auto;row-gap:var(--playbackPillRowGap);}
 .pathPill.pathPillExpanded .pathPillText,.pathPillNowText,.pathPillNowTextSmall{font-size:12px;}
 .infoPill .npBarArea{flex-shrink:0;}
+
+/* One silhouette for the CSS surface and optical mask; wheel lenses are circles. */
+.pathPill,.infoPill,.liquidGlass{--liquid-corner-power:2.25;corner-shape:superellipse(1.169925);}
+.wheelGlassRing.liquidGlass,.wheelCenterGlass.liquidGlass{--liquid-corner-power:2;corner-shape:round;}
+.pathPill,.pathPill.pathPillExpanded,.ipodList{clip-path:none;}

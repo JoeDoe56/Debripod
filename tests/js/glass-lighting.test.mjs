@@ -153,3 +153,34 @@ test("device tilt sweeps the light through all quadrants with a short damping ti
     assert.ok(f.api.state().intensity>.9);
   }
 });
+
+test("device tilt keeps diagonal motion below the saturated cardinal clamp",()=>{
+  const f=load();
+  f.api.testing.orientationChange({beta:0,gamma:0});
+  f.api.testing.orientationChange({beta:35,gamma:35});
+  for(let t=20;t<=200;t+=20)f.api.testing.step(t);
+  const state=f.api.state();
+  assert.ok(state.x > -0.16 && state.x < 1, `x saturated: ${state.x}`);
+  assert.ok(state.y > -0.22 && state.y < 1, `y saturated: ${state.y}`);
+});
+
+test("strong diagonal device tilt preserves direction without rectangular clamping",()=>{
+  const f=load({motionMultiplier:2});
+  f.api.testing.orientationChange({beta:0,gamma:0});
+  f.api.testing.orientationChange({beta:45,gamma:45});
+  for(let t=20;t<=200;t+=20)f.api.testing.step(t);
+  const state=f.api.state();
+  assert.ok(Math.abs(state.x) < 1 && Math.abs(state.y) < 1);
+  assert.ok(Math.sign(state.x + 0.16) === Math.sign(state.y + 0.22));
+});
+
+test("large unequal tilts retain their angle instead of clipping a component",()=>{
+  const f=load({motionMultiplier:2});
+  f.api.testing.orientationChange({beta:0,gamma:0});
+  f.api.testing.orientationChange({beta:20,gamma:60});
+  for(let t=20;t<=1000;t+=20)f.api.testing.step(t);
+  const state=f.api.state();
+  const x=-.16+2.3*Math.sin(Math.PI/3),y=-.22+2.3*Math.sin(Math.PI/9);
+  assert.ok(Math.hypot(state.x,state.y)<1);
+  assert.ok(Math.abs(Math.atan2(state.y,state.x)-Math.atan2(y,x))<.001);
+});

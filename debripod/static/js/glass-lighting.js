@@ -56,6 +56,18 @@
     };
     schedule();
   }
+  function compressLightVector(x, y){
+    const radius = Math.hypot(x, y);
+    const limit = 0.8;
+    if(!Number.isFinite(radius) || radius <= limit) return {x, y};
+    // Preserve the diagonal direction while easing the vector into the
+    // allowed circle. Independent x/y clamping turns diagonal motion into a
+    // cardinal snap when the phone is rotated far enough.
+    const headroom = 1 - limit;
+    const compressed = limit + headroom * (1 - Math.exp(-(radius - limit) / headroom));
+    const factor = compressed / radius;
+    return {x:x * factor, y:y * factor};
+  }
   function step(timestamp){
     frame = 0;
     const now = Number(timestamp || performance.now() || Date.now());
@@ -94,10 +106,20 @@
     if(!orientationOrigin) orientationOrigin = {beta, gamma};
     const angle = Number(window.screen && window.screen.orientation && window.screen.orientation.angle || window.orientation || 0) * Math.PI / 180;
     const multiplier = motionEffectMultiplier();
-    const dx = Math.sin((gamma - orientationOrigin.gamma) * Math.PI / 180) * 2 * multiplier;
-    const dy = Math.sin((beta - orientationOrigin.beta) * Math.PI / 180) * 2 * multiplier;
+    // Keep the sensor response continuous across ordinary phone movements.
+    // The old factor of 2 saturated the clamped light vector at roughly 30°,
+    // which made the highlight jump between the four cardinal extremes.
+    // A slightly expanded, but unsaturated, sine response preserves the
+    // proportional motion while leaving useful headroom for diagonal tilts.
+    const sensorScale = 1.15;
+    const dx = Math.sin((gamma - orientationOrigin.gamma) * Math.PI / 180) * sensorScale * multiplier;
+    const dy = Math.sin((beta - orientationOrigin.beta) * Math.PI / 180) * sensorScale * multiplier;
     orientationActive = true;
-    setTarget(neutral.x + dx * Math.cos(angle) + dy * Math.sin(angle), neutral.y + dy * Math.cos(angle) - dx * Math.sin(angle), 0.95, "orientation");
+    const projected = compressLightVector(
+      neutral.x + dx * Math.cos(angle) + dy * Math.sin(angle),
+      neutral.y + dy * Math.cos(angle) - dx * Math.sin(angle)
+    );
+    setTarget(projected.x, projected.y, 0.95, "orientation");
   }
   function attachOrientation(){
     if(orientationAttached || !window.addEventListener) return;

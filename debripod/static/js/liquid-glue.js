@@ -1321,6 +1321,10 @@
         target: ".wheelGlassRing.liquidGlass, .wheelCenterGlass.liquidGlass",
         rendererKey: "wheel",
         geometryRect: wheelLensLayoutRect,
+        tiltProjection: function(){
+          const rect = wheelGlassLayoutRect();
+          return rect ? {x:rect.left + rect.width / 2, y:rect.top + rect.height / 2, perspective:900} : null;
+        },
         sourceType: "visualizerWebgl",
         sourceElement: "#visualizerReactiveArt"
       })));

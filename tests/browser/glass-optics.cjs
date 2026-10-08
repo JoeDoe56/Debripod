@@ -74,19 +74,89 @@ const server=http.createServer((req,res)=>{
       assert.equal(initial.after[i].source,row.source,'static wallpaper is not re-uploaded');
       assert.equal(initial.after[i].prepares,row.prepares,'static optics reuse the prepared backdrop');
     });
+    // The wheel glass is rasterized into a canvas that is itself transformed
+    // by the CSS perspective. Verify the live render supplies the same pivot
+    // and perspective to the backdrop projection uniform; this guards against
+    // refraction becoming a texture glued to the rotating wheel.
+    const projection=await page.evaluate(()=>{
+      const renderer=window.__liquidGLRenderers__.wheel;
+      const lens=renderer.lenses.find(item=>item.el.classList.contains('wheelGlassRing')) || renderer.lenses[0];
+      const source=renderer._sourceCssRect || {left:0,top:0,width:innerWidth,height:innerHeight};
+      const pivot=lens.options.tiltProjection();
+      const calls=[];
+      const original=renderer.gl.uniform4f.bind(renderer.gl);
+      renderer.gl.uniform4f=function(location,a,b,c,d){
+        if(location===renderer.u.tiltProjection) calls.push([a,b,c,d]);
+        return original(location,a,b,c,d);
+      };
+      lens.tiltX=8; lens.tiltY=-6;
+      renderer.render({timestamp:performance.now()});
+      renderer.gl.uniform4f=original;
+      return {pivot,source,calls,last:calls[calls.length-1]};
+    });
+    assert.ok(projection.last,'wheel render must bind a tilt projection');
+    assert.ok(Math.abs(projection.last[0] - (projection.pivot.x-projection.source.left)/projection.source.width)<0.002);
+    assert.ok(Math.abs(projection.last[1] - (projection.pivot.y-projection.source.top)/projection.source.height)<0.002);
+    assert.equal(projection.last[2],900);
+    assert.equal(projection.last[3],1);
+    await require('./wheel-projection-checks.cjs')(page);
     await page.screenshot({path:path.join(output,'testing-glass-wallpaper.png')});
+    const corners=await page.evaluate(()=>{
+      const r=window.__liquidGLRenderers__.main;
+      const lens=r.lenses.find(l=>l.el.id==='libList');
+      r.render();
+      const gl=r.gl, rect=lens.rectPx, dpr=r._dpr;
+      const pixel=(x,y)=>{
+        const rgba=new Uint8Array(4);
+        gl.readPixels(Math.floor((rect.left+x)*dpr),Math.floor(r.canvas.height-(rect.top+y)*dpr),1,1,gl.RGBA,gl.UNSIGNED_BYTE,rgba);
+        return [...rgba];
+      };
+      const coverage=()=>{
+        const size=Math.ceil(lens.radiusCss*dpr),data=new Uint8Array(size*size*4);
+        gl.readPixels(Math.floor(rect.left*dpr),Math.floor(r.canvas.height-(rect.top+lens.radiusCss)*dpr),size,size,gl.RGBA,gl.UNSIGNED_BYTE,data);
+        return data.reduce((sum,value,i)=>sum+(i%4===3?value:0),0);
+      };
+      const result={power:lens.cornerPower,radius:lens.radiusCss,outer:pixel(.5,.5),smooth:pixel(7,7),center:pixel(rect.width/2,rect.height/2),
+        wheelPowers:window.__liquidGLRenderers__.wheel.lenses.map(l=>l.cornerPower),smoothCoverage:coverage()};
+      const oldPower=lens.el.style.getPropertyValue('--liquid-corner-power');
+      lens.el.style.setProperty('--liquid-corner-power','2'); lens.updateMetrics(); r.render(); result.roundCoverage=coverage();
+      if(oldPower)lens.el.style.setProperty('--liquid-corner-power',oldPower);
+      else lens.el.style.removeProperty('--liquid-corner-power');
+      lens.updateMetrics(); r.render();
+      return result;
+    });
+    assert.equal(corners.power,2.25,'glass renders the same continuous corner as its CSS surface');
+    assert.equal(corners.outer[3],0,'continuous corner still rejects pixels outside its silhouette');
+    assert.ok(corners.smooth[3]>240,JSON.stringify(corners));
+    assert.ok(corners.smoothCoverage>corners.roundCoverage+600,JSON.stringify(corners));
+    assert.ok(corners.center[3]>240,'center normal remains finite');
+    assert.ok(corners.wheelPowers.every(power=>power===2),'wheel silhouettes stay circular');
+
     const contact=await page.evaluate(()=>{
       const r=Object.values(window.__liquidGLRenderers__)[0], lens=r.lenses[0], rect=lens.rectPx;
+      // A list row or wheel hit region may stop bubbling while it arbitrates
+      // the gesture.  The glass contact listener must still see the stream.
+      const child=document.createElement('button');
+      child.type='button'; child.style.cssText='position:absolute;left:0;top:0;width:1px;height:1px;opacity:0';
+      lens.el.appendChild(child);
+      child.addEventListener('pointerdown',event=>event.stopPropagation());
       let now=performance.now();
-      window.dispatchEvent(new PointerEvent('pointerdown',{clientX:rect.left+rect.width/2,clientY:rect.top+rect.height/2}));
+      child.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:rect.left+rect.width/2,clientY:rect.top+rect.height/2,pointerId:19,buttons:1}));
       for(let i=0;i<8;i++) r._lensContact(lens,now+=64);
       const pressed={...lens._opticalContact};
-      window.dispatchEvent(new PointerEvent('pointercancel'));
+      // Pointer capture changes the event target, but coordinates continue to
+      // drive the highlight toward the user's finger.
+      lens.el.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,clientX:rect.left+rect.width*.8,clientY:rect.top+rect.height*.25,pointerId:19,buttons:1}));
+      for(let i=0;i<4;i++) r._lensContact(lens,now+=64);
+      const moved={...lens._opticalContact};
+      lens.el.dispatchEvent(new PointerEvent('pointercancel',{bubbles:true,pointerId:19}));
       for(let i=0;i<8;i++) r._lensContact(lens,now+=64);
-      return {pressed,released:lens._opticalContact.press};
+      child.remove();
+      return {pressed,moved,released:lens._opticalContact.press};
     });
     assert.equal(contact.pressed.press,1,'touch highlight reaches its pressed state');
     assert.ok(Math.abs(contact.pressed.x-0.5)<0.01 && Math.abs(contact.pressed.y-0.5)<0.01);
+    assert.ok(Math.abs(contact.moved.x-.8)<0.02 && Math.abs(contact.moved.y-.75)<0.02,'captured pointer keeps the highlight under the finger');
     assert.equal(contact.released,0,'cancelled touch fully releases its highlight');
     // Bad input leaves the applied image and setting intact.
     assert.equal(await page.evaluate(()=>DebriPod.wallpaper.upload(new File(['bad'],'broken.png',{type:'image/png'}))),false);

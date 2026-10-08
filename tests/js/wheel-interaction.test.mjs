@@ -115,7 +115,7 @@ test("horizontal right edge pull opens the panel and suppresses wheel navigation
   assert.deepEqual(events.at(-1), ["open", true]);
 });
 
-test("continuing a right pull across the centre hands horizontal travel to panel scrolling", () => {
+test("continuing a right pull across the centre hands wheel rotation to panel scrolling", () => {
   const progress = [];
   const scroll = [];
   const wheel = createInteraction({callbacks: {
@@ -135,6 +135,28 @@ test("continuing a right pull across the centre hands horizontal travel to panel
   assert.ok(Math.abs(scroll[0][0]) > 1);
   wheel.end({pointerId: 4});
   assert.equal(progress.at(-1), 1);
+});
+
+test("centre jitter does not hand off until the finger reaches the left side", () => {
+  const wheel = createInteraction({callbacks: {panelProgress: () => {}}});
+  wheel.begin(point(190, 100), {rect});
+  wheel.move(point(100, 100));
+  wheel.move(point(99, 100));
+  assert.equal(wheel.state(), STATES.RIGHT_PANEL_GESTURE);
+  wheel.move(point(90, 100));
+  assert.equal(wheel.state(), STATES.RIGHT_PANEL_SCROLL_GESTURE);
+  wheel.cancel("test");
+});
+
+test("a fast outer-edge pull can hand off without a centre sample", () => {
+  const progress = [];
+  const wheel = createInteraction({callbacks: {panelProgress: value => progress.push(value)}});
+  wheel.begin(point(190, 100), {rect});
+  wheel.move(point(70, 100));
+  assert.equal(wheel.state(), STATES.RIGHT_PANEL_SCROLL_GESTURE);
+  assert.equal(progress.at(-1), 1);
+  wheel.cancel("test");
+  assert.equal(progress.at(-1), 0, "cancel restores the closed panel");
 });
 
 test("a second right pull on an open panel does not animate it closed", () => {

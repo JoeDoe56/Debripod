@@ -51,6 +51,7 @@
   const EDGE_START = 0.27;
   const EDGE_RESOLVE = 24;
   const EDGE_ANGLE_TOLERANCE = 42;
+  const PANEL_CROSSOVER_MARGIN = 0.04;
   const DEAD_ZONE = 0.30;
   const ACTION_ZONE = 0.52;
   const VERTICAL_RESOLVE = 24;
@@ -103,6 +104,12 @@
     while (delta > 180) delta -= 360;
     while (delta < -180) delta += 360;
     return delta;
+  }
+
+  function crossedPanelCenter(point, rect) {
+    const r = rect || {left: 0, width: 1};
+    const margin = Math.max(8, Number(r.width || 1) * PANEL_CROSSOVER_MARGIN);
+    return Number(point && point.x) < r.left + r.width / 2 - margin;
   }
 
   // wheel-controls may transfer capture from the hit target to the wheel when
@@ -303,23 +310,29 @@
           const progress = edgeProgress(pointer.start, point, pointer.rect, pointer.edge);
           transition(pointer.edge.indexOf("right") === 0 ? STATES.RIGHT_PANEL_GESTURE : STATES.LYRICS_GESTURE, { edge: pointer.edge });
           if (pointer.edge.indexOf("right") === 0) {
-            // Keep the first resolved sample in the regular panel gesture.
-            // The centre crossing is handled by RIGHT_PANEL_GESTURE below;
-            // this preserves the inner Next Track hit region's arbitration.
-            if (!pointer.panelInitial || pointer.edge === "right_close") {
+            // A fast pull from the outer edge can cross the handoff boundary
+            // in one coalesced move. Inner hit-region starts remain in the
+            // regular panel gesture until a later move proves intent.
+            const outerStart = pointer.start.x >= pointer.rect.left + pointer.rect.width / 2 + pointer.rect.width * .2;
+            if (pointer.edge === "right" && outerStart && crossedPanelCenter(point, pointer.rect)) {
+              pointer.panelScrollActive = true;
+              pointer.panelScrollAngle = wheelPoint(point, pointer.rect).angle;
+              transition(STATES.RIGHT_PANEL_SCROLL_GESTURE, {reason: "crossed_wheel_center"});
+              if (!pointer.panelInitial) emit("panelProgress", 1);
+            } else if (!pointer.panelInitial || pointer.edge === "right_close") {
               emit("panelProgress", pointer.edge === "right_close" ? 1 - progress : progress);
             }
           }
           else emit("lyricsProgress", pointer.edge === "left_close" ? 1 - progress : progress);
         }
       } else if (state === STATES.RIGHT_PANEL_GESTURE) {
-        // A right-edge pull opens the panel at the wheel centre.  Keep the
-        // same contact alive as it crosses to the left side: after the
-        // centre, the horizontal travel becomes a panel-scroll gesture.
+        // A right-edge pull opens the panel at the wheel centre. Keep the
+        // same contact alive as it reaches the left side; after that
+        // crossover, circular movement becomes panel scrolling.
         // This deliberately uses the pointer's x movement rather than
         // starting a second panel animation, so an already-open panel stays
         // open while it is being browsed.
-        if (pointer.edge === "right" && point.x < pointer.rect.left + pointer.rect.width / 2) {
+        if (pointer.edge === "right" && crossedPanelCenter(point, pointer.rect)) {
           pointer.panelScrollActive = true;
           if (!pointer.panelInitial) emit("panelProgress", 1);
           // Once the handoff occurs, the wheel's circular motion controls

@@ -144,6 +144,14 @@ const server=http.createServer((req,res)=>{
     await page.waitForTimeout(300);
     const art=page.locator('#nowPlaying');
     const artworkBefore=await art.boundingBox();
+    const playbackInset=await art.evaluate(el=>{
+      const art=el.getBoundingClientRect(),screen=el.parentElement.getBoundingClientRect();
+      return {left:art.left-screen.left,top:art.top-screen.top,right:screen.right-art.right,bottom:screen.bottom-art.bottom,
+        width:art.width,height:art.height,screenWidth:screen.width,screenHeight:screen.height};
+    });
+    for(const side of ['left','top','right','bottom']) assert.equal(playbackInset[side],12,'Now Playing uses the shared 12px frame');
+    assert.equal(playbackInset.width,playbackInset.screenWidth-24);
+    assert.equal(playbackInset.height,playbackInset.screenHeight-24);
     const sharpRegion={x:artworkBefore.x+artworkBefore.width*.72,y:artworkBefore.y+artworkBefore.height*.22,width:artworkBefore.width*.2,height:artworkBefore.height*.55};
     const sharpBefore=PNG.sync.read(await page.screenshot({clip:sharpRegion}));
     await drag(cx-wheel.width*.39,cy,cx+wheel.width*.05,cy);

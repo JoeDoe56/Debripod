@@ -60,8 +60,12 @@
       const renderers = window.__liquidGLRenderers__ || {};
       Object.values(renderers).forEach(renderer => renderer.requestRender());
     };
+    // Controls inside a glass surface (the list rows and wheel hit regions)
+    // are allowed to stop bubbling while they arbitrate a gesture.  Observe
+    // the stream during capture so the optical contact state cannot miss the
+    // press or release, including after a pointer is captured by the wheel.
     ["pointerdown", "pointermove", "pointerup", "pointercancel", "blur"].forEach(name =>
-      window.addEventListener(name, update, { passive: true }));
+      window.addEventListener(name, update, { passive: true, capture: true }));
   }
 
   function finiteNumber(value, fallback) {
@@ -580,12 +584,14 @@
         uniform float u_frost;
         uniform float u_frostSamples;
         uniform float u_radius;
+        uniform float u_cornerPower;
         uniform float u_time;
         uniform bool  u_specular;
         uniform float u_revealProgress;
         uniform int   u_revealType;
         uniform float u_tiltX;
         uniform float u_tiltY;
+        uniform vec4 u_tiltProjection;
         uniform float u_magnify;
         uniform float u_hollowInset;
         uniform bool  u_hollowMaskContent;
@@ -629,7 +635,15 @@
 
         float udRoundBox( vec2 p, vec2 b, float r ) {
           vec2 q = abs(p) - b + r;
-          return length(max(q, 0.0)) + min(max(q.x, q.y), 0.0) - r;
+          vec2 outside = max(q, 0.0);
+          // A superellipse above L2 has zero curvature at the straight-edge
+          // join. Use the same power as the CSS surface; wheels remain L2.
+          float power = max(2.0, u_cornerPower);
+          vec2 unit = outside / max(r, 1.0);
+          float corner = power > 2.01
+            ? pow(pow(unit.x, power) + pow(unit.y, power), 1.0 / power) * max(r, 1.0)
+            : length(outside);
+          return corner + min(max(q.x, q.y), 0.0) - r;
         }
 
         float edgeFactor(vec2 uv, float radius_px){
@@ -788,8 +802,30 @@
         vec2 shapeNormal(vec2 p, vec2 b, float r) {
           vec2 q = abs(p) - b + r;
           vec2 outside = max(q, 0.0);
-          if (dot(outside, outside) > 0.00001) return normalize(outside) * sign(p);
-          return q.x > q.y ? vec2(sign(p.x), 0.0) : vec2(0.0, sign(p.y));
+          if (dot(outside, outside) > 0.00001) {
+            vec2 gradient = u_cornerPower > 2.01
+              ? pow(outside / max(r, 1.0), vec2(u_cornerPower - 1.0)) : outside;
+            return gradient / max(length(gradient), 0.0001) * sign(p);
+          }
+          // The nearest-edge normal jumps by 90 degrees on the rectangle's
+          // medial diagonals. Blend only the interior gradients, reaching the
+          // exact edge normal at the corner/straight-edge boundary.
+          float band = max(0.001, min(max(r, 1.0), max(-q.x, -q.y)));
+          float weight = smoothstep(-band, band, q.x - q.y);
+          vec2 gradient = vec2(sign(p.x) * weight, sign(p.y) * (1.0 - weight));
+          return gradient / max(length(gradient), 0.0001);
+        }
+        vec2 projectBackdrop(vec2 sourceUV) {
+          if (u_tiltProjection.w < 0.5) return sourceUV;
+          vec2 sourceCssSize = u_lensCssSize / max(u_bounds.zw, vec2(0.00001));
+          vec2 q = (sourceUV - u_tiltProjection.xy) * sourceCssSize;
+          float rx = radians(u_tiltX), ry = radians(u_tiltY);
+          // CSS applies rotateY, then rotateX, then perspective to the plane.
+          vec3 rotated = vec3(cos(ry) * q.x,
+            cos(rx) * q.y + sin(rx) * sin(ry) * q.x,
+            sin(rx) * q.y - cos(rx) * sin(ry) * q.x);
+          float w = max(0.1, 1.0 - rotated.z / u_tiltProjection.z);
+          return u_tiltProjection.xy + rotated.xy / w / sourceCssSize;
         }
         vec4 compositeOpticalLayers(vec4 base, vec2 uv) {
           // The same lower-glass and text layers are sampled at displaced UVs.
@@ -855,7 +891,8 @@
             return;
           }
           vec2 localUV = (v_uv - 0.5) / u_magnify + 0.5;
-          vec2 mapped = u_bounds.xy + vec2(localUV.x, 1.0 - localUV.y) * u_bounds.zw;
+          vec2 localMapped = u_bounds.xy + vec2(localUV.x, 1.0 - localUV.y) * u_bounds.zw;
+          vec2 mapped = projectBackdrop(localMapped);
           if (u_debugAlbumSourceFlat) {
             gl_FragColor = sampleAlbumArtSource(mapped);
             return;
@@ -895,12 +932,11 @@
           float scale = clamp(min(u_lensCssSize.x, u_lensCssSize.y) / 150.0, 0.35, 1.5);
           vec2 cssToUV = u_sourceTexelsPerCssPixel / u_textureResolution;
           vec2 direction = vec2(normal.x, -normal.y);
-          vec2 tilt = vec2(tan(radians(u_tiltY)), -tan(radians(u_tiltX))) * 2.0;
           float opticalStrength = clamp(u_refraction / 0.045, 0.0, 2.5);
           float inner = refractLobe(d, 4.0 * scale, 18.0 * scale) * opticalStrength * dRefract;
           float outer = refractLobe(d, -13.0 * scale, 10.0 * scale) * opticalStrength * dRefract;
-          vec2 innerUV = mapped + (direction * inner - tilt) * cssToUV;
-          vec2 outerUV = mapped + (direction * outer - tilt) * cssToUV;
+          vec2 innerUV = projectBackdrop(localMapped + direction * inner * cssToUV);
+          vec2 outerUV = projectBackdrop(localMapped + direction * outer * cssToUV);
           if (u_hollowInset > 0.0 && u_hollowMaskContent) {
             innerUV = mix(innerUV, mapped, smoothstep(0.01, 0.30, hollowInnerShapeAtTextureUV(innerUV)));
             outerUV = mix(outerUV, mapped, smoothstep(0.01, 0.30, hollowInnerShapeAtTextureUV(outerUV)));
@@ -972,7 +1008,13 @@
             float innerRim = 1.0 - smoothstep(0.5, 10.0 * scale, insideCss);
             float glint = (outerPeak + innerRim * 0.45) * (primary * u_specularPrimary + secondary * u_specularSecondary);
             float heightMask = 1.0 - smoothstep(0.0, 70.0 * scale, insideCss);
-            vec2 lobes = clamp((vec2(facing, -facing) - 0.55) / 0.45, 0.0, 1.0) * heightMask;
+            // The broad face highlight has a smooth surface direction. It
+            // must not reuse the nearest-edge SDF normal: that normal's
+            // medial bisectors draw diagonal lines across a flat panel.
+            vec2 faceGradient = p_px / max(b_px, vec2(1.0));
+            vec2 faceNormal = faceGradient / max(length(faceGradient), 0.0001);
+            float faceFacing = dot(faceNormal, lightDir);
+            vec2 lobes = clamp((vec2(faceFacing, -faceFacing) - 0.55) / 0.45, 0.0, 1.0) * heightMask;
             vec2 key = lobes / (0.7 * (1.0 - lobes) + 1.0);
             vec2 contactPx = (v_uv - u_contact.xy) * u_lensCssSize;
             float contactLight = exp(-dot(contactPx, contactPx) / 3200.0) * press * 0.065;
@@ -1039,12 +1081,14 @@
         frost: gl.getUniformLocation(this.program, "u_frost"),
         frostSamples: gl.getUniformLocation(this.program, "u_frostSamples"),
         radius: gl.getUniformLocation(this.program, "u_radius"),
+        cornerPower: gl.getUniformLocation(this.program, "u_cornerPower"),
         time: gl.getUniformLocation(this.program, "u_time"),
         specular: gl.getUniformLocation(this.program, "u_specular"),
         revealProgress: gl.getUniformLocation(this.program, "u_revealProgress"),
         revealType: gl.getUniformLocation(this.program, "u_revealType"),
         tiltX: gl.getUniformLocation(this.program, "u_tiltX"),
         tiltY: gl.getUniformLocation(this.program, "u_tiltY"),
+        tiltProjection: gl.getUniformLocation(this.program, "u_tiltProjection"),
         magnify: gl.getUniformLocation(this.program, "u_magnify"),
         hollowInset: gl.getUniformLocation(this.program, "u_hollowInset"),
         hollowMaskContent: gl.getUniformLocation(this.program, "u_hollowMaskContent"),
@@ -2432,6 +2476,7 @@
       gl.uniform1f(this.u.frost, Math.max(0, resolved.frostSigmaPx));
       gl.uniform1f(this.u.frostSamples, this._configuredFrostSamples());
       gl.uniform1f(this.u.radius, lens.radiusGl);
+      gl.uniform1f(this.u.cornerPower, lens.cornerPower || 2);
       gl.uniform1i(this.u.specular, resolved.specular ? 1 : 0);
       gl.uniform1f(this.u.revealProgress, lens._revealProgress == null ? 1.0 : lens._revealProgress);
       gl.uniform1i(this.u.revealType, lens.revealTypeIndex || 0);
@@ -2447,6 +2492,13 @@
 
       gl.uniform1f(this.u.tiltX, lens.tiltX || 0);
       gl.uniform1f(this.u.tiltY, lens.tiltY || 0);
+      const tiltProjection = typeof lens.options.tiltProjection === "function"
+        ? lens.options.tiltProjection() : lens._mirrorActive
+          ? {x:rect.left + rect.width / 2, y:rect.top + rect.height / 2, perspective:800} : null;
+      gl.uniform4f(this.u.tiltProjection,
+        tiltProjection ? (tiltProjection.x - (sourceCssRect.left || 0)) / Math.max(1, sourceCssRect.width) : 0,
+        tiltProjection ? (tiltProjection.y - (sourceCssRect.top || 0)) / Math.max(1, sourceCssRect.height) : 0,
+        tiltProjection ? tiltProjection.perspective : 900, tiltProjection ? 1 : 0);
       gl.uniform1f(this.u.hollowInset, lens.hollowInsetGl || 0);
       gl.uniform1i(this.u.hollowMaskContent, lens.hollowMaskContent ? 1 : 0);
       gl.uniform1f(this.u.material, resolved.material);
@@ -3519,6 +3571,8 @@
       } else {
         brPx = this._resolveCssLength(brRaw, 0);
       }
+      this.cornerPower = Number(style.getPropertyValue("--liquid-corner-power")) ||
+        (/squircle|superellipse\(2\)/.test(style.getPropertyValue("corner-shape")) ? 4 : 2);
       const maxAllowedCss = Math.min(rect.width, rect.height) * 0.5;
       this.radiusCss = Math.min(brPx, maxAllowedCss);
 
