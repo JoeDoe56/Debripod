@@ -337,6 +337,20 @@
     }
   }
 
+  // Scroll the contextual panel from wheel gestures without exposing its
+  // inner DOM node to the interaction controller.  The browser's native
+  // finger scrolling remains available; this is only the explicit wheel
+  // handoff after a right-edge pull crosses the centre.
+  function scrollPanel(delta){
+    const panel = contextPanel || buildPanel();
+    const inner = panel && panel.querySelector ? panel.querySelector(".dpContextPanelInner") : null;
+    if(!inner) return 0;
+    const amount = Number(delta);
+    if(!Number.isFinite(amount) || !amount) return Number(inner.scrollTop || 0);
+    inner.scrollTop = Math.max(0, Number(inner.scrollTop || 0) + amount);
+    return Number(inner.scrollTop || 0);
+  }
+
   function decorateRow(row, item){
     if(!row || row.classList.contains("dpStandardRow")) return;
     if(row.classList.contains("ipodVirtualSpacer") || row.classList.contains("ipodPageAnchorSpacer") || row.classList.contains("ipodListEndSpacer")) return;
@@ -465,6 +479,7 @@
     updatePanel,
     setPanelProgress,
     setPanelOpen,
+    scrollPanel,
     isPanelOpen,
     getPanelSafeZone: ()=>SAFE_ZONE
   };

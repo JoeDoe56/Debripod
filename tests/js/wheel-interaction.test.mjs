@@ -115,6 +115,67 @@ test("horizontal right edge pull opens the panel and suppresses wheel navigation
   assert.deepEqual(events.at(-1), ["open", true]);
 });
 
+test("continuing a right pull across the centre hands horizontal travel to panel scrolling", () => {
+  const progress = [];
+  const scroll = [];
+  const wheel = createInteraction({callbacks: {
+    panelProgress: value => progress.push(value),
+    panelScroll: (value, details) => scroll.push([value, details.source]),
+    panelOpen: () => {},
+  }});
+  wheel.begin(point(190, 100), {rect, pointerId: 4});
+  wheel.move(point(100, 100), {pointerId: 4});
+  assert.equal(wheel.state(), STATES.RIGHT_PANEL_GESTURE);
+  wheel.move(point(90, 100), {pointerId: 4});
+  assert.equal(wheel.state(), STATES.RIGHT_PANEL_SCROLL_GESTURE);
+  assert.equal(progress.at(-1), 1, 'panel is fully open while the same contact scrolls it');
+  wheel.move(point(80, 80), {pointerId: 4});
+  assert.equal(scroll.length, 1);
+  assert.equal(scroll[0][1], "wheel-cross-center");
+  assert.ok(Math.abs(scroll[0][0]) > 1);
+  wheel.end({pointerId: 4});
+  assert.equal(progress.at(-1), 1);
+});
+
+test("a second right pull on an open panel does not animate it closed", () => {
+  const progress = [];
+  const scroll = [];
+  const wheel = createInteraction({
+    isPanelOpen: () => true,
+    callbacks: {
+      panelProgress: value => progress.push(value),
+      panelScroll: value => scroll.push(value),
+      panelOpen: value => progress.push(["open", value]),
+    },
+  });
+  wheel.begin(point(190, 100), {rect});
+  wheel.move(point(150, 100));
+  assert.equal(wheel.state(), STATES.RIGHT_PANEL_GESTURE);
+  assert.deepEqual(progress, []);
+  wheel.move(point(100, 100));
+  wheel.move(point(80, 100));
+  wheel.move(point(70, 80));
+  assert.equal(wheel.state(), STATES.RIGHT_PANEL_SCROLL_GESTURE);
+  assert.equal(scroll.length, 1);
+  assert.ok(Math.abs(scroll[0]) > 1);
+  wheel.end();
+  assert.deepEqual(progress, []);
+});
+
+test("panel scroll handoff ends with the normal list gesture on the next contact", () => {
+  let scrolls = 0;
+  const wheel = createInteraction({callbacks: {panelScroll: () => { scrolls++; }}});
+  wheel.begin(point(190, 100), {rect});
+  wheel.move(point(100, 100));
+  wheel.move(point(90, 100));
+  wheel.move(point(80, 80));
+  wheel.end();
+  assert.equal(scrolls, 1);
+  wheel.begin(point(100, 100), {rect});
+  assert.notEqual(wheel.state(), STATES.RIGHT_PANEL_SCROLL_GESTURE);
+  wheel.cancel("test");
+});
+
 test("a touch beginning on the Next Track hit region resolves even near its inner edge", () => {
   const wheel = createInteraction({callbacks: {panelProgress: () => {}}});
   wheel.begin(point(126, 100), {rect, edgeHint: "right"});

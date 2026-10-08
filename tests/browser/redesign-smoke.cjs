@@ -71,7 +71,9 @@ const server=http.createServer((req,res)=>{
     await drag(cx,cy,cx+wheel.width*.39,cy);
     const initial=await page.evaluate(()=>({height:document.querySelector('.dpStandardRow').getBoundingClientRect().height,font:getComputedStyle(document.querySelector('.dpStandardRow')).fontFamily,pills:[...document.querySelectorAll('.dpStandardRow .ipodPills')].filter(x=>getComputedStyle(x).display!=='none').length}));
     assert.equal(initial.pills,0);assert.match(initial.font,/Host Grotesk/);
+    await require('./glass-layout-checks.cjs')(page);
     await require('./scrolling-checks.cjs')(page,touch,drag,wheel);
+    await require('./panel-wheel-checks.cjs')(page,touch,drag,wheel);
     await page.evaluate(()=>{
       DebriPod.rowSystem.setPanelOpen(false);
       state.current={kind:'metalist',label:'Album',level:'tracks'};

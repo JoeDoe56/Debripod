@@ -23,6 +23,7 @@
     NORMAL: "normal",
     POTENTIAL_EDGE: "potential_edge",
     RIGHT_PANEL_GESTURE: "right_panel_gesture",
+    RIGHT_PANEL_SCROLL_GESTURE: "right_panel_scroll_gesture",
     PANEL_OPEN: "right_panel_open",
     LYRICS_GESTURE: "lyrics_gesture",
     LYRICS_VISIBLE: "lyrics_visible",
@@ -95,6 +96,13 @@
     const travel = direction === "right_close" || direction === "left_close" ? closeTravel : startTravel;
     const delta = direction === "right" ? a.x - b.x : direction === "left" ? b.x - a.x : direction === "left_close" ? a.x - b.x : b.x - a.x;
     return clamp(delta / travel, 0, 1);
+  }
+
+  function angleDelta(next, previous) {
+    let delta = Number(next) - Number(previous);
+    while (delta > 180) delta -= 360;
+    while (delta < -180) delta += 360;
+    return delta;
   }
 
   // wheel-controls may transfer capture from the hit target to the wheel when
@@ -294,12 +302,44 @@
           emit("suppress", true);
           const progress = edgeProgress(pointer.start, point, pointer.rect, pointer.edge);
           transition(pointer.edge.indexOf("right") === 0 ? STATES.RIGHT_PANEL_GESTURE : STATES.LYRICS_GESTURE, { edge: pointer.edge });
-          if (pointer.edge.indexOf("right") === 0) emit("panelProgress", pointer.edge === "right_close" ? 1 - progress : progress);
+          if (pointer.edge.indexOf("right") === 0) {
+            // Keep the first resolved sample in the regular panel gesture.
+            // The centre crossing is handled by RIGHT_PANEL_GESTURE below;
+            // this preserves the inner Next Track hit region's arbitration.
+            if (!pointer.panelInitial || pointer.edge === "right_close") {
+              emit("panelProgress", pointer.edge === "right_close" ? 1 - progress : progress);
+            }
+          }
           else emit("lyricsProgress", pointer.edge === "left_close" ? 1 - progress : progress);
         }
       } else if (state === STATES.RIGHT_PANEL_GESTURE) {
+        // A right-edge pull opens the panel at the wheel centre.  Keep the
+        // same contact alive as it crosses to the left side: after the
+        // centre, the horizontal travel becomes a panel-scroll gesture.
+        // This deliberately uses the pointer's x movement rather than
+        // starting a second panel animation, so an already-open panel stays
+        // open while it is being browsed.
+        if (pointer.edge === "right" && point.x < pointer.rect.left + pointer.rect.width / 2) {
+          pointer.panelScrollActive = true;
+          if (!pointer.panelInitial) emit("panelProgress", 1);
+          // Once the handoff occurs, the wheel's circular motion controls
+          // the panel.  Seed the angle here so the radial crossing itself
+          // does not create a large accidental scroll jump.
+          pointer.panelScrollAngle = wheelPoint(point, pointer.rect).angle;
+          transition(STATES.RIGHT_PANEL_SCROLL_GESTURE, {reason: "crossed_wheel_center"});
+          return true;
+        }
         const progress = edgeProgress(pointer.start, point, pointer.rect, pointer.edge);
-        emit("panelProgress", pointer.edge === "right_close" ? 1 - progress : progress);
+        if (!pointer.panelInitial || pointer.edge === "right_close") emit("panelProgress", pointer.edge === "right_close" ? 1 - progress : progress);
+      } else if (state === STATES.RIGHT_PANEL_SCROLL_GESTURE) {
+        const currentAngle = wheelPoint(point, pointer.rect).angle;
+        const previousAngle = Number(pointer.panelScrollAngle);
+        if (Number.isFinite(previousAngle) && Number.isFinite(currentAngle) && currentAngle !== previousAngle) {
+          // One normal wheel detent is about 18 degrees / one 48px row. Use
+          // that same scale for the panel's native overflow scroll.
+          emit("panelScroll", angleDelta(currentAngle, previousAngle) * (48 / 18), {source: "wheel-cross-center"});
+          pointer.panelScrollAngle = currentAngle;
+        }
       } else if (state === STATES.LYRICS_GESTURE) {
         const progress = edgeProgress(pointer.start, point, pointer.rect, pointer.edge);
         emit("lyricsProgress", pointer.edge === "left_close" ? 1 - progress : progress);
@@ -339,7 +379,17 @@
       if (finished === STATES.RIGHT_PANEL_GESTURE) {
         const progress = edgeProgress(pointer.start, pointer.current, pointer.rect, pointer.edge);
         const amount = pointer.edge === "right_close" ? 1 - progress : progress;
-        setPanel(amount >= 0.5, amount >= 0.5 ? 1 : 0);
+        if (pointer.panelInitial && pointer.edge === "right") {
+          // A second pull from the right is a no-op until it crosses the
+          // centre; never collapse/reopen an already visible panel.
+          emit("panelProgress", 1);
+        } else {
+          setPanel(amount >= 0.5, amount >= 0.5 ? 1 : 0);
+        }
+      } else if (finished === STATES.RIGHT_PANEL_SCROLL_GESTURE) {
+        // The panel is already at its open position.  Commit that position
+        // only for a panel that was opened by this contact.
+        if (!pointer.panelInitial) setPanel(true, 1);
       } else if (finished === STATES.LYRICS_GESTURE) {
         const progress = edgeProgress(pointer.start, pointer.current, pointer.rect, pointer.edge);
         const amount = pointer.edge === "left_close" ? 1 - progress : progress;
@@ -360,7 +410,7 @@
         emit("random");
       }
       const result = { state, action, gesture, position: selectedPosition, target: actionTarget };
-      consumedLastPointer = !!pointer.holdResolved || finished === STATES.RIGHT_PANEL_GESTURE || finished === STATES.LYRICS_GESTURE || finished === STATES.ACTION_TARGET_SELECTED || finished === STATES.ACTION_DEAD_ZONE || finished === STATES.ACTION_MODE || finished === STATES.FULLSCREEN_GESTURE || finished === STATES.RANDOM_GESTURE;
+      consumedLastPointer = !!pointer.holdResolved || finished === STATES.RIGHT_PANEL_GESTURE || finished === STATES.RIGHT_PANEL_SCROLL_GESTURE || finished === STATES.LYRICS_GESTURE || finished === STATES.ACTION_TARGET_SELECTED || finished === STATES.ACTION_DEAD_ZONE || finished === STATES.ACTION_MODE || finished === STATES.FULLSCREEN_GESTURE || finished === STATES.RANDOM_GESTURE;
       emit("actionMode", false, actions, actionTarget);
       emit("suppress", false);
       pointer = null;
@@ -375,7 +425,7 @@
       if (!pointer) return;
       const cancelPointerId = details && details.pointerId != null ? details.pointerId : null;
       if (pointer.pointerId != null && cancelPointerId != null && pointer.pointerId !== cancelPointerId) return;
-      const restorePanel = pointer.edge && pointer.edge.indexOf("right") === 0 && (state === STATES.POTENTIAL_EDGE || state === STATES.RIGHT_PANEL_GESTURE);
+      const restorePanel = pointer.edge && pointer.edge.indexOf("right") === 0 && (state === STATES.POTENTIAL_EDGE || state === STATES.RIGHT_PANEL_GESTURE || state === STATES.RIGHT_PANEL_SCROLL_GESTURE);
       const restoreLyrics = pointer.edge && pointer.edge.indexOf("left") === 0 && (state === STATES.POTENTIAL_EDGE || state === STATES.LYRICS_GESTURE);
       transition(STATES.ACTION_CANCELLED, { reason: reason || "cancelled" });
       emit("actionMode", false, actions, actionTarget);
@@ -427,6 +477,7 @@
       actionsForTarget: target => root.mediaActions && root.mediaActions.wheelActionsForTarget ? root.mediaActions.wheelActionsForTarget(target) : {},
       callbacks: {
         panelProgress: value => typeof rowSystem.setPanelProgress === "function" && rowSystem.setPanelProgress(value, {immediate: true}),
+        panelScroll: value => typeof rowSystem.scrollPanel === "function" && rowSystem.scrollPanel(value),
         panelOpen: value => typeof rowSystem.setPanelOpen === "function" && rowSystem.setPanelOpen(value, {animate: true}),
         lyricsProgress: value => typeof lyrics.setProgress === "function" && lyrics.setProgress(value, {immediate: true}),
         lyricsOpen: value => typeof lyrics.setOpen === "function" && lyrics.setOpen(value, {animate: true}),

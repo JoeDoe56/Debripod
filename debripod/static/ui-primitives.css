@@ -28,6 +28,15 @@
   font-display: swap;
 }
 
+/* Real ExtraBold face: Host Grotesk ends at 800; avoid synthetic weight. */
+@font-face {
+  font-family: "Host Grotesk";
+  src: url("/static/fonts/host-grotesk/HostGrotesk-latin-wght-300-800.woff2") format("woff2");
+  font-weight: 800;
+  font-style: normal;
+  font-display: swap;
+}
+
 :root {
   --ui-text-opacity: .4;
   --foreground-opacity: var(--ui-text-opacity);
@@ -144,7 +153,7 @@ html, body, button, input, select, textarea {
 /* These SF assets have 28px of ink on a 32px-tall canvas. The navigation masks and MENU
    retain that optical match at 88% of their original size. */
 .wheel:not(.wheelActionMode) .wheelLabel .wheelIcon:not(.seekModeIcon){width:28.16px;height:14.08px;}
-.wheelLabel .menuWord:not([hidden]){display:block;font-weight:900;font-size:15.84px;line-height:1;letter-spacing:.025em;}
+.wheelLabel .menuWord:not([hidden]){display:block;font-weight:800;font-size:15.84px;line-height:1;letter-spacing:.025em;}
 .npTime,.npTechInline,.rangeEditorFeedback{font-variant-numeric:tabular-nums lining-nums;}
 .npMeterFill{background:rgb(255 255 255 / var(--ui-text-strong-opacity));}
 .infoPill.rangeEditorFeedback{opacity:1;visibility:visible;transform:translateY(0);}
