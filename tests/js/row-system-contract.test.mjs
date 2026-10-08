@@ -22,7 +22,7 @@ test("row system exposes shared panel and normalized value APIs", () => {
 });
 
 test("context panel reflows list content and preserves a shared safe-zone token", () => {
-  assert.match(style, /--dp-panel-width:30%/);
+  assert.match(style, /--dp-panel-width:40%/);
   assert.match(style, /right:calc\(var\(--dp-panel-progress\) \* \(var\(--dp-panel-width\) \+ var\(--dp-panel-gap\)\)\)/);
   assert.match(style, /--dp-row-safe-zone:var\(--panel-safe-zone/);
   assert.match(style, /-webkit-mask-image:linear-gradient/);

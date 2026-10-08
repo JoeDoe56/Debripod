@@ -1,10 +1,10 @@
 :root{
   --dp-row-safe-zone:var(--panel-safe-zone, var(--ui-safe-zone, var(--dp-selected-pill-edge-room, 44px)));
-  --dp-panel-width:30%;
-  --dp-panel-gap:var(--dp-row-safe-zone);
-  --dp-row-height:55px;
+  --dp-panel-width:40%;
+  --dp-panel-gap:0px;
+  --dp-row-height:48px;
   --dp-row-primary-size:15px;
-  --dp-row-secondary-size:11px;
+  --dp-row-secondary-size:12px;
 }
 
 .ipodScreenContent{
@@ -77,7 +77,7 @@
 }
 .dpRowContent{
   display:grid;
-  grid-template-columns:44px minmax(0, 1fr) auto;
+  grid-template-columns:36px minmax(0, 1fr) auto;
   align-items:center;
   column-gap:12px;
   height:100%;
@@ -91,14 +91,14 @@
 #libList.dpSelectionSuppressed .sel .dpRowIconArea{color:var(--dp-text-rows);}
 #libList.dpSelectionSuppressed .sel .dpRowSecondary{opacity:.74;}
 .dpStandardRow.twoLine,.dpStandardRow.settingRow,.dpStandardRow.isExpandedRow{height:var(--dp-row-height);min-height:var(--dp-row-height);max-height:var(--dp-row-height);}
-.dpRowIconArea{width:44px;height:44px;display:grid;place-items:center;position:relative;flex:none;}
+.dpRowIconArea{width:36px;height:36px;display:grid;place-items:center;position:relative;flex:none;}
 .dpRowIconArea{color:var(--dp-text-rows, rgb(255 255 255 / var(--ui-text-opacity)));}
 .sel .dpRowIconArea{color:var(--dp-text-selected-row, rgb(255 255 255 / var(--ui-text-strong-opacity)));}
 .dpRowText{min-width:0;display:grid !important;grid-template-rows:minmax(0,1fr) minmax(0,auto);align-content:center;gap:3px;-webkit-mask-image:linear-gradient(90deg,#000 0%,#000 calc(100% - 18px),transparent 100%);mask-image:linear-gradient(90deg,#000 0%,#000 calc(100% - 18px),transparent 100%);}
 .dpRowPrimary{min-width:0;overflow:hidden;text-overflow:clip;white-space:nowrap;font-size:var(--dp-row-primary-size);line-height:1.2;font-weight:500;}
 .dpRowSecondary{min-width:0;overflow:hidden;text-overflow:clip;white-space:nowrap;font-size:var(--dp-row-secondary-size);line-height:1.2;opacity:.74;font-weight:500;}
 .ipodItem.dpStandardRow .dpRowPrimary,.ipodItem.dpStandardRow .dpRowSecondary{margin:0;line-height:1.2;}
-.ipodItem.dpStandardRow .dpRowText{grid-template-rows:20px 16px;gap:2px;}
+.ipodItem.dpStandardRow .dpRowText{grid-template-rows:18px 14.4px;gap:2px;}
 .ipodItem.dpStandardRow.sel [data-selected-row-text]{transform:none;}
 .ipodItem.dpStandardRow.sel .dpRowSecondary{opacity:1;}
 .ipodItem.dpStandardRow .dpRowPrimary,.ipodItem.dpStandardRow .dpRowSecondary{overflow:visible;}
@@ -123,8 +123,8 @@
 }
 @media (max-width:520px){
   .dpStandardRow{padding-left:8px !important;padding-right:8px !important;}
-  .dpRowContent{grid-template-columns:40px minmax(0,1fr) auto;column-gap:9px;}
-  .dpRowIconArea{width:40px;height:40px;}
+  .dpRowContent{grid-template-columns:36px minmax(0,1fr) auto;column-gap:9px;}
+  .dpRowIconArea{width:36px;height:36px;}
 }
 
 /* Library categories use one centered identity line; context stays in the panel. */

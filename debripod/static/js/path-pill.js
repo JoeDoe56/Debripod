@@ -250,8 +250,8 @@
   var pathPillMotion = {
     currentWidth: 0,
     targetWidth: 0,
-    currentHeight: 29,
-    targetHeight: 29,
+    currentHeight: 48,
+    targetHeight: 48,
     raf: 0,
     lastStepTs: 0,
     initialized: false
@@ -397,7 +397,7 @@
       const root = document.documentElement;
       const fallbackWidth = rect && rect.width ? Math.max(1, Math.floor(rect.width)) : Math.max(1, Math.floor(window.innerWidth || 1) - 24);
       const rootStyle = getComputedStyle(root);
-      const screenFrame = Math.max(0, parseFloat(rootStyle.getPropertyValue("--screenFrame")) || 0);
+      const screenFrame = Math.max(0, parseFloat(getComputedStyle(libList).paddingLeft) || 0);
       const infoWidth = Math.max(1, Math.floor(fallbackWidth - (screenFrame * 2)));
       const artCandidates = [npArt, npArtStill].filter(Boolean);
       const coverRect = artCandidates
@@ -413,7 +413,7 @@
       const maxWidth = constrainPathPillWidth(infoWidth, coverWidth, fallbackWidth);
       root.style.setProperty("--pathPillMaxWidth", maxWidth + "px");
       root.style.setProperty("--infoPillWidth", infoWidth + "px");
-      root.style.setProperty("--infoPillHeight", "42px");
+      root.style.setProperty("--infoPillHeight", "48px");
       const pathText = document.getElementById("libHeaderText");
       const padX = Math.max(0, parseFloat(rootStyle.getPropertyValue("--playbackPillPadX")) || 10);
       const basePadX = 12;
@@ -429,13 +429,8 @@
       const minWidth = Math.min(maxWidth, targetPad * 2 + 1);
       const target = Math.max(1, Math.min(maxWidth, Math.max(minWidth, measured || minWidth)));
       setPathPillTargetWidth(target);
-      const padY = pathPillMotion.targetPadY;
-      const rowGap = Math.max(0, parseFloat(rootStyle.getPropertyValue("--playbackPillRowGap")) || 1);
-      const pathHeight = Math.max(14, Math.ceil((pathText && pathText.getBoundingClientRect ? pathText.getBoundingClientRect().height : 14) || 14));
-      const nowHeight = expanded && pathPillNowText
-        ? Math.max(14, Math.ceil((pathPillNowText.getBoundingClientRect ? pathPillNowText.getBoundingClientRect().height : 14) || 14))
-        : 0;
-      setPathPillTargetHeight(pathHeight + (expanded ? nowHeight + rowGap : 0) + padY * 2);
+      // Height is independent of metadata; extra room stays around the text.
+      setPathPillTargetHeight(48);
     }catch(e){}
   }
   try{ window.updatePathPillMaxWidth = updatePathPillMaxWidth; }catch(e){}

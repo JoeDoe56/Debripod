@@ -64,7 +64,7 @@
       --radius: 20px;
       --radiusSm: 14px;
       --screenRadius: 20px;
-      --screenFrame: 14px;
+      --screenFrame: calc(2 * var(--stageGap));
       --screenContentInset: var(--screenFrame);
       --screenInnerRadius: max(0px, calc(var(--screenRadius) - var(--screenContentInset)));
       --playbackPillRadius: 20px;
@@ -74,14 +74,14 @@
       --playbackPillMaxWidth: min(calc(100vw - 24px), var(--pathPillMaxWidth, calc(100vw - 24px)));
       --pathPillTargetWidth: auto;
       --pathPillRenderedWidth: var(--pathPillTargetWidth);
-      --pathPillCollapsedHeight: 29px;
+      --pathPillCollapsedHeight: 48px;
       --pathPillExpandedHeight: 48px;
       --pathPillRenderedHeight: var(--pathPillCollapsedHeight);
       --path-text-fade: 12px;
       --infoBarThickness: 8.4px;
       --infoBarInsetX: 9px;
       --infoPillWidth: var(--pathPillMaxWidth, calc(100vw - 24px));
-      --infoPillHeight: 42px;
+      --infoPillHeight: 48px;
       --wheelZoneHeight: calc(var(--wheelSize) + (var(--wheelGap) * 2));
       --stageGap: 6px;
       --infoPillGap: 2px;
@@ -124,7 +124,7 @@
     .passkeyGatePanel{
       width:min(420px, calc(100vw - 48px));
       display:grid;
-      gap:14px;
+      gap:calc(2 * var(--stageGap));
     }
     .passkeyGateKicker{
       color:var(--muted);
@@ -290,12 +290,12 @@
     }
 
 .searchbar{
-      margin-top:14px;
+      margin-top:calc(2 * var(--stageGap));
       border:1px solid var(--border2);
       border-radius: var(--radius);
       background: rgba(28,28,30,.60);
       box-shadow: var(--shadow2);
-      padding:14px;
+      padding:calc(2 * var(--stageGap));
     }
     @supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))){
       .searchbar{
@@ -307,7 +307,7 @@
 
     input[type="text"]{
       width: min(760px, 100%);
-      padding: 12px 14px;
+      padding: 12px calc(2 * var(--stageGap));
       font-size: 15px;
       border-radius: 14px;
       border: 1px solid transparent;
@@ -321,7 +321,7 @@
     }
 
     select{
-      padding: 12px 14px;
+      padding: 12px calc(2 * var(--stageGap));
       font-size: 14px;
       border-radius: 14px;
       border: 1px solid transparent;
@@ -341,7 +341,7 @@
       color: var(--text);
       font-size: 14px;
       font-weight: 700;
-      padding: 12px 14px;
+      padding: 12px calc(2 * var(--stageGap));
       border-radius: 14px;
       cursor: pointer;
       transition: background .12s ease, transform .06s ease, filter .12s ease;
@@ -378,14 +378,14 @@
     a{color: var(--primary2); text-decoration:none}
     a:hover{text-decoration:underline}
 
-    .grid{display:grid; grid-template-columns: 1fr; gap:12px; margin-top:14px}
+    .grid{display:grid; grid-template-columns: 1fr; gap:12px; margin-top:calc(2 * var(--stageGap))}
 
     .card{
       border:1px solid var(--border2);
       border-radius: var(--radius);
       background: rgba(28,28,30,.60);
       box-shadow: var(--shadow2);
-      padding: 14px;
+      padding: calc(2 * var(--stageGap));
     }
     @supports ((-webkit-backdrop-filter: blur(1px)) or (backdrop-filter: blur(1px))){
       .card{
@@ -1576,7 +1576,7 @@
       display:flex;
       justify-content:flex-end;
       gap:8px;
-      margin-top:14px;
+      margin-top:calc(2 * var(--stageGap));
     }
     .dpSettingModal button{
       border:0;
@@ -1933,7 +1933,7 @@
     }
     .infoPill .npTime{
       margin-top:2px;
-      font-size:10.5px;
+      font-size:12px;
       display:grid;
       grid-template-columns:44px minmax(0, 1fr) 44px;
       align-items:center;
@@ -2008,7 +2008,7 @@
     /* Search loading animation */
     .searchResultsWrap{
       position: relative;
-      margin-top: 14px;
+      margin-top: calc(2 * var(--stageGap));
       min-height: 96px;
     }
     .searchLoader{
@@ -2210,4 +2210,10 @@
 .hScrollText.hScrollTextScrollable[data-scroll-away="true"]{mask-image:linear-gradient(to right,transparent 0,#000 var(--path-text-fade),#000 calc(100% - var(--path-text-fade)),transparent 100%);-webkit-mask-image:linear-gradient(to right,transparent 0,#000 var(--path-text-fade),#000 calc(100% - var(--path-text-fade)),transparent 100%);}
 
 .pathPill,.pathPill.pathPillExpanded{padding:var(--pathPillRenderedPadY,8px) var(--pathPillRenderedPadX,12px);}
-.pathPill .pathPillRows,.pathPill.pathPillExpanded .pathPillRows{grid-template-rows:1fr var(--pathPillSecondFraction,0fr);transition:none;}
+/* Fixed-height pills center their intrinsic text block, including a true one-row state. */
+.pathPill .pathPillRows{grid-template-rows:auto;row-gap:0;transition:none;}
+.pathPill:not(.pathPillExpanded) .pathPillNowRow{display:none;}
+.pathPill:not(.pathPillExpanded) .pathPillText{font-size:var(--dp-row-primary-size,15px);}
+.pathPill.pathPillExpanded .pathPillRows{grid-template-rows:auto auto;row-gap:var(--playbackPillRowGap);}
+.pathPill.pathPillExpanded .pathPillText,.pathPillNowText,.pathPillNowTextSmall{font-size:12px;}
+.infoPill .npBarArea{flex-shrink:0;}
