@@ -180,7 +180,47 @@ test("large unequal tilts retain their angle instead of clipping a component",()
   f.api.testing.orientationChange({beta:20,gamma:60});
   for(let t=20;t<=1000;t+=20)f.api.testing.step(t);
   const state=f.api.state();
-  const x=-.16+2.3*Math.sin(Math.PI/3),y=-.22+2.3*Math.sin(Math.PI/9);
+  const x=-.16+2.3*Math.cos(Math.PI/9)*Math.sin(Math.PI/3),y=-.22+2.3*Math.sin(Math.PI/9);
   assert.ok(Math.hypot(state.x,state.y)<1);
   assert.ok(Math.abs(Math.atan2(state.y,state.x)-Math.atan2(y,x))<.001);
+});
+
+test("equivalent upright sensor angles do not move the light",()=>{
+  const f=load();
+  f.api.testing.orientationChange({alpha:0,beta:90,gamma:0});
+  for(let t=20;t<=400;t+=20)f.api.testing.step(t);
+  const before=f.api.state();
+  // At vertical, alpha and gamma can trade values for the same physical pose.
+  f.api.testing.orientationChange({alpha:70,beta:90,gamma:-70});
+  for(let t=420;t<=800;t+=20)f.api.testing.step(t);
+  assert.ok(Math.hypot(f.api.state().x-before.x,f.api.state().y-before.y)<.001);
+});
+
+test("upright tilt tracks physical motion across changing Euler representations",()=>{
+  const readings=[{alpha:0,beta:90,gamma:10},{alpha:65,beta:90,gamma:-55},{alpha:350,beta:90,gamma:20}];
+  const states=readings.map(reading=>{
+    const f=load();
+    f.api.testing.orientationChange({alpha:0,beta:90,gamma:0});
+    f.api.testing.orientationChange(reading);
+    for(let t=20;t<=400;t+=20)f.api.testing.step(t);
+    return f.api.state();
+  });
+  assert.ok(states[0].x>-.16+.1,'a real sideways tilt still moves the light');
+  for(const state of states.slice(1))assert.ok(Math.hypot(state.x-states[0].x,state.y-states[0].y)<.001);
+});
+
+test("movement after a stationary hold resumes smoothing instead of snapping",()=>{
+  const f=load();
+  f.api.testing.orientationChange({alpha:0,beta:90,gamma:0});
+  f.api.testing.orientationChange({alpha:0,beta:90,gamma:20});
+  for(let t=20;t<=600;t+=20)f.api.testing.step(t);
+  const before=f.api.state();
+  f.api.testing.orientationChange({alpha:0,beta:90,gamma:-20});
+  f.api.testing.step(10600);
+  const first=f.api.state();
+  for(let t=10620;t<=11000;t+=20)f.api.testing.step(t);
+  const settled=f.api.state();
+  const distance=Math.hypot(settled.x-before.x,settled.y-before.y);
+  assert.ok(Math.hypot(first.x-before.x,first.y-before.y)<distance*.5,'first frame must not jump to the new target');
+  assert.ok(Math.hypot(first.x-before.x,first.y-before.y)>distance*.1,'the light must start responding promptly');
 });

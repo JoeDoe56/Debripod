@@ -33,6 +33,8 @@ merge unrelated controls into one superellipse or replace the app's gestures.
 The two opposing highlight layers are evaluated in the existing lens draw.
 Specular rim lighting retains DebriPod's `codex/testing3` 3D normal/light response
 so device tilt crosses a neutral direction smoothly; touch glow is retained.
+The broad face highlight uses a radial surface normal and the same 3D light's
+planar projection, without renormalizing that projection at neutral tilt.
 Outer drop shadows stay on the DOM element; the ring shadow is analytic in the
 shader. The clear-to-regular transition maps to magnitude 0–0.52 of the existing
 slider; magnitude 0.52–1 advances to the dark/light endpoint. At zero, the body

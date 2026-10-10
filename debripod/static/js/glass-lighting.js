@@ -83,6 +83,7 @@
     const moving = Math.abs(target.x - light.x) > 0.002 || Math.abs(target.y - light.y) > 0.002 || Math.abs(target.intensity - light.intensity) > 0.002;
     markGlassFrame();
     if(moving) schedule();
+    else lastFrameAt = 0; // A new movement must not include time spent idle.
     return moving;
   }
   function resetPointerLight(){
@@ -98,22 +99,32 @@
     if(pointerIdleTimer) clearTimeout(pointerIdleTimer);
     pointerIdleTimer = setTimeout(resetPointerLight, 900);
   }
+  // W3C device orientation uses Rz(alpha) * Rx(beta) * Ry(gamma).
+  // Reconstruct the physical basis before comparing poses: individual Euler
+  // angles can exchange values at vertical without any real phone movement.
+  function orientationMatrix(alpha, beta, gamma){
+    const a = alpha * Math.PI / 180, b = beta * Math.PI / 180, g = gamma * Math.PI / 180;
+    const ca = Math.cos(a), sa = Math.sin(a), cb = Math.cos(b), sb = Math.sin(b), cg = Math.cos(g), sg = Math.sin(g);
+    return [ca*cg-sa*sb*sg, -cb*sa, cg*sa*sb+ca*sg,
+      cg*sa+ca*sb*sg, ca*cb, sa*sg-ca*cg*sb,
+      -cb*sg, sb, cb*cg];
+  }
   function orientationChange(event){
     if(!event || event.beta == null || event.gamma == null) return;
     const beta = Number(event && event.beta);
     const gamma = Number(event && event.gamma);
     if(!Number.isFinite(beta) || !Number.isFinite(gamma)) return;
-    if(!orientationOrigin) orientationOrigin = {beta, gamma};
+    const alpha = Number(event.alpha);
+    const matrix = orientationMatrix(Number.isFinite(alpha) ? alpha : 0, beta, gamma);
+    if(!orientationOrigin) orientationOrigin = {x:matrix[2], y:matrix[5], z:matrix[8]};
     const angle = Number(window.screen && window.screen.orientation && window.screen.orientation.angle || window.orientation || 0) * Math.PI / 180;
     const multiplier = motionEffectMultiplier();
-    // Keep the sensor response continuous across ordinary phone movements.
-    // The old factor of 2 saturated the clamped light vector at roughly 30°,
-    // which made the highlight jump between the four cardinal extremes.
-    // A slightly expanded, but unsaturated, sine response preserves the
-    // proportional motion while leaving useful headroom for diagonal tilts.
+    // Project the initial screen normal into the current phone frame. This
+    // gives continuous local tilt whether the initial phone pose is flat or
+    // upright, including alpha/gamma exchanges and angle wraparound.
     const sensorScale = 1.15;
-    const dx = Math.sin((gamma - orientationOrigin.gamma) * Math.PI / 180) * sensorScale * multiplier;
-    const dy = Math.sin((beta - orientationOrigin.beta) * Math.PI / 180) * sensorScale * multiplier;
+    const dx = -(matrix[0]*orientationOrigin.x + matrix[3]*orientationOrigin.y + matrix[6]*orientationOrigin.z) * sensorScale * multiplier;
+    const dy = (matrix[1]*orientationOrigin.x + matrix[4]*orientationOrigin.y + matrix[7]*orientationOrigin.z) * sensorScale * multiplier;
     orientationActive = true;
     const projected = compressLightVector(
       neutral.x + dx * Math.cos(angle) + dy * Math.sin(angle),

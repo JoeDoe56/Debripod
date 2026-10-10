@@ -44,21 +44,41 @@
     return Math.max(min, Math.min(max, value));
   }
 
-  const glassContact = { x: -100000, y: -100000, down: false, attached: false };
+  const glassContact = { x: -100000, y: -100000, down: false, pointerDown: false, touchId: null, attached: false };
   function fsTime(frame) {
     return frame && Number.isFinite(frame.timestamp) ? frame.timestamp : performance.now();
   }
   function attachGlassContact() {
     if (glassContact.attached) return;
     glassContact.attached = true;
-    const update = event => {
-      if (Number.isFinite(event.clientX)) glassContact.x = event.clientX;
-      if (Number.isFinite(event.clientY)) glassContact.y = event.clientY;
-      if (event.type === "pointerdown") glassContact.down = true;
-      if (["pointerup", "pointercancel", "blur"].includes(event.type)) glassContact.down = false;
-      if (event.type === "pointermove" && !glassContact.down) return;
+    const renderContact = () => {
+      glassContact.down = glassContact.pointerDown || glassContact.touchId !== null;
       const renderers = window.__liquidGLRenderers__ || {};
       Object.values(renderers).forEach(renderer => renderer.requestRender());
+    };
+    const update = event => {
+      if (glassContact.touchId === null) {
+        if (Number.isFinite(event.clientX)) glassContact.x = event.clientX;
+        if (Number.isFinite(event.clientY)) glassContact.y = event.clientY;
+      }
+      if (event.type === "pointerdown") glassContact.pointerDown = true;
+      if (["pointerup", "pointercancel", "blur"].includes(event.type)) glassContact.pointerDown = false;
+      if (event.type === "blur") glassContact.touchId = null;
+      if (event.type === "pointermove" && !glassContact.down) return;
+      renderContact();
+    };
+    const updateTouch = event => {
+      const touches = Array.from(event.touches || []);
+      const touch = touches.find(item => item.identifier === glassContact.touchId) || touches[0];
+      if (touch) {
+        glassContact.touchId = touch.identifier;
+        glassContact.x = touch.clientX;
+        glassContact.y = touch.clientY;
+      } else {
+        glassContact.touchId = null;
+        glassContact.pointerDown = false;
+      }
+      renderContact();
     };
     // Controls inside a glass surface (the list rows and wheel hit regions)
     // are allowed to stop bubbling while they arbitrate a gesture.  Observe
@@ -66,6 +86,10 @@
     // press or release, including after a pointer is captured by the wheel.
     ["pointerdown", "pointermove", "pointerup", "pointercancel", "blur"].forEach(name =>
       window.addEventListener(name, update, { passive: true, capture: true }));
+    // Native touch scrolling cancels Pointer Events, but the touch stream
+    // continues until the finger lifts. Keep the contact glow for that stream.
+    ["touchstart", "touchmove", "touchend", "touchcancel"].forEach(name =>
+      window.addEventListener(name, updateTouch, { passive: true, capture: true }));
   }
 
   function finiteNumber(value, fallback) {
@@ -1016,9 +1040,19 @@
             float opposite = (outerPeak * 0.65 + innerRim * 0.42) *
               pow(secondaryFacing, 2.8) * u_specularSecondary;
             vec3 softRimColor = mix(vec3(1.0), face.rgb, 0.08);
+            float heightMask = 1.0 - smoothstep(0.0, 70.0 * scale, insideCss);
+            // Use a radial face normal to avoid the panel's medial diagonals.
+            // The 3D light's XY projection fades smoothly through neutral;
+            // normalizing it again in 2D would reintroduce the direction flip.
+            vec2 faceGradient = p_px / max(b_px, vec2(1.0));
+            vec2 faceNormal = faceGradient / max(length(faceGradient), 0.0001);
+            vec2 faceFacing = vec2(dot(faceNormal, primaryLight.xy), dot(faceNormal, secondaryLight.xy));
+            vec2 lobes = clamp((faceFacing - 0.55) / 0.45, 0.0, 1.0) * heightMask;
+            vec2 key = lobes / (0.7 * (1.0 - lobes) + 1.0);
             vec2 contactPx = (v_uv - u_contact.xy) * u_lensCssSize;
             float contactLight = exp(-dot(contactPx, contactPx) / 3200.0) * press * 0.065;
-            rgb += (sharp * vec3(1.0) + (soft + opposite) * softRimColor) * (1.0 + 0.45 * press) + vec3(contactLight);
+            rgb += (sharp * vec3(1.0) + (soft + opposite) * softRimColor) * (1.0 + 0.45 * press) +
+              vec3((key.x + key.y) * 0.035 + contactLight);
           }
           // SDR holding tone preserves hue at luminous rims.
           rgb = max(rgb, vec3(0.0));
