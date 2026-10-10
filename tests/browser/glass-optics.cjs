@@ -173,6 +173,7 @@ const server=http.createServer((req,res)=>{
     await page.waitForFunction(()=>window.liquidGlassReady && window.DebriPod?.wallpaper);
     await page.evaluate(()=>DebriPod.wallpaper.ready);
     assert.equal(await page.evaluate(()=>DebriPod.wallpaper.active()),false,'deleted wallpaper cannot return on reload');
+    const tiltLighting=await require('./tilt-lighting-checks.cjs')(page);
     // Compile and draw the actual bounded-kernel fallback with LOD unavailable.
     const fallback=await browser.newPage({viewport:{width:800,height:600}});
     await fallback.addInitScript(()=>{
@@ -192,7 +193,7 @@ const server=http.createServer((req,res)=>{
     await fallback.screenshot({path:path.join(output,'testing-glass-fallback.png')});
     await fallback.close();
     assert.deepEqual(errors,[]);assert.deepEqual(gpuErrors,[]);
-    console.log(JSON.stringify({ok:true,initial,samples,screenshots:output},null,2));
+    console.log(JSON.stringify({ok:true,initial,samples,tiltLighting,screenshots:output},null,2));
   }catch(error){await page.screenshot({path:path.join(output,'testing-glass-failure.png')});console.error({errors,gpuErrors});throw error;}
   finally{await browser.close();server.close();}
 })().catch(error=>{console.error(error);server.close();process.exitCode=1;});

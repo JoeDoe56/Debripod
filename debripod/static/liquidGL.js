@@ -997,28 +997,28 @@
           float opaque = clamp((u_materialDensity - 0.52) / 0.48, 0.0, 1.0);
           rgb = mix(rgb, u_materialTone, opaque * dBody);
           if (u_specular) {
-            // ShatteredGlass's backdrop/body and two opposing highlight layers
-            // share one shape. Here they are fused in a draw, after tinting.
+            // Keep testing3's 3D light response. The positive Z components
+            // remain well defined as the phone's planar light crosses zero,
+            // letting opposite rims fade through neutral without flipping.
+            float outerPeak = 1.0 - smoothstep(0.0, 1.15, insideCss);
+            float innerRim = 1.0 - smoothstep(0.5, 5.5, insideCss);
+            float rimSlope = mix(0.58, 1.35, outerPeak);
+            vec3 N = normalize(vec3(normal * rimSlope, 0.62));
+            vec2 tiltNormal = vec2(sin(radians(u_tiltY)), -sin(radians(u_tiltX))) * 0.34;
+            N = normalize(vec3(N.xy + tiltNormal, N.z));
             vec2 globalLight = mix(vec2(-0.48, 0.76), vec2(u_globalLight.x, -u_globalLight.y) * 1.4, u_globalLightIntensity);
-            vec2 lightDir = normalize(globalLight + vec2(0.00001));
-            float facing = dot(normal, lightDir);
-            float primary = clamp((facing - 0.35) / 0.65, 0.0, 1.0);
-            float secondary = clamp((-facing - 0.35) / 0.65, 0.0, 1.0);
-            float outerPeak = exp(-insideCss / (1.5 * scale));
-            float innerRim = 1.0 - smoothstep(0.5, 10.0 * scale, insideCss);
-            float glint = (outerPeak + innerRim * 0.45) * (primary * u_specularPrimary + secondary * u_specularSecondary);
-            float heightMask = 1.0 - smoothstep(0.0, 70.0 * scale, insideCss);
-            // The broad face highlight has a smooth surface direction. It
-            // must not reuse the nearest-edge SDF normal: that normal's
-            // medial bisectors draw diagonal lines across a flat panel.
-            vec2 faceGradient = p_px / max(b_px, vec2(1.0));
-            vec2 faceNormal = faceGradient / max(length(faceGradient), 0.0001);
-            float faceFacing = dot(faceNormal, lightDir);
-            vec2 lobes = clamp((vec2(faceFacing, -faceFacing) - 0.55) / 0.45, 0.0, 1.0) * heightMask;
-            vec2 key = lobes / (0.7 * (1.0 - lobes) + 1.0);
+            vec3 primaryLight = normalize(vec3(globalLight, 0.52));
+            vec3 secondaryLight = normalize(vec3(-globalLight, 0.46));
+            float primaryFacing = max(dot(N, primaryLight), 0.0);
+            float secondaryFacing = max(dot(N, secondaryLight), 0.0);
+            float sharp = outerPeak * pow(primaryFacing, 7.0) * u_specularPrimary;
+            float soft = innerRim * pow(primaryFacing, 2.2) * u_specularPrimary * 0.62;
+            float opposite = (outerPeak * 0.65 + innerRim * 0.42) *
+              pow(secondaryFacing, 2.8) * u_specularSecondary;
+            vec3 softRimColor = mix(vec3(1.0), face.rgb, 0.08);
             vec2 contactPx = (v_uv - u_contact.xy) * u_lensCssSize;
             float contactLight = exp(-dot(contactPx, contactPx) / 3200.0) * press * 0.065;
-            rgb += vec3(glint * (1.0 + 0.45 * press) + (key.x + key.y) * 0.035 + contactLight);
+            rgb += (sharp * vec3(1.0) + (soft + opposite) * softRimColor) * (1.0 + 0.45 * press) + vec3(contactLight);
           }
           // SDR holding tone preserves hue at luminous rims.
           rgb = max(rgb, vec3(0.0));

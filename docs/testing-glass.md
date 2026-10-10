@@ -33,6 +33,8 @@ Remove Wallpaper control.
   source geometry changes. Slider, pointer-light and press updates reuse it.
 - Native CSS shadows on the wheel explicitly use round corners so the global
   squircle CSS cannot produce a second silhouette around the circular shader.
+- Specular rims use `codex/testing3`'s 3D light response with the newer sensor
+  mapping and touch glow. Small tilts cross neutral without a direction flip.
 - `renderer.debugState()` reports `opticalBackend`, `opticalPrepareCount`, and
   `opticalTextureSize` for inspecting cache reuse.
 
@@ -47,7 +49,8 @@ node tests/browser/redesign-smoke.cjs
 
 The optical browser check exercises the native picker, saved wallpaper restore,
 deletion across reloads, invalid images, two-context/1.5x rendering, idle texture
-reuse, circular wheel CSS, touch-highlight release, and actual GPU output on the no-LOD fallback. Images
+reuse, circular wheel CSS, touch-highlight release, smooth specular tilt through
+neutral, and actual GPU output on the no-LOD fallback. Images
 are written to `.pytest_cache/testing-glass-*.png`. These are desktop Edge tests,
 including a 430×932 viewport at 3x device scale; they do not substitute for Safari
 testing on a physical iPhone or a measured comparison with Apple's native glass.
