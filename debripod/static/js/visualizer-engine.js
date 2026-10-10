@@ -69,10 +69,14 @@ function clampByte(n){
   return Math.max(0, Math.min(255, Math.round(Number(n || 0)) || 0));
 }
 
-function visualizerBandLumaEligibility(luma){
+function visualizerBandLumaEligibility(luma, usefulLow = 0.1, usefulHigh = 0.9){
   var value = clamp01(luma);
-  var rise = value <= 0.04 ? 0 : (value >= 0.10 ? 1 : ((value - 0.04) / 0.06) * ((value - 0.04) / 0.06) * (3 - 2 * ((value - 0.04) / 0.06)));
-  var fall = value <= 0.90 ? 1 : (value >= 0.96 ? 0 : 1 - (((value - 0.90) / 0.06) * ((value - 0.90) / 0.06) * (3 - 2 * ((value - 0.90) / 0.06))));
+  var darkEnd = Math.min(0.1, Math.max(0.005, clamp01(usefulLow)));
+  var lightStart = Math.max(0.9, Math.min(0.995, clamp01(usefulHigh)));
+  var risePosition = clamp01((value - darkEnd * 0.4) / (darkEnd * 0.6));
+  var fallPosition = clamp01((value - lightStart) / ((1 - lightStart) * 0.6));
+  var rise = risePosition * risePosition * (3 - 2 * risePosition);
+  var fall = 1 - fallPosition * fallPosition * (3 - 2 * fallPosition);
   return Math.max(0, Math.min(1, rise * fall));
 }
 
@@ -606,7 +610,7 @@ function ensureVisualizerWebGL(){
       "#ifdef GL_FRAGMENT_PRECISION_HIGH\nprecision highp float;\n#else\nprecision mediump float;\n#endif", "varying vec2 uv;", "uniform sampler2D artTex;", "uniform sampler2D previousArtTex;", "uniform float artMix;", "uniform vec2 canvasSize;", "uniform float previousAngle;", "uniform float incomingAngle;", "uniform float angle;", "uniform float lumaLow;", "uniform float lumaHigh;", "uniform float fade;", "uniform float brightnessCap;", "uniform float energy;", "uniform float beat;", "uniform float bands[9];", "uniform float bandCenters[9];", "uniform float bandWidths[9];", "uniform vec4 frequencyResponse;", "uniform vec4 energyResponse;", "uniform vec4 beatResponse;",
       "float bandWeight(float l,float center,float width){return max(0.0,1.0-abs(l-center)/max(0.0001,width));}",
       "vec2 projectedUv(vec2 source,float radians){vec2 centered=(source-0.5)*canvasSize;float c=cos(radians);float s=sin(radians);vec2 rotated=vec2(c*centered.x+s*centered.y,-s*centered.x+c*centered.y);float overscan=1.08;return clamp(rotated/max(1.0,length(canvasSize))*overscan+0.5,0.0,1.0);}",
-      "void main(){", "vec2 previousUv=projectedUv(uv,previousAngle);", "vec2 incomingUv=projectedUv(uv,incomingAngle);", "vec3 incoming=texture2D(artTex,incomingUv).rgb;", "vec3 outgoing=texture2D(previousArtTex,previousUv).rgb;", "vec3 rgb=mix(outgoing,incoming,clamp(artMix,0.0,1.0));", "float luma=dot(rgb,vec3(0.2126,0.7152,0.0722));", "float useful=clamp((luma-lumaLow)/max(0.08,lumaHigh-lumaLow),0.0,1.0);", "float bandEligible=smoothstep(0.04,0.10,luma)*(1.0-smoothstep(0.90,0.96,luma));",
+      "void main(){", "vec2 previousUv=projectedUv(uv,previousAngle);", "vec2 incomingUv=projectedUv(uv,incomingAngle);", "vec3 incoming=texture2D(artTex,incomingUv).rgb;", "vec3 outgoing=texture2D(previousArtTex,previousUv).rgb;", "vec3 rgb=mix(outgoing,incoming,clamp(artMix,0.0,1.0));", "float luma=dot(rgb,vec3(0.2126,0.7152,0.0722));", "float useful=clamp((luma-lumaLow)/max(0.08,lumaHigh-lumaLow),0.0,1.0);", "float darkEnd=min(0.10,max(0.005,lumaLow));float lightStart=max(0.90,min(0.995,lumaHigh));float bandEligible=smoothstep(darkEnd*0.4,darkEnd,luma)*(1.0-smoothstep(lightStart,1.0-(1.0-lightStart)*0.4,luma));",
       "float w0=bandWeight(useful,bandCenters[0],bandWidths[0]);float w1=bandWeight(useful,bandCenters[1],bandWidths[1]);float w2=bandWeight(useful,bandCenters[2],bandWidths[2]);", "float w3=bandWeight(useful,bandCenters[3],bandWidths[3]);float w4=bandWeight(useful,bandCenters[4],bandWidths[4]);float w5=bandWeight(useful,bandCenters[5],bandWidths[5]);", "float w6=bandWeight(useful,bandCenters[6],bandWidths[6]);float w7=bandWeight(useful,bandCenters[7],bandWidths[7]);float w8=bandWeight(useful,bandCenters[8],bandWidths[8]);", "float total=max(0.0001,w0+w1+w2+w3+w4+w5+w6+w7+w8);", "float frequency=bandEligible*(w0*bands[0]+w1*bands[1]+w2*bands[2]+w3*bands[3]+w4*bands[4]+w5*bands[5]+w6*bands[6]+w7*bands[7]+w8*bands[8])/total;",
       "float brightness=clamp(1.0+frequency*frequencyResponse.x+energy*energyResponse.x+beat*beatResponse.x,0.0,4.0);", "float opacity=clamp(1.0+frequency*frequencyResponse.y+energy*energyResponse.y+beat*beatResponse.y,0.0,1.0);", "float saturation=clamp(1.0+frequency*frequencyResponse.z+energy*energyResponse.z+beat*beatResponse.z,0.0,3.0);", "float contrast=clamp(1.0+frequency*frequencyResponse.w+energy*energyResponse.w+beat*beatResponse.w,0.0,3.0);", "rgb=mix(vec3(luma),rgb,saturation);rgb=(rgb-0.5)*contrast+0.5;rgb=min(clamp(rgb*brightness,0.0,1.0),vec3(brightnessCap));", "float alpha=opacity*fade;gl_FragColor=vec4(rgb*alpha,alpha);", "}"
     ].join("\n");

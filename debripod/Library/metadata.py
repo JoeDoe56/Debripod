@@ -34,7 +34,7 @@ META_LOCK = threading.Lock()
 ANALYSIS_LOCK = threading.BoundedSemaphore(1)
 PALETTE_ALGORITHM_VERSION = 4
 PALETTE_COLOR_COUNT = 16
-VISUALIZER_ART_ALGORITHM_VERSION = 3
+VISUALIZER_ART_ALGORITHM_VERSION = 4
 # The field is sampled across the whole viewport after rotation.  A 512px
 # field is under-resolved on tall phones and desktop screens, where one source
 # texel can cover multiple visible pixels.  Keep the blur in the same visual
@@ -649,6 +649,32 @@ def _robust_visualizer_luma(raw_rgb: bytes) -> Optional[dict[str, float]]:
     interval = useful_lumas or lumas
     low = _percentile(interval, 0.03)
     high = _percentile(interval, 0.97)
+    # Favor colorful regions over neutral framing. Saturation alone would give
+    # nearly black colored noise a large vote; chroma also weights its strength.
+    # Analyze the blurred field once, not the changing audio-reactive output.
+    colorful: list[tuple[float, float]] = []
+    for index, luma in enumerate(lumas):
+        channels = raw[index * 3:index * 3 + 3]
+        maximum, minimum = max(channels) / 255.0, min(channels) / 255.0
+        chroma = maximum - minimum
+        saturation = chroma / max(maximum, 0.0001)
+        if chroma > 0.04 and saturation > 0.15:
+            colorful.append((luma, saturation * saturation * chroma))
+    # A stray colored speck should not redefine an otherwise grayscale cover.
+    if len(colorful) >= max(8, math.ceil(len(lumas) * 0.02)):
+        ordered = sorted(colorful)
+        total = sum(weight for _luma, weight in ordered)
+
+        def weighted_percentile(fraction: float) -> float:
+            cumulative = 0.0
+            for value, weight in ordered:
+                cumulative += weight
+                if cumulative >= total * fraction:
+                    return value
+            return ordered[-1][0]
+
+        low = weighted_percentile(0.03)
+        high = weighted_percentile(0.97)
     if high < low + VISUALIZER_MIN_LUMA_SPAN:
         high = min(1.0, low + VISUALIZER_MIN_LUMA_SPAN)
         low = max(0.0, high - VISUALIZER_MIN_LUMA_SPAN)

@@ -134,7 +134,6 @@ test("grayscale source samples softly exclude clipped luma and keep glass covera
   );
   assert.match(liquid, /color\.rgb \*= opacity \* u_reactiveFade/);
   assert.match(liquid, /color\.a = 1\.0/);
-  assert.match(visualizer, /smoothstep\(0\.04,0\.10,luma\)/);
 });
 
 test("Now Playing suppresses selected-row glass and opaque zero-opacity lenses", () => {

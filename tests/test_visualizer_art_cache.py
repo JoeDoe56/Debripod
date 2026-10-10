@@ -108,3 +108,29 @@ def test_clipped_grayscale_extremes_do_not_define_visualizer_band_range():
     assert bounds is not None
     assert 0.18 < bounds["useful_luma_low"] < 0.23
     assert 0.77 < bounds["useful_luma_high"] < 0.82
+
+
+def test_colorful_regions_define_range_despite_dominant_neutral_background():
+    colors = bytes([140, 0, 0] * 50 + [0, 190, 0] * 50)
+    neutral = bytes([30, 30, 30] * 400 + [230, 230, 230] * 400)
+    bounds = metadata._robust_visualizer_luma(neutral + colors)
+    assert bounds is not None
+    assert bounds["useful_luma_low"] == pytest.approx(140 * 0.2126 / 255)
+    assert bounds["useful_luma_high"] == pytest.approx(190 * 0.7152 / 255)
+    # Neutral padding must not change the range assigned to these colors.
+    assert bounds == metadata._robust_visualizer_luma(colors)
+
+
+def test_very_dark_and_bright_colors_are_not_removed_by_fixed_cutoffs():
+    dark = metadata._robust_visualizer_luma(bytes([0, 0, 80] * 50 + [0, 0, 160] * 50))
+    bright = metadata._robust_visualizer_luma(bytes([255, 255, 180] * 50 + [255, 255, 220] * 50))
+    assert dark is not None and bright is not None
+    assert dark["useful_luma_low"] < metadata.VISUALIZER_BAND_LUMA_MIN
+    assert bright["useful_luma_high"] > metadata.VISUALIZER_BAND_LUMA_MAX
+    for bounds in (dark, bright):
+        assert bounds["useful_luma_high"] - bounds["useful_luma_low"] >= metadata.VISUALIZER_MIN_LUMA_SPAN - 1e-9
+
+
+def test_isolated_color_noise_keeps_grayscale_mapping():
+    gray = bytes([51, 51, 51] * 100 + [204, 204, 204] * 100)
+    assert metadata._robust_visualizer_luma(gray + bytes([255, 0, 0])) == metadata._robust_visualizer_luma(gray)

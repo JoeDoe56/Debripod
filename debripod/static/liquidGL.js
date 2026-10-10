@@ -771,7 +771,11 @@
             float w7 = max(0.0, 1.0 - abs(useful - u_reactiveBandCenters[7]) / max(0.0001, u_reactiveBandWidths[7]));
             float w8 = max(0.0, 1.0 - abs(useful - u_reactiveBandCenters[8]) / max(0.0001, u_reactiveBandWidths[8]));
             float total = max(0.0001, w0+w1+w2+w3+w4+w5+w6+w7+w8);
-            float bandEligible = smoothstep(0.04, 0.10, luma) * (1.0 - smoothstep(0.90, 0.96, luma));
+            // Expand the soft exclusion only when the cover's colorful range
+            // reaches into dark or bright areas; pure black/white stay excluded.
+            float darkEnd = min(0.10, max(0.005, u_reactiveLumaLow));
+            float lightStart = max(0.90, min(0.995, u_reactiveLumaHigh));
+            float bandEligible = smoothstep(darkEnd * 0.4, darkEnd, luma) * (1.0 - smoothstep(lightStart, 1.0 - (1.0 - lightStart) * 0.4, luma));
             float frequency = bandEligible * (w0*u_reactiveBands[0]+w1*u_reactiveBands[1]+w2*u_reactiveBands[2]+w3*u_reactiveBands[3]+w4*u_reactiveBands[4]+w5*u_reactiveBands[5]+w6*u_reactiveBands[6]+w7*u_reactiveBands[7]+w8*u_reactiveBands[8]) / total;
             float brightness = clamp(1.0 + frequency*u_reactiveFrequencyResponse.x + u_reactiveEnergy*u_reactiveEnergyResponse.x + u_reactiveBeat*u_reactiveBeatResponse.x, 0.0, 4.0);
             float opacity = clamp(1.0 + frequency*u_reactiveFrequencyResponse.y + u_reactiveEnergy*u_reactiveEnergyResponse.y + u_reactiveBeat*u_reactiveBeatResponse.y, 0.0, 1.0);

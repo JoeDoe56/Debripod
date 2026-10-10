@@ -44,6 +44,15 @@ Remove Wallpaper control.
 - `renderer.debugState()` reports `opticalBackend`, `opticalPrepareCount`, and
   `opticalTextureSize` for inspecting cache reuse.
 
+Visualizer artwork cache version 4 assigns audio bands using saturation/chroma
+weighted brightness percentiles from the blurred cover. Neutral borders and
+backgrounds have no vote in the colorful range. Covers with fewer than 8 colorful
+samples or 2% colorful coverage retain the grayscale brightness fallback. The
+minimum brightness span remains 0.08. Both visualizer renderers extend their soft
+dark/bright response fades when the chosen range includes extreme colors, while
+pure black and white remain excluded from frequency response. Cache analysis runs
+once per cover and does not follow audio or change saturation/contrast settings.
+
 Run `node --test tests/js/*.test.mjs`, then, with `NODE_PATH` pointing to an existing
 Playwright/pngjs installation:
 
