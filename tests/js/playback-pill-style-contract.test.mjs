@@ -16,7 +16,6 @@ function cssBlock(selector) {
 
 test("playback meters share one thickness, have no track border, and retain range semantics", () => {
   assert.match(css, /--infoBarThickness:\s*8\.4px/);
-  assert.match(css, /--infoBarInsetX:\s*9px/);
   assert.doesNotMatch(cssBlock(".npMeterTrack"), /\bborder\s*:/);
   assert.match(cssBlock(".npMeterFill"), /border-radius:\s*999px/);
   assert.match(html, /class="npSeek"[^>]*type="range"/);

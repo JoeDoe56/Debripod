@@ -69,7 +69,7 @@ test("flat filemeta artwork values are normalized without an ok wrapper", () => 
 
 test("metadata feeds quality first and updates both playback pill consumers", () => {
   assert.match(nowPlaying, /m\.quality \|\| m\.tech \|\| m\.ext/);
-  assert.match(nowPlaying, /pathPillNowText\.innerHTML = playbackTitleHtml/);
+  assert.match(nowPlaying, /pathPillNowText\.innerHTML = plain \? playbackTitleHtml/);
   assert.match(nowPlaying, /npTech\.dataset\.progressText/);
 });
 

@@ -67,7 +67,7 @@
       --screenFrame: calc(2 * var(--stageGap));
       --screenContentInset: var(--screenFrame);
       --screenInnerRadius: max(0px, calc(var(--screenRadius) - var(--screenContentInset)));
-      --playbackPillRadius: 20px;
+      --playbackPillRadius: 24px;
       --playbackPillPadX: 10px;
       --playbackPillPadY: 5px;
       --playbackPillRowGap: 1px;
@@ -2205,20 +2205,23 @@
     .debripodInlineStatus[data-tone="warn"]{ background:rgba(112, 59, 23, .90); }
 
 /* Geometry is authored atomically by the shared motion clock. */
-.pathPill,.pathPill.pathPillExpanded{border-radius:var(--pathPillRenderedRadius,16px);clip-path:inset(0 round var(--pathPillRenderedRadius,16px));}
+.pathPill,.pathPill.pathPillExpanded{border-radius:var(--pathPillRenderedRadius,24px);clip-path:inset(0 round var(--pathPillRenderedRadius,24px));}
 .hScrollText.hScrollTextScrollable{padding-inline:0;mask-image:linear-gradient(to right,#000 0,#000 calc(100% - var(--path-text-fade)),transparent 100%);-webkit-mask-image:linear-gradient(to right,#000 0,#000 calc(100% - var(--path-text-fade)),transparent 100%);}
 .hScrollText.hScrollTextScrollable[data-scroll-away="true"]{mask-image:linear-gradient(to right,transparent 0,#000 var(--path-text-fade),#000 calc(100% - var(--path-text-fade)),transparent 100%);-webkit-mask-image:linear-gradient(to right,transparent 0,#000 var(--path-text-fade),#000 calc(100% - var(--path-text-fade)),transparent 100%);}
 
 .pathPill,.pathPill.pathPillExpanded{padding:var(--pathPillRenderedPadY,8px) var(--pathPillRenderedPadX,12px);}
 /* Fixed-height pills center their intrinsic text block, including a true one-row state. */
 .pathPill .pathPillRows{grid-template-rows:auto;row-gap:0;transition:none;}
+.pathPill .pathPillText,.pathPill .pathPillNowText{display:block;line-height:1.2;}
 .pathPill:not(.pathPillExpanded) .pathPillNowRow{display:none;}
 .pathPill:not(.pathPillExpanded) .pathPillText{font-size:var(--dp-row-primary-size,15px);}
 .pathPill.pathPillExpanded .pathPillRows{grid-template-rows:auto auto;row-gap:var(--playbackPillRowGap);}
 .pathPill.pathPillExpanded .pathPillText,.pathPillNowText,.pathPillNowTextSmall{font-size:12px;}
 .infoPill .npBarArea{flex-shrink:0;}
 
-/* One silhouette for the CSS surface and optical mask; wheel lenses are circles. */
+/* Match the CSS surface and optical mask, with semicircular pill ends. */
 .pathPill,.infoPill,.liquidGlass{--liquid-corner-power:2.25;corner-shape:superellipse(1.169925);}
+.pathPill,.infoPill,.pathPillGlass.liquidGlass,.infoPillGlass.liquidGlass,.libListSelectedGlass.liquidGlass,
 .wheelGlassRing.liquidGlass,.wheelCenterGlass.liquidGlass{--liquid-corner-power:2;corner-shape:round;}
+.npMeterTrack,.npBufferedFill,.npMeterFill{corner-shape:round;}
 .pathPill,.pathPill.pathPillExpanded,.ipodList{clip-path:none;}

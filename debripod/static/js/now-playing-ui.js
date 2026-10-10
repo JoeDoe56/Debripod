@@ -61,9 +61,10 @@ function setPlaybackPillMetadata(meta, fallbackLabel){
   var m = meta || {};
   if(window.DebriPod && DebriPod.lyrics) DebriPod.lyrics.trackChanged(m);
   try{
-    const plain = playbackTitlePlain(m, fallbackLabel);
+    const hasMetadata = !!(state && state.now) || Object.keys(m).length > 0 || !!String(fallbackLabel || "").trim();
+    const plain = hasMetadata ? playbackTitlePlain(m, fallbackLabel) : "";
     if(pathPillNowText){
-      pathPillNowText.innerHTML = playbackTitleHtml(m, fallbackLabel);
+      pathPillNowText.innerHTML = plain ? playbackTitleHtml(m, fallbackLabel) : "";
       pathPillNowText.dataset.text = plain;
       pathPillNowText.classList.remove("pathPillNowTextSmall");
       requestAnimationFrame(()=>{
@@ -75,7 +76,6 @@ function setPlaybackPillMetadata(meta, fallbackLabel){
       });
     }
     playbackPillMetadataVisible = !!plain.trim();
-    if(libHeader) libHeader.classList.toggle("pathPillExpanded", hasNowPlayingMetadata());
     try{ if(typeof updatePathPillMaxWidth === "function") updatePathPillMaxWidth(); }catch(e){}
     if(!hasNowPlayingMetadata() && infoPill) infoPill.classList.add("infoPillHidden");
   }catch(e){}

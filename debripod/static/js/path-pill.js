@@ -323,7 +323,7 @@
         const elapsed = pathPillMotion.lastStepTs ? Math.max(1, now - pathPillMotion.lastStepTs) : interval;
         pathPillMotion.lastStepTs = now;
         const expanded=libHeader.classList.contains("pathPillExpanded");
-        const targetRadius=expanded?(parseFloat(getComputedStyle(document.documentElement).getPropertyValue("--playbackPillRadius"))||16):pathPillMotion.targetHeight/2;
+        const targetRadius=pathPillMotion.targetHeight/2;
         const geometry=window.LiquidGlassMotion.advance(
           {width:pathPillMotion.currentWidth,height:pathPillMotion.currentHeight,radius:pathPillMotion.currentRadius ?? pathPillMotion.currentHeight/2,padX:pathPillMotion.currentPadX ?? 12,padY:pathPillMotion.currentPadY ?? 8,expansion:pathPillMotion.expansion || 0},
           {width:pathPillMotion.targetWidth,height:pathPillMotion.targetHeight,radius:targetRadius,padX:pathPillMotion.targetPadX ?? 12,padY:pathPillMotion.targetPadY ?? 8,expansion:expanded?1:0},elapsed,92);
@@ -392,6 +392,10 @@
 
   function updatePathPillMaxWidth(){
     try{
+      // The actual second line determines the layout. Playback state or a
+      // stale data-text attribute must not reserve space for an empty row.
+      const expanded = !!(pathPillNowText && String(pathPillNowText.textContent || "").trim());
+      if(libHeader) libHeader.classList.toggle("pathPillExpanded", expanded);
       const content = document.querySelector(".ipodScreenContent");
       const rect = content ? content.getBoundingClientRect() : null;
       const root = document.documentElement;
@@ -418,10 +422,9 @@
       const padX = Math.max(0, parseFloat(rootStyle.getPropertyValue("--playbackPillPadX")) || 10);
       const basePadX = 12;
       const pathWidth = pathPillIntrinsicTextWidth(pathText);
-      const nowWidth = (libHeader && libHeader.classList.contains("pathPillExpanded") && pathPillNowText)
+      const nowWidth = (expanded && pathPillNowText)
         ? pathPillIntrinsicTextWidth(pathPillNowText)
         : 0;
-      const expanded = !!(libHeader && libHeader.classList.contains("pathPillExpanded"));
       const targetPad = expanded ? padX : basePadX;
       pathPillMotion.targetPadX=targetPad;
       pathPillMotion.targetPadY=expanded?Math.max(0,parseFloat(rootStyle.getPropertyValue("--playbackPillPadY"))||5):8;
@@ -692,7 +695,6 @@
     playbackPillsVisible = hasNowPlayingMetadata();
     if(!playbackPillsVisible){
       hidePlaybackPillsImmediate(reason || "no media");
-      try{ if(libHeader) libHeader.classList.remove("pathPillExpanded"); }catch(e){}
       try{ updatePathPillMaxWidth(); }catch(e){}
       showPathPill(!!pathPillPinned);
       return;
@@ -702,7 +704,6 @@
     clearPlaybackPillHideFinalTimers();
     showPathPill(true);
     try{
-      if(libHeader) libHeader.classList.add("pathPillExpanded");
       setPlaybackPillVisibleClass(true);
       updatePathPillMaxWidth();
       if(infoPill){

@@ -1172,7 +1172,7 @@
       const host = document.getElementById("ipodScreen");
       const hostRect = host ? host.getBoundingClientRect() : {left:0, top:0};
       const targetHeight = Math.max(1, rowRect.height || (visibleBottom - visibleTop));
-      const radius = targetHeight > 58 ? 16 : Math.min(right - left, targetHeight) / 2;
+      const radius = Math.min(right - left, targetHeight) / 2;
       setLibSelectionTarget(left - hostRect.left, rowRect.top - hostRect.top, right - left, targetHeight, radius, 1);
       const renderer = liquidGlassRendererByKey("main");
       if(renderer){
