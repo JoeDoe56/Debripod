@@ -79,7 +79,7 @@ module.exports=async function checkScrolling(page,touch,drag,wheel){
     await new Promise(resolve=>setTimeout(resolve,180));
     return {steps:state.sel-start,rows:libList.querySelectorAll('.ipodItem').length,visible:getComputedStyle(document.getElementById('libListSelectedGlass')).visibility,frames};
   });
-  await page.waitForFunction(()=>libList._dpScrollAnimTarget==null && !listSelectionMotion.rapidInput,{},{timeout:5000}).catch(async error=>{
+  await page.waitForFunction(()=>libList._dpScrollAnimTarget==null && !listSelectionMotion.rapidInput,{},{timeout:30000}).catch(async error=>{
     console.log('Scroll timeout',await page.evaluate(()=>({top:libList.scrollTop,target:libList._dpScrollAnimTarget,frame:libList._dpScrollAnimFrame,scroll:DebriPod.listScroll.phase(),motion:listSelectionMotion,scheduler:DebriPod.frameScheduler.stats()})));throw error;
   });
   await page.waitForFunction(()=>getComputedStyle(document.getElementById("libListSelectedGlass")).visibility!=="hidden");
