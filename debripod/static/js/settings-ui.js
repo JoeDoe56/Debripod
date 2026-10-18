@@ -1965,6 +1965,15 @@ async function libDoSearch(engine, q){
     };
   }
 
+  function glassQualitySummary(){
+    const names = {auto:"Auto", superfluid:"Superfluid", glass:"Glass", lite:"Lite", frost:"Frost", static:"Solid"};
+    const chosen = uiSettings.glassQuality || "auto";
+    if(chosen !== "auto") return names[chosen] || chosen;
+    let active = "";
+    try{ active = DebriPod.glass.instance.tier().name; }catch(e){}
+    return active ? "Auto · " + (names[active] || active) : "Auto";
+  }
+
   function advancedRowsForCategory(category){
     const cat = String(category || "system");
     if(cat === "glass"){
@@ -1974,6 +1983,7 @@ async function libDoSearch(engine, q){
       GLASS_ELEMENT_KEYS.forEach((key)=>{
         items.push({kind:"libui_action", label:glassElementLabel(key), sub_label:"Dark ↔ transparent ↔ light", action:"set_glass_value:" + key + ":material", pills:glassElementSummary(key), forceTwoLine:true, settingRow:true});
       });
+      items.push({kind:"libui_action", label:"Glass quality", sub_label:"Auto picks a level for this device and steps down if frames run slow", action:"cycle_glass_quality", pills:[glassQualitySummary()], forceTwoLine:true, settingRow:true});
       items.push({kind:"libui_action", label:"Render scale", sub_label:"Glass backing-resolution scale", action:"set_glass_quality:glassRenderScale", pills:[String(Number(uiSettings.glassRenderScale || 1).toFixed(2)) + "x"], forceTwoLine:true, settingRow:true});
       items.push({kind:"libui_action", label:"Frost samples", sub_label:"Deterministic frost kernel samples", action:"set_glass_quality:glassFrostSamples", pills:[String(Math.round(Number(uiSettings.glassFrostSamples || 8)))], forceTwoLine:true, settingRow:true});
       items.push({kind:"libui_action", label:"Idle glass FPS", action:"set_glass_quality:glassIdleFps", pills:[String(normalizeAnimationFps(uiSettings.glassIdleFps)) + " FPS"], forceTwoLine:true, settingRow:true});
@@ -2939,6 +2949,16 @@ async function libDoSearch(engine, q){
           }
         }, true);
         return true;
+      case "cycle_glass_quality": {
+        const levels = DebriPod.uiSettings.GLASS_QUALITY_LEVELS;
+        const index = levels.indexOf(uiSettings.glassQuality || "auto");
+        uiSettings.glassQuality = levels[(index + 1) % levels.length];
+        saveUiSettings();
+        try{ if(window.DebriPod && DebriPod.glass && DebriPod.glass.instance) DebriPod.glass.instance.invalidate(true); }catch(e){}
+        try{ if(typeof scheduleLiquidGlassRender === "function") scheduleLiquidGlassRender(); }catch(e){}
+        await viewLibUiSettings(false);
+        return true;
+      }
       case "cycle_visualizer_fps_lock":
         cycleVisualizerFpsLock();
         await viewLibUiSettings(false);

@@ -14,7 +14,7 @@
  *
  *   NODE_PATH=<dir with playwright> node tests/perf/glass-perf.cjs
  *     [--profile phone|desktop] [--frames 90] [--cpu 4] [--render-scale 0.5]
- *     [--only idle,selection] [--out report.json]
+ *     [--only idle,selection] [--quality auto|superfluid|glass|lite] [--out report.json]
  */
 const {chromium} = require(process.env.PLAYWRIGHT_MODULE || 'playwright');
 const http = require('node:http');
@@ -29,6 +29,7 @@ const frames = Number(arg('frames', '90')) || 90;
 const renderScale = Number(arg('render-scale', '0')) || 0;
 const only = (arg('only', '') || '').split(',').filter(Boolean);
 const outFile = arg('out', '');
+const quality = arg('quality', '');
 const base = path.resolve(__dirname, '../..');
 
 const profiles = {
@@ -225,7 +226,8 @@ async function runScenario(page, cdp, name, perFrame) {
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   await page.waitForFunction(() => window.liquidGlassReady && window.state && document.querySelector('#libList .ipodItem'));
   const bootSeconds = (Date.now() - bootStart) / 1000;
-  await page.evaluate((scale) => {
+  await page.evaluate(([scale, quality]) => {
+    if (quality) DebriPod.uiSettings.settings.glassQuality = quality;
     state.current = {kind: 'metalist', level: 'songs', label: 'Songs', root: {id: '__all__'}};
     resetList(Array.from({length: 2000}, (_, i) => ({kind: 'track', media: 'audio', root_id: 'fixture', rel: `song-${i}.flac`, label: `Song ${i}`, secondary: `Artist ${i % 40} · Album ${i % 90}`, track_number: i + 1})));
     setSelectionFast(4);
@@ -233,7 +235,7 @@ async function runScenario(page, cdp, name, perFrame) {
       DebriPod.uiSettings.settings.glassRenderScale = scale;
       window.dispatchEvent(new Event('resize'));
     }
-  }, renderScale);
+  }, [renderScale, quality]);
   await page.evaluate(() => DebriPod.glassLighting && DebriPod.glassLighting.requestOrientationPermission(true));
   await page.waitForTimeout(2500);
   await page.evaluate(() => window.__pumpBegin());
@@ -245,9 +247,10 @@ async function runScenario(page, cdp, name, perFrame) {
   const scenarios = [
     ['idle', null],
     ['selection', async (i) => { if (i % 12 === 0) await page.evaluate((d) => setSelectionFast(state.sel + d), (i / 12) % 8 < 4 ? 1 : -1); }],
+    // Pointer light first: once orientation events arrive the light follows them, not the pointer.
+    ['mouse', async (i) => { await page.evaluate(([x, y]) => window.__pointer(x, y), [vp.width * (0.5 + 0.45 * Math.sin(i / 10)), vp.height * (0.5 + 0.45 * Math.cos(i / 14))]); }],
     ['tilt', async (i) => { await page.evaluate(([b, g]) => window.__tilt(b, g), [40 + 12 * Math.sin(i / 9), 10 * Math.sin(i / 13)]); }],
     ['tiltStill', async () => { await page.evaluate(([b, g]) => window.__tilt(b, g), [40 + (Math.random() - 0.5) * 0.08, 5 + (Math.random() - 0.5) * 0.08]); }],
-    ['mouse', async (i) => { await page.evaluate(([x, y]) => window.__pointer(x, y), [vp.width * (0.5 + 0.45 * Math.sin(i / 10)), vp.height * (0.5 + 0.45 * Math.cos(i / 14))]); }],
     ['playback', null],
     ['playbackSelection', async (i) => { if (i % 12 === 0) await page.evaluate((d) => setSelectionFast(state.sel + d), (i / 12) % 8 < 4 ? 1 : -1); }],
   ];
@@ -267,7 +270,7 @@ async function runScenario(page, cdp, name, perFrame) {
     for (let i = 0; i < 40; i++) await page.evaluate(() => window.__pumpFrame());
   }
   const pumpErrors = await page.evaluate(() => window.__pumpErrors || []);
-  const report = {profile: profileName, cpuRate, renderScale: renderScale || 'default', frames, bootSeconds: +bootSeconds.toFixed(2), errors: errors.concat(pumpErrors), results};
+  const report = {profile: profileName, cpuRate, renderScale: renderScale || 'default', quality: quality || 'default', frames, bootSeconds: +bootSeconds.toFixed(2), errors: errors.concat(pumpErrors), results};
   if (outFile) fs.writeFileSync(outFile, JSON.stringify(report, null, 2));
   console.log(`profile=${profileName} cpu=${cpuRate}x frames=${frames} boot=${report.bootSeconds}s errors=${report.errors.length}`);
   console.table(results);

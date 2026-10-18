@@ -29,7 +29,14 @@
 
   window.LiquidGlassMotion = SF.motion;
 
-  const transitions = SF.createContentTransitions({root: document.body});
+  // Below the full WebGL tiers, text changes fade without the blur and scale.
+  const transitionEffects = ()=>{
+    try{
+      const tier = root.glass && root.glass.instance ? root.glass.instance.tier() : null;
+      return tier && (!tier.webgl || tier.name === "lite") ? "opacity" : "full";
+    }catch(e){ return "full"; }
+  };
+  const transitions = SF.createContentTransitions({root: document.body, effects: transitionEffects});
   window.LiquidGlassOverlays = transitions;
   if(document.readyState === "loading") document.addEventListener("DOMContentLoaded", ()=> transitions.start(), {once:true});
   else transitions.start();

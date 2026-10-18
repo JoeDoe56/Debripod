@@ -13,6 +13,8 @@
   // GLASS_DEFAULTS_END
   const GLASS_ELEMENT_KEYS = ["libraryList", "wheel", "pathPill", "infoPill", "listPills", "selectedRow"];
   const UI_SETTINGS_KEY = "debripod_device_ui_settings:v3";
+  // sfgl quality tiers, best first; "auto" lets the engine choose and adapt.
+  const GLASS_QUALITY_LEVELS = ["auto", "superfluid", "glass", "lite", "frost", "static"];
   const LEGACY_UI_SETTINGS_KEY = "debripod_ui_settings";
   const LEGACY_UI_MIGRATION_KEY = "debripod_device_ui_settings:v3:migrated";
   const DEFAULT_TEXT_MODES = {
@@ -70,6 +72,7 @@
       },
       "performanceOverlayText": false,
       "liquidGlassElements": cloneGlassElementSettings(DEFAULT_LIQUID_GLASS_ELEMENT_SETTINGS),
+      "glassQuality": "auto",
       "glassRenderScale": 1.5,
       "glassRenderScaleVersion": 1,
       "glassFrostSamples": 8,
@@ -273,6 +276,7 @@
     out.videoAmbient = cloneVideoAmbientSettings(out.videoAmbient);
     out.performanceOverlayText = !!out.performanceOverlayText;
     out.liquidGlassElements = cloneGlassElementSettings(out.liquidGlassElements);
+    out.glassQuality = GLASS_QUALITY_LEVELS.indexOf(out.glassQuality) >= 0 ? out.glassQuality : "auto";
     out.glassRenderScale = clampNumber(out.glassRenderScale, 1.5, 0.5, 2);
     out.glassFrostSamples = Math.round(clampNumber(out.glassFrostSamples, 8, 0, 16));
     out.glassIdleFps = normalizeAnimationFps(out.glassIdleFps);
@@ -382,6 +386,7 @@
   if(deviceSettingsUserId) setDeviceSettingsUserId(deviceSettingsUserId);
 
   root.uiSettings = {
+    GLASS_QUALITY_LEVELS,
     DEFAULT_UI_SETTINGS,
     DEFAULT_TEXT_MODES,
     DEFAULT_ANIMATION_FPS,
