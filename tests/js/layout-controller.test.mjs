@@ -3,7 +3,7 @@ import {createRequire} from "node:module";
 import test from "node:test";
 
 const require = createRequire(import.meta.url);
-const {chooseLayout, normalWheelWellLayout, mediaBox, stableViewportChange} = require("../../debripod/static/js/layout-controller.js");
+const {chooseLayout, normalWheelWellLayout, mediaBox, stableViewportChange, createBrowserController} = require("../../debripod/static/js/layout-controller.js");
 
 const rect = (left, top, width, height) => ({left, top, right: left + width, bottom: top + height, width, height});
 const base = {
@@ -88,4 +88,35 @@ test("pinch zoom and software keyboard preserve stable viewport geometry", () =>
   assert.equal(stableViewportChange(stable, {width:260, height:560}, {zoomed:true}), stable);
   assert.equal(stableViewportChange(stable, {width:390, height:810}, {touchViewport:true}), stable);
   assert.deepEqual(stableViewportChange(stable, {width:844, height:390}, {force:true}), {width:844, height:390});
+});
+
+test("fullscreen entry and exit recapture the touch viewport, including a delayed resize", () => {
+  const documentEvents = new Map(), windowEvents = new Map(), frames = new Map(), styles = new Map();
+  let nextFrame = 0;
+  const root = {clientWidth:360, clientHeight:640, classList:{toggle() {}}, style:{setProperty:(key, value) => styles.set(key, value)}};
+  const doc = {documentElement:root, readyState:"complete", querySelector:() => null, getElementById:() => null,
+    addEventListener:(event, handler) => documentEvents.set(event, handler)};
+  const win = {document:doc, navigator:{maxTouchPoints:1}, visualViewport:{scale:1},
+    addEventListener:(event, handler) => windowEvents.set(event, handler),
+    requestAnimationFrame:handler => { frames.set(++nextFrame, handler); return nextFrame; },
+    cancelAnimationFrame:key => frames.delete(key)};
+  function flush() {
+    for(let i = 0; frames.size && i < 10; i++) {
+      const pending = [...frames.values()]; frames.clear(); pending.forEach(handler => handler());
+    }
+  }
+  createBrowserController(win);
+  flush();
+  assert.equal(styles.get("--stable-viewport-height"), "640px");
+  root.clientHeight = 600;
+  windowEvents.get("resize")(); flush();
+  assert.equal(styles.get("--stable-viewport-height"), "640px", "browser chrome still leaves the layout stable");
+  documentEvents.get("fullscreenchange")();
+  root.clientHeight = 740;
+  windowEvents.get("resize")(); flush();
+  assert.equal(styles.get("--stable-viewport-height"), "740px", "fullscreen uses the extra height");
+  root.clientHeight = 640;
+  windowEvents.get("resize")();
+  documentEvents.get("fullscreenchange")(); flush();
+  assert.equal(styles.get("--stable-viewport-height"), "640px", "exiting fullscreen restores the layout");
 });

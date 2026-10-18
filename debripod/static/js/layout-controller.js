@@ -180,6 +180,16 @@
           schedule();
         }, 120);
       });
+      doc.addEventListener("fullscreenchange", ()=>{
+        captureStableViewport(true);
+        schedule();
+        // Mobile browsers can finish resizing after fullscreenchange. Read
+        // the settled layout viewport again on the following frame.
+        win.requestAnimationFrame(()=>{
+          captureStableViewport(true);
+          schedule();
+        });
+      });
       schedule();
     }
     if(doc.readyState === "loading") doc.addEventListener("DOMContentLoaded", start, {once:true});
