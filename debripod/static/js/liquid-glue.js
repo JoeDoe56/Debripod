@@ -79,16 +79,43 @@
     }
   }
 
+  // DebriPod values handed to the glass engine. Renderer hooks are read when
+  // needed, so later settings changes apply without re-registering lenses.
+  function debripodGlassLayer(el){
+    if(!el) return 0;
+    if(el.id === "libListSelectedGlass") return 2;
+    if(el.matches && el.matches("[data-liquid-row-pill]") && el.closest(".ipodItem.sel")) return 3;
+    if(el.matches && el.matches("[data-liquid-row-pill], .wheelCenterGlass, .pathPillGlass, .infoPillGlass")) return 1;
+    return 0;
+  }
+
+  const debripodGlassHooks = {
+    renderScale: ()=> DebriPod.uiSettings.settings.glassRenderScale,
+    frostSamples: ()=> DebriPod.uiSettings.settings.glassFrostSamples,
+    backdrop: ()=>{
+      const renderer = window.DebriPod && window.DebriPod.visualizerRenderer;
+      return renderer && typeof renderer.sourceForLiquidGL === "function" ? renderer.sourceForLiquidGL() : null;
+    },
+    lighting: ()=>{
+      const lighting = window.DebriPod && window.DebriPod.glassLighting;
+      return lighting && typeof lighting.state === "function" ? lighting.state() : null;
+    },
+    scheduler: (window.DebriPod && window.DebriPod.frameScheduler) || null,
+    layer: debripodGlassLayer,
+    underlay: (el)=> el && el.id === "libListSelectedGlass" && window.DebriPod ? window.DebriPod.rowRefraction || null : null,
+    edgeFrost: (el)=> el && el.id === "libList" && el.scrollTop > 0 ? 1 : 0
+  };
+
   function liquidGlassElementOptions(key){
     const settings = glassElementSettings(key);
-    return {
+    return Object.assign({}, debripodGlassHooks, {
       snapshot: "#divwrap",
       resolution: 0.25,
       reveal: "none",
       tilt: false,
       liveGeometry: true,
       material: normalizeLiquidGlassMaterial(settings.material, 0)
-    };
+    });
   }
 
   function applyGlassMaterialClass(el, material){
@@ -1306,6 +1333,7 @@
   function initLiquidGlass(){
     try{
       if(liquidGlassReady || typeof window.liquidGL !== "function") return;
+      try{ window.LIQUID_GL_DEBUG = window.DEBRIPOD_UI_DEBUG === true || (localStorage.getItem("debripod_ui_debug") || "") === "1"; }catch(e){}
       const sharedGlassOptions = Object.assign({}, liquidGlassElementOptions("pathPill"), {
         target: "#libList.liquidGlass, #libListSelectedGlass.liquidGlass, .pathPillGlass.liquidGlass, .infoPillGlass.liquidGlass",
         rendererKey: "main",

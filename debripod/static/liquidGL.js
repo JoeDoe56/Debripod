@@ -16,10 +16,7 @@
    * ------------------------------------------------*/
   function liquidGLDebugEnabled() {
     try {
-      if (window.LIQUID_GL_DEBUG === true || window.DEBRIPOD_UI_DEBUG === true) {
-        return true;
-      }
-      return (localStorage.getItem("debripod_ui_debug") || "") === "1";
+      return window.LIQUID_GL_DEBUG === true;
     } catch (e) {
       return false;
     }
@@ -254,9 +251,14 @@
       this.scaleFactor = 1;
       this._scrollUpdateCounter = 0;
       this.sourceType = sourceOptions.sourceType || "visualizerWebgl";
-      this.sourceSelector = sourceOptions.sourceElement || sourceOptions.source || "#visualizerBg";
+      this.sourceSelector = sourceOptions.sourceElement || sourceOptions.source || null;
       this.sourceCssSelector = sourceOptions.sourceCssElement || sourceOptions.sourceCssSelector || null;
       this.sourceProvider = typeof sourceOptions.sourceProvider === "function" ? sourceOptions.sourceProvider : null;
+      // Host-supplied values. Each may be a value or a function returning one:
+      // renderScale, frostSamples, backdrop (visualizer source adapter),
+      // lighting ({x, y, intensity, source}) and scheduler ({mark}).
+      this._hooks = {};
+      this._applyHooks(sourceOptions);
       this._sourceElement = null;
       this._sourceCssRect = null;
       this._sourceTextureReady = false;
@@ -577,7 +579,7 @@
         }
 
         // Adapted from liquid-glass-react's QuartzCore reconstruction. Shapes
-        // remain DebriPod's DOM-aligned rounded rectangles and hollow wheel.
+        // remain DOM-aligned rounded rectangles and hollow rings.
         float lensCurve(float t) {
           t = clamp(t, 0.0, 1.0);
           return sqrt(max(0.0, (2.0 - t) * t));
@@ -1025,9 +1027,7 @@
 
     /* ----------------------------- */
     _resizeCanvas() {
-      const configuredScale = window.DebriPod && window.DebriPod.uiSettings && window.DebriPod.uiSettings.settings
-        ? Number(window.DebriPod.uiSettings.settings.glassRenderScale)
-        : 1;
+      const configuredScale = Number(this._hookValue("renderScale", 1));
       const renderScale = Math.max(0.5, Math.min(2, Number.isFinite(configuredScale) ? configuredScale : 1.5));
       this._dpr = renderScale;
       this.canvas.width = Math.max(1, Math.round(innerWidth * renderScale));
@@ -1049,9 +1049,27 @@
       return this._sourceElement;
     }
 
+    _applyHooks(options = {}) {
+      ["renderScale", "frostSamples", "backdrop", "lighting", "scheduler"].forEach((key) => {
+        if (options && options[key] !== undefined) this._hooks[key] = options[key];
+      });
+    }
+
+    _hookValue(key, fallback) {
+      const hook = this._hooks[key];
+      if (hook === undefined || hook === null) return fallback;
+      try {
+        const value = typeof hook === "function" ? hook() : hook;
+        return value === undefined || value === null ? fallback : value;
+      } catch (e) {
+        return fallback;
+      }
+    }
+
     configureSource(options = {}) {
+      this._applyHooks(options);
       const nextType = options.sourceType || this.sourceType || "visualizerWebgl";
-      const nextSelector = options.sourceElement || options.source || this.sourceSelector || "#visualizerBg";
+      const nextSelector = options.sourceElement || options.source || this.sourceSelector || null;
       const nextCssSelector = options.sourceCssElement || options.sourceCssSelector || this.sourceCssSelector || null;
       const nextProvider = typeof options.sourceProvider === "function" ? options.sourceProvider : this.sourceProvider;
       const providerChanged = nextProvider !== this.sourceProvider;
@@ -1186,13 +1204,8 @@
     }
 
     _configuredFrostSamples() {
-      try {
-        const settings = window.DebriPod && window.DebriPod.uiSettings && window.DebriPod.uiSettings.settings || {};
-        const value = Number(settings.glassFrostSamples);
-        return Math.max(0, Math.min(16, Math.round(Number.isFinite(value) ? value : 8)));
-      } catch (e) {
-        return 8;
-      }
+      const value = Number(this._hookValue("frostSamples", 8));
+      return Math.max(0, Math.min(16, Math.round(Number.isFinite(value) ? value : 8)));
     }
 
     _bindReactiveVisualizerUniforms(frameState) {
@@ -1243,8 +1256,7 @@
 
     _globalLightingState() {
       try {
-        const lighting = window.DebriPod && window.DebriPod.glassLighting;
-        const state = lighting && typeof lighting.state === "function" ? lighting.state() : null;
+        const state = this._hookValue("lighting", null);
         if (!state) return { x: -0.16, y: -0.22, intensity: 0.22, source: "default" };
         return {
           x: Math.max(-1, Math.min(1, Number(state.x) || 0)),
@@ -1276,12 +1288,7 @@
         return this._refreshAlbumArtTransitionSource(reason || "album art transition");
       }
       if (this.sourceType === "visualizerWebgl" || this.sourceType === "webglTexture") {
-        const adapter =
-          window.DebriPod &&
-          window.DebriPod.visualizerRenderer &&
-          typeof window.DebriPod.visualizerRenderer.sourceForLiquidGL === "function"
-            ? window.DebriPod.visualizerRenderer.sourceForLiquidGL()
-            : null;
+        const adapter = this._hookValue("backdrop", null);
         this._wallpaperActive = !!(adapter && adapter.ready && adapter.wallpaper);
         if (adapter && adapter.ready && adapter.image) {
           const artKey = String(adapter.artKey || adapter.sourceRevision || adapter.image.currentSrc || adapter.image.src || "reactive-art");
@@ -1740,7 +1747,7 @@
 
     requestRender() {
       if (document.hidden) return;
-      const scheduler = window.DebriPod && window.DebriPod.frameScheduler;
+      const scheduler = this._hooks.scheduler;
       if (this.useExternalTicker && scheduler && scheduler.mark) {
         scheduler.mark({ render: true });
         return;
@@ -1768,7 +1775,7 @@
 
     setVisible(on) {
       const next = !!on;
-      if(!next && this.rendererKey === "main" && window.DebriPod && window.DebriPod.rowRefraction) window.DebriPod.rowRefraction.clear();
+      if (!next) this._underlays().forEach((underlay) => { if (underlay.clear) underlay.clear(); });
       if (this.visible === next) {
         if (!next) {
           this.clear();
@@ -1851,15 +1858,9 @@
       const transitionTime = Number.isFinite(fs.timestamp) ? fs.timestamp : performance.now();
       // One copy per optical depth, not per row. Each upper lens samples the
       // completed lower glass pass at its refracted UV coordinates.
-      const depth = lens => {
-        const el = lens.el;
-        if (el.id === "libListSelectedGlass") return 2;
-        if (el.matches && el.matches("[data-liquid-row-pill]") && el.closest(".ipodItem.sel")) return 3;
-        if (el.matches && el.matches("[data-liquid-row-pill], .wheelCenterGlass, .pathPillGlass, .infoPillGlass")) return 1;
-        return 0;
-      };
-      const textLayer = this.rendererKey === "main" && window.DebriPod && window.DebriPod.rowRefraction;
-      if(textLayer) textLayer.beginFrame();
+      const depth = (lens) => lens.layer();
+      const underlays = this._underlays();
+      underlays.forEach((underlay) => { if (underlay.beginFrame) underlay.beginFrame(); });
       let currentDepth = 0;
       gl.uniform1i(this.u.hasUnderGlass, 0);
       this.lenses.slice().sort((a,b) => depth(a) - depth(b)).forEach((lens) => {
@@ -1876,7 +1877,7 @@
         }
       });
 
-      if(textLayer) textLayer.endFrame();
+      underlays.forEach((underlay) => { if (underlay.endFrame) underlay.endFrame(); });
       if (hasActiveVisibleTransition) this.requestRender();
       const renderFinishedAt = typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
       const submissionMs = Math.max(0, renderFinishedAt - renderStartedAt);
@@ -1885,6 +1886,15 @@
       if (this._renderSubmissionSamples.length > 120) {
         this._renderSubmissionTotalMs -= this._renderSubmissionSamples.shift();
       }
+    }
+
+    _underlays() {
+      const out = new Set();
+      this.lenses.forEach((lens) => {
+        const underlay = lens && lens.underlay ? lens.underlay() : null;
+        if (underlay) out.add(underlay);
+      });
+      return out;
     }
 
     _bindUnderText(source) {
@@ -1960,7 +1970,7 @@
       const gl = this.gl;
       const rect = lens.rectPx;
       gl.uniform1i(this.u.hasUnderText, 0);
-      const textLayer = this.rendererKey === "main" && window.DebriPod && window.DebriPod.rowRefraction;
+      const textLayer = lens.underlay();
       if (!rect) {
         return;
       }
@@ -1980,7 +1990,7 @@
       }
 
       let textPrepared = false;
-      if(lens.el.id === "libListSelectedGlass" && textLayer){
+      if(textLayer && textLayer.prepare){
         // A translucent reveal must not cut away fully visible native text.
         if(Number(getComputedStyle(lens.el).opacity) >= .995){
           const textSource = textLayer.prepare(rect,lens.radiusCss,true);
@@ -2096,7 +2106,7 @@
       gl.uniform1f(this.u.specularSecondary, resolved.specularSecondary);
       const contact = this._lensContact(lens, fsTime(this._externalFrameState));
       gl.uniform4f(this.u.contact, contact.x, contact.y, contact.press, 0);
-      gl.uniform1f(this.u.scrollEdge, lens.el.id === "libList" && lens.el.scrollTop > 0 ? 1 : 0);
+      gl.uniform1f(this.u.scrollEdge, lens.edgeFrost());
 
       const clip = lens.clipRectPx;
       if (clip) {
@@ -2193,6 +2203,33 @@
         });
         this._sizeObs.observe(this.el);
       }
+    }
+
+    // Per-lens host hooks. Each option may be a value or a function of the
+    // lens element: layer (optical depth, lower draws first), underlay (a
+    // live content layer refracted by this lens) and edgeFrost (0..1 extra
+    // frost along the top and bottom edges).
+    _option(key, fallback) {
+      const value = this.options ? this.options[key] : undefined;
+      if (value === undefined || value === null) return fallback;
+      try {
+        const resolved = typeof value === "function" ? value(this.el, this) : value;
+        return resolved === undefined || resolved === null ? fallback : resolved;
+      } catch (e) {
+        return fallback;
+      }
+    }
+
+    layer() {
+      return finiteNumber(this._option("layer", 0), 0);
+    }
+
+    underlay() {
+      return this._option("underlay", null);
+    }
+
+    edgeFrost() {
+      return clamp(finiteNumber(this._option("edgeFrost", 0), 0), 0, 1);
     }
 
     _normalizeOptionsPatch(patch) {
@@ -2557,7 +2594,7 @@
       magnify: 1,
       material: null,
       sourceType: "visualizerWebgl",
-      sourceElement: "#visualizerBg",
+      sourceElement: null,
       on: {},
     };
     const options = { ...defaults, ...userOptions };
@@ -2632,9 +2669,9 @@
       canvasZIndex: window.getComputedStyle(renderer.canvas).zIndex
     });
 
-    if (window.DebriPod && window.DebriPod.frameScheduler) {
+    if (options.scheduler) {
       renderer.useExternalTicker = true;
-      if (window.DebriPod.frameScheduler.mark) window.DebriPod.frameScheduler.mark({ render: true });
+      if (options.scheduler.mark) options.scheduler.mark({ render: true });
     }
 
     if (!renderer._rafId && !renderer.useExternalTicker) {

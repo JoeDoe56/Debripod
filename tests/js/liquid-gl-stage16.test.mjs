@@ -50,7 +50,8 @@ test("reactive artwork is uploaded only on its art key and sampled as uniforms",
 });
 
 test("the glass backing scale is independent of device DPR and frost is deterministic", () => {
-  assert.match(liquid, /glassRenderScale/);
+  assert.match(glue, /glassRenderScale/);
+  assert.match(liquid, /_hookValue\("renderScale", 1\)/);
   assert.match(liquid, /_configuredFrostSamples\(\)/);
   assert.match(liquid, /value : 8/);
   assert.match(liquid, /const int MAX_FROST_SAMPLES = 16/);
@@ -139,12 +140,13 @@ test("selected-row settings preview never re-registers a removed lens", () => {
 test("artwork recovers after a temporary unavailable source, including the same album", () => {
   let adapter = {ready:true, image:{}, artKey:"album:a"};
   let uploads = 0;
-  const context = {window:{innerWidth:400, innerHeight:800, DebriPod:{visualizerRenderer:{sourceForLiquidGL:()=>adapter}}}};
+  const context = {window:{innerWidth:400, innerHeight:800}};
   vm.createContext(context);
   const start = liquid.indexOf('    refreshSourceTexture(reason = "") {');
   const end = liquid.indexOf('    _createAlbumTexture()', start);
   const method = vm.runInContext('({' + liquid.slice(start,end) + '}).refreshSourceTexture', context);
   const renderer = {sourceType:"visualizerWebgl", sourceRefreshCount:0, _resolveSourceElement:()=>null,
+    _hookValue:(key, fallback)=> key === "backdrop" ? adapter : fallback,
     updateTextureFromImage(){uploads++; this.texture={}; this._sourceIsSolidFallback=false; return true;},
     updateTextureFromSolidColor(){this.texture={}; this._sourceIsSolidFallback=true; return true;}};
   method.call(renderer);
