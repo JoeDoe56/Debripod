@@ -7,7 +7,8 @@ import {fileURLToPath} from "node:url";
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const visualizerPath = path.resolve(here, "../../debripod/static/js/visualizer-engine.js");
-const liquidPath = path.resolve(here, "../../debripod/static/liquidGL.js");
+// The glass engine (sfgl) is vendored as one bundle; its GLSL stays readable.
+const liquidPath = path.resolve(here, "../../debripod/static/vendor/sfgl/sfgl.iife.js");
 const gluePath = path.resolve(here, "../../debripod/static/js/liquid-glue.js");
 const ambientPath = path.resolve(here, "../../debripod/static/js/video-ambient.js");
 const palettePath = path.resolve(here, "../../debripod/static/js/palette-utils.js");
@@ -84,11 +85,13 @@ test("visualizer keeps the cover flat and follows pause/resume transport fades",
 });
 
 test("glass reactive sampling matches the background transform and stays premultiplied", () => {
-  assert.match(liquid, /vec2 backgroundUv = vec2\(clamp\(uv\.x, 0\.0, 1\.0\), 1\.0 - clamp\(uv\.y, 0\.0, 1\.0\)\)/);
+  // The reactive backdrop is DebriPod GLSL handed to sfgl's prepare pass.
+  assert.match(glue, /vec2 backgroundUv = vec2\(clamp\(uv\.x, 0\.0, 1\.0\), 1\.0 - clamp\(uv\.y, 0\.0, 1\.0\)\)/);
   const premultiply = liquid.indexOf("final.rgb *= final.a");
   const coverage = liquid.indexOf("final.rgb *= inShape");
   assert.ok(premultiply >= 0 && coverage > premultiply, "source alpha must be premultiplied before edge coverage");
   assert.doesNotMatch(liquid, /final\.rgb \*= u_revealProgress/);
+  assert.match(liquid, /vec4 final = vec4\(rgb, face\.a \* dBody \* u_opacity\)/);
   assert.match(visualizer, /float alpha=opacity\*fade;gl_FragColor=vec4\(rgb\*alpha,alpha\)/);
 
   const reactiveUv = ([u, v], angle, width, height) => {
@@ -132,15 +135,16 @@ test("grayscale source samples softly exclude clipped luma and keep glass covera
     {...visualizerReactiveSourcePixel([0.8, 0.4, 0.2], 0.5, 0)},
     {r:0, g:0, b:0, a:1}
   );
-  assert.match(liquid, /color\.rgb \*= opacity \* u_reactiveFade/);
-  assert.match(liquid, /color\.a = 1\.0/);
+  assert.match(glue, /color\.rgb \*= opacity \* dp_fade;/);
+  assert.match(glue, /return vec4\(color\.rgb, 1\.0\);/);
   assert.match(visualizer, /smoothstep\(0\.04,0\.10,luma\)/);
 });
 
 test("Now Playing suppresses selected-row glass and opaque zero-opacity lenses", () => {
   assert.match(glue, /if\(list\.hasAttribute\("aria-hidden"\) \|\| nowPlayingSurfaceVisible\(\)\)/);
-  assert.match(glue, /Number\(style\.opacity \|\| 1\) <= 0\.01/);
-  assert.match(liquid, /style\.display === "none" \|\| style\.visibility === "hidden" \|\| Number\(style\.opacity \|\| 1\) <= 0\.01/);
+  // Hidden, invisible and zero-opacity lenses are skipped with the browser's
+  // native visibility check instead of a per-frame ancestor style walk.
+  assert.match(liquid, /checkVisibility\(\{opacityProperty:\s*!0,\s*visibilityProperty:\s*!0\}\)|checkVisibility\(\{opacityProperty: true, visibilityProperty: true\}\)/);
 });
 
 test("paused video cannot restart ambient sampling", () => {

@@ -79,11 +79,14 @@ function api(url) {
   });
   await page.goto(`http://127.0.0.1:${server.address().port}/`);
   await page.waitForFunction(() => window.liquidGlassReady && window.state && document.querySelector('#libList .ipodItem'));
-  await page.evaluate(() => {
+  await page.evaluate((quality) => {
+    // Pin the quality tier when the engine supports it (sfgl), so software
+    // GPUs in CI are compared at full quality.
+    if (quality && window.DebriPod && DebriPod.uiSettings) DebriPod.uiSettings.settings.glassQuality = quality;
     state.current = {kind: 'metalist', level: 'songs', label: 'Songs', root: {id: '__all__'}};
     resetList(Array.from({length: 200}, (_, i) => ({kind: 'track', media: 'audio', root_id: 'fixture', rel: `song-${i}.flac`, label: `Song ${i}`, secondary: `Artist ${i % 40} · Album ${i % 90}`, track_number: i + 1})));
     setSelectionFast(3);
-  });
+  }, arg('quality', 'superfluid'));
   await page.evaluate(() => {
     const img = new Image();
     img.src = '/snap-art.svg';

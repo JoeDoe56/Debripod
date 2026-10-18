@@ -1,9 +1,17 @@
-  var LIQUID_VISUALIZER_RENDERER_KEYS = ["main", "wheel"];
+/* DebriPod's glass adapter.
+ *
+ * The glass engine is sfgl (static/vendor/sfgl). This file maps DebriPod's
+ * elements, settings and state onto it: which elements are lenses and in
+ * which layer, their materials, the reactive artwork or wallpaper backdrop,
+ * the selected-row motion, the row pills, and the tilted wheel.
+ */
   var glassTextUnderColorState = {
     lastRun: 0,
     lastSignature: "",
     runCount: 0
   };
+  var debripodGlass = null;
+  var debripodGlassMainSurface = null;
 
   function applyUiTuningCss(){
     try{
@@ -62,6 +70,7 @@
       });
     }catch(e){}
   }
+
   applyUiTuningCss();
 
   function normalizeWheelRotationMaxDegrees(value){
@@ -77,45 +86,6 @@
     }catch(e){
       return cloneGlassElementSettings(DEFAULT_LIQUID_GLASS_ELEMENT_SETTINGS)[key] || DEFAULT_LIQUID_GLASS_ELEMENT_SETTINGS.libraryList;
     }
-  }
-
-  // DebriPod values handed to the glass engine. Renderer hooks are read when
-  // needed, so later settings changes apply without re-registering lenses.
-  function debripodGlassLayer(el){
-    if(!el) return 0;
-    if(el.id === "libListSelectedGlass") return 2;
-    if(el.matches && el.matches("[data-liquid-row-pill]") && el.closest(".ipodItem.sel")) return 3;
-    if(el.matches && el.matches("[data-liquid-row-pill], .wheelCenterGlass, .pathPillGlass, .infoPillGlass")) return 1;
-    return 0;
-  }
-
-  const debripodGlassHooks = {
-    renderScale: ()=> DebriPod.uiSettings.settings.glassRenderScale,
-    frostSamples: ()=> DebriPod.uiSettings.settings.glassFrostSamples,
-    backdrop: ()=>{
-      const renderer = window.DebriPod && window.DebriPod.visualizerRenderer;
-      return renderer && typeof renderer.sourceForLiquidGL === "function" ? renderer.sourceForLiquidGL() : null;
-    },
-    lighting: ()=>{
-      const lighting = window.DebriPod && window.DebriPod.glassLighting;
-      return lighting && typeof lighting.state === "function" ? lighting.state() : null;
-    },
-    scheduler: (window.DebriPod && window.DebriPod.frameScheduler) || null,
-    layer: debripodGlassLayer,
-    underlay: (el)=> el && el.id === "libListSelectedGlass" && window.DebriPod ? window.DebriPod.rowRefraction || null : null,
-    edgeFrost: (el)=> el && el.id === "libList" && el.scrollTop > 0 ? 1 : 0
-  };
-
-  function liquidGlassElementOptions(key){
-    const settings = glassElementSettings(key);
-    return Object.assign({}, debripodGlassHooks, {
-      snapshot: "#divwrap",
-      resolution: 0.25,
-      reveal: "none",
-      tilt: false,
-      liveGeometry: true,
-      material: normalizeLiquidGlassMaterial(settings.material, 0)
-    });
   }
 
   function applyGlassMaterialClass(el, material){
@@ -147,31 +117,6 @@
     return Array.isArray(value) ? value : [value];
   }
 
-  function liquidGlassRenderers(){
-    const list = [];
-    try{
-      if(window.__liquidGLRenderer__) list.push(window.__liquidGLRenderer__);
-      const renderers = window.__liquidGLRenderers__;
-      if(renderers && typeof renderers === "object"){
-        Object.keys(renderers).forEach((key)=>{
-          const renderer = renderers[key];
-          if(renderer && list.indexOf(renderer) < 0) list.push(renderer);
-        });
-      }
-    }catch(e){}
-    return list;
-  }
-
-  function liquidGlassRendererByKey(key){
-    try{
-      const wanted = key || "main";
-      const renderers = window.__liquidGLRenderers__;
-      if(renderers && renderers[wanted]) return renderers[wanted];
-      if(wanted === "main") return window.__liquidGLRenderer__ || (renderers && renderers.default) || null;
-    }catch(e){}
-    return null;
-  }
-
   function frameScheduler(){
     try{ return window.DebriPod && window.DebriPod.frameScheduler ? window.DebriPod.frameScheduler : null; }catch(e){ return null; }
   }
@@ -184,143 +129,9 @@
     }catch(e){}
   }
 
-  function rendererTargetVisible(renderer){
-    try{
-      if(!renderer || !renderer.lenses || !renderer.lenses.length || document.hidden) return false;
-      return renderer.lenses.some((lens)=>{
-        if(!lens || !lens.el || !lens.el.isConnected) return false;
-        const style = window.getComputedStyle ? window.getComputedStyle(lens.el) : null;
-        if(style && (style.display === "none" || style.visibility === "hidden" || Number(style.opacity || 1) <= 0.01)) return false;
-        let node = lens.el.parentElement;
-        while(node && node !== document.body){
-          const parentStyle = window.getComputedStyle ? window.getComputedStyle(node) : null;
-          if(parentStyle && (parentStyle.display === "none" || parentStyle.visibility === "hidden" || Number(parentStyle.opacity || 1) <= 0.01)) return false;
-          node = node.parentElement;
-        }
-        const rect = lens.el.getBoundingClientRect();
-        return rect.width > 0 && rect.height > 0 && rect.right > -2 && rect.bottom > -2 && rect.left < (window.innerWidth || 0) + 2 && rect.top < (window.innerHeight || 0) + 2;
-      });
-    }catch(e){
-      return true;
-    }
-  }
-
-  function liquidWheelRenderer(){
-    return liquidGlassRendererByKey("wheel");
-  }
-
   function applyRootGlassMaterialClass(material){
     try{
       applyGlassMaterialClass(document.documentElement, material);
-    }catch(e){}
-  }
-
-  function liquidGlassLensElementKey(renderer, lens){
-    const el = lens && lens.el;
-    if(el && el.classList){
-      if(el.classList.contains("infoPillGlass")) return "infoPill";
-      if(el.classList.contains("pathPillGlass")) return "pathPill";
-      if(el.classList.contains("ipodPill") && el.hasAttribute("data-liquid-row-pill")) return "listPills";
-    }
-    if(el && el.id === "libList") return "libraryList";
-    if(el && el.id === "libListSelectedGlass") return "selectedRow";
-    const rendererKey = renderer && renderer.rendererKey;
-    if(rendererKey === "wheel") return "wheel";
-    return "pathPill";
-  }
-
-  function applyLiquidGlassStyleOptions(){
-    try{
-      applyTextModeClasses();
-      applyElementGlassMaterialClasses();
-      updateLibSelectionGlass("style options");
-      liquidGlassRenderers().forEach((renderer)=>{
-        if(!renderer || !renderer.lenses) return;
-        renderer.lenses.forEach((lens)=>{
-          if(!lens) return;
-          const opts = liquidGlassElementOptions(liquidGlassLensElementKey(renderer, lens));
-          if(typeof lens.setOptions === "function") lens.setOptions({material:opts.material});
-          else if(lens.options) lens.options.material = opts.material;
-        });
-      });
-      markFrameWork({render:true, textContrast:true});
-    }catch(e){}
-  }
-
-  function previewLiquidGlassElementMaterial(elementKey, value){
-    const material = normalizeLiquidGlassMaterial(value, 0);
-    liquidGlassRenderers().forEach((renderer)=>{
-      (renderer.lenses || []).forEach((lens)=>{
-        if(liquidGlassLensElementKey(renderer, lens) !== elementKey) return;
-        if(typeof lens.setOptions === "function") lens.setOptions({material:material});
-      });
-    });
-    const targets = {
-      libraryList:[document.getElementById("libList")],
-      wheel:[document.getElementById("wheel")],
-      pathPill:[document.getElementById("libHeader")],
-      infoPill:[document.getElementById("infoPill")],
-      listPills:Array.from(document.querySelectorAll(".ipodPill[data-liquid-row-pill]")),
-      selectedRow:[document.getElementById("libListSelectedGlass")]
-    };
-    (targets[elementKey] || []).forEach((el)=> applyGlassMaterialClass(el, material));
-    markFrameWork({render:true, textContrast:true});
-  }
-
-  function setLiquidGlassElementSetting(elementKey, field, value){
-    const current = cloneGlassElementSettings(uiSettings.liquidGlassElements);
-    if(!current[elementKey] || field !== "material") return;
-    current[elementKey].material = normalizeLiquidGlassMaterial(value, current[elementKey].material);
-    uiSettings.liquidGlassElements = cloneGlassElementSettings(current);
-    liquidGlassElements = cloneGlassElementSettings(uiSettings.liquidGlassElements);
-    saveUiSettings();
-    applyLiquidGlassStyleOptions();
-  }
-
-  applyElementGlassMaterialClasses();
-
-  function mountLiquidCanvas(){
-    try{
-      const wrap = document.getElementById("divwrap");
-      if(!wrap) return;
-      liquidGlassRenderers().forEach((renderer)=>{
-        if(!renderer || !renderer.canvas) return;
-        renderer.canvas.classList.add("liquidGlassCanvas");
-        const key = renderer.rendererKey || (renderer === window.__liquidGLRenderer__ ? "main" : "");
-        renderer.canvas.classList.toggle("liquidGlassCanvasMain", key === "main");
-        renderer.canvas.classList.toggle("liquidGlassCanvasWheel", key === "wheel");
-        renderer.canvas.setAttribute("data-liquid-renderer", key || "unknown");
-        if(key === "wheel"){
-          const wheelHost = document.getElementById("wheel") || document.querySelector(".ipodWheelWrap");
-          if(wheelHost && renderer.canvas.parentNode !== wheelHost){
-            wheelHost.insertBefore(renderer.canvas, wheelHost.firstChild);
-          }
-          positionWheelLiquidCanvas();
-        }else if(key === "main"){
-          const stage = document.querySelector(".ipodStage");
-          if(stage && renderer.canvas.parentNode !== stage){
-            stage.insertBefore(renderer.canvas, stage.firstChild);
-          }else if(!stage && renderer.canvas.parentNode !== wrap){
-            const afterBg = document.getElementById("visualizerBg");
-            if(afterBg && afterBg.parentNode === wrap && afterBg.nextSibling){
-              wrap.insertBefore(renderer.canvas, afterBg.nextSibling);
-            }else{
-              wrap.insertBefore(renderer.canvas, wrap.firstChild);
-            }
-          }
-          positionMainLiquidCanvas();
-        }else if(renderer.canvas.parentNode !== wrap){
-          const afterBg = document.getElementById("visualizerBg");
-          if(afterBg && afterBg.parentNode === wrap && afterBg.nextSibling){
-            wrap.insertBefore(renderer.canvas, afterBg.nextSibling);
-          }else{
-            wrap.insertBefore(renderer.canvas, wrap.firstChild);
-          }
-        }
-        renderer.canvas.style.pointerEvents = "none";
-        renderer.canvas.style.setProperty("z-index", key === "wheel" ? "10" : "65", "important");
-      });
-      debugLiquidGlassRenderers("mount");
     }catch(e){}
   }
 
@@ -349,101 +160,6 @@
     const width = el.offsetWidth * transformScale * scaleX;
     const height = el.offsetHeight * transformScale * scaleY;
     return {left:base.left + (base.width - width) / 2, top:base.top + (base.height - height) / 2, width, height};
-  }
-
-  function positionWheelLiquidCanvas(){
-    try{
-      const renderer = liquidWheelRenderer();
-      const canvas = renderer && renderer.canvas;
-      const host = document.getElementById("wheel") || document.querySelector(".ipodWheelWrap");
-      if(!canvas || !host) return;
-      const rect = wheelGlassLayoutRect() || host.getBoundingClientRect();
-      canvas.style.position = "absolute";
-      canvas.style.setProperty("position", "absolute", "important");
-      canvas.style.setProperty("inset", "auto", "important");
-      canvas.style.setProperty("left", (-(rect.left || 0)).toFixed(3) + "px", "important");
-      canvas.style.setProperty("top", (-(rect.top || 0)).toFixed(3) + "px", "important");
-      canvas.style.right = "auto";
-      canvas.style.bottom = "auto";
-      canvas.style.setProperty("width", (window.innerWidth || canvas.width || 1) + "px", "important");
-      canvas.style.setProperty("height", (window.innerHeight || canvas.height || 1) + "px", "important");
-      canvas.style.setProperty("pointer-events", "none", "important");
-      canvas.style.setProperty("z-index", "10", "important");
-    }catch(e){}
-  }
-
-  function refreshLiquidGlassSource(renderer, reason){
-    try{
-      if(!renderer || !renderer.refreshSourceTexture) return false;
-      const updated = !!renderer.refreshSourceTexture(reason || "app");
-      renderer._dpSourceRefreshCount = (renderer._dpSourceRefreshCount || 0) + 1;
-      renderer._dpLastSourceRefreshReason = reason || "app";
-      renderer._dpLastSourceRefreshSuccess = updated;
-      return updated;
-    }catch(e){}
-    return false;
-  }
-
-  function normalizeLiquidRendererKeys(keys){
-    try{
-      if(!keys) return LIQUID_VISUALIZER_RENDERER_KEYS.slice();
-      const raw = Array.isArray(keys) ? keys : [keys];
-      const seen = new Set();
-      const out = [];
-      raw.forEach((key)=>{
-        const value = String(key || "").trim();
-        if(!value || LIQUID_VISUALIZER_RENDERER_KEYS.indexOf(value) < 0 || seen.has(value)) return;
-        seen.add(value);
-        out.push(value);
-      });
-      return out.length ? out : LIQUID_VISUALIZER_RENDERER_KEYS.slice();
-    }catch(e){
-      return LIQUID_VISUALIZER_RENDERER_KEYS.slice();
-    }
-  }
-
-  function visibleLiquidGlassVisualizerRendererKeys(keys){
-    const out = [];
-    try{
-      normalizeLiquidRendererKeys(keys).forEach((key)=>{
-        const renderer = liquidGlassRendererByKey(key);
-        if(renderer && rendererTargetVisible(renderer)) out.push(key);
-      });
-    }catch(e){}
-    return out;
-  }
-
-  function markLiquidRendererSourceRefresh(renderer, reason, updated){
-    try{
-      if(!renderer) return;
-      renderer._dpSourceRefreshCount = (renderer._dpSourceRefreshCount || 0) + 1;
-      renderer._dpLastSourceRefreshReason = reason || "";
-      renderer._dpLastSourceRefreshSuccess = updated === true;
-    }catch(e){}
-  }
-
-  function refreshLiquidGlassVisualizerSources(reason, options){
-    try{
-      const opts = options || {};
-      normalizeLiquidRendererKeys(opts.keys).forEach((key)=>{
-        const renderer = liquidGlassRendererByKey(key);
-        if(!renderer) return;
-        if(!opts.force && !rendererTargetVisible(renderer)) return;
-        const frame = typeof currentVisualizerFrameState === "function" ? currentVisualizerFrameState() : null;
-        const artKey = frame && frame.artKey ? String(frame.artKey) : "";
-        if(!opts.force && artKey && renderer._dpReactiveArtKey === artKey && renderer._reactiveArtActive && !renderer._sourceIsSolidFallback) return;
-        let updated = false;
-        let alreadyCounted = false;
-        if((renderer.sourceType === "visualizerWebgl" || renderer.sourceType === "webglTexture") && renderer.refreshSourceTexture){
-          updated = !!renderer.refreshSourceTexture(reason || "visualizer webgl");
-        }else{
-          updated = refreshLiquidGlassSource(renderer, reason || "visualizer fallback");
-          alreadyCounted = true;
-        }
-        if(updated && artKey) renderer._dpReactiveArtKey = artKey;
-        if(!alreadyCounted) markLiquidRendererSourceRefresh(renderer, reason || "visualizer", updated);
-      });
-    }catch(e){}
   }
 
   function cssPointValue(style, name, axisSize, fallback){
@@ -486,6 +202,9 @@
       const opts = options && typeof options === "object"
         ? options
         : (arguments.length ? {reason:String(options || ""), force:true} : {reason:"direct", force:true});
+      // Check the rate before reading styles: this runs on animated frames.
+      const nowEarly = performance && performance.now ? performance.now() : Date.now();
+      if(!opts.force && (nowEarly - glassTextUnderColorState.lastRun) < (opts.activeAnimating ? 260 : 1200)) return false;
       const root = document.documentElement;
       const style = window.getComputedStyle ? window.getComputedStyle(root) : null;
       if(!style) return;
@@ -527,52 +246,6 @@
     return false;
   }
 
-  function renderLiquidGlassNow(frameState, options){
-    try{
-      const opts = options || {};
-      updateGlassTextUnderColors({reason:opts.reason || "liquid render", activeAnimating:!!opts.activeAnimating});
-      updateLibSelectionGlass("");
-      liquidGlassRenderers().forEach((renderer)=>{
-        if(!renderer || !renderer.render) return;
-        if(!rendererTargetVisible(renderer)){
-          if(renderer.setVisible) renderer.setVisible(false);
-          return;
-        }
-        if(renderer.setVisible) renderer.setVisible(true);
-        const key = renderer.rendererKey || "";
-        if(key === "main") positionMainLiquidCanvas();
-        if(key === "wheel") positionWheelLiquidCanvas();
-        renderer.render(Object.assign({}, currentVisualizerFrameState(frameState && frameState.timestamp), frameState || {}));
-      });
-    }catch(e){}
-  }
-
-  function renderLiquidGlassVisualizerSourceNow(frameState, options){
-    try{
-      const opts = options || {};
-      const keys = visibleLiquidGlassVisualizerRendererKeys(opts.keys);
-      updateGlassTextUnderColors({reason:opts.reason || "visualizer render", activeAnimating:opts.activeAnimating !== false});
-      keys.forEach((key)=>{
-        const renderer = liquidGlassRendererByKey(key);
-        if(key === "main") positionMainLiquidCanvas();
-        if(key === "wheel") positionWheelLiquidCanvas();
-        if(renderer && renderer.render && rendererTargetVisible(renderer)) renderer.render(Object.assign({}, currentVisualizerFrameState(frameState && frameState.timestamp), frameState || {}));
-      });
-    }catch(e){}
-  }
-
-  function captureLiquidGlassSnapshot(reason, includeLibList){
-    try{
-      refreshLiquidGlassVisualizerSources(reason || "app");
-      if(includeLibList){
-        const mainRenderer = liquidGlassRendererByKey("main");
-        if(mainRenderer && rendererTargetVisible(mainRenderer)) refreshLiquidGlassSource(mainRenderer, reason || "app");
-      }
-      updateGlassTextUnderColors({reason:reason || "snapshot", force:true});
-      renderLiquidGlassNow(null, {reason:reason || "snapshot"});
-    }catch(e){}
-  }
-
   function selectedListInnerRect(){
     try{
       const list = document.getElementById("libList");
@@ -605,123 +278,6 @@
     }
   }
 
-  // The shared main renderer initially registers the selected row and row
-  // pills as one target set, so those lenses have no group marker.  Teardown
-  // must therefore identify the actual elements as well as tagged groups.
-  function syncLibTransientLenses(renderer, config){
-    if(!renderer) return {selected:false, pills:0};
-    const input = config || {};
-    const selectedElement = input.selectedElement || null;
-    const pillElements = Array.from(input.pillElements || []).filter(Boolean);
-    const active = input.active !== false;
-    const wanted = new Set(active ? [selectedElement].concat(pillElements).filter(Boolean) : []);
-    const manageSelected = input.manageSelected !== false;
-    const managePills = input.managePills !== false;
-    const isSelected = (el, lens) => manageSelected && (
-      el === selectedElement ||
-      (el && el.id === "libListSelectedGlass") ||
-      (lens && lens._dpLensGroup === "selectedRow")
-    );
-    const isPill = (el, lens) => managePills && (
-      (el && el.matches && el.matches(".ipodPill[data-liquid-row-pill]")) ||
-      (lens && lens._dpLensGroup === "listPills")
-    );
-    const next = [];
-    (renderer.lenses || []).forEach((lens)=>{
-      const el = lens && lens.el;
-      const transientSelected = isSelected(el, lens);
-      const transientPill = isPill(el, lens);
-      if(!transientSelected && !transientPill){
-        if(lens && el && el.isConnected !== false) next.push(lens);
-        return;
-      }
-      const keep = active && wanted.has(el);
-      if(keep){
-        lens._dpLensGroup = transientSelected ? "selectedRow" : "listPills";
-        next.push(lens);
-      }else{
-        try{ if(lens.destroy) lens.destroy(); }catch(e){}
-      }
-    });
-    renderer.lenses = next;
-    if(active && typeof renderer.addLens === "function"){
-      const add = (el, group, options) => {
-        if(!el || !el.isConnected || renderer.lenses.some((lens)=>lens && lens.el === el)) return;
-        const lens = renderer.addLens(el, options || {});
-        if(lens) lens._dpLensGroup = group;
-      };
-      if(manageSelected) add(selectedElement, "selectedRow", input.selectedOptions);
-      if(managePills) pillElements.forEach((el)=>add(el, "listPills", input.pillOptions));
-    }
-    renderer._metricsDirty = true;
-    renderer._snapshotRectPx = null;
-    return {
-      selected: !!(selectedElement && renderer.lenses.some((lens)=>lens && lens.el === selectedElement)),
-      pills: renderer.lenses.filter((lens)=>lens && lens._dpLensGroup === "listPills").length
-    };
-  }
-
-  function cancelLibSelectionMotion(){
-    try{
-      if(typeof listSelectionMotion === "undefined" || !listSelectionMotion) return;
-      const pending = listSelectionMotion.raf;
-      if(pending > 0 && typeof cancelAnimationFrame === "function") cancelAnimationFrame(pending);
-      const scheduler = frameScheduler();
-      if(pending === -1 && scheduler && scheduler.cancel) scheduler.cancel("lib-selection-motion");
-      if(listSelectionMotion.boundaryReleaseTimer && typeof clearTimeout === "function") clearTimeout(listSelectionMotion.boundaryReleaseTimer);
-      listSelectionMotion.raf = 0;
-      listSelectionMotion.boundaryReleaseTimer = 0;
-      listSelectionMotion.boundaryHeld = false;
-      listSelectionMotion.boundaryDirection = 0;
-      listSelectionMotion.targetOpacity = 0;
-      listSelectionMotion.currentOpacity = 0;
-      listSelectionMotion.targetStretch = 0;
-      listSelectionMotion.stretch = 0;
-      listSelectionMotion.targetForegroundProgress = 0;
-      listSelectionMotion.foregroundProgress = 0;
-    }catch(e){}
-  }
-
-  function destroyLibPillGlassLenses(reason){
-    try{
-      const renderer = liquidGlassRendererByKey("main");
-      if(renderer) syncLibTransientLenses(renderer, {active:false, manageSelected:false, managePills:true});
-      if(renderer) renderer._dpLiquidTargetIds = [];
-      document.querySelectorAll(".ipodPill[data-liquid-row-pill]").forEach((el)=>{
-        try{
-          el.removeAttribute("data-liquid-pill-id");
-          el.style.visibility = "";
-        }catch(e){}
-      });
-      markFrameWork({metrics:true, render:true});
-      debugLiquidGlassRenderers(reason || "destroy lib pills");
-    }catch(e){}
-  }
-
-  function destroyLibSelectionGlass(reason){
-    try{
-      cancelLibSelectionMotion();
-      const renderer = liquidGlassRendererByKey("main");
-      if(renderer){
-        syncLibTransientLenses(renderer, {active:false, manageSelected:true, managePills:false});
-        renderer._metricsDirty = true;
-        renderer._snapshotRectPx = null;
-      }
-      const el = document.getElementById("libListSelectedGlass");
-      if(el){
-        el.style.opacity = "0";
-        el.classList.remove("isVisible");
-      }
-      markFrameWork({metrics:true, render:true});
-      debugLiquidGlassRenderers(reason || "destroy lib selection");
-    }catch(e){}
-  }
-
-  function destroyTransientListGlass(reason){
-    destroyLibSelectionGlass(reason || "destroy transient list glass");
-    destroyLibPillGlassLenses(reason || "destroy transient list glass");
-  }
-
   function stableRowPillId(row, pill, index){
     try{
       const rowIndex = row && row.dataset ? String(row.dataset.index || "") : "";
@@ -752,24 +308,6 @@
       Number(pill.top) < Number(inner.bottom) + overscan;
   }
 
-  function positionMainLiquidCanvas(){
-    try{
-      const renderer = liquidGlassRendererByKey("main");
-      const canvas = renderer && renderer.canvas;
-      const host = document.querySelector(".ipodStage");
-      if(!canvas || !host) return;
-      const rect = host.getBoundingClientRect();
-      canvas.style.setProperty("position", "absolute", "important");
-      canvas.style.setProperty("inset", "auto", "important");
-      canvas.style.setProperty("left", (-(rect.left || 0)).toFixed(3) + "px", "important");
-      canvas.style.setProperty("top", (-(rect.top || 0)).toFixed(3) + "px", "important");
-      canvas.style.setProperty("width", (window.innerWidth || canvas.width || 1) + "px", "important");
-      canvas.style.setProperty("height", (window.innerHeight || canvas.height || 1) + "px", "important");
-      canvas.style.setProperty("pointer-events", "none", "important");
-      canvas.style.setProperty("z-index", "65", "important");
-    }catch(e){}
-  }
-
   function computeEligibleRowPillElements(){
     const out = [];
     try{
@@ -797,63 +335,530 @@
     return out;
   }
 
+  // ------------------------------------------------------------------
+  // Engine, surface and lens options
+  // ------------------------------------------------------------------
+
+  function debripodGlassInstance(){ return debripodGlass; }
+  function debripodGlassSurface(){ return debripodGlassMainSurface; }
+
+  function glassRequestRender(){
+    try{ if(debripodGlass) debripodGlass.requestRender(); }catch(e){}
+  }
+
+  // Optical depth. Higher layers refract the glass below them.
+  function debripodGlassLayer(el){
+    if(!el) return 0;
+    if(el.id === "libListSelectedGlass") return 2;
+    if(el.hasAttribute && el.hasAttribute("data-liquid-row-pill")) return el.closest(".ipodItem.sel") ? 3 : 1;
+    if(el.classList && (el.classList.contains("wheelCenterGlass") || el.classList.contains("pathPillGlass") || el.classList.contains("infoPillGlass"))) return 1;
+    return 0;
+  }
+
+  // The wheel is tilted with a CSS 3D transform. Its glass is drawn on the
+  // main surface with the same transform, so it tilts exactly like the
+  // labels and hit areas.
+  function wheelGlassTransform(){
+    if(!wheelGlassTiltX && !wheelGlassTiltY) return null;
+    const rect = wheelGlassLayoutRect();
+    if(!rect) return null;
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const matrix = new DOMMatrix().translate(cx, cy)
+      .multiply(new DOMMatrix("perspective(900px)"))
+      .rotateAxisAngle(1, 0, 0, wheelGlassTiltX)
+      .rotateAxisAngle(0, 1, 0, wheelGlassTiltY)
+      .translate(-cx, -cy);
+    return {matrix, tiltX:wheelGlassTiltX, tiltY:wheelGlassTiltY};
+  }
+
+  function glassLensOptions(key){
+    const settings = glassElementSettings(key);
+    const options = {
+      reveal: "none",
+      material: normalizeLiquidGlassMaterial(settings.material, 0),
+      layer: debripodGlassLayer
+    };
+    if(key === "libraryList"){
+      options.geometry = (el)=> el && el.parentElement ? el.parentElement.getBoundingClientRect() : null;
+      options.edgeFrost = (el)=> el && el.scrollTop > 0 ? 1 : 0;
+    }else if(key === "selectedRow"){
+      options.geometry = "live";
+      options.underlay = ()=> (window.DebriPod && window.DebriPod.rowRefraction) || null;
+      options.opacity = ()=> Math.max(0, Math.min(1, Number(listSelectionMotion.currentOpacity) || 0));
+    }else if(key === "listPills"){
+      options.geometry = "dom";
+      options.clip = ()=> document.getElementById("libList");
+      options.clipToPaddingBox = true;
+    }else if(key === "wheel"){
+      options.geometry = wheelLensLayoutRect;
+      options.transform = wheelGlassTransform;
+    }else{
+      options.geometry = "live";
+    }
+    return options;
+  }
+
+  // Kept for callers that still ask for element options by key.
+  function liquidGlassElementOptions(key){ return glassLensOptions(key); }
+
+  function liquidGlassLensElementKey(lens){
+    const el = lens && lens.el;
+    if(el && el.classList){
+      if(el.classList.contains("infoPillGlass")) return "infoPill";
+      if(el.classList.contains("pathPillGlass")) return "pathPill";
+      if(el.classList.contains("ipodPill") && el.hasAttribute("data-liquid-row-pill")) return "listPills";
+      if(el.classList.contains("wheelGlassRing") || el.classList.contains("wheelCenterGlass")) return "wheel";
+    }
+    if(el && el.id === "libList") return "libraryList";
+    if(el && el.id === "libListSelectedGlass") return "selectedRow";
+    return "pathPill";
+  }
+
+  function glassLenses(){
+    const surface = debripodGlassSurface();
+    return surface ? surface.lenses.slice() : [];
+  }
+
+  // Lenses whose element has a class, for the path and info pill code.
+  function glassLensesWithClass(className){
+    return glassLenses().filter((lens)=> lens && lens.el && lens.el.classList && lens.el.classList.contains(className));
+  }
+
+  function applyLiquidGlassStyleOptions(){
+    try{
+      applyTextModeClasses();
+      applyElementGlassMaterialClasses();
+      updateLibSelectionGlass("style options");
+      glassLenses().forEach((lens)=>{
+        const options = glassLensOptions(liquidGlassLensElementKey(lens));
+        lens.setOptions({material:options.material});
+      });
+      markFrameWork({render:true, textContrast:true});
+    }catch(e){}
+  }
+
+  function previewLiquidGlassElementMaterial(elementKey, value){
+    const material = normalizeLiquidGlassMaterial(value, 0);
+    glassLenses().forEach((lens)=>{
+      if(liquidGlassLensElementKey(lens) === elementKey) lens.setOptions({material:material});
+    });
+    const targets = {
+      libraryList:[document.getElementById("libList")],
+      wheel:[document.getElementById("wheel")],
+      pathPill:[document.getElementById("libHeader")],
+      infoPill:[document.getElementById("infoPill")],
+      listPills:Array.from(document.querySelectorAll(".ipodPill[data-liquid-row-pill]")),
+      selectedRow:[document.getElementById("libListSelectedGlass")]
+    };
+    (targets[elementKey] || []).forEach((el)=> applyGlassMaterialClass(el, material));
+    markFrameWork({render:true, textContrast:true});
+  }
+
+  function setLiquidGlassElementSetting(elementKey, field, value){
+    const current = cloneGlassElementSettings(uiSettings.liquidGlassElements);
+    if(!current[elementKey] || field !== "material") return;
+    current[elementKey].material = normalizeLiquidGlassMaterial(value, current[elementKey].material);
+    uiSettings.liquidGlassElements = cloneGlassElementSettings(current);
+    liquidGlassElements = cloneGlassElementSettings(uiSettings.liquidGlassElements);
+    saveUiSettings();
+    applyLiquidGlassStyleOptions();
+  }
+
+  applyElementGlassMaterialClasses();
+
+  // ------------------------------------------------------------------
+  // Backdrop: the reactive artwork, or the test wallpaper
+  // ------------------------------------------------------------------
+
+  // The reactive artwork, rendered by sfgl in the glass context from the same
+  // per-frame state the visualizer draws with. Matches the visualizer's
+  // rotation, band response and fade; paused or missing art is opaque black.
+  var DEBRIPOD_REACTIVE_BACKDROP = [
+    "uniform sampler2D dp_art;",
+    "uniform sampler2D dp_previousArt;",
+    "uniform bool dp_hasArt;",
+    "uniform float dp_artMix;",
+    "uniform float dp_angle;",
+    "uniform float dp_previousAngle;",
+    "uniform vec2 dp_viewport;",
+    "uniform float dp_lumaLow;",
+    "uniform float dp_lumaHigh;",
+    "uniform float dp_fade;",
+    "uniform float dp_brightnessCap;",
+    "uniform float dp_energy;",
+    "uniform float dp_beat;",
+    "uniform float dp_bands[9];",
+    "uniform float dp_bandCenters[9];",
+    "uniform float dp_bandWidths[9];",
+    "uniform vec4 dp_frequencyResponse;",
+    "uniform vec4 dp_energyResponse;",
+    "uniform vec4 dp_beatResponse;",
+    "vec2 dpProjectedUV(vec2 uv, float angle) {",
+    "  vec2 backgroundUv = vec2(clamp(uv.x, 0.0, 1.0), 1.0 - clamp(uv.y, 0.0, 1.0));",
+    "  vec2 screen = (backgroundUv - 0.5) * dp_viewport;",
+    "  float c = cos(angle);",
+    "  float s = sin(angle);",
+    "  vec2 rotated = vec2(c * screen.x + s * screen.y, -s * screen.x + c * screen.y);",
+    "  return clamp(rotated / max(1.0, length(dp_viewport)) + 0.5, 0.0, 1.0);",
+    "}",
+    "float dpBandWeight(float useful, float center, float width) {",
+    "  return max(0.0, 1.0 - abs(useful - center) / max(0.0001, width));",
+    "}",
+    "vec4 sfBackdrop(vec2 uv) {",
+    "  if (!dp_hasArt) return vec4(0.0, 0.0, 0.0, 1.0);",
+    "  vec2 artUv = dpProjectedUV(uv, dp_angle);",
+    "  vec4 color = texture2D(dp_art, vec2(artUv.x, 1.0 - artUv.y));",
+    "  if (dp_artMix < 1.0) {",
+    "    vec2 previousUv = dpProjectedUV(uv, dp_previousAngle);",
+    "    vec4 previous = texture2D(dp_previousArt, vec2(previousUv.x, 1.0 - previousUv.y));",
+    "    color = mix(previous, color, dp_artMix);",
+    "  }",
+    "  float luma = dot(color.rgb, vec3(0.2126, 0.7152, 0.0722));",
+    "  float useful = clamp((luma - dp_lumaLow) / max(0.08, dp_lumaHigh - dp_lumaLow), 0.0, 1.0);",
+    "  float total = 0.0;",
+    "  float weighted = 0.0;",
+    "  for (int i = 0; i < 9; i++) {",
+    "    float w = dpBandWeight(useful, dp_bandCenters[i], dp_bandWidths[i]);",
+    "    total += w;",
+    "    weighted += w * dp_bands[i];",
+    "  }",
+    "  float bandEligible = smoothstep(0.04, 0.10, luma) * (1.0 - smoothstep(0.90, 0.96, luma));",
+    "  float frequency = bandEligible * weighted / max(0.0001, total);",
+    "  float brightness = clamp(1.0 + frequency * dp_frequencyResponse.x + dp_energy * dp_energyResponse.x + dp_beat * dp_beatResponse.x, 0.0, 4.0);",
+    "  float opacity = clamp(1.0 + frequency * dp_frequencyResponse.y + dp_energy * dp_energyResponse.y + dp_beat * dp_beatResponse.y, 0.0, 1.0);",
+    "  float saturation = clamp(1.0 + frequency * dp_frequencyResponse.z + dp_energy * dp_energyResponse.z + dp_beat * dp_beatResponse.z, 0.0, 3.0);",
+    "  float contrast = clamp(1.0 + frequency * dp_frequencyResponse.w + dp_energy * dp_energyResponse.w + dp_beat * dp_beatResponse.w, 0.0, 3.0);",
+    "  color.rgb = mix(vec3(luma), color.rgb, saturation);",
+    "  color.rgb = min(clamp((color.rgb - 0.5) * contrast + 0.5, 0.0, 1.0) * brightness, vec3(dp_brightnessCap));",
+    // The visualizer canvas clears to opaque black; composite over that and
+    // keep the source opaque so paused glass shows its material over black.
+    "  color.rgb *= opacity * dp_fade;",
+    "  return vec4(color.rgb, 1.0);",
+    "}"
+  ].join("\n");
+
+  function finiteOr(value, fallback){
+    const n = Number(value);
+    return Number.isFinite(n) ? n : fallback;
+  }
+
+  function visualizerSourceAdapter(){
+    const renderer = window.DebriPod && window.DebriPod.visualizerRenderer;
+    return renderer && typeof renderer.sourceForLiquidGL === "function" ? renderer.sourceForLiquidGL() : null;
+  }
+
+  var debripodReactiveBackdrop = {
+    kind: "program",
+    fragment: DEBRIPOD_REACTIVE_BACKDROP,
+    ready: ()=> true,
+    _state(frame){
+      return typeof currentVisualizerFrameState === "function" ? currentVisualizerFrameState(frame && frame.timestamp) : {};
+    },
+    textures(){
+      const adapter = visualizerSourceAdapter();
+      const out = {};
+      if(adapter && adapter.ready && adapter.image){
+        const key = String(adapter.artKey || adapter.image.currentSrc || adapter.image.src || "art");
+        out.dp_art = {source:adapter.image, key};
+        const fs = typeof currentVisualizerFrameState === "function" ? currentVisualizerFrameState() : {};
+        const transition = fs.artTransition || {};
+        out.dp_previousArt = transition.active && transition.fromImage && transition.fromKey
+          ? {source:transition.fromImage, key:String(transition.fromKey)}
+          : {source:adapter.image, key};
+      }
+      return out;
+    },
+    uniforms(frame, size){
+      const adapter = visualizerSourceAdapter();
+      const fs = this._state(frame) || {};
+      const transition = fs.artTransition || {};
+      const responses = (kind)=> ["brightness", "opacity", "saturation", "contrast"].map((channel)=> finiteOr(fs.responseSettings && fs.responseSettings[kind] && fs.responseSettings[kind][channel], 0));
+      const nine = (input, fallback)=> Array.from({length:9}, (_unused, index)=> finiteOr(input && input[index], fallback[index]));
+      const hasPrevious = !!(transition.active && transition.fromImage && transition.fromKey);
+      return {
+        dp_hasArt: !!(adapter && adapter.ready && adapter.image),
+        dp_artMix: hasPrevious ? Math.max(0, Math.min(1, finiteOr(transition.progress, 0))) : 1,
+        dp_angle: transition.active ? finiteOr(transition.toAngle, Math.PI) : finiteOr(fs.angleRadians, Math.PI),
+        dp_previousAngle: finiteOr(transition.fromAngle, finiteOr(fs.angleRadians, Math.PI)),
+        dp_viewport: [window.innerWidth || size.width || 1, window.innerHeight || size.height || 1],
+        dp_lumaLow: Math.max(0, Math.min(1, finiteOr(fs.lumaLow, 0))),
+        dp_lumaHigh: Math.max(0.04, Math.min(1, finiteOr(fs.lumaHigh, 1))),
+        dp_fade: Math.max(0, Math.min(1, finiteOr(fs.fade, fs.active ? 1 : 0))),
+        dp_brightnessCap: Math.max(0, Math.min(1, finiteOr(fs.brightnessCap, 1))),
+        dp_energy: Math.max(0, Math.min(1, finiteOr(fs.energy, 0))),
+        dp_beat: Math.max(0, Math.min(1, finiteOr(fs.beat, 0))),
+        dp_bands: nine(fs.bands, [0, 0, 0, 0, 0, 0, 0, 0, 0]),
+        dp_bandCenters: nine(fs.bandCenters, [0, .125, .25, .375, .5, .625, .75, .875, 1]),
+        dp_bandWidths: nine(fs.bandWidths, [.125, .125, .125, .125, .125, .125, .125, .125, .125]),
+        dp_frequencyResponse: responses("frequency"),
+        dp_energyResponse: responses("energy"),
+        dp_beatResponse: responses("beat")
+      };
+    },
+    // Animated while the visualizer shows or an artwork crossfade runs; the
+    // prepare rate then follows the quality tier.
+    dynamic(frame){
+      const fs = this._state(frame) || {};
+      const transition = fs.artTransition || {};
+      return !!(transition.active || finiteOr(fs.fade, 0) > 0.002);
+    },
+    key(frame){
+      const adapter = visualizerSourceAdapter();
+      const fs = this._state(frame) || {};
+      return [adapter && adapter.ready ? String(adapter.artKey || "") : "none", finiteOr(fs.fade, 0).toFixed(3), finiteOr(fs.angleRadians, 0).toFixed(4), window.innerWidth, window.innerHeight].join("|");
+    }
+  };
+
+  var debripodWallpaperBackdrop = null;
+  function currentGlassBackdrop(){
+    const wallpaper = window.DebriPod && window.DebriPod.wallpaper;
+    if(wallpaper && typeof wallpaper.active === "function" && wallpaper.active()){
+      const source = wallpaper.source();
+      if(source && source.image){
+        if(!debripodWallpaperBackdrop || debripodWallpaperBackdrop._image !== source.image){
+          debripodWallpaperBackdrop = SFGL.imageBackdrop(source.image, {fit:"cover", key:()=> String(source.artKey || "wallpaper")});
+          debripodWallpaperBackdrop._image = source.image;
+        }
+        return debripodWallpaperBackdrop;
+      }
+    }
+    return debripodReactiveBackdrop;
+  }
+
+  function refreshLiquidGlassVisualizerSources(reason, options){
+    try{
+      const glass = debripodGlassInstance();
+      if(!glass) return;
+      const provider = currentGlassBackdrop();
+      if(glass._backdropProvider !== provider) glass.setBackdrop(provider);
+      else glass.requestRender();
+    }catch(e){}
+  }
+
+  // ------------------------------------------------------------------
+  // Frames
+  // ------------------------------------------------------------------
+
+  function renderLiquidGlassNow(frameState, options){
+    glassRequestRender();
+  }
+
+  function renderLiquidGlassVisualizerSourceNow(frameState, options){
+    glassRequestRender();
+  }
+
+  function captureLiquidGlassSnapshot(reason, includeLibList){
+    try{
+      refreshLiquidGlassVisualizerSources(reason || "app");
+      updateGlassTextUnderColors({reason:reason || "snapshot", force:true});
+      if(debripodGlass) debripodGlass.invalidate(true);
+    }catch(e){}
+  }
+
+  function scheduleLiquidGlassSnapshot(reason, includeLibList){
+    try{
+      const scheduler = frameScheduler();
+      if(scheduler && scheduler.request){
+        scheduler.request("liquid-snapshot", ()=> captureLiquidGlassSnapshot(reason, includeLibList));
+        scheduler.mark({refreshSources:true, metrics:true, render:true, textContrast:true});
+      }else{
+        requestAnimationFrame(()=> captureLiquidGlassSnapshot(reason, includeLibList));
+      }
+    }catch(e){}
+  }
+
+  function scheduleLiquidGlassRender(){
+    markFrameWork({metrics:true, render:true, textContrast:true});
+  }
+
+  function recaptureLiquidGlassElement(el){
+    glassRequestRender();
+  }
+
+  // Older callers mounted canvases by hand; sfgl places its surface itself.
+  function mountLiquidCanvas(){}
+
+  // ------------------------------------------------------------------
+  // Transient list glass: selected row and row pills
+  // ------------------------------------------------------------------
+
+  function destroyLibPillGlassLenses(reason){
+    try{
+      const surface = debripodGlassSurface();
+      if(surface) surface.syncGroup("listPills", [], null);
+      pillGlassTargetIds = [];
+      document.querySelectorAll(".ipodPill[data-liquid-row-pill]").forEach((el)=>{
+        try{
+          el.removeAttribute("data-liquid-pill-id");
+          el.style.visibility = "";
+        }catch(e){}
+      });
+      markFrameWork({render:true});
+    }catch(e){}
+  }
+
+  function destroyLibSelectionGlass(reason){
+    try{
+      cancelLibSelectionMotion();
+      const surface = debripodGlassSurface();
+      if(surface) surface.syncGroup("selectedRow", [], null);
+      const el = document.getElementById("libListSelectedGlass");
+      if(el){
+        el.style.opacity = "0";
+        el.classList.remove("isVisible");
+      }
+      markFrameWork({render:true});
+    }catch(e){}
+  }
+
+  function destroyTransientListGlass(reason){
+    destroyLibSelectionGlass(reason || "destroy transient list glass");
+    destroyLibPillGlassLenses(reason || "destroy transient list glass");
+  }
+
+  var pillGlassTargetIds = [];
   function reconcileLibPillGlassTargets(reason){
     try{
-      if(typeof window.liquidGL !== "function") return;
-      if(!liquidGlassReady || document.documentElement.classList.contains("liquidGlassFallback")) return;
+      if(!liquidGlassReady || !debripodGlassSurface() || document.documentElement.classList.contains("liquidGlassFallback")) return;
       if(nowPlayingSurfaceVisible()){
         destroyLibPillGlassLenses(reason || "now playing visible");
         return;
       }
-      const renderer = liquidGlassRendererByKey("main");
       const elements = computeEligibleRowPillElements();
       const nextIds = elements.map((el)=> String(el.getAttribute("data-liquid-pill-id") || ""));
-      const currentIds = renderer && Array.isArray(renderer._dpLiquidTargetIds) ? renderer._dpLiquidTargetIds : [];
-      const same = currentIds.length === nextIds.length && currentIds.every((id, idx)=> id === nextIds[idx]) && elements.every(el => renderer.lenses.some(lens => lens.el === el));
-      if(renderer && same){
-        if(renderer.canvas) renderer.canvas.style.visibility = "";
-        renderer._metricsDirty = true;
-        renderer._snapshotRectPx = null;
-        if(renderer.lenses){
-          renderer.lenses.forEach((lens)=>{ try{ lens.rectPx = null; }catch(e){} });
-        }
-        if(renderer.setVisible) renderer.setVisible(true);
-        if(renderer.render) renderer.render(currentVisualizerFrameState());
-        return;
+      const surface = debripodGlassSurface();
+      const same = pillGlassTargetIds.length === nextIds.length && pillGlassTargetIds.every((id, idx)=> id === nextIds[idx]) &&
+        elements.every((el)=> surface.lenses.some((lens)=> lens.el === el));
+      if(!same){
+        surface.syncGroup("listPills", elements, glassLensOptions("listPills"));
+        pillGlassTargetIds = nextIds;
+        applyElementGlassMaterialClasses();
       }
-      const options = Object.assign({}, liquidGlassElementOptions("listPills"), {
-        target: ".ipodPill.liquidGlass[data-liquid-row-pill][data-liquid-pill-id]",
-        rendererKey: "main",
-        sourceType: "visualizerWebgl",
-        sourceElement: "#visualizerReactiveArt",
-        clipTarget: "#libList",
-        clipToPaddingBox: true,
-        syncTargets: true
-      });
-      let nextRenderer = renderer;
-      if(nextRenderer && nextRenderer.syncLensGroup){
-        // Tag any lenses created by the shared initial target before syncing;
-        // otherwise an ungrouped stale pill survives an empty group sync.
-        syncLibTransientLenses(nextRenderer, {active:true, manageSelected:false, managePills:true, pillElements:elements, pillOptions:options});
-        nextRenderer.syncLensGroup("listPills", elements, options);
-      }else{
-        window.liquidGL(options);
-        nextRenderer = liquidGlassRendererByKey("main");
-      }
-      if(nextRenderer){
-        nextRenderer._dpLiquidTargetIds = nextIds;
-        nextRenderer._metricsDirty = true;
-        nextRenderer._snapshotRectPx = null;
-        if(nextRenderer.canvas) nextRenderer.canvas.style.visibility = "";
-        if(nextRenderer.setVisible) nextRenderer.setVisible(true);
-      }
-      applyElementGlassMaterialClasses();
-      mountLiquidCanvas();
-      refreshLiquidGlassVisualizerSources(reason || "lib pills", {keys:["main"]});
+      refreshLiquidGlassVisualizerSources(reason || "lib pills");
       invalidateLibPillGlass(reason || "lib pills");
     }catch(e){
-      try{ console.error("[DebriPod LiquidGL] row-pill reconciliation failed", e); }catch(err){}
+      try{ console.error("[DebriPod glass] row-pill reconciliation failed", e); }catch(err){}
     }
+  }
+
+  function invalidateLibPillGlass(reason){
+    try{
+      updateLibSelectionGlass(reason || "");
+      if(debripodGlass) debripodGlass.invalidate(false);
+      markFrameWork({render:true, textContrast:true});
+    }catch(e){}
+  }
+
+  function hideTransientListGlass(reason){
+    destroyTransientListGlass(reason || "hide transient list glass");
+  }
+
+  function refreshLibPillGlassLenses(reason){
+    reconcileLibPillGlassTargets(reason || "lib pills");
+  }
+
+  // ------------------------------------------------------------------
+  // Diagnostics
+  // ------------------------------------------------------------------
+
+  function debugLiquidGlassRenderers(reason){
+    try{
+      const enabled = window.DEBRIPOD_UI_DEBUG === true || (localStorage.getItem("debripod_ui_debug") || "") === "1";
+      if(!enabled || !debripodGlass || !console || !console.log) return;
+      console.log("[DebriPod glass]", reason || "state", debripodGlass.statsSnapshot(), glassLenses().map((lens)=>({id:lens.el.id || "", className:lens.el.className, group:lens.group || "", rect:lens.rect})));
+    }catch(e){}
+  }
+
+  function liquidGlassDiagnostics(){
+    try{
+      if(!debripodGlass) return [];
+      const stats = debripodGlass.statsSnapshot();
+      return [{
+        key:"main",
+        visible:glassLenses().some((lens)=> lens.rect),
+        visibleLensCount:glassLenses().filter((lens)=> lens.rect).length,
+        lensCount:stats.lenses,
+        lens_count:stats.lenses,
+        averageRenderSubmissionMs:stats.cpuMs,
+        renderCount:stats.renders,
+        sourceRefreshCount:stats.prepares,
+        frostSamples:debripodGlass.frostEnabled() ? Number(DebriPod.uiSettings.settings.glassFrostSamples) || 0 : 0,
+        renderScale:stats.renderScale,
+        tier:stats.tier
+      }];
+    }catch(e){
+      return [];
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Start-up
+  // ------------------------------------------------------------------
+
+  function initLiquidGlass(){
+    try{
+      if(liquidGlassReady || !window.SFGL || typeof SFGL.createGlass !== "function") return;
+      const settings = ()=> (window.DebriPod && DebriPod.uiSettings && DebriPod.uiSettings.settings) || {};
+      debripodGlass = SFGL.createGlass({
+        scheduler: frameScheduler(),
+        lighting: window.DebriPod && window.DebriPod.glassLighting,
+        renderScale: ()=> settings().glassRenderScale,
+        frost: ()=> settings().glassFrostSamples,
+        quality: ()=> settings().glassQuality || "auto",
+        debug: window.DEBRIPOD_UI_DEBUG === true
+      });
+      const stage = document.querySelector(".ipodStage");
+      debripodGlassMainSurface = debripodGlass.surface({host:stage || undefined, z:65, className:"liquidGlassCanvasMain", attributes:{"data-liquid-renderer":"main"}});
+      refreshLiquidGlassVisualizerSources("init");
+      const surface = debripodGlassMainSurface;
+      surface.syncGroup("libraryList", [document.getElementById("libList")].filter(Boolean), glassLensOptions("libraryList"));
+      surface.syncGroup("pathPill", Array.from(document.querySelectorAll(".pathPillGlass.liquidGlass")), glassLensOptions("pathPill"));
+      surface.syncGroup("infoPill", Array.from(document.querySelectorAll(".infoPillGlass.liquidGlass")), glassLensOptions("infoPill"));
+      surface.syncGroup("wheel", Array.from(document.querySelectorAll(".wheelGlassRing.liquidGlass, .wheelCenterGlass.liquidGlass")), glassLensOptions("wheel"));
+      applyLiquidGlassStyleOptions();
+      try{
+        const root = window.DebriPod = window.DebriPod || {};
+        root.glass = {instance:debripodGlass, stats:()=> debripodGlass.statsSnapshot()};
+      }catch(err){}
+      try{
+        const scheduler = frameScheduler();
+        if(scheduler && scheduler.register){
+          // DebriPod-only work; sfgl registers its own render task.
+          scheduler.register("liquid-glass", (frameState)=>{
+            const flags = frameState && frameState.flags ? frameState.flags : {};
+            if(flags.refreshSources) refreshLiquidGlassVisualizerSources("scheduler");
+            if(flags.textContrast) updateGlassTextUnderColors({reason:"scheduler", force:true});
+            else if(flags.render || flags.metrics) updateGlassTextUnderColors({reason:"scheduler", activeAnimating:!!flags.keepAlive});
+          }, {phase:"write"});
+        }
+      }catch(err){}
+      liquidGlassReady = true;
+      markFrameWork({refreshSources:true, metrics:true, render:true, textContrast:true});
+    }catch(e){
+      liquidGlassReady = true;
+      try{ console.error("[DebriPod glass] initialization failed", e); }catch(err){}
+      try{ document.documentElement.classList.add("liquidGlassFallback"); }catch(err){}
+    }
+  }
+
+  // ------------------------------------------------------------------
+  // Wheel tilt
+  // ------------------------------------------------------------------
+
+  function cacheWheelGlassTiltRect(){
+    try{
+      glassLensesWithClass("wheelGlassRing").concat(glassLensesWithClass("wheelCenterGlass")).forEach((lens)=> lens.invalidate(true));
+      wheelGlassTiltRect = wheelGlassLayoutRect();
+      return wheelGlassTiltRect;
+    }catch(e){
+      wheelGlassTiltRect = null;
+      return null;
+    }
+  }
+
+  function renderWheelLiquidGlass(frameState){
+    glassRequestRender();
   }
 
   var listSelectionMotion = {
@@ -888,13 +893,32 @@
     settleTimer: 0
   };
 
+  function cancelLibSelectionMotion(){
+    try{
+      if(typeof listSelectionMotion === "undefined" || !listSelectionMotion) return;
+      const pending = listSelectionMotion.raf;
+      if(pending > 0 && typeof cancelAnimationFrame === "function") cancelAnimationFrame(pending);
+      const scheduler = frameScheduler();
+      if(pending === -1 && scheduler && scheduler.cancel) scheduler.cancel("lib-selection-motion");
+      if(listSelectionMotion.boundaryReleaseTimer && typeof clearTimeout === "function") clearTimeout(listSelectionMotion.boundaryReleaseTimer);
+      listSelectionMotion.raf = 0;
+      listSelectionMotion.boundaryReleaseTimer = 0;
+      listSelectionMotion.boundaryHeld = false;
+      listSelectionMotion.boundaryDirection = 0;
+      listSelectionMotion.targetOpacity = 0;
+      listSelectionMotion.currentOpacity = 0;
+      listSelectionMotion.targetStretch = 0;
+      listSelectionMotion.stretch = 0;
+      listSelectionMotion.targetForegroundProgress = 0;
+      listSelectionMotion.foregroundProgress = 0;
+    }catch(e){}
+  }
+
   function libSelectionDirectScrolling(){
     const scroll = window.DebriPod && window.DebriPod.listScroll;
     return !!(scroll && scroll.isDirectScrolling());
   }
 
-  // Suspend presentation as one operation. Fading a live text cutout while
-  // its canvas and the native scroller move independently produces ghosting.
   function suspendLibSelectionVisual(){
     if(listSelectionMotion.suppressed) return;
     listSelectionMotion.suppressed = true;
@@ -931,13 +955,27 @@
     }, 160);
   }
 
+  // The foreground variables only style the selected row inside #libList.
+  // Writing them there (not on :root) keeps each frame's style invalidation
+  // to the list instead of the whole document, and unchanged values are
+  // not written again.
+  var libSelectionForegroundWritten = {};
   function applyLibSelectionForeground(){
       const fg = Math.max(0, Math.min(1, listSelectionMotion.foregroundProgress || 0));
-      document.documentElement.style.setProperty("--dp-selected-foreground-progress", fg.toFixed(3));
-      document.documentElement.style.setProperty("--dp-selected-foreground-base-pct", ((1 - fg) * 100).toFixed(2) + "%");
-      document.documentElement.style.setProperty("--dp-selected-foreground-target-pct", (fg * 100).toFixed(2) + "%");
-      document.documentElement.style.setProperty("--dp-selected-foreground-scale", (1 + fg * 0.035).toFixed(4));
-      document.documentElement.style.setProperty("--dp-selected-pill-scale", (1 + fg * 0.025).toFixed(4));
+      const target = document.getElementById("libList") || document.documentElement;
+      const values = {
+        "--dp-selected-foreground-progress": fg.toFixed(3),
+        "--dp-selected-foreground-base-pct": ((1 - fg) * 100).toFixed(2) + "%",
+        "--dp-selected-foreground-target-pct": (fg * 100).toFixed(2) + "%",
+        "--dp-selected-foreground-scale": (1 + fg * 0.035).toFixed(4),
+        "--dp-selected-pill-scale": (1 + fg * 0.025).toFixed(4)
+      };
+      if(libSelectionForegroundWritten.target !== target) libSelectionForegroundWritten = {target};
+      Object.keys(values).forEach((key)=>{
+        if(libSelectionForegroundWritten[key] === values[key]) return;
+        libSelectionForegroundWritten[key] = values[key];
+        target.style.setProperty(key, values[key]);
+      });
   }
 
   function applyLibSelectionMotion(){
@@ -958,24 +996,10 @@
       el.style.borderRadius = Math.max(0, listSelectionMotion.currentRadius).toFixed(3) + "px";
       el.style.opacity = listSelectionMotion.currentOpacity.toFixed(3);
       el.classList.toggle("isVisible", listSelectionMotion.currentOpacity > 0.01);
-      document.documentElement.style.setProperty("--dp-selected-x", renderX.toFixed(3) + "px");
-      document.documentElement.style.setProperty("--dp-selected-y", listSelectionMotion.currentY.toFixed(3) + "px");
-      document.documentElement.style.setProperty("--dp-selected-w", renderWidth.toFixed(3) + "px");
-      document.documentElement.style.setProperty("--dp-selected-h", renderHeight.toFixed(3) + "px");
-      document.documentElement.style.setProperty("--dp-selected-radius", Math.max(0, listSelectionMotion.currentRadius).toFixed(3) + "px");
-      document.documentElement.style.setProperty("--dp-selected-stretch", String(listSelectionMotion.stretch || 0));
-      document.documentElement.style.setProperty("--dp-selected-opacity", listSelectionMotion.currentOpacity.toFixed(3));
       applyLibSelectionForeground();
       if(typeof setSelectedRowContentOffset === "function") setSelectedRowContentOffset(renderY + (renderHeight - listSelectionMotion.currentHeight) / 2, listSelectionMotion.targetY);
-      const renderer = liquidGlassRendererByKey("main");
-      if(renderer){
-        renderer._metricsDirty = true;
-        renderer._snapshotRectPx = null;
-        if(renderer.lenses){
-          renderer.lenses.forEach((lens)=>{ try{ lens.rectPx = null; }catch(e){} });
-        }
-        markFrameWork({metrics:true, render:true});
-      }
+      // The selected lens measures its element live; only a draw is needed.
+      markFrameWork({render:true});
     }catch(e){}
   }
 
@@ -1172,8 +1196,6 @@
         return;
       }
       const settings = glassElementSettings("selectedRow");
-      let selectionRenderer = liquidGlassRendererByKey("main");
-      if(selectionRenderer && selectionRenderer.canvas) selectionRenderer.canvas.style.visibility = "";
       applyGlassMaterialClass(el, settings.material);
       const row = list.querySelector(".ipodItem.sel");
       const inner = selectedListInnerRect();
@@ -1201,222 +1223,15 @@
       const targetHeight = Math.max(1, rowRect.height || (visibleBottom - visibleTop));
       const radius = Math.min(right - left, targetHeight) / 2;
       setLibSelectionTarget(left - hostRect.left, rowRect.top - hostRect.top, right - left, targetHeight, radius, 1);
-      const renderer = liquidGlassRendererByKey("main");
-      if(renderer){
-        syncLibTransientLenses(renderer, {
-          active:true,
-          manageSelected:true,
-          managePills:false,
-          selectedElement:el,
-          selectedOptions:Object.assign({}, liquidGlassElementOptions("selectedRow"), {rendererKey:"main", clipTarget:null, clipToPaddingBox:false})
-        });
-        renderer._metricsDirty = true;
-        if(renderer.lenses){
-          renderer.lenses.forEach((lens)=>{ try{ lens.rectPx = null; }catch(e){} });
-        }
-      }
-      if(reason && renderer) markFrameWork({metrics:true, render:true});
+      const surface = debripodGlassSurface();
+      if(surface) surface.syncGroup("selectedRow", [el], glassLensOptions("selectedRow"));
+      if(reason && surface) markFrameWork({render:true});
     }catch(e){}
-  }
-
-  function invalidateLibPillGlass(reason){
-    try{
-      updateLibSelectionGlass(reason || "");
-      const renderer = liquidGlassRendererByKey("main");
-      if(renderer){
-        renderer._metricsDirty = true;
-        renderer._snapshotRectPx = null;
-        if(renderer.lenses){
-          renderer.lenses.forEach((lens)=>{ try{ lens.rectPx = null; }catch(e){} });
-        }
-      }
-      markFrameWork({metrics:true, render:true, textContrast:true});
-    }catch(e){}
-  }
-
-  function hideTransientListGlass(reason){
-    destroyTransientListGlass(reason || "hide transient list glass");
-  }
-
-  function refreshLibPillGlassLenses(reason){
-    reconcileLibPillGlassTargets(reason || "lib pills");
-  }
-
-  function scheduleLiquidGlassSnapshot(reason, includeLibList){
-    try{
-      const scheduler = frameScheduler();
-      if(scheduler && scheduler.request){
-        scheduler.request("liquid-snapshot", ()=> captureLiquidGlassSnapshot(reason, includeLibList));
-        scheduler.mark({refreshSources:true, metrics:true, render:true, textContrast:true});
-      }else{
-        requestAnimationFrame(()=> captureLiquidGlassSnapshot(reason, includeLibList));
-      }
-    }catch(e){}
-  }
-
-  function debugLiquidGlassRenderers(reason){
-    try{
-      const enabled = window.DEBRIPOD_UI_DEBUG === true || (localStorage.getItem("debripod_ui_debug") || "") === "1";
-      if(!enabled || !console || !console.log) return;
-      liquidGlassRenderers().forEach((renderer)=>{
-        const lenses = (renderer.lenses || []).map((lens)=> lens && lens.el ? {
-          className: lens.el.className,
-          id: lens.el.id || "",
-          hollow: !!lens.hollowMaskContent,
-          rectPx: lens.rectPx ? {
-            left: Math.round(lens.rectPx.left),
-            top: Math.round(lens.rectPx.top),
-            width: Math.round(lens.rectPx.width),
-            height: Math.round(lens.rectPx.height)
-          } : null
-        } : null).filter(Boolean);
-        console.log("[DebriPod LiquidGL]", reason || "state", {
-          rendererKey: renderer.rendererKey || "unknown",
-          texture: String(renderer.textureWidth || 0) + "x" + String(renderer.textureHeight || 0),
-          textureWidth: renderer.textureWidth || 0,
-          textureHeight: renderer.textureHeight || 0,
-          lensCount: renderer.lenses ? renderer.lenses.length : 0,
-          lenses: lenses,
-          canvasClassName: renderer.canvas ? renderer.canvas.className : "",
-          canvasZIndex: renderer.canvas ? window.getComputedStyle(renderer.canvas).zIndex : "",
-          canvasOpacity: renderer.canvas ? window.getComputedStyle(renderer.canvas).opacity : ""
-        });
-      });
-    }catch(e){}
-  }
-
-  function liquidGlassDiagnostics(){
-    const out = [];
-    try{
-      liquidGlassRenderers().forEach((renderer)=>{
-        if(!renderer) return;
-        const key = renderer.rendererKey || "main";
-        const settingsKey = key === "wheel" ? "wheel" : "pathPill";
-        const settings = glassElementSettings(settingsKey) || {};
-        const canvasStyle = renderer.canvas && window.getComputedStyle ? window.getComputedStyle(renderer.canvas) : null;
-        const targetRects = (renderer.lenses || []).map((lens)=>{
-          try{
-            const r = lens && lens.el ? lens.el.getBoundingClientRect() : null;
-            return r ? {left:r.left, top:r.top, width:r.width, height:r.height} : null;
-          }catch(e){ return null; }
-        }).filter(Boolean);
-        const row = {
-          key:key,
-          visible:rendererTargetVisible(renderer),
-          resolution:Number(settings.resolution || renderer.resolution || 0),
-          texture:String(renderer.textureWidth || 0) + "x" + String(renderer.textureHeight || 0),
-          lens_count:renderer.lenses ? renderer.lenses.length : 0,
-          lensCount:renderer.lenses ? renderer.lenses.length : 0,
-          canvas_opacity:renderer.canvas && window.getComputedStyle ? window.getComputedStyle(renderer.canvas).opacity : "",
-          renderCount: renderer._renderCount || renderer.renderCount || 0,
-          sourceRefreshCount: renderer._dpSourceRefreshCount || 0,
-          lastSourceRefreshReason: renderer._dpLastSourceRefreshReason || "",
-          lastSourceRefreshSuccess: renderer._dpLastSourceRefreshSuccess === true
-        };
-        out.push(row);
-      });
-    }catch(e){}
-    return out;
-  }
-
-  function recaptureLiquidGlassElement(el){
-    try{
-      if(!el) return;
-      renderLiquidGlassNow();
-    }catch(e){}
-  }
-
-  function scheduleLiquidGlassRender(){
-    markFrameWork({metrics:true, render:true, textContrast:true});
-  }
-
-  function initLiquidGlass(){
-    try{
-      if(liquidGlassReady || typeof window.liquidGL !== "function") return;
-      try{ window.LIQUID_GL_DEBUG = window.DEBRIPOD_UI_DEBUG === true || (localStorage.getItem("debripod_ui_debug") || "") === "1"; }catch(e){}
-      const sharedGlassOptions = Object.assign({}, liquidGlassElementOptions("pathPill"), {
-        target: "#libList.liquidGlass, #libListSelectedGlass.liquidGlass, .pathPillGlass.liquidGlass, .infoPillGlass.liquidGlass",
-        rendererKey: "main",
-        geometryRect: function(element){
-          const surface = element && element.id === "libList" ? element.parentElement : element;
-          return surface ? surface.getBoundingClientRect() : null;
-        },
-        sourceType: "visualizerWebgl",
-        sourceElement: "#visualizerReactiveArt"
-      });
-      window.liquidGL(sharedGlassOptions);
-      const wheelGlassInstances = asLiquidArray(window.liquidGL(Object.assign({}, liquidGlassElementOptions("wheel"), {
-        target: ".wheelGlassRing.liquidGlass, .wheelCenterGlass.liquidGlass",
-        rendererKey: "wheel",
-        geometryRect: wheelLensLayoutRect,
-        tiltProjection: function(){
-          const rect = wheelGlassLayoutRect();
-          return rect ? {x:rect.left + rect.width / 2, y:rect.top + rect.height / 2, perspective:900} : null;
-        },
-        sourceType: "visualizerWebgl",
-        sourceElement: "#visualizerReactiveArt"
-      })));
-      liquidWheelLenses = wheelGlassInstances.filter(inst => inst && inst.el);
-      mountLiquidCanvas();
-      refreshLiquidGlassVisualizerSources("init");
-      applyLiquidGlassStyleOptions();
-      liquidGlassRenderers().forEach((renderer)=>{
-        try{
-          renderer.useExternalTicker = true;
-          if(renderer._rafId){
-            cancelAnimationFrame(renderer._rafId);
-            renderer._rafId = null;
-          }
-        }catch(err){}
-      });
-      try{
-        const scheduler = frameScheduler();
-        if(scheduler && scheduler.register){
-          scheduler.register("liquid-glass", (frameState)=>{
-            const flags = frameState && frameState.flags ? frameState.flags : {};
-            if(flags.refreshSources) refreshLiquidGlassVisualizerSources("scheduler");
-            if(flags.textContrast) updateGlassTextUnderColors({reason:"scheduler", force:true});
-            if(flags.metrics || flags.render || flags.refreshSources || flags.textContrast){
-              renderLiquidGlassNow(frameState, {reason:"scheduler", activeAnimating:!!flags.keepAlive});
-            }
-          });
-        }
-      }catch(err){}
-      liquidGlassReady = true;
-      markFrameWork({refreshSources:true, metrics:true, render:true, textContrast:true});
-    }catch(e){
-      liquidGlassReady = true;
-      try{ console.error("[DebriPod LiquidGL] initialization failed", e); }catch(err){}
-      try{ document.documentElement.classList.add("liquidGlassFallback"); }catch(err){}
-    }
-  }
-
-  function cacheWheelGlassTiltRect(){
-    try{
-      const lens = liquidWheelLenses[0];
-      if(!lens || !lens.el) return null;
-      liquidWheelLenses.forEach((item)=>{
-        try{ if(item && item.updateMetrics) item.updateMetrics(); }catch(e){}
-      });
-      wheelGlassTiltRect = wheelGlassLayoutRect() || lens.rectPx || lens.el.getBoundingClientRect();
-      positionWheelLiquidCanvas();
-      return wheelGlassTiltRect;
-    }catch(e){
-      wheelGlassTiltRect = null;
-      return null;
-    }
   }
 
   function setWheelLensTilt(rotX, rotY){
-    try{
-      wheelGlassTiltX = Number.isFinite(rotX) ? rotX : 0;
-      wheelGlassTiltY = Number.isFinite(rotY) ? rotY : 0;
-      liquidWheelLenses.forEach((lens)=>{
-        if(!lens) return;
-        lens.tiltX = wheelGlassTiltX;
-        lens.tiltY = wheelGlassTiltY;
-      });
-    }catch(e){}
+    wheelGlassTiltX = Number.isFinite(rotX) ? rotX : 0;
+    wheelGlassTiltY = Number.isFinite(rotY) ? rotY : 0;
   }
 
   function applyWheelTiltTransform(rotX, rotY){
@@ -1491,25 +1306,14 @@
     }catch(e){}
   }
 
-  function renderWheelLiquidGlass(frameState){
-    try{
-      const renderer = liquidWheelRenderer();
-      if(renderer && renderer.render){
-        positionWheelLiquidCanvas();
-        renderer.render(Object.assign({}, currentVisualizerFrameState(frameState && frameState.timestamp), frameState || {}));
-      }
-    }catch(e){}
-  }
-
   function updateWheelGlassTilt(clientX, clientY){
     try{
       if(wheelGlassResetFrame){
         cancelAnimationFrame(wheelGlassResetFrame);
         wheelGlassResetFrame = 0;
       }
-      const lens = liquidWheelLenses[0] || null;
-      const rect = wheelGlassTiltRect || (lens && lens.rectPx) || cacheWheelGlassTiltRect() || (wheel ? wheel.getBoundingClientRect() : null);
-      if(!rect.width || !rect.height) return;
+      const rect = wheelGlassTiltRect || cacheWheelGlassTiltRect() || (wheel ? wheel.getBoundingClientRect() : null);
+      if(!rect || !rect.width || !rect.height) return;
       const pctX = Math.max(-1, Math.min(1, (clientX - (rect.left + rect.width / 2)) / (rect.width / 2)));
       const pctY = Math.max(-1, Math.min(1, (clientY - (rect.top + rect.height / 2)) / (rect.height / 2)));
       const maxTilt = normalizeWheelRotationMaxDegrees(wheelRotationMaxDegrees);
@@ -1559,9 +1363,11 @@
   }
 
   try{
-    root.liquidDiagnostics = {
+    // (Previously assigned to an undefined `root`, so the performance overlay
+    // never received glass diagnostics.)
+    (window.DebriPod = window.DebriPod || {}).liquidDiagnostics = {
       renderers: liquidGlassDiagnostics,
-      visibleVisualizerRenderers: visibleLiquidGlassVisualizerRendererKeys,
+      visibleVisualizerRenderers: function(){ return liquidGlassDiagnostics().filter((row)=> row.visible).map((row)=> row.key); },
       textColorScans: function(){
         return {
           runCount: glassTextUnderColorState.runCount || 0,

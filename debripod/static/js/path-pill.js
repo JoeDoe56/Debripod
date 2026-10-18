@@ -296,13 +296,9 @@
 
   function markPathPillWidthChanged(){
     try{
-      const renderer = liquidGlassRendererByKey("main");
-      if(renderer){
-        renderer._metricsDirty = true;
-        (renderer.lenses || []).forEach((lens)=>{ try{ if(lens && lens.el && lens.el.classList && lens.el.classList.contains("pathPillGlass")) lens.rectPx = null; }catch(e){} });
-        // Width was applied in this frame; draw its lens before this frame's
-        // paint rather than waiting for the scheduler's next RAF.
-      }
+      // Width was applied in this frame; re-measure its lens before this
+      // frame's paint rather than waiting for the scheduler's next RAF.
+      if(typeof glassLensesWithClass === "function") glassLensesWithClass("pathPillGlass").forEach((lens)=> lens.invalidate(true));
       const scheduler = window.DebriPod && window.DebriPod.frameScheduler;
       if(scheduler && scheduler.mark) scheduler.mark({metrics:true, render:true, textContrast:true, keepAlive:true});
     }catch(e){}
@@ -461,39 +457,25 @@
     try{
       updatePathPillMaxWidth();
       if(refreshText !== false) refreshPlaybackPillTextLayer(reason || "path pill", false);
-      const renderer = liquidGlassRendererByKey("main");
-      if(!renderer) return;
-      if(renderer.setVisible) renderer.setVisible(true);
-      renderer._metricsDirty = true;
+      if(typeof glassLensesWithClass !== "function") return;
       let touched = false;
-      if(renderer.lenses && renderer.lenses.length){
-        renderer.lenses.forEach((lens)=>{
-          try{
-            if(!lens || !lens.el || !lens.el.classList || !lens.el.classList.contains("pathPillGlass")) return;
-            touched = true;
-            lens.rectPx = null;
-            if(lens.updateMetrics) lens.updateMetrics();
-            lens.revealTypeIndex = 1;
-            lens._revealProgress = pathPillRenderOpacity();
-          }catch(e){}
-        });
-      }
-      if(refreshSource !== false) refreshLiquidGlassVisualizerSources(reason || "path pill", {keys:["main"]});
+      glassLensesWithClass("pathPillGlass").forEach((lens)=>{
+        try{
+          touched = true;
+          lens.invalidate(true);
+          lens.setReveal(pathPillRenderOpacity());
+        }catch(e){}
+      });
+      if(refreshSource !== false) refreshLiquidGlassVisualizerSources(reason || "path pill");
       if(touched && typeof markFrameWork === "function") markFrameWork({metrics:true, render:true, keepAlive:true});
     }catch(e){}
   }
 
   function hidePathPillGlassNow(reason){
     try{
-      const renderer = liquidGlassRendererByKey("main");
-      if(!renderer || !renderer.lenses) return;
-      renderer.lenses.forEach((lens)=>{
-        try{
-          if(!lens || !lens.el || !lens.el.classList || !lens.el.classList.contains("pathPillGlass")) return;
-          lens.revealTypeIndex = 1;
-          lens._revealProgress = 0;
-          lens.rectPx = null;
-        }catch(e){}
+      if(typeof glassLensesWithClass !== "function") return;
+      glassLensesWithClass("pathPillGlass").forEach((lens)=>{
+        try{ lens.setReveal(0); }catch(e){}
       });
       if(typeof markFrameWork === "function") markFrameWork({metrics:true, render:true});
     }catch(e){}
@@ -592,39 +574,25 @@
     try{
       updatePathPillMaxWidth();
       if(refreshText !== false) refreshPlaybackPillTextLayer(reason || "info pill", false);
-      const renderer = liquidGlassRendererByKey("main");
-      if(!renderer) return;
-      if(renderer.setVisible) renderer.setVisible(true);
-      renderer._metricsDirty = true;
+      if(typeof glassLensesWithClass !== "function") return;
       let touched = false;
-      if(renderer.lenses && renderer.lenses.length){
-        renderer.lenses.forEach((lens)=>{
-          try{
-            if(!lens || !lens.el || !lens.el.classList || !lens.el.classList.contains("infoPillGlass")) return;
-            touched = true;
-            lens.rectPx = null;
-            if(lens.updateMetrics) lens.updateMetrics();
-            lens.revealTypeIndex = 1;
-            lens._revealProgress = infoPillRenderOpacity();
-          }catch(e){}
-        });
-      }
-      if(refreshSource !== false) refreshLiquidGlassVisualizerSources(reason || "info pill", {keys:["main"]});
+      glassLensesWithClass("infoPillGlass").forEach((lens)=>{
+        try{
+          touched = true;
+          lens.invalidate(true);
+          lens.setReveal(infoPillRenderOpacity());
+        }catch(e){}
+      });
+      if(refreshSource !== false) refreshLiquidGlassVisualizerSources(reason || "info pill");
       if(touched && typeof markFrameWork === "function") markFrameWork({metrics:true, render:true, keepAlive:true});
     }catch(e){}
   }
 
   function hideInfoPillGlassNow(reason){
     try{
-      const renderer = liquidGlassRendererByKey("main");
-      if(!renderer || !renderer.lenses) return;
-      renderer.lenses.forEach((lens)=>{
-        try{
-          if(!lens || !lens.el || !lens.el.classList || !lens.el.classList.contains("infoPillGlass")) return;
-          lens.revealTypeIndex = 1;
-          lens._revealProgress = 0;
-          lens.rectPx = null;
-        }catch(e){}
+      if(typeof glassLensesWithClass !== "function") return;
+      glassLensesWithClass("infoPillGlass").forEach((lens)=>{
+        try{ lens.setReveal(0); }catch(e){}
       });
       if(typeof markFrameWork === "function") markFrameWork({metrics:true, render:true});
     }catch(e){}

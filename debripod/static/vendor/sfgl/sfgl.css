@@ -1,0 +1,3 @@
+/* sfgl base styles. Lens elements are placeholders; the glass is drawn by a
+ * surface canvas. The CSS-only tiers are defined in the tiers section. */
+[data-sf-surface] { pointer-events: none; }

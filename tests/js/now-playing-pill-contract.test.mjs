@@ -149,8 +149,8 @@ test("cover clicks and double clicks share one pill toggle", () => {
 test("static art participates in width observation and glass follows opacity", () => {
   assert.match(pathPill, /var npArtStill = document\.getElementById\("npArtStill"\)/);
   assert.match(pathPill, /\[npArt, npArtStill, document\.querySelector\("\.ipodScreenContent"\)/);
-  assert.match(pathPill, /lens\._revealProgress = pathPillRenderOpacity\(\)/);
-  assert.match(pathPill, /lens\._revealProgress = infoPillRenderOpacity\(\)/);
+  assert.match(pathPill, /lens\.setReveal\(pathPillRenderOpacity\(\)\)/);
+  assert.match(pathPill, /lens\.setReveal\(infoPillRenderOpacity\(\)\)/);
 });
 
 test("progress input has an invisible thumb and symmetric time-label alignment", () => {
