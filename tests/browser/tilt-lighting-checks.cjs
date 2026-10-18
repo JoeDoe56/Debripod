@@ -2,14 +2,16 @@ const assert = require('node:assert/strict');
 
 module.exports = async function checkTiltLighting(page) {
   const response = await page.evaluate(() => {
-    const renderer = window.__liquidGLRenderers__.main;
-    const lens = renderer.lenses.find(item => item.el.id === 'libList');
-    lens.updateMetrics();
-    const rect = lens.rectPx, dpr = renderer._dpr, gl = renderer.gl;
-    const original = renderer._globalLightingState;
+    const glass = DebriPod.glass.instance, surface = DebriPod.glass.surface;
+    const lens = surface.lenses.find(item => item.group === 'libraryList');
+    // One frame draws the whole surface; lens geometry is re-read in its measure phase.
+    const draw = () => { glass.requestRender(); glass.frame({timestamp: performance.now(), flags: {render: true}}); };
+    draw();
+    const rect = lens.rect, dpr = surface.renderScale, gl = surface.gl;
+    const original = glass.lighting;
     const sampleSurface = inset => [rect.left + inset, rect.left + rect.width - inset].map(x => {
       const rgba = new Uint8Array(4);
-      gl.readPixels(Math.floor(x * dpr), Math.floor(renderer.canvas.height - (rect.top + rect.height * .85) * dpr),
+      gl.readPixels(Math.floor(x * dpr), Math.floor(surface.canvas.height - (rect.top + rect.height * .85) * dpr),
         1, 1, gl.RGBA, gl.UNSIGNED_BYTE, rgba);
       return [...rgba];
     });
@@ -19,20 +21,21 @@ module.exports = async function checkTiltLighting(page) {
     const beta = Math.asin((.22 + .038 / 1.33) / scale) * 180 / Math.PI;
     const gamma = Math.asin((.16 + .024 / 1.33) / scale) * 180 / Math.PI;
     let light;
-    renderer._globalLightingState = () => light;
+    // The glass reads its light through glass.lighting.state() every frame.
+    glass.lighting = {state: () => light};
     try {
       const sweeps = ['beta', 'gamma'].map(axis => [-1, -.5, -.1, 0, .1, .5, 1].map(delta => {
         const b = beta + (axis === 'beta' ? delta : 0);
         const g = gamma + (axis === 'gamma' ? delta : 0);
         light = {x:-.16 + scale * Math.sin(g * Math.PI / 180), y:-.22 + scale * Math.sin(b * Math.PI / 180),
           intensity:.95, source:'orientation'};
-        renderer.render();
+        draw();
         return {delta, rims:sampleSurface(1.5), faces:sampleSurface(20)};
       }));
       const faces = [];
       const extremes = [-35, 35].map(angle => {
         light = {x:-.16 + scale * Math.sin(angle * Math.PI / 180), y:-.22, intensity:.95, source:'orientation'};
-        renderer.render();
+        draw();
         // These points are beyond the narrow rim: only the broad face light
         // should brighten the otherwise static black-backed material here.
         faces.push(sampleSurface(20));
@@ -40,8 +43,8 @@ module.exports = async function checkTiltLighting(page) {
       });
       return {sweeps, extremes, faces, error:gl.getError()};
     } finally {
-      renderer._globalLightingState = original;
-      renderer.render();
+      glass.lighting = original;
+      draw();
     }
   });
   assert.equal(response.error, 0, 'tilt specular shader renders without GPU errors');

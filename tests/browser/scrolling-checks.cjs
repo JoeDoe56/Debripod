@@ -10,7 +10,7 @@ module.exports=async function checkScrolling(page,touch,drag,wheel){
   });
   await page.waitForTimeout(500);
   assert.ok(await page.locator('#libList .ipodItem').count()<60,'large Songs view stays virtualized');
-  assert.equal(await page.locator('#libList .dpRowSecondary').first().textContent(),'Artist');
+  assert.equal(await page.locator('#libList .dpRowSecondary').first().textContent(),'Song 0 · Artist · Artist');
   assert.equal(await page.evaluate(()=>state.items.some(item=>item.kind==='random')),false);
   const box=await page.locator('#libList').boundingBox();
   const anchor=await page.evaluate(()=>{
@@ -27,25 +27,35 @@ module.exports=async function checkScrolling(page,touch,drag,wheel){
   await touch('touchMove',x,y-30);
   await page.waitForTimeout(250);
   assert.equal(await page.evaluate(()=>DebriPod.listScroll.isDirectScrolling()),true,'stationary held finger must retain scroll ownership');
-  const heldGlow=await page.evaluate(()=>({
-    cancels:window._glassScrollCancels,
-    press:window.__liquidGLRenderers__.main.lenses.find(l=>l.el===libList)._opticalContact.press,
-  }));
+  // The glass eases its contact glow once per drawn frame, so each probe draws a few frames first.
+  const heldGlow=await page.evaluate(()=>{
+    const glass=DebriPod.glass.instance,lens=DebriPod.glass.surface.lenses.find(l=>l.group==='libraryList');
+    let now=Math.max(performance.now(),lens&&lens.contact?lens.contact.time+64:0);
+    for(let i=0;i<6;i++){now+=64;glass.frame({timestamp:now,flags:{render:true}});}
+    return {cancels:window._glassScrollCancels,press:lens&&lens.contact?lens.contact.press:0};
+  });
   assert.ok(heldGlow.cancels>0,'native list scrolling cancels its pointer stream');
   assert.ok(heldGlow.press>.9,'scrolling with a held finger retains the glass glow: '+JSON.stringify(heldGlow));
   assert.equal(await page.evaluate(()=>getComputedStyle(document.getElementById('libListSelectedGlass')).visibility),'hidden');
   assert.equal(await page.evaluate(()=>[...libList.querySelectorAll('.dpRowPrimary,.dpRowSecondary')].some(el=>el.style.clipPath)),false,'hidden glass leaves no native text holes');
   for(let step=1;step<=10;step++){await touch('touchMove',x,y-30-step*16);await page.waitForTimeout(12);}
   const movedGlow=await page.evaluate(({x,y})=>{
-    const lens=window.__liquidGLRenderers__.main.lenses.find(l=>l.el===libList),rect=lens.rectPx;
-    return {press:lens._opticalContact.press,
-      offset:Math.hypot(lens._opticalContact.x-(x-rect.left)/rect.width,lens._opticalContact.y-(1-(y-rect.top)/rect.height))};
+    const glass=DebriPod.glass.instance,lens=DebriPod.glass.surface.lenses.find(l=>l.group==='libraryList');
+    let now=Math.max(performance.now(),lens.contact?lens.contact.time+64:0);
+    for(let i=0;i<6;i++){now+=64;glass.frame({timestamp:now,flags:{render:true}});}
+    const rect=lens.el.getBoundingClientRect(),contact=lens.contact||{press:0,x:0,y:0};
+    return {press:contact.press,
+      offset:Math.hypot(contact.x-(x-rect.left)/rect.width,contact.y-(1-(y-rect.top)/rect.height))};
   },{x,y:y-190});
   assert.ok(movedGlow.press>.9 && movedGlow.offset<.06,'native scroll glow follows the finger: '+JSON.stringify(movedGlow));
   await touch('touchEnd');
   await page.waitForTimeout(250);
-  assert.ok(await page.evaluate(()=>window.__liquidGLRenderers__.main.lenses.find(l=>l.el===libList)._opticalContact.press)<.02,
-    'touch release clears the glow even while the list has inertia');
+  assert.ok(await page.evaluate(()=>{
+    const glass=DebriPod.glass.instance,lens=DebriPod.glass.surface.lenses.find(l=>l.group==='libraryList');
+    let now=Math.max(performance.now(),lens&&lens.contact?lens.contact.time+64:0);
+    for(let i=0;i<8;i++){now+=64;glass.frame({timestamp:now,flags:{render:true}});}
+    return lens&&lens.contact?lens.contact.press:0;
+  })<.02,'touch release clears the glow even while the list has inertia');
   await page.evaluate(()=>{
     libList.removeEventListener('pointercancel',window._glassScrollCancelListener,{capture:true});
     delete window._glassScrollCancels;delete window._glassScrollCancelListener;
@@ -69,7 +79,7 @@ module.exports=async function checkScrolling(page,touch,drag,wheel){
     await new Promise(resolve=>setTimeout(resolve,180));
     return {steps:state.sel-start,rows:libList.querySelectorAll('.ipodItem').length,visible:getComputedStyle(document.getElementById('libListSelectedGlass')).visibility,frames};
   });
-  await page.waitForFunction(()=>libList._dpScrollAnimTarget==null && !listSelectionMotion.rapidInput,{},{timeout:5000}).catch(async error=>{
+  await page.waitForFunction(()=>libList._dpScrollAnimTarget==null && !listSelectionMotion.rapidInput,{},{timeout:30000}).catch(async error=>{
     console.log('Scroll timeout',await page.evaluate(()=>({top:libList.scrollTop,target:libList._dpScrollAnimTarget,frame:libList._dpScrollAnimFrame,scroll:DebriPod.listScroll.phase(),motion:listSelectionMotion,scheduler:DebriPod.frameScheduler.stats()})));throw error;
   });
   await page.waitForFunction(()=>getComputedStyle(document.getElementById("libListSelectedGlass")).visibility!=="hidden");

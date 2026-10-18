@@ -271,14 +271,6 @@
     }
     .liquidGlassCanvasMain{ z-index: 65 !important; }
     .visualizerBg{ z-index: 1; }
-    .liquidGlassCanvasWheel{
-      position: absolute !important;
-      right: auto !important;
-      bottom: auto !important;
-      inset: auto !important;
-      z-index: 10 !important;
-      pointer-events: none !important;
-    }
 
 
     @media (max-height: 720px){
@@ -772,8 +764,7 @@
     #videoAmbientBg.active{ opacity:1; }
 
     html.isIphone .visualizerBg,
-    html.isIphone .liquidGlassCanvasMain,
-    html.isIphone .liquidGlassCanvasWheel{
+    html.isIphone .liquidGlassCanvasMain{
       border-top-left-radius: var(--screenRadius);
       border-top-right-radius: var(--screenRadius);
       overflow:hidden;
@@ -1167,6 +1158,11 @@
       display:flex;
       align-items:center;
       gap:10px;
+    }
+
+    .libraryListGlass{
+      inset:0;
+      border-radius:var(--screenRadius);
     }
 
     .ipodList{
@@ -2126,8 +2122,7 @@
       z-index:70;
     }
     .ipodStage.layoutExpanded .wheelZone,
-    .ipodStage.layoutExpanded .ipodWheelWrap,
-    .ipodStage.layoutExpanded .liquidGlassCanvasWheel{
+    .ipodStage.layoutExpanded .ipodWheelWrap{
       display:none !important;
     }
     .ipodStage.layoutExpanded .wheelZone{

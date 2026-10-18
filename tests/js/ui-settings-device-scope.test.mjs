@@ -125,3 +125,19 @@ test("opacity migration preserves legacy transparency ahead of an injected redes
     assert.equal(loadUiSettings(storage).setDeviceSettingsUserId("opacity-user").textOpacity, expected);
   }
 });
+
+test("glass quality defaults to auto and only keeps known tiers", () => {
+  const storage = makeStorage();
+  const settings = loadUiSettings(storage);
+  let user = settings.setDeviceSettingsUserId("quality-user");
+  assert.equal(user.glassQuality, "auto");
+  user.glassQuality = "lite";
+  settings.saveUiSettings(user);
+  // A fresh page load reads the saved value back from storage.
+  const reloaded = loadUiSettings(storage).setDeviceSettingsUserId("quality-user");
+  assert.equal(reloaded.glassQuality, "lite");
+  user.glassQuality = "ultra";
+  settings.saveUiSettings(user);
+  assert.equal(loadUiSettings(storage).setDeviceSettingsUserId("quality-user").glassQuality, "auto");
+  assert.deepEqual(Array.from(settings.GLASS_QUALITY_LEVELS), ["auto", "superfluid", "glass", "lite", "frost", "static"]);
+});

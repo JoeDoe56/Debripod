@@ -7,7 +7,8 @@ const path = require('node:path');
 const assert = require('node:assert/strict');
 const {PNG} = require('pngjs');
 const base = path.resolve(__dirname, '../..');
-const output = path.join(base, '.pytest_cache');
+const output = process.env.DEBRIPOD_TEST_OUTPUT || path.join(base, '.pytest_cache');
+fs.mkdirSync(output, {recursive:true});
 const types={'.js':'text/javascript','.css':'text/css','.svg':'image/svg+xml','.ttf':'font/ttf','.woff2':'font/woff2','.png':'image/png','.html':'text/html'};
 const calls=[];
 function api(url){
@@ -50,6 +51,9 @@ const server=http.createServer((req,res)=>{
   try{
     await page.goto(`http://127.0.0.1:${server.address().port}/`);
     await page.waitForFunction(()=>window.state&&state.items.length>5&&document.querySelector('.dpStandardRow'));
+    // The glass checks read WebGL lens state; auto quality would pick a CSS tier on a software GPU.
+    await page.waitForFunction(()=>window.DebriPod&&DebriPod.glass&&DebriPod.glass.instance);
+    await page.evaluate(()=>{DebriPod.uiSettings.settings.glassQuality='superfluid';DebriPod.glass.instance.invalidate(true);});
     await page.evaluate(()=>document.fonts.ready);
     await page.screenshot({path:path.join(output,'redesign-library.png')});
     const before=await page.locator('#libList').boundingBox();

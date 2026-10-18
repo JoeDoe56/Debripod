@@ -6,6 +6,8 @@ Commits use Conventional Commits.
 ## [Unreleased]
 
 ### Added
+- Glass quality setting (Auto, Superfluid, Glass, Lite, Frost, Solid). Auto adapts render scale and tier to the device. Frost and Solid draw with CSS only, and a lost WebGL context falls back to Frost.
+- Glass performance harness (`tests/perf/glass-perf.cjs`) and deterministic snapshot tool (`tests/perf/glass-snapshot.cjs`).
 - Inward top/bottom wheel pulls enter fullscreen or choose a random eligible item, with gesture cancellation and stable directional controls.
 - Lyrics over Now Playing artwork, with synchronized LRC highlighting, plain lyrics, instrumental and unavailable states, track-change cancellation, and seek-aware playback tracking.
 - Same-origin LRCLIB lookup through the shared HTTP client, with cached exact recording lookup and conservative search matching.
@@ -15,6 +17,8 @@ Commits use Conventional Commits.
 - Tests for gestures, collection actions, metadata, numeric normalization, and iPhone 15 Pro Max browser dimensions.
 
 ### Changed
+- The glass engine moved to the sfgl repository, with its history, and is vendored in `static/vendor/sfgl`. One surface now draws every lens. The wheel's tilt is projected in the shader instead of on a second canvas. The backdrop is prepared at most once per frame and only when it changes. Idle, still-tilt and playback frames do far less GPU and main-thread work.
+- Mouse movement moves the glass light on devices without tilt sensors.
 - Native list scrolling owns touch and momentum, hides the selected glass until settling, and selects the row beneath its previous screen position.
 - Wheel detents are batched per animation frame; virtual rows stay attached and share a measured height instead of rebuilding library-wide measurements during scrolling.
 - Library root rows use a centered single line. Other sparse rows center automatically, and secondary lines omit repeated identities and fields.
@@ -28,10 +32,12 @@ Commits use Conventional Commits.
 - Shared settings-row construction replaces duplicate builders, and offline shell caching includes the new fonts, symbols, and styles.
 
 ### Removed
+- `static/liquidGL.js`, the separate glass-motion, glass-overlays, glass-lighting, frame-scheduler and row-refraction scripts, and about 1,700 lines of unused renderer code paths. All of them are now part of sfgl.
 - Full Screen settings and Random list rows; their actions now use the wheel edge gestures.
 - Persistent metadata/status pills on standard rows, double-height standard rows, the dedicated View Lyrics action, and the separate center-hold action screen.
 
 ### Fixed
+- Liquid glass diagnostics were written to an undefined global. They now go to `window.DebriPod.liquidDiagnostics`.
 - Selection/refraction flicker during rapid wheel and finger scrolling: one scroll owner, coordinated geometry, cleared hidden-lens cutouts, and native text replacement committed after glass drawing.
 - Songs Random resolves cached library references for every queue entry, retains its chosen item through async navigation, and prevents overlapping playback starts.
 - Lyrics browsing now preserves offscreen reading positions, recenters small scrolls, and supports seeking by click or keyboard. Full-height blur feathers toward the cover's midpoint, leaving right-side artwork taps available to pin playback pills.

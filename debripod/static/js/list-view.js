@@ -1356,7 +1356,7 @@
     }
     if(editInputToFocus){
       try{
-        editInputToFocus.focus();
+        editInputToFocus.focus({preventScroll:true});
 
         const n = editInputToFocus.value.length;
         editInputToFocus.setSelectionRange(n, n);
@@ -1643,6 +1643,25 @@ function vibeTick(){
       state.sel = 0;
     }
 
+    // Settings edits reload the same rows. Restore the actual list geometry,
+    // rather than anchoring a new first row at the old selection's position.
+    const savedPosition = state.current || {};
+    if(settingsViewIdentity(savedPosition) && restoreScroll != null &&
+        Number.isFinite(savedPosition.savedPageAnchorOffset)){
+      state.pageAnchorOffset = savedPosition.savedPageAnchorOffset;
+      state.pageAnchorBottomSlack = savedPosition.savedPageAnchorBottomSlack || 0;
+      if(libList) libList.scrollTop = Math.max(0, restoreScroll);
+      replaceListItems(arr, {preserveSelection:false, preserveScroll:true, preserveEntryAnchor:true, selectionIndex:state.sel, reason:"settings refresh"});
+      if(libList) libList.scrollTop = Math.max(0, restoreScroll);
+      setHeader();
+      try{
+        if(window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.saveRenderedViewSnapshot){
+          DebriPod.clientSync.saveRenderedViewSnapshot(arr);
+        }
+      }catch(e){}
+      return;
+    }
+
     let preserveEntryAnchor = false;
     let requestedAnchorY = null;
     state.pageAnchorOffset = 0;
@@ -1700,6 +1719,8 @@ function vibeTick(){
     try{
       if(state.current){
         state.current.savedSel = state.sel;
+        state.current.savedPageAnchorOffset = Number(state.pageAnchorOffset || 0);
+        state.current.savedPageAnchorBottomSlack = Number(state.pageAnchorBottomSlack || 0);
         if(libList){
           state.current.savedScroll = libList.scrollTop;
           state.current.savedAnchorY = selectedRowViewportY();
@@ -1774,7 +1795,29 @@ function vibeTick(){
     }
   }
 
+  function settingsViewIdentity(view){
+    if(!view || !/^(settings(?:_|$)|libuisettings$|libadvanced(?:settings|category)$|libdatabasebackups$|account_settings$|setupwizard$|setup_editor$)/.test(view.kind || "")) return "";
+    return JSON.stringify([view.kind, view.category, view.advancedCategory, view.setupPage, view.folderPath, view.label]);
+  }
+
   async function setView(view, push){
+    const settingsIdentity = settingsViewIdentity(view);
+    let position = null;
+    if(!push && settingsIdentity){
+      if(settingsIdentity === settingsViewIdentity(state.current)){
+        snapshotListState();
+        position = state.current;
+      }else if(state.current && ["settings_editor", "setup_editor"].includes(state.current.kind) &&
+          settingsIdentity === settingsViewIdentity(state.history[state.history.length - 1])){
+        // Saving a separate editor returns to its parent, just like Cancel.
+        position = state.history.pop();
+      }
+      if(position){
+        for(const key of ["savedSel", "savedScroll", "savedAnchorY", "savedPageAnchorOffset", "savedPageAnchorBottomSlack"]){
+          view[key] = position[key];
+        }
+      }
+    }
     if(push && state.current){
       const entryAnchorY = selectedRowViewportY();
       if(entryAnchorY != null) view.entryAnchorY = entryAnchorY;

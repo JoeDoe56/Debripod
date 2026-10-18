@@ -444,7 +444,7 @@ def _pwa_shell_assets() -> list[str]:
         f"/icon-512.png?v={ICON_VERSION}",
         f"/static/debripod.css?v={ASSET_VERSION}",
         f"/static/debripod.js?v={ASSET_VERSION}",
-        f"/static/liquidGL.js?v={ASSET_VERSION}",
+        f"/static/vendor/sfgl/sfgl.iife.js?v={ASSET_VERSION}",
         f"/static/vendor/hls-local.js?v={ASSET_VERSION}",
     ]
     js_dir = Path(__file__).resolve().parent / "static" / "js"

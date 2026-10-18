@@ -569,7 +569,7 @@
     requestAnimationFrame(()=>{
       try{
         const input = libList && libList.querySelector(".ipodItem.sel .libInlineInput");
-        if(input){ input.focus(); input.click(); }
+        if(input){ input.focus({preventScroll:true}); input.click(); }
       }catch(e){}
     });
   }
@@ -1867,9 +1867,10 @@ async function libDoSearch(engine, q){
         try{ backend = await apiGet("/api/performance", {networkOnly:true, skipMirror:true}); }catch(e){ backend = null; }
         const schedulerStats = (window.DebriPod && DebriPod.frameScheduler && DebriPod.frameScheduler.stats) ? DebriPod.frameScheduler.stats() : {};
         items.push({kind:"info", label:"FPS", pills:[String(Math.round(Number(schedulerStats.fps || 0))), "long " + String(Number(schedulerStats.longFrames || 0))]});
-        const renderers = (window.DebriPod && DebriPod.liquidDiagnostics && DebriPod.liquidDiagnostics.renderers) ? DebriPod.liquidDiagnostics.renderers() : [];
-        for(const r of renderers){
-          items.push({kind:"info", label:"LiquidGL " + String(r.key || "renderer"), pills:[r.visible ? "visible" : "hidden", "res " + String(r.resolution || ""), String(r.texture || "")]});
+        const glassStats = (window.DebriPod && DebriPod.glass && DebriPod.glass.stats) ? DebriPod.glass.stats() : null;
+        if(glassStats){
+          items.push({kind:"info", label:"Glass", pills:[String(glassStats.tier || ""), "scale " + Number(glassStats.renderScale || 0).toFixed(2), String(glassStats.lenses || 0) + " lenses"]});
+          items.push({kind:"info", label:"Glass frames", pills:[String(glassStats.renders || 0) + " drawn", String(glassStats.prepares || 0) + " backdrops", String(glassStats.copies || 0) + " copies"]});
         }
         const rows = (window.DebriPod && DebriPod.listDiagnostics && DebriPod.listDiagnostics.rows) ? DebriPod.listDiagnostics.rows() : {visible:0,total:(state.items || []).length};
         items.push({kind:"info", label:"Rows", pills:[String(rows.visible || 0) + " visible", String(rows.total || 0) + " total"]});
@@ -1965,6 +1966,15 @@ async function libDoSearch(engine, q){
     };
   }
 
+  function glassQualitySummary(){
+    const names = {auto:"Auto", superfluid:"Superfluid", glass:"Glass", lite:"Lite", frost:"Frost", static:"Solid"};
+    const chosen = uiSettings.glassQuality || "auto";
+    if(chosen !== "auto") return names[chosen] || chosen;
+    let active = "";
+    try{ active = DebriPod.glass.instance.tier().name; }catch(e){}
+    return active ? "Auto · " + (names[active] || active) : "Auto";
+  }
+
   function advancedRowsForCategory(category){
     const cat = String(category || "system");
     if(cat === "glass"){
@@ -1974,9 +1984,9 @@ async function libDoSearch(engine, q){
       GLASS_ELEMENT_KEYS.forEach((key)=>{
         items.push({kind:"libui_action", label:glassElementLabel(key), sub_label:"Dark ↔ transparent ↔ light", action:"set_glass_value:" + key + ":material", pills:glassElementSummary(key), forceTwoLine:true, settingRow:true});
       });
+      items.push({kind:"libui_action", label:"Glass quality", sub_label:"Auto picks a level for this device and steps down if frames run slow", action:"cycle_glass_quality", pills:[glassQualitySummary()], forceTwoLine:true, settingRow:true});
       items.push({kind:"libui_action", label:"Render scale", sub_label:"Glass backing-resolution scale", action:"set_glass_quality:glassRenderScale", pills:[String(Number(uiSettings.glassRenderScale || 1).toFixed(2)) + "x"], forceTwoLine:true, settingRow:true});
       items.push({kind:"libui_action", label:"Frost samples", sub_label:"Deterministic frost kernel samples", action:"set_glass_quality:glassFrostSamples", pills:[String(Math.round(Number(uiSettings.glassFrostSamples || 8)))], forceTwoLine:true, settingRow:true});
-      items.push({kind:"libui_action", label:"Idle glass FPS", action:"set_glass_quality:glassIdleFps", pills:[String(normalizeAnimationFps(uiSettings.glassIdleFps)) + " FPS"], forceTwoLine:true, settingRow:true});
       items.push({kind:"libui_action", label:"Interaction glass FPS", action:"set_glass_quality:glassInteractionFps", pills:[String(normalizeAnimationFps(uiSettings.glassInteractionFps)) + " FPS"], forceTwoLine:true, settingRow:true});
       return items;
     }
@@ -2093,12 +2103,8 @@ async function libDoSearch(engine, q){
       const js = await apiGet("/api/library/reindex/status", {networkOnly:true, cache:"no-store"});
       state.fullReindexStatus = (js && js.status) ? js.status : {};
       if(state.current && state.current.kind === "libadvancedcategory" && state.current.advancedCategory === "system"){
-        const prevSel = state.sel;
-        const prevScroll = libList ? libList.scrollTop : 0;
+        snapshotListState();
         resetList(advancedRowsForCategory("system"));
-        state.sel = Math.max(0, Math.min((state.items || []).length - 1, prevSel));
-        renderList();
-        try{ if(libList) libList.scrollTop = prevScroll; }catch(e){}
       }
       scheduleFullReindexPoll();
     }catch(e){
@@ -2680,7 +2686,7 @@ async function libDoSearch(engine, q){
       try{
         const input = libList ? libList.querySelector(".ipodItem.sel .libInlineInput") : null;
         if(input){
-          input.focus();
+          input.focus({preventScroll:true});
           input.click();
           const n = String(input.value || "").length;
           input.setSelectionRange(n, n);
@@ -2939,6 +2945,16 @@ async function libDoSearch(engine, q){
           }
         }, true);
         return true;
+      case "cycle_glass_quality": {
+        const levels = DebriPod.uiSettings.GLASS_QUALITY_LEVELS;
+        const index = levels.indexOf(uiSettings.glassQuality || "auto");
+        uiSettings.glassQuality = levels[(index + 1) % levels.length];
+        saveUiSettings();
+        try{ if(window.DebriPod && DebriPod.glass && DebriPod.glass.instance) DebriPod.glass.instance.invalidate(true); }catch(e){}
+        try{ if(typeof scheduleLiquidGlassRender === "function") scheduleLiquidGlassRender(); }catch(e){}
+        await viewLibAdvancedCategory("glass", false);
+        return true;
+      }
       case "cycle_visualizer_fps_lock":
         cycleVisualizerFpsLock();
         await viewLibUiSettings(false);
