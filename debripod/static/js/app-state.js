@@ -28,7 +28,6 @@ var uiSettings = DebriPod.uiSettings.settings;
 var liquidGlassElements = cloneGlassElementSettings(uiSettings.liquidGlassElements);
 var wheelRotationMaxDegrees = 10;
 var liquidGlassReady = false;
-var liquidWheelLenses = [];
 var wheelGlassResetTimer = null;
 var wheelGlassResetFrame = 0;
 var wheelGlassTiltFrame = 0;

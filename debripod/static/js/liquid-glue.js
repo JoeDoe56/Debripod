@@ -819,7 +819,7 @@
       applyLiquidGlassStyleOptions();
       try{
         const root = window.DebriPod = window.DebriPod || {};
-        root.glass = {instance:debripodGlass, stats:()=> debripodGlass.statsSnapshot()};
+        root.glass = {instance:debripodGlass, surface:debripodGlassMainSurface, stats:()=> debripodGlass.statsSnapshot()};
       }catch(err){}
       try{
         const scheduler = frameScheduler();

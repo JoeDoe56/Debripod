@@ -76,11 +76,14 @@ module.exports = async function checkGlassLayout(page) {
     assert.equal(geometry.pathMax, geometry.infoWidth);
   }
   const caps = await page.evaluate(() => {
-    const renderer = window.__liquidGLRenderers__.main;
+    const glass = DebriPod.glass.instance, surface = DebriPod.glass.surface;
     return ['.pathPillGlass', '.infoPillGlass', '#libListSelectedGlass'].map(selector => {
       const el = document.querySelector(selector);
-      const lens = renderer.lenses.find(item => item.el === el);
-      lens.updateMetrics();
+      const lens = surface.lenses.find(item => item.el === el);
+      // Lens geometry and shape are read in the frame's measure phase.
+      lens.invalidate(true);
+      glass.requestRender();
+      glass.frame({timestamp: performance.now(), flags: {render: true}});
       const rect = el.getBoundingClientRect(), style = getComputedStyle(el);
       return {selector, power:lens.cornerPower, radius:lens.radiusCss,
         expectedRadius:Math.min(rect.width, rect.height) / 2,

@@ -102,11 +102,19 @@ function installProbe() {
   };
   wrap(w.HTMLCanvasElement && w.HTMLCanvasElement.prototype);
   wrap(w.OffscreenCanvas && w.OffscreenCanvas.prototype);
+  // The glass is one sfgl surface (DebriPod.glass.surface); its context is
+  // included explicitly in case it was created before the wrap was installed.
+  const glassGl = () => {
+    const surface = w.DebriPod && w.DebriPod.glass && w.DebriPod.glass.surface;
+    return surface && surface.gl ? surface.gl : null;
+  };
   w.__gpuFinish = () => {
     const t = performance.now();
     const px = new Uint8Array(4);
+    const all = new Set(contexts);
+    if (glassGl()) all.add(glassGl());
     // readPixels cannot return until all queued drawing for that context is done.
-    contexts.forEach((gl) => { try { if (!gl.isContextLost() && gl.drawingBufferWidth) gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); } catch (e) {} });
+    all.forEach((gl) => { try { if (!gl.isContextLost() && gl.drawingBufferWidth) gl.readPixels(0, 0, 1, 1, gl.RGBA, gl.UNSIGNED_BYTE, px); } catch (e) {} });
     return performance.now() - t;
   };
   w.__glContextCount = () => contexts.size;
@@ -115,14 +123,6 @@ function installProbe() {
     try {
       const glass = w.DebriPod && w.DebriPod.glass;
       if (glass && typeof glass.stats === 'function') return Object.assign(out, glass.stats());
-      const seen = new Set();
-      const list = [w.__liquidGLRenderer__].concat(Object.values(w.__liquidGLRenderers__ || {})).filter((r) => r && !seen.has(r) && seen.add(r));
-      list.forEach((r) => {
-        out.renders += r.renderCount || 0;
-        out.prepares += r._opticalPrepareCount || 0;
-        out.lenses += (r.lenses || []).length;
-        out.surfaces += 1;
-      });
     } catch (e) {}
     return out;
   };

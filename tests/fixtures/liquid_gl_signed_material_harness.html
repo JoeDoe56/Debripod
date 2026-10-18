@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width,initial-scale=1">
-  <title>LiquidGL signed material regression</title>
+  <title>sfgl signed material regression</title>
   <style>
     * { box-sizing: border-box; }
     html, body { width: 100%; min-height: 100%; margin: 0; overflow: hidden; background: #111; color: white; font: 14px/1.25 system-ui, sans-serif; }
@@ -27,7 +27,7 @@
     <div class="sample"><div class="glass" id="material-p1"></div><div class="label">+1.00 light</div></div>
     <div class="sample"><div class="glass circle" id="material-tilt"></div><div class="label">+0.52 circle + tilt</div></div>
   </main>
-  <script src="/debripod/static/liquidGL.js"></script>
+  <script src="/debripod/static/vendor/sfgl/sfgl.iife.js"></script>
   <script>
     const source = document.getElementById("sourceCanvas");
     const ctx = source.getContext("2d");
@@ -41,20 +41,27 @@
         ctx.fillRect(x, y, 12, 12);
       }
     }
+    // One sfgl surface draws every sample. The no-LOD path is forced by the
+    // WebGL1 context (no EXT_shader_texture_lod) and by the explicit caps.
+    const glass = SFGL.createGlass({webgl2: false, quality: "superfluid", lighting: false, capsOverride: {lodMode: "bias"}});
+    glass.setBackdrop(SFGL.imageBackdrop(source, {fit: "stretch"}));
+    // z above the backdrop canvas (which follows this one in the DOM).
+    const surface = glass.surface({z: 1});
+    // Tilt about the lens centre, as the wheel's CSS tilt does.
+    const tiltTransform = lens => {
+      const r = lens.rect, cx = r.left + r.width / 2, cy = r.top + r.height / 2;
+      return {matrix: new DOMMatrix().translate(cx, cy).multiply(new DOMMatrix("perspective(900px)")).rotateAxisAngle(1, 0, 0, 12).rotateAxisAngle(0, 1, 0, -8).translate(-cx, -cy), tiltX: 12, tiltY: -8};
+    };
     const samples = [
       ["material-n1", -1], ["material-n52", -.52], ["material-n12", -.12], ["material-0", 0],
       ["material-p12", .12], ["material-p52", .52], ["material-p1", 1], ["material-tilt", .52]
     ];
-    samples.forEach(([id, material]) => window.liquidGL({
-      target: "#" + id,
-      rendererKey: "fixture-" + id,
-      sourceType: "albumArtCanvasOrImage",
-      sourceElement: "#sourceCanvas",
+    const lenses = samples.map(([id, material]) => surface.lens(document.getElementById(id), {
       material,
       reveal: "none",
-      tilt: id === "material-tilt",
-      resolution: 1
+      ...(id === "material-tilt" ? {transform: tiltTransform} : {})
     }));
+    window.__glassFixture = {glass, surface, lenses};
   </script>
 </body>
 </html>

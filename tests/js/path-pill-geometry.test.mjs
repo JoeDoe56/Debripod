@@ -48,18 +48,13 @@ test("path pill text fades only when it overflows", () => {
 
 test("width changes coalesce glass work into the shared frame scheduler", () => {
   const calls = [];
-  const lens = {rectPx: {}, el: {classList: {contains: () => true}}};
-  const renderer = {lenses: [lens], render(){
-    assert.equal(this._metricsDirty, true);
-    assert.equal(lens.rectPx, null);
-    calls.push("render");
-  }};
+  const lens = {invalidate(shape){ calls.push(["invalidate", shape]); }};
   const mark = loadFunction("markPathPillWidthChanged", {
-    liquidGlassRendererByKey: () => renderer,
-    window: {DebriPod: {frameScheduler: {mark(){ calls.push("schedule"); }}}}
+    glassLensesWithClass(className){ calls.push(["lens", className]); return [lens]; },
+    window: {DebriPod: {frameScheduler: {mark(options){ calls.push(["schedule", options.metrics, options.render]); }}}}
   });
   mark();
-  assert.deepEqual(calls, ["schedule"]);
+  assert.deepEqual(calls, [["lens", "pathPillGlass"], ["invalidate", true], ["schedule", true, true]]);
 });
 
 test("list pill remains eligible while partially visible", () => {

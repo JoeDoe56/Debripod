@@ -58,71 +58,51 @@ const server=http.createServer((req,res)=>{
     const wheelShapes=await page.evaluate(()=>['wheel','wheelGlassRing','btnCenter','wheelCenterGlass'].map(id=>({id,corner:getComputedStyle(document.getElementById(id)).getPropertyValue('corner-shape')})));
     for(const shape of wheelShapes) assert.ok(['round','superellipse(1)',''].includes(shape.corner),shape.id+' must not inherit the global squircle shadow');
     const initial=await page.evaluate(()=>{
-      const renderers=Object.values(window.__liquidGLRenderers__);
-      const rows=renderers.map(r=>({key:r.rendererKey,wallpaper:r._wallpaperActive,backend:r.debugState().opticalBackend,
-        source:r._sourceUploadRevision,prepares:r._opticalPrepareCount,error:r.gl.getError(),width:r.canvas.width}));
-      for(let i=0;i<20;i++) renderLiquidGlassNow();
-      return {rows,after:renderers.map(r=>({source:r._sourceUploadRevision,prepares:r._opticalPrepareCount,error:r.gl.getError()}))};
+      const glass=DebriPod.glass.instance, surface=DebriPod.glass.surface;
+      const draw=()=>{glass.requestRender();glass.frame({timestamp:performance.now(),flags:{render:true}});};
+      const rows=[surface].map(s=>({wallpaper:DebriPod.wallpaper.active(),lodMode:s.caps.lodMode,ready:s.backdrop.ready,
+        source:s.backdrop.key,prepares:s.backdrop.prepareCount,error:s.gl.getError(),width:s.canvas.width}));
+      for(let i=0;i<20;i++) draw();
+      return {rows,after:[surface].map(s=>({source:s.backdrop.key,prepares:s.backdrop.prepareCount,error:s.gl.getError()}))};
     });
-    assert.equal(initial.rows.length,2);
+    // Every lens (library, pills, wheel) is drawn by one surface.
+    assert.equal(await page.evaluate(()=>DebriPod.glass.stats().surfaces),1,'one surface draws every lens');
+    assert.equal(initial.rows.length,1);
     initial.rows.forEach((row,i)=>{
       assert.equal(row.wallpaper,true);
-      assert.equal(row.backend,'shared-mip');
+      assert.equal(row.ready,true,'the wallpaper backdrop is prepared');
       assert.equal(row.width,645,'keeps the 1.5x backing scale on a 3x display');
       assert.equal(row.error,0);
       assert.equal(initial.after[i].error,0);
       assert.equal(initial.after[i].source,row.source,'static wallpaper is not re-uploaded');
       assert.equal(initial.after[i].prepares,row.prepares,'static optics reuse the prepared backdrop');
     });
-    // The wheel glass is rasterized into a canvas that is itself transformed
-    // by the CSS perspective. Verify the live render supplies the same pivot
-    // and perspective to the backdrop projection uniform; this guards against
-    // refraction becoming a texture glued to the rotating wheel.
-    const projection=await page.evaluate(()=>{
-      const renderer=window.__liquidGLRenderers__.wheel;
-      const lens=renderer.lenses.find(item=>item.el.classList.contains('wheelGlassRing')) || renderer.lenses[0];
-      const source=renderer._sourceCssRect || {left:0,top:0,width:innerWidth,height:innerHeight};
-      const pivot=lens.options.tiltProjection();
-      const calls=[];
-      const original=renderer.gl.uniform4f.bind(renderer.gl);
-      renderer.gl.uniform4f=function(location,a,b,c,d){
-        if(location===renderer.u.tiltProjection) calls.push([a,b,c,d]);
-        return original(location,a,b,c,d);
-      };
-      lens.tiltX=8; lens.tiltY=-6;
-      renderer.render({timestamp:performance.now()});
-      renderer.gl.uniform4f=original;
-      return {pivot,source,calls,last:calls[calls.length-1]};
-    });
-    assert.ok(projection.last,'wheel render must bind a tilt projection');
-    assert.ok(Math.abs(projection.last[0] - (projection.pivot.x-projection.source.left)/projection.source.width)<0.002);
-    assert.ok(Math.abs(projection.last[1] - (projection.pivot.y-projection.source.top)/projection.source.height)<0.002);
-    assert.equal(projection.last[2],900);
-    assert.equal(projection.last[3],1);
+    // The wheel's projection (pivot and perspective of its CSS tilt) is checked by wheel-projection-checks.cjs.
     await require('./wheel-projection-checks.cjs')(page);
     await page.screenshot({path:path.join(output,'testing-glass-wallpaper.png')});
     const corners=await page.evaluate(()=>{
-      const r=window.__liquidGLRenderers__.main;
-      const lens=r.lenses.find(l=>l.el.id==='libList');
-      r.render();
-      const gl=r.gl, rect=lens.rectPx, dpr=r._dpr;
+      const glass=DebriPod.glass.instance, surface=DebriPod.glass.surface, gl=surface.gl;
+      const draw=()=>{glass.requestRender();glass.frame({timestamp:performance.now(),flags:{render:true}});};
+      const lens=surface.lenses.find(l=>l.el.id==='libList');
+      draw();
+      const rect=lens.rect, dpr=surface.renderScale, H=surface.canvas.height;
       const pixel=(x,y)=>{
         const rgba=new Uint8Array(4);
-        gl.readPixels(Math.floor((rect.left+x)*dpr),Math.floor(r.canvas.height-(rect.top+y)*dpr),1,1,gl.RGBA,gl.UNSIGNED_BYTE,rgba);
+        gl.readPixels(Math.floor((rect.left+x)*dpr),Math.floor(H-(rect.top+y)*dpr),1,1,gl.RGBA,gl.UNSIGNED_BYTE,rgba);
         return [...rgba];
       };
       const coverage=()=>{
         const size=Math.ceil(lens.radiusCss*dpr),data=new Uint8Array(size*size*4);
-        gl.readPixels(Math.floor(rect.left*dpr),Math.floor(r.canvas.height-(rect.top+lens.radiusCss)*dpr),size,size,gl.RGBA,gl.UNSIGNED_BYTE,data);
+        gl.readPixels(Math.floor(rect.left*dpr),Math.floor(H-(rect.top+lens.radiusCss)*dpr),size,size,gl.RGBA,gl.UNSIGNED_BYTE,data);
         return data.reduce((sum,value,i)=>sum+(i%4===3?value:0),0);
       };
       const result={power:lens.cornerPower,radius:lens.radiusCss,outer:pixel(.5,.5),smooth:pixel(7,7),center:pixel(rect.width/2,rect.height/2),
-        wheelPowers:window.__liquidGLRenderers__.wheel.lenses.map(l=>l.cornerPower),smoothCoverage:coverage()};
+        wheelPowers:surface.lenses.filter(l=>l.group==='wheel').map(l=>l.cornerPower),smoothCoverage:coverage()};
       const oldPower=lens.el.style.getPropertyValue('--liquid-corner-power');
-      lens.el.style.setProperty('--liquid-corner-power','2'); lens.updateMetrics(); r.render(); result.roundCoverage=coverage();
+      lens.el.style.setProperty('--liquid-corner-power','2'); lens.invalidate(true); draw(); result.roundCoverage=coverage();
       if(oldPower)lens.el.style.setProperty('--liquid-corner-power',oldPower);
       else lens.el.style.removeProperty('--liquid-corner-power');
-      lens.updateMetrics(); r.render();
+      lens.invalidate(true); draw();
       return result;
     });
     assert.equal(corners.power,2.25,'glass renders the same continuous corner as its CSS surface');
@@ -133,26 +113,28 @@ const server=http.createServer((req,res)=>{
     assert.ok(corners.wheelPowers.every(power=>power===2),'wheel silhouettes stay circular');
 
     const contact=await page.evaluate(()=>{
-      const r=Object.values(window.__liquidGLRenderers__)[0], lens=r.lenses[0], rect=lens.rectPx;
+      const glass=DebriPod.glass.instance, lens=DebriPod.glass.surface.lenses[0], rect=lens.el.getBoundingClientRect();
+      // The contact easing advances once per drawn frame, by at most 64 ms.
+      let now=performance.now();
+      const frames=count=>{for(let i=0;i<count;i++){now+=64;glass.frame({timestamp:now,flags:{render:true}});}};
       // A list row or wheel hit region may stop bubbling while it arbitrates
       // the gesture.  The glass contact listener must still see the stream.
       const child=document.createElement('button');
       child.type='button'; child.style.cssText='position:absolute;left:0;top:0;width:1px;height:1px;opacity:0';
       lens.el.appendChild(child);
       child.addEventListener('pointerdown',event=>event.stopPropagation());
-      let now=performance.now();
       child.dispatchEvent(new PointerEvent('pointerdown',{bubbles:true,clientX:rect.left+rect.width/2,clientY:rect.top+rect.height/2,pointerId:19,buttons:1}));
-      for(let i=0;i<8;i++) r._lensContact(lens,now+=64);
-      const pressed={...lens._opticalContact};
+      frames(8);
+      const pressed={...lens.contact};
       // Pointer capture changes the event target, but coordinates continue to
       // drive the highlight toward the user's finger.
       lens.el.dispatchEvent(new PointerEvent('pointermove',{bubbles:true,clientX:rect.left+rect.width*.8,clientY:rect.top+rect.height*.25,pointerId:19,buttons:1}));
-      for(let i=0;i<4;i++) r._lensContact(lens,now+=64);
-      const moved={...lens._opticalContact};
+      frames(4);
+      const moved={...lens.contact};
       lens.el.dispatchEvent(new PointerEvent('pointercancel',{bubbles:true,pointerId:19}));
-      for(let i=0;i<8;i++) r._lensContact(lens,now+=64);
+      frames(8);
       child.remove();
-      return {pressed,moved,released:lens._opticalContact.press};
+      return {pressed,moved,released:lens.contact?lens.contact.press:0};
     });
     assert.equal(contact.pressed.press,1,'touch highlight reaches its pressed state');
     assert.ok(Math.abs(contact.pressed.x-0.5)<0.01 && Math.abs(contact.pressed.y-0.5)<0.01);
@@ -174,20 +156,25 @@ const server=http.createServer((req,res)=>{
     await page.evaluate(()=>DebriPod.wallpaper.ready);
     assert.equal(await page.evaluate(()=>DebriPod.wallpaper.active()),false,'deleted wallpaper cannot return on reload');
     const tiltLighting=await require('./tilt-lighting-checks.cjs')(page);
-    // Compile and draw the actual bounded-kernel fallback with LOD unavailable.
+    // Compile and draw the actual no-LOD fallback (WebGL1, no texture LOD) on the fixture surface.
     const fallback=await browser.newPage({viewport:{width:800,height:600}});
     await fallback.addInitScript(()=>{
       const original=WebGLRenderingContext.prototype.getExtension;
       WebGLRenderingContext.prototype.getExtension=function(name){return name==='EXT_shader_texture_lod'?null:original.call(this,name);};
     });
     await fallback.goto(url+'/tests/fixtures/liquid_gl_signed_material_harness.html');
-    await fallback.waitForFunction(()=>window.__liquidGLRenderers__ && Object.keys(window.__liquidGLRenderers__).length===8);
-    const samples=await fallback.evaluate(()=>Object.values(window.__liquidGLRenderers__).map(r=>{
-      r.render(); const lens=r.lenses[0],p=lens.rectPx,d=r._dpr;
-      const color=new Uint8Array(4);r.gl.readPixels(Math.round((p.left+p.width/2)*d),Math.round(r.canvas.height-(p.top+p.height/2)*d),1,1,r.gl.RGBA,r.gl.UNSIGNED_BYTE,color);
-      return {backend:r.debugState().opticalBackend,error:r.gl.getError(),color:Array.from(color)};
-    }));
-    samples.forEach(row=>{assert.equal(row.backend,'bounded-kernel');assert.equal(row.error,0);assert.ok(row.color[3]>240,'glass must remain opaque over an opaque backdrop');});
+    await fallback.waitForFunction(()=>window.__glassFixture && window.__glassFixture.lenses.length===8);
+    const samples=await fallback.evaluate(()=>{
+      const {glass,surface,lenses}=window.__glassFixture;
+      glass.requestRender(); glass.frame({timestamp:performance.now(),flags:{render:true}});
+      const gl=surface.gl, d=surface.renderScale, H=surface.canvas.height;
+      return lenses.map(lens=>{
+        const p=lens.rect;
+        const color=new Uint8Array(4);gl.readPixels(Math.round((p.left+p.width/2)*d),Math.round(H-(p.top+p.height/2)*d),1,1,gl.RGBA,gl.UNSIGNED_BYTE,color);
+        return {lodMode:surface.caps.lodMode,webgl2:surface.caps.webgl2,error:gl.getError(),color:Array.from(color)};
+      });
+    });
+    samples.forEach(row=>{assert.equal(row.lodMode,'bias','no-LOD path');assert.equal(row.webgl2,false);assert.equal(row.error,0);assert.ok(row.color[3]>240,'glass must remain opaque over an opaque backdrop');});
     assert.ok(samples[0].color.slice(0,3).every(v=>v<12),'dark endpoint');
     assert.ok(samples[6].color.slice(0,3).every(v=>v>240),'light endpoint');
     await fallback.screenshot({path:path.join(output,'testing-glass-fallback.png')});
