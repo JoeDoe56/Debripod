@@ -1,10 +1,9 @@
 # Testing Glass branch
 
-The `testing-glass` branch starts from `codex/testing3`. It replaces the optical
-material inside DebriPod's shared LiquidGL renderer, with the original signed
-material slider and device settings retained. Source revisions, licensing and
-adaptations are recorded in
-[`static/vendor/liquid-glass/NOTICE.md`](../debripod/static/vendor/liquid-glass/NOTICE.md).
+The glass is drawn by the vendored [sfgl](https://github.com/JoeDoe56/sfgl) engine
+(`debripod/static/vendor/sfgl/`), with the original signed material slider and
+device settings retained. Source revisions, licensing and adaptations are
+recorded in [`static/vendor/sfgl/NOTICE.md`](../debripod/static/vendor/sfgl/NOTICE.md).
 
 ## Wallpaper comparison
 
@@ -27,22 +26,17 @@ Remove Wallpaper control.
 
 ## Rendering and checks
 
-- Two shared glass contexts, existing source artwork reuse, render scale, frame
-  scheduling, layered glass and row text remain in place.
-- Mip blur prepares a bounded GPU source only when artwork/visualizer state or
-  source geometry changes. Slider, pointer-light and press updates reuse it.
-- Native CSS shadows on the wheel explicitly use round corners so the global
-  squircle CSS cannot produce a second silhouette around the circular shader.
-- Specular rims use `codex/testing3`'s 3D light response with the newer sensor
-  mapping and touch glow. The broad face highlight also uses the 3D light
-  projection, so small tilts cross neutral without a direction flip.
-- Sensor input compares physical orientation matrices relative to the initial
-  screen normal, keeping upright angle exchanges continuous. Lighting resumes
-  its 45 ms smoothing after stationary holds rather than counting idle time.
-- Touch contact survives the Pointer Events cancellation used by native list
-  scrolling, follows the held finger, and releases when the touch ends.
-- `renderer.debugState()` reports `opticalBackend`, `opticalPrepareCount`, and
-  `opticalTextureSize` for inspecting cache reuse.
+- **Surface:** one sfgl surface draws every lens, including the wheel. The wheel's tilt is a perspective projection in the lens vertex shader, so there is no separate wheel canvas.
+- **Backdrop:** the backdrop (visualizer or wallpaper) is prepared once per frame into a mip-mapped texture. A static source is not prepared again. Slider, pointer-light and press updates reuse the prepared texture.
+- **Quality:** Settings → Glass → Glass quality chooses a tier.
+  - Auto picks a tier for the device and lowers the render scale, then the tier, when frames run slow.
+  - Superfluid, Glass and Lite draw with WebGL.
+  - Frost (blur) and Solid are CSS only.
+  - A lost WebGL context falls back to Frost until it is restored.
+- **Wheel shadows:** native CSS shadows on the wheel explicitly use round corners, so the global squircle CSS cannot produce a second silhouette around the circular shader.
+- **Specular rims:** they use the 3D light response with the sensor mapping and touch glow. The broad face highlight uses the same 3D light projection, so small tilts cross neutral without the direction flipping.
+- **Touch contact:** it survives the Pointer Events cancellation used by native list scrolling, follows the held finger, and releases when the touch ends.
+- **Debugging:** `DebriPod.glass.stats()` reports renders, backdrop prepares, layer copies, lens draws, the active tier and render scale. `DebriPod.glass.instance.debugFlat(true)` draws the backdrop without optics, for checking projection.
 
 Run `node --test tests/js/*.test.mjs`, then, with `NODE_PATH` pointing to an existing
 Playwright/pngjs installation:
@@ -54,7 +48,7 @@ node tests/browser/redesign-smoke.cjs
 ```
 
 The optical browser check exercises the native picker, saved wallpaper restore,
-deletion across reloads, invalid images, two-context/1.5x rendering, idle texture
+deletion across reloads, invalid images, single-surface 1.5x rendering, idle texture
 reuse, circular wheel CSS, touch-highlight release, smooth rim and face lighting
 through neutral, and actual GPU output on the no-LOD fallback. The redesign
 check also exercises touch glow during native list scrolling. Images

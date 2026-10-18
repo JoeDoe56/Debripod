@@ -2,7 +2,7 @@
 
 DebriPod is a local async media app for browsing, streaming, downloading, organizing, and playing media from your own computer. It opens in your browser at a local address, usually `http://127.0.0.1:8083`.
 
-DebriPod supports local audio and video libraries, unified metadata and folder browsing, playlists, YouTube and YouTube Music, Soulseek, torrent discovery, multiple debrid providers, Last.fm, local accounts, passkeys, a first run setup wizard, task tracking, per user settings, SQLite backed library caches, cached client state, a PWA service worker, LiquidGL glass UI, a WebGL visualizer, and optional MCP access.
+DebriPod supports local audio and video libraries, unified metadata and folder browsing, playlists, YouTube and YouTube Music, Soulseek, torrent discovery, multiple debrid providers, Last.fm, local accounts, passkeys, a first run setup wizard, task tracking, per user settings, SQLite backed library caches, cached client state, a PWA service worker, a liquid-glass UI built on [sfgl](https://github.com/JoeDoe56/sfgl), a WebGL visualizer, and optional MCP access.
 
 ## Quick install
 
@@ -125,11 +125,11 @@ The rule format looks like this.
 
 Remove the `#` marker from rules you want to activate, then save the smart playlist from the UI.
 
-### Visualizer, LiquidGL, and client cache
+### Visualizer, glass, and client cache
 
-The UI includes a WebGL visualizer, album art color extraction, LiquidGL glass surfaces, a wheel interface, selected row glass, a path pill, and a now playing control pill. Host Grotesk typography, shared circular indicators, and locally bundled SF Symbol glyphs give browsing and settings one visual system. Advanced Settings → Text controls base foreground opacity. Numeric adjustments temporarily reuse the control pill for the exact value and progress bar. Visualizer and glass settings are managed in the UI and stored locally.
+The UI includes a WebGL visualizer, album art color extraction, liquid-glass surfaces drawn by the vendored sfgl engine (`static/vendor/sfgl`, refreshed with `Scripts/sync-sfgl.sh`), a wheel interface, selected row glass, a path pill, and a now playing control pill. Host Grotesk typography, shared circular indicators, and locally bundled SF Symbol glyphs give browsing and settings one visual system. Advanced Settings → Text controls base foreground opacity. Numeric adjustments temporarily reuse the control pill for the exact value and progress bar. Visualizer and glass settings are managed in the UI and stored locally.
 
-The frontend is split into smaller modules for API access, client sync, library browsing, list rendering, LiquidGL, playback, media session handling, now playing UI, path pill behavior, passkeys, search tasks, settings, visualizer behavior, wheel controls, and performance overlay. DebriPod also includes a service worker and cached client mirror so common app state and library views can survive refreshes more cleanly.
+The frontend is split into smaller modules for API access, client sync, library browsing, list rendering, the sfgl glass adapter, playback, media session handling, now playing UI, path pill behavior, passkeys, search tasks, settings, visualizer behavior, wheel controls, and performance overlay. DebriPod also includes a service worker and cached client mirror so common app state and library views can survive refreshes more cleanly.
 
 ### Last.fm
 
@@ -191,7 +191,7 @@ debripod/
   Services/               unified search, Local Index, torrent API, Debrid, Soulseek, yt-dlp, and Last.fm helpers
   Tasks/                  task model and task manager helpers
   playback/               streaming, range responses, ffprobe, and command helpers
-  static/                 static shell/auth pages, JS modules, LiquidGL, visualizer, service worker, fonts
+  static/                 static shell/auth pages, JS modules, vendored sfgl, visualizer, service worker, fonts
 install/
   debripod.sh             macOS and Linux installer, updater, and launcher
   debripod.ps1            Windows installer, updater, and launcher
