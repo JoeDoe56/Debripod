@@ -42,6 +42,11 @@ const server = http.createServer((req, res) => {
     page.on('pageerror', error => errors.push(error.message));
     await page.goto(`http://127.0.0.1:${server.address().port}`);
     await page.waitForFunction(() => window.state && state.items.length && typeof viewLibAdvancedCategory === 'function');
+    await page.evaluate(() => setView({kind:'metalist', label:'Albums', load:async () => resetList([
+      {kind:'album', label:'The Band', sub_label:'The Band', artist:'The Band'},
+      {kind:'album', label:'Artist — Album', sub_label:'Artist · Album · 2026'},
+    ])}, true));
+    assert.deepEqual(await page.locator('#libList .dpRowSecondary').allTextContents(), ['The Band', 'Artist · Album · 2026']);
     const position = () => page.evaluate(() => ({selection:state.sel, scroll:libList.scrollTop, offset:state.pageAnchorOffset,
       y:libList.querySelector('.ipodItem.sel').getBoundingClientRect().top}));
     async function select(action) {
