@@ -569,7 +569,7 @@
     requestAnimationFrame(()=>{
       try{
         const input = libList && libList.querySelector(".ipodItem.sel .libInlineInput");
-        if(input){ input.focus(); input.click(); }
+        if(input){ input.focus({preventScroll:true}); input.click(); }
       }catch(e){}
     });
   }
@@ -2103,12 +2103,8 @@ async function libDoSearch(engine, q){
       const js = await apiGet("/api/library/reindex/status", {networkOnly:true, cache:"no-store"});
       state.fullReindexStatus = (js && js.status) ? js.status : {};
       if(state.current && state.current.kind === "libadvancedcategory" && state.current.advancedCategory === "system"){
-        const prevSel = state.sel;
-        const prevScroll = libList ? libList.scrollTop : 0;
+        snapshotListState();
         resetList(advancedRowsForCategory("system"));
-        state.sel = Math.max(0, Math.min((state.items || []).length - 1, prevSel));
-        renderList();
-        try{ if(libList) libList.scrollTop = prevScroll; }catch(e){}
       }
       scheduleFullReindexPoll();
     }catch(e){
@@ -2690,7 +2686,7 @@ async function libDoSearch(engine, q){
       try{
         const input = libList ? libList.querySelector(".ipodItem.sel .libInlineInput") : null;
         if(input){
-          input.focus();
+          input.focus({preventScroll:true});
           input.click();
           const n = String(input.value || "").length;
           input.setSelectionRange(n, n);
