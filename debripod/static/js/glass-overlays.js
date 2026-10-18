@@ -2,7 +2,8 @@
 (function(root){
   "use strict";
   const duration=135, active=new WeakMap(), running=new Set(), snapshots=new WeakMap();let observer=null;
-  const segment=text=>root.Intl?.Segmenter?Array.from(new Intl.Segmenter(undefined,{granularity:'grapheme'}).segment(text),x=>x.segment):Array.from(text);
+  let segmenter=null;
+  const segment=text=>{if(!root.Intl?.Segmenter)return Array.from(text);segmenter=segmenter||new Intl.Segmenter(undefined,{granularity:'grapheme'});return Array.from(segmenter.segment(text),x=>x.segment);};
   // LCS retains each unchanged character, including stable runs in the middle.
   function changes(before,after){
     const a=segment(before),b=segment(after),same=new Set();
@@ -17,7 +18,7 @@
   }
   function visible(el){
     if(!el?.isConnected || root.document.hidden || root.matchMedia?.('(prefers-reduced-motion: reduce)').matches)return false;
-    if(el.closest('script,style,textarea,input,select,[data-liquid-overlay-exempt],[data-liquid-overlay],.liquidOverlayGhost'))return false;
+    if(el.closest('script,style,textarea,input,select,[data-liquid-overlay-exempt],[data-sf-transition-exempt],[data-liquid-overlay],.liquidOverlayGhost'))return false;
     const r=el.getBoundingClientRect();let left=Math.max(0,r.left),top=Math.max(0,r.top),right=Math.min(root.innerWidth,r.right),bottom=Math.min(root.innerHeight,r.bottom);
     for(let p=el;p&&p!==root.document.documentElement;p=p.parentElement){
       const style=root.getComputedStyle(p);if(style.display==='none'||style.visibility==='hidden'||Number(style.opacity)===0)return false;
@@ -91,16 +92,17 @@
     let finished=false;const cleanup=()=>{if(finished)return;finished=true;for(const a of animations)a.cancel();write(()=>ghost.remove());active.delete(el);running.delete(cleanup);};active.set(el,cleanup);running.add(cleanup);
     Promise.all(animations.map(a=>a.finished.catch(()=>{}))).then(cleanup);
   }
+  function keyOf(node){return node.getAttribute('data-liquid-key')||node.getAttribute('data-sf-key')||node.id;}
   function textLeaves(nodes){
     const found=new Map();
     const visit=(node,path)=>{
       if(node.nodeType===3){found.set(path,node);return;}
       if(node.nodeType!==1||node.matches('script,style,[data-liquid-overlay],.liquidOverlayGhost'))return;
       if(node.childNodes.length&&Array.from(node.childNodes).every(n=>n.nodeType===3||(n.nodeType===1&&n.hasAttribute('data-liquid-overlay')))){
-        const key=node.getAttribute('data-liquid-key')||node.id;if(key)path='key:'+key;
+        const key=keyOf(node);if(key)path='key:'+key;
         found.set(path+'/0',node.childNodes.length===1&&node.firstChild.nodeType===3?node.firstChild:{data:node.textContent});return;
       }
-      const key=node.getAttribute('data-liquid-key')||node.id;
+      const key=keyOf(node);
       if(key)path='key:'+key;
       Array.from(node.childNodes).forEach((child,i)=>visit(child,path+'/'+i));
     };
@@ -115,7 +117,7 @@
       for(const r of records){
         if(r.target.nodeType===1&&r.target.closest('[data-liquid-overlay],.liquidOverlayGhost'))continue;
         if(r.type==='attributes'){
-          if(r.attributeName==='src'&&r.target.hasAttribute('data-liquid-symbol'))animateSymbol(r.target,r.oldValue);
+          if(r.attributeName==='src'&&(r.target.hasAttribute('data-liquid-symbol')||r.target.hasAttribute('data-sf-symbol')))animateSymbol(r.target,r.oldValue);
           else if(r.attributeName==='hidden'&&r.oldValue!==null&&!r.target.hidden&&visible(r.target))r.target.animate?.([{filter:'blur(3px)',scale:'.9',opacity:.1},{filter:'blur(0)',scale:'1',opacity:1}],{duration,easing:'ease-out'});
           continue;
         }

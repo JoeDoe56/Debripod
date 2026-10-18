@@ -224,3 +224,41 @@ test("movement after a stationary hold resumes smoothing instead of snapping",()
   assert.ok(Math.hypot(first.x-before.x,first.y-before.y)<distance*.5,'first frame must not jump to the new target');
   assert.ok(Math.hypot(first.x-before.x,first.y-before.y)>distance*.1,'the light must start responding promptly');
 });
+
+test("mouse lighting reaches the opposite rims at tilt strength and holds where the pointer stops", () => {
+  const f = load({permission:"denied", stored:"denied"});
+  const settle = () => { for(let i = 0; i < 80; i++) f.api.testing.step(i * 20 + 1000); };
+  f.api.testing.pointerMove({clientX:400, clientY:400});
+  settle();
+  const right = f.api.state();
+  assert.equal(right.source, "pointer");
+  assert.ok(right.intensity > 0.9, "pointer light uses the same strength as device tilt");
+  assert.ok(right.x > 0.5, "the right edge moves the light well past neutral: " + right.x);
+  f.api.testing.pointerMove({clientX:0, clientY:800});
+  settle();
+  const lowerLeft = f.api.state();
+  assert.ok(lowerLeft.x < -0.5 && lowerLeft.y > 0.4, JSON.stringify(lowerLeft));
+  // No idle timer: the light stays where the pointer left it.
+  settle();
+  const held = f.api.state();
+  assert.ok(Math.abs(held.x - lowerLeft.x) < 0.01 && Math.abs(held.y - lowerLeft.y) < 0.01 && held.source === "pointer", JSON.stringify(held));
+});
+
+test("mouse lighting returns to neutral only when the pointer leaves the window", () => {
+  const f = load({permission:"denied", stored:"denied"});
+  const settle = () => { for(let i = 0; i < 80; i++) f.api.testing.step(i * 20 + 1000); };
+  f.api.testing.pointerMove({clientX:400, clientY:0});
+  settle();
+  f.api.testing.pointerLeftWindow({relatedTarget:{}});
+  settle();
+  assert.equal(f.api.state().source, "pointer", "moving between elements is not leaving the window");
+  f.api.testing.pointerLeftWindow({relatedTarget:null});
+  settle();
+  assert.equal(f.api.state().source, "default");
+  assert.ok(Math.abs(f.api.state().intensity - 0.22) < 0.01);
+});
+
+test("pointer lighting listens in the capture phase so wheel drags cannot hide it", () => {
+  assert.match(source, /addEventListener\("pointermove", pointerMove, \{passive:true, capture:true\}\)/);
+  assert.doesNotMatch(source, /setTimeout\(resetPointerLight/);
+});
