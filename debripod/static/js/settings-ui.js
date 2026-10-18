@@ -2956,7 +2956,7 @@ async function libDoSearch(engine, q){
         saveUiSettings();
         try{ if(window.DebriPod && DebriPod.glass && DebriPod.glass.instance) DebriPod.glass.instance.invalidate(true); }catch(e){}
         try{ if(typeof scheduleLiquidGlassRender === "function") scheduleLiquidGlassRender(); }catch(e){}
-        await viewLibUiSettings(false);
+        await viewLibAdvancedCategory("glass", false);
         return true;
       }
       case "cycle_visualizer_fps_lock":
