@@ -76,7 +76,6 @@ test("glass follows per-render DOM geometry including the bouncing center", () =
   assert.match(glue, /liveGeometry: true/);
   assert.match(liquid, /this\._syncDomRect = this\.options\.liveGeometry === true/);
   assert.match(liquid, /else if \(this\.lenses\.some\(\(lens\) => lens && lens\._syncDomRect\)\)/);
-  assert.match(liquid, /this\._mirrorActive && this\._baseRect/);
   assert.doesNotMatch(liquid, /_liveMirrorBaseRect/);
 });
 
@@ -203,9 +202,9 @@ test("rounded lens shadows stay on the element and never spawn detached clones",
   vm.createContext(context);
   const method=vm.runInContext('({'+liquid.slice(start,end)+'}).setShadow',context);
   let removed=0;
-  const lens={options:{},el:{style:{}},originalShadow:'none',_shadowEl:{remove(){removed++;}},_shadowValue:()=> 'rounded-shadow'};
+  const lens={options:{},el:{style:{}},originalShadow:'none',_shadowValue:()=> 'rounded-shadow'};
   method.call(lens,true,.2);
-  assert.equal(removed,1);assert.equal(lens._shadowEl,null);assert.equal(lens.el.style.boxShadow,'rounded-shadow');
+  assert.equal(lens.el.style.boxShadow,'rounded-shadow');
   method.call(lens,false,.2);assert.equal(lens.el.style.boxShadow,'none');
 });
 

@@ -222,137 +222,6 @@
   }
 
   /* --------------------------------------------------
-   *  Glassworks capture backend.
-   *  DebriPod uses direct visualizer, album art, video, or WebGL sources for
-   *  normal renderers. DOM snapshots are snapdom-only and never use fallback
-   *  canvas rasterizers, so text can stay isolated above the glass.
-   * ------------------------------------------------*/
-
-  function parseBackgroundImageUrl(value) {
-    if (!value || value === "none") return null;
-    const m = String(value).match(/^url\(["']?([^)"']+)["']?\)\s*$/);
-    return m ? m[1] : null;
-  }
-
-  async function injectBackgroundImageShims(target) {
-    const cleanups = [];
-    const loads = [];
-    if (!target || !target.querySelectorAll) return cleanups;
-    target.querySelectorAll("*").forEach((el) => {
-      let cs;
-      try { cs = window.getComputedStyle(el); } catch (e) { return; }
-      const url = parseBackgroundImageUrl(cs.backgroundImage);
-      if (!url) return;
-      const restores = [];
-      if (cs.position === "static") {
-        const prev = el.style.position;
-        el.style.position = "relative";
-        restores.push(() => { el.style.position = prev; });
-      }
-      if (cs.isolation !== "isolate") {
-        const prev = el.style.isolation;
-        el.style.isolation = "isolate";
-        restores.push(() => { el.style.isolation = prev; });
-      }
-      const shim = document.createElement("img");
-      shim.crossOrigin = "anonymous";
-      shim.setAttribute("data-liquidgl-bg-shim", "");
-      shim.setAttribute("data-liquid-ignore", "");
-      shim.style.cssText = [
-        "position:absolute",
-        "inset:0",
-        "width:100%",
-        "height:100%",
-        "object-fit:" + (cs.backgroundSize === "contain" ? "contain" : "cover"),
-        "object-position:" + (cs.backgroundPosition || "50% 50%"),
-        "pointer-events:none",
-        "z-index:-1",
-        "border-radius:" + cs.borderRadius,
-        "user-select:none"
-      ].join(";");
-      loads.push(new Promise((resolve) => {
-        let done = false;
-        const finish = () => { if (!done) { done = true; resolve(); } };
-        shim.addEventListener("load", finish, { once: true });
-        shim.addEventListener("error", finish, { once: true });
-        setTimeout(finish, 1500);
-      }));
-      shim.src = url;
-      el.insertBefore(shim, el.firstChild);
-      cleanups.push(() => {
-        if (shim.parentNode) shim.parentNode.removeChild(shim);
-        for (let i = restores.length - 1; i >= 0; i--) restores[i]();
-      });
-    });
-    if (loads.length) await Promise.all(loads);
-    return cleanups;
-  }
-
-  function snapshotLooksComplete(canvas) {
-    if (!canvas || canvas.width <= 0 || canvas.height <= 0 || canvas.height < 200) return true;
-    let ctx;
-    try { ctx = canvas.getContext("2d", { willReadFrequently: true }); } catch (e) { return true; }
-    if (!ctx) return true;
-    const rows = [Math.floor(canvas.height * 0.55), Math.floor(canvas.height * 0.75), Math.max(0, canvas.height - 32)];
-    for (const y of rows) {
-      let data;
-      try { data = ctx.getImageData(0, y, canvas.width, 1).data; } catch (e) { return true; }
-      let opaque = 0;
-      for (let i = 0; i < data.length; i += 4) if (data[i + 3] > 16) opaque++;
-      if (opaque / Math.max(1, data.length / 4) > 0.01) return true;
-    }
-    return false;
-  }
-
-  async function snapdomCapture(target, scale) {
-    return window.snapdom.toCanvas(target, {
-      scale,
-      dpr: 1,
-      outerTransforms: false,
-      backgroundColor: "transparent",
-      crossOrigin: "anonymous",
-      embedFonts: true
-    });
-  }
-
-  async function snapToCanvas(target, { scale, ignore, engine, onEngineFallback, validateCompleteness } = {}) {
-    if ((engine || "snapdom") !== "snapdom") throw new Error("liquidGL: DOM snapshot engine disabled.");
-    if (typeof window.snapdom === "undefined") {
-      throw new Error("liquidGL: snapdom missing and DOM snapshot fallback is disabled.");
-    }
-    const restores = [];
-    if (typeof ignore === "function" && target.querySelectorAll) {
-      target.querySelectorAll("*").forEach((el) => {
-        try {
-          if (ignore(el)) {
-            const prev = el.style.visibility;
-            el.style.visibility = "hidden";
-            restores.push(() => { el.style.visibility = prev; });
-          }
-        } catch (e) {}
-      });
-    }
-    const shimCleanups = await injectBackgroundImageShims(target);
-    let canvas = null;
-    let failed = false;
-    try {
-      canvas = await snapdomCapture(target, scale);
-    } catch (e) {
-      failed = true;
-      liquidGLLog("warn", "liquidGL: snapdom capture failed.", e);
-    } finally {
-      for (let i = restores.length - 1; i >= 0; i--) restores[i]();
-    }
-    if (failed || (validateCompleteness === true && !snapshotLooksComplete(canvas))) {
-      if (typeof onEngineFallback === "function") onEngineFallback("disabled");
-      for (let i = shimCleanups.length - 1; i >= 0; i--) shimCleanups[i]();
-      throw new Error("liquidGL: DOM snapshot capture unavailable.");
-    }
-    for (let i = shimCleanups.length - 1; i >= 0; i--) shimCleanups[i]();
-    return canvas;
-  }
-
-  /* --------------------------------------------------
    *  Shared renderer (one per page)
    * ------------------------------------------------*/
   class liquidGLRenderer {
@@ -364,7 +233,6 @@
       this.canvas.setAttribute("data-liquid-renderer", rendererKey || "default");
       document.body.appendChild(this.canvas);
 
-      const isMobileSafari = /iPad|iPhone|iPod/.test(navigator.userAgent);
       const ctxAttribs = {
         alpha: true,
         premultipliedAlpha: true,
@@ -384,17 +252,11 @@
       this.textureWidth = 0;
       this.textureHeight = 0;
       this.scaleFactor = 1;
-      this.startTime = Date.now();
       this._scrollUpdateCounter = 0;
-      this._snapshotResolution = Math.max(
-        0.1,
-        Math.min(3.0, snapshotResolution)
-      );
       this.sourceType = sourceOptions.sourceType || "visualizerWebgl";
       this.sourceSelector = sourceOptions.sourceElement || sourceOptions.source || "#visualizerBg";
       this.sourceCssSelector = sourceOptions.sourceCssElement || sourceOptions.sourceCssSelector || null;
       this.sourceProvider = typeof sourceOptions.sourceProvider === "function" ? sourceOptions.sourceProvider : null;
-      this._engine = "snapdom";
       this._sourceElement = null;
       this._sourceCssRect = null;
       this._sourceTextureReady = false;
@@ -416,8 +278,6 @@
       this._albumRenderedAt = 0;
       this._albumSourceRect = null;
       this._albumSourceSize = { width: 1, height: 1 };
-      this._debugCanaryTexture = null;
-      this._hiddenSkipSince = 0;
       this.renderCount = 0;
       this.sourceRefreshCount = 0;
       this._renderSubmissionSamples = [];
@@ -453,15 +313,6 @@
           return;
         }
 
-        this._dynamicNodes.forEach((node) => {
-          const meta = this._dynMeta.get(node.el);
-          if (meta) {
-            meta.needsRecapture = true;
-            meta.prevDrawRect = null;
-            meta.lastCapture = null;
-          }
-        });
-
         this._resizeCanvas();
         this._metricsDirty = true;
         this.lenses.forEach((l) => l.updateMetrics());
@@ -474,21 +325,10 @@
         new ResizeObserver(onResize).observe(this.snapshotTarget);
       }
 
-      /* --------------------------------------------------
-       *  Dynamic DOM elements (non-video, e.g. animating text)
-       * ------------------------------------------------*/
-      this._dynamicNodes = [];
-      this._dynMeta = new WeakMap();
-      this._lastDynamicUpdate = 0;
       this._metricsDirty = true;
       this._snapshotRectPx = null;
       this._externalFrameState = null;
       this._dpr = Math.min(2, window.devicePixelRatio || 1);
-
-      const styleEl = document.createElement("style");
-      styleEl.id = "liquid-gl-dynamic-styles";
-      document.head.appendChild(styleEl);
-      this._dynamicStyleSheet = styleEl.sheet;
 
       this._resizeCanvas();
       this._pendingReveal = [];
@@ -497,67 +337,9 @@
       /* --------------------------------------------------
        *  Dynamic media (video) support
        * ------------------------------------------------*/
-      this._videoNodes = Array.from(
-        this.snapshotTarget.querySelectorAll("video")
-      );
-      this._videoNodes = this._videoNodes.filter((v) => !this._isIgnored(v));
-      this._tmpCanvas = document.createElement("canvas");
-      this._tmpCtx = this._tmpCanvas.getContext("2d");
-
       this.canvas.style.opacity = "0";
 
       this.useExternalTicker = false;
-
-      /* --------------------------------------------------
-       *  Inline worker for heavy dynamic nodes
-       * ------------------------------------------------*/
-      this._workerEnabled =
-        typeof OffscreenCanvas !== "undefined" &&
-        typeof Worker !== "undefined" &&
-        typeof ImageBitmap !== "undefined";
-
-      if (this._workerEnabled) {
-        const workerSrc = `
-          /* dynamic-element worker (runs in its own thread) */
-          self.onmessage = async (e) => {
-            const { id, width, height, snap, dyn } = e.data;
-            const off = new OffscreenCanvas(width, height);
-            const ctx = off.getContext('2d');
-
-            ctx.drawImage(snap, 0, 0, width, height);
-            ctx.drawImage(dyn, 0, 0, width, height);
-
-            const bmp = await off.transferToImageBitmap();
-            self.postMessage({ id, bmp }, [bmp]);
-          };
-        `;
-        const blob = new Blob([workerSrc], { type: "application/javascript" });
-        this._dynWorker = new Worker(URL.createObjectURL(blob), {
-          type: "module",
-        });
-
-        this._dynJobs = new Map();
-
-        this._dynWorker.onmessage = (e) => {
-          const { id, bmp } = e.data;
-          const meta = this._dynJobs.get(id);
-          if (!meta) return;
-          this._dynJobs.delete(id);
-
-          const { x, y, w, h } = meta;
-          const gl = this.gl;
-          gl.bindTexture(gl.TEXTURE_2D, this.texture);
-          gl.texSubImage2D(
-            gl.TEXTURE_2D,
-            0,
-            x,
-            y,
-            gl.RGBA,
-            gl.UNSIGNED_BYTE,
-            bmp
-          );
-        };
-      }
     }
 
     /* ----------------------------- */
@@ -602,14 +384,10 @@
         uniform vec4  u_bounds;
         uniform float u_albumMix;
         uniform float u_refraction;
-        uniform float u_refractionFill;
-        uniform float u_bevelDepth;
-        uniform float u_bevelWidth;
         uniform float u_frost;
         uniform float u_frostSamples;
         uniform float u_radius;
         uniform float u_cornerPower;
-        uniform float u_time;
         uniform bool  u_specular;
         uniform float u_revealProgress;
         uniform int   u_revealType;
@@ -619,11 +397,9 @@
         uniform float u_magnify;
         uniform float u_hollowInset;
         uniform bool  u_hollowMaskContent;
-        uniform float u_material;
         uniform float u_materialDensity;
         uniform float u_materialSign;
         uniform vec3  u_materialTone;
-        uniform float u_materialAlpha;
         uniform float u_specularPrimary;
         uniform float u_specularSecondary;
         uniform bool  u_useAlbumTransitionSource;
@@ -634,7 +410,6 @@
         uniform float u_reactiveArtMix;
         uniform float u_reactivePreviousAngle;
         uniform vec2  u_reactiveViewport;
-        uniform vec2  u_reactiveParallax;
         uniform float u_reactiveAngle;
         uniform float u_reactiveLumaLow;
         uniform float u_reactiveLumaHigh;
@@ -668,14 +443,6 @@
             ? pow(pow(unit.x, power) + pow(unit.y, power), 1.0 / power) * max(r, 1.0)
             : length(outside);
           return corner + min(max(q.x, q.y), 0.0) - r;
-        }
-
-        float edgeFactor(vec2 uv, float radius_px){
-          vec2 p_px = (uv - 0.5) * u_resolution;
-          vec2 b_px = 0.5 * u_resolution;
-          float d = -udRoundBox(p_px, b_px, radius_px);
-          float bevel_px = u_bevelWidth * min(u_resolution.x, u_resolution.y);
-          return 1.0 - smoothstep(0.0, bevel_px, d);
         }
 
         float hollowInnerShapeAtTextureUV(vec2 textureUV) {
@@ -1109,14 +876,10 @@
         bounds: gl.getUniformLocation(this.program, "u_bounds"),
         albumMix: gl.getUniformLocation(this.program, "u_albumMix"),
         refraction: gl.getUniformLocation(this.program, "u_refraction"),
-        refractionFill: gl.getUniformLocation(this.program, "u_refractionFill"),
-        bevelDepth: gl.getUniformLocation(this.program, "u_bevelDepth"),
-        bevelWidth: gl.getUniformLocation(this.program, "u_bevelWidth"),
         frost: gl.getUniformLocation(this.program, "u_frost"),
         frostSamples: gl.getUniformLocation(this.program, "u_frostSamples"),
         radius: gl.getUniformLocation(this.program, "u_radius"),
         cornerPower: gl.getUniformLocation(this.program, "u_cornerPower"),
-        time: gl.getUniformLocation(this.program, "u_time"),
         specular: gl.getUniformLocation(this.program, "u_specular"),
         revealProgress: gl.getUniformLocation(this.program, "u_revealProgress"),
         revealType: gl.getUniformLocation(this.program, "u_revealType"),
@@ -1126,11 +889,9 @@
         magnify: gl.getUniformLocation(this.program, "u_magnify"),
         hollowInset: gl.getUniformLocation(this.program, "u_hollowInset"),
         hollowMaskContent: gl.getUniformLocation(this.program, "u_hollowMaskContent"),
-        material: gl.getUniformLocation(this.program, "u_material"),
         materialDensity: gl.getUniformLocation(this.program, "u_materialDensity"),
         materialSign: gl.getUniformLocation(this.program, "u_materialSign"),
         materialTone: gl.getUniformLocation(this.program, "u_materialTone"),
-        materialAlpha: gl.getUniformLocation(this.program, "u_materialAlpha"),
         specularPrimary: gl.getUniformLocation(this.program, "u_specularPrimary"),
         specularSecondary: gl.getUniformLocation(this.program, "u_specularSecondary"),
         useAlbumTransitionSource: gl.getUniformLocation(this.program, "u_useAlbumTransitionSource"),
@@ -1141,7 +902,6 @@
         reactiveArtMix: gl.getUniformLocation(this.program, "u_reactiveArtMix"),
         reactivePreviousAngle: gl.getUniformLocation(this.program, "u_reactivePreviousAngle"),
         reactiveViewport: gl.getUniformLocation(this.program, "u_reactiveViewport"),
-        reactiveParallax: gl.getUniformLocation(this.program, "u_reactiveParallax"),
         reactiveAngle: gl.getUniformLocation(this.program, "u_reactiveAngle"),
         reactiveLumaLow: gl.getUniformLocation(this.program, "u_reactiveLumaLow"),
         reactiveLumaHigh: gl.getUniformLocation(this.program, "u_reactiveLumaHigh"),
@@ -1170,7 +930,7 @@
       const gl = this.gl;
       gl.uniform1i(this.u.hasOpticalSource, 0);
       gl.uniform2f(this.u.textureResolution, this.textureWidth, this.textureHeight);
-      if (!this._hasTextureLod || this._opticalUnavailable || this._forceGlassCanary()) return;
+      if (!this._hasTextureLod || this._opticalUnavailable) return;
       // Prepare the audio-reactive artwork once per renderer, then reuse it
       // for every lens and every blur/dispersion tap. No canvas uploads.
       const sourceRect = this._sourceCssRect || {width:window.innerWidth, height:window.innerHeight};
@@ -1279,44 +1039,6 @@
     }
 
     /* ----------------------------- */
-    async captureSnapshot(reason = "") {
-      if (this.sourceType !== "domSnapshot") {
-        return this.refreshSourceTexture(reason || "direct source");
-      }
-      if (this._capturing) return false;
-      this._capturing = true;
-      const ignore = (element) => {
-        try {
-          return !!(
-            !element ||
-            element === this.canvas ||
-            (element.hasAttribute && (element.hasAttribute("data-liquid-ignore") || element.hasAttribute("data-liquidgl-bg-shim"))) ||
-            (element.closest && element.closest("[data-liquid-ignore]"))
-          );
-        } catch (e) {
-          return false;
-        }
-      };
-      try {
-        const scale = Math.max(0.1, Math.min(3.0, this._snapshotResolution || 1));
-        const snapCanvas = await snapToCanvas(this.snapshotTarget, {
-          scale,
-          ignore,
-          engine: this._engine,
-          validateCompleteness: true
-        });
-        if (!snapCanvas) return false;
-        this._snapshotRectPx = this.snapshotTarget.getBoundingClientRect();
-        this.scaleFactor = scale;
-        return this._uploadTextureSource(snapCanvas, snapCanvas.width, snapCanvas.height, reason || "dom snapshot", { allowDark: true, skipBlankCheck: false, scaleFactor: scale });
-      } catch (e) {
-        liquidGLLog("warn", "liquidGL: DOM snapshot capture failed.", e);
-        return false;
-      } finally {
-        this._capturing = false;
-      }
-    }
-
     _resolveSourceElement() {
       if (this._sourceElement && document.documentElement.contains(this._sourceElement)) {
         return this._sourceElement;
@@ -1333,7 +1055,6 @@
       const nextCssSelector = options.sourceCssElement || options.sourceCssSelector || this.sourceCssSelector || null;
       const nextProvider = typeof options.sourceProvider === "function" ? options.sourceProvider : this.sourceProvider;
       const providerChanged = nextProvider !== this.sourceProvider;
-      this._engine = "snapdom";
       if (nextType !== this.sourceType || nextSelector !== this.sourceSelector || nextCssSelector !== this.sourceCssSelector || providerChanged) {
         this.sourceType = nextType;
         this.sourceSelector = nextSelector;
@@ -1402,8 +1123,6 @@
         albumNextTexture: !!this._albumNextTexture,
         albumUploadedCurrentSrc: this._albumUploadedCurrentSrc || "",
         albumUploadedNextSrc: this._albumUploadedNextSrc || "",
-        canaryEnabled: this._forceGlassCanary(),
-        albumFlatDebugEnabled: this._debugAlbumSourceFlat(),
         useAlbumTransitionSource: this.sourceType === "albumArtTransition" && !!this._albumCurrentTexture,
         albumSourceSize: this._albumSourceSize || null,
         albumCurrentSize: this._albumCurrentSize || null,
@@ -1429,102 +1148,6 @@
       };
     }
 
-    _rendererDebugEnabled() {
-      try {
-        return this.rendererKey === "removedOverlayKey" && (
-          window.DEBRIPOD_UI_DEBUG === true ||
-          window.DEBRIPOD_LIQUID_RENDERER_DEBUG === true ||
-          (localStorage.getItem("debripod_ui_debug") || "") === "1" ||
-          (localStorage.getItem("debripod_liquid_renderer_debug") || "") === "1"
-        );
-      } catch (e) {
-        return false;
-      }
-    }
-
-    _debugRenderSkip(reason, details = {}) {
-      if (!this._rendererDebugEnabled()) return;
-      liquidGLLog("warn", "liquidGL: renderer diagnostic", Object.assign({
-        reason,
-        rendererState: this.debugState ? this.debugState() : null
-      }, details || {}));
-    }
-
-    _isLensIntentionallyHidden(lens) {
-      try {
-        let node = lens && lens.el ? lens.el : null;
-        while (node && node !== document.body) {
-          const style = window.getComputedStyle(node);
-          if (
-            Number(style.opacity || 1) <= 0.01
-          ) {
-            return true;
-          }
-          node = node.parentElement;
-        }
-      } catch (e) {}
-      return false;
-    }
-
-    _debugLensHidden(lens) {
-      if (this.rendererKey !== "removedOverlayKey" || !this._rendererDebugEnabled()) return;
-      if (this._isLensIntentionallyHidden(lens)) {
-        this._hiddenSkipSince = 0;
-        return;
-      }
-      const now = performance && performance.now ? performance.now() : Date.now();
-      if (!this._hiddenSkipSince) {
-        this._hiddenSkipSince = now;
-        return;
-      }
-      if (now - this._hiddenSkipSince < 250) return;
-      this._hiddenSkipSince = now;
-      this._debugRenderSkip("lens skipped: not visible", {
-        lensClassName: lens && lens.el ? lens.el.className : ""
-      });
-    }
-
-    _forceGlassCanary() {
-      try {
-        return this.rendererKey === "removedOverlayKey" && (
-          window.DEBRIPOD_FORCE_NP_GLASS_CANARY === true ||
-          (localStorage.getItem("debripod_force_glass_canary") || "") === "1"
-        );
-      } catch (e) {
-        return false;
-      }
-    }
-
-    _debugAlbumSourceFlat() {
-      try {
-        return this.rendererKey === "removedOverlayKey" &&
-          this.sourceType === "albumArtTransition" &&
-          (localStorage.getItem("debripod_debug_album_source_flat") || "") === "1";
-      } catch (e) {
-        return false;
-      }
-    }
-
-    _ensureDebugCanaryTexture() {
-      if (this._debugCanaryTexture) return this._debugCanaryTexture;
-      const gl = this.gl;
-      const tex = gl.createTexture();
-      if (!tex) return null;
-      const pixels = new Uint8Array([
-        255, 64, 64, 255, 255, 220, 80, 255,
-        80, 180, 255, 255, 255, 255, 255, 255
-      ]);
-      gl.bindTexture(gl.TEXTURE_2D, tex);
-      gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-      gl.texImage2D(gl.TEXTURE_2D, 0, gl.RGBA, 2, 2, 0, gl.RGBA, gl.UNSIGNED_BYTE, pixels);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MAG_FILTER, gl.NEAREST);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_S, gl.CLAMP_TO_EDGE);
-      gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_WRAP_T, gl.CLAMP_TO_EDGE);
-      this._debugCanaryTexture = tex;
-      return tex;
-    }
-
     _albumSourceSizeForUniform() {
       const rect = this._sourceCssRect || this._albumSourceRect || null;
       return {
@@ -1537,7 +1160,7 @@
       const gl = this.gl;
       const useAlbumTransitionSource = this.sourceType === "albumArtTransition" && !!this._albumCurrentTexture;
       if (this.u.useAlbumTransitionSource) gl.uniform1i(this.u.useAlbumTransitionSource, useAlbumTransitionSource ? 1 : 0);
-      if (this.u.debugAlbumSourceFlat) gl.uniform1i(this.u.debugAlbumSourceFlat, this._debugAlbumSourceFlat() ? 1 : 0);
+      if (this.u.debugAlbumSourceFlat) gl.uniform1i(this.u.debugAlbumSourceFlat, 0);
       if (this.u.albumCurrentTex) {
         gl.activeTexture(gl.TEXTURE1);
         gl.bindTexture(gl.TEXTURE_2D, this._albumCurrentTexture || this.texture);
@@ -1603,15 +1226,6 @@
       gl.activeTexture(gl.TEXTURE0);
       gl.bindTexture(gl.TEXTURE_2D,this.texture);
       gl.uniform2f(this.u.reactiveViewport, window.innerWidth || 1, window.innerHeight || 1);
-      let parallaxX = 0;
-      let parallaxY = 0;
-      try {
-        const lighting = window.DebriPod && window.DebriPod.glassLighting;
-        const motion = lighting && typeof lighting.parallax === "function" ? lighting.parallax() : null;
-        parallaxX = Math.max(-1, Math.min(1, finite(motion && motion.x, 0)));
-        parallaxY = Math.max(-1, Math.min(1, finite(motion && motion.y, 0)));
-      } catch (e) {}
-      if (this.u.reactiveParallax) gl.uniform2f(this.u.reactiveParallax, parallaxX, parallaxY);
       gl.uniform1f(this.u.reactiveAngle, transition.active ? finite(transition.toAngle, Math.PI) : finite(fs.angleRadians, Math.PI));
       gl.uniform1f(this.u.reactiveLumaLow, Math.max(0, Math.min(1, finite(fs.lumaLow, 0))));
       gl.uniform1f(this.u.reactiveLumaHigh, Math.max(.04, Math.min(1, finite(fs.lumaHigh, 1))));
@@ -1770,15 +1384,6 @@
         if (isPowerOfTwoTexture(image.naturalWidth, image.naturalHeight) && gl.generateMipmap && gl.LINEAR_MIPMAP_LINEAR != null) {
           gl.generateMipmap(gl.TEXTURE_2D);
           gl.texParameteri(gl.TEXTURE_2D, gl.TEXTURE_MIN_FILTER, gl.LINEAR_MIPMAP_LINEAR);
-        }
-        if (this._rendererDebugEnabled()) {
-          liquidGLLog("log", "liquidGL: album image uploaded", {
-            rendererKey: this.rendererKey,
-            complete: image.complete === true,
-            naturalWidth: image.naturalWidth || 0,
-            naturalHeight: image.naturalHeight || 0,
-            currentSrc: image.currentSrc || image.src || ""
-          });
         }
       } catch (e) {
         liquidGLLog("warn", "liquidGL: Album art transition texture upload failed.", {
@@ -1987,7 +1592,6 @@
         if (!this.texture) return false;
         this._sourceOwnsTexture = true;
       }
-      const textureSizeChanged = this.textureWidth !== width || this.textureHeight !== height;
       try {
         gl.bindTexture(gl.TEXTURE_2D, this.texture);
         gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
@@ -2019,12 +1623,6 @@
       this.textureHeight = height;
       this.scaleFactor = Number(options.scaleFactor) || 1;
       this._markSourceReadyAfterUpload(reason, { solidFallback: options.solidFallback === true });
-      if (textureSizeChanged && this._dynMeta && this._dynamicNodes) {
-        this._dynamicNodes.forEach((node) => {
-          const meta = this._dynMeta.get(node.el);
-          if (meta) meta.prevDrawRect = null;
-        });
-      }
       liquidGLLog("log", "liquidGL: Texture uploaded.", {
         rendererKey: this.rendererKey,
         reason,
@@ -2202,27 +1800,15 @@
       const renderStartedAt = typeof performance !== "undefined" && performance.now ? performance.now() : Date.now();
       const gl = this.gl;
       if (!this.visible || document.hidden) {
-        if (!this.visible) this._debugRenderSkip("render skipped: renderer not visible");
         this.clear();
         return;
       }
       if (!this.texture) this.refreshSourceTexture("render fallback");
-      if (!this.texture && this._forceGlassCanary()) {
-        const canary = this._ensureDebugCanaryTexture();
-        if (canary) {
-          this.texture = canary;
-          this.textureWidth = 2;
-          this.textureHeight = 2;
-          this._sourceTextureReady = true;
-        }
-      }
       if (!this.texture) {
-        this._debugRenderSkip("render skipped: missing texture");
         this.clear();
         return;
       }
-      if (this.sourceType === "albumArtTransition" && !this._albumCurrentTexture && !this._forceGlassCanary()) {
-        this._debugRenderSkip("render skipped: albumArtTransition missing current texture");
+      if (this.sourceType === "albumArtTransition" && !this._albumCurrentTexture) {
         this.clear();
         return;
       }
@@ -2246,9 +1832,6 @@
       this._bindReactiveVisualizerUniforms(fs);
       this._bindGlobalLightingUniforms(this._globalLightingState());
       this._prepareOpticalBackdrop(fs);
-
-      const time = Number.isFinite(fs.timestamp) ? fs.timestamp / 1000 : (Date.now() - this.startTime) / 1000;
-      gl.uniform1f(this.u.time, time);
 
       if (this._metricsDirty || !this._snapshotRectPx) {
         this._snapshotRectPx = this.snapshotTarget.getBoundingClientRect();
@@ -2286,13 +1869,10 @@
             this._captureUnderGlass();
             currentDepth = nextDepth;
           }
-          this._hiddenSkipSince = 0;
           if (lens._advanceTransition && lens._advanceTransition(transitionTime)) {
             hasActiveVisibleTransition = true;
           }
           this._renderLens(lens);
-        } else {
-          this._debugLensHidden(lens);
         }
       });
 
@@ -2381,34 +1961,20 @@
       const rect = lens.rectPx;
       gl.uniform1i(this.u.hasUnderText, 0);
       const textLayer = this.rendererKey === "main" && window.DebriPod && window.DebriPod.rowRefraction;
-      const forceCanary = this._forceGlassCanary();
-      if (forceCanary && !this.texture) {
-        const canary = this._ensureDebugCanaryTexture();
-        if (canary) {
-          this.texture = canary;
-          this.textureWidth = 2;
-          this.textureHeight = 2;
-        }
-      }
       if (!rect) {
-        this._debugRenderSkip("_renderLens skipped: missing rect");
         return;
       }
-      if ((!this.texture || !this.textureWidth || !this.textureHeight) && !forceCanary) {
-        this._debugRenderSkip("_renderLens skipped: missing texture dimensions");
+      if (!this.texture || !this.textureWidth || !this.textureHeight) {
         return;
       }
       if (!(rect.width > 0) || !(rect.height > 0)) {
-        this._debugRenderSkip("_renderLens skipped: zero lens rect", { rect });
         return;
       }
-      if (this.sourceType === "albumArtTransition" && !forceCanary) {
+      if (this.sourceType === "albumArtTransition") {
         if (!this._albumCurrentTexture) {
-          this._debugRenderSkip("_renderLens skipped: albumArtTransition missing current texture");
           return;
         }
         if (!this._sourceCssRect || !(this._sourceCssRect.width > 0) || !(this._sourceCssRect.height > 0)) {
-          this._debugRenderSkip("_renderLens skipped: albumArtTransition missing source rect");
           return;
         }
       }
@@ -2449,8 +2015,8 @@
       let topUV = 0;
       let wUV = 1;
       let hUV = 1;
-      if (this._sourceCssRect || forceCanary || (this.sourceType !== "albumArtCanvasOrImage" && this.sourceType !== "liveVideoFrame")) {
-        const srcRect = this._sourceCssRect || (forceCanary ? rect : { left: 0, top: 0, width: window.innerWidth || 1, height: window.innerHeight || 1 });
+      if (this._sourceCssRect || (this.sourceType !== "albumArtCanvasOrImage" && this.sourceType !== "liveVideoFrame")) {
+        const srcRect = this._sourceCssRect || { left: 0, top: 0, width: window.innerWidth || 1, height: window.innerHeight || 1 };
         leftUV = (rect.left - srcRect.left) / Math.max(1, srcRect.width);
         topUV = (rect.top - srcRect.top) / Math.max(1, srcRect.height);
         wUV = rect.width / Math.max(1, srcRect.width);
@@ -2468,14 +2034,6 @@
         leftUV >= 1.02 ||
         topUV >= 1.02
       ) {
-        this._debugRenderSkip("_renderLens skipped: invalid bounds", {
-          leftUV,
-          topUV,
-          wUV,
-          hUV,
-          rect,
-          sourceCssRect: this._sourceCssRect || null
-        });
         return;
       }
       gl.uniform4f(this.u.bounds, leftUV, topUV, wUV, hUV);
@@ -2504,9 +2062,6 @@
       }
       const resolved = lens.resolveOptics(this._adaptiveQuality || 1);
       gl.uniform1f(this.u.refraction, resolved.refraction);
-      gl.uniform1f(this.u.refractionFill, resolved.refractionFill);
-      gl.uniform1f(this.u.bevelDepth, resolved.bevelDepth);
-      gl.uniform1f(this.u.bevelWidth, resolved.bevelWidth);
       gl.uniform1f(this.u.frost, Math.max(0, resolved.frostSigmaPx));
       gl.uniform1f(this.u.frostSamples, this._configuredFrostSamples());
       gl.uniform1f(this.u.radius, lens.radiusGl);
@@ -2527,36 +2082,21 @@
       gl.uniform1f(this.u.tiltX, lens.tiltX || 0);
       gl.uniform1f(this.u.tiltY, lens.tiltY || 0);
       const tiltProjection = typeof lens.options.tiltProjection === "function"
-        ? lens.options.tiltProjection() : lens._mirrorActive
-          ? {x:rect.left + rect.width / 2, y:rect.top + rect.height / 2, perspective:800} : null;
+        ? lens.options.tiltProjection() : null;
       gl.uniform4f(this.u.tiltProjection,
         tiltProjection ? (tiltProjection.x - (sourceCssRect.left || 0)) / Math.max(1, sourceCssRect.width) : 0,
         tiltProjection ? (tiltProjection.y - (sourceCssRect.top || 0)) / Math.max(1, sourceCssRect.height) : 0,
         tiltProjection ? tiltProjection.perspective : 900, tiltProjection ? 1 : 0);
       gl.uniform1f(this.u.hollowInset, lens.hollowInsetGl || 0);
       gl.uniform1i(this.u.hollowMaskContent, lens.hollowMaskContent ? 1 : 0);
-      gl.uniform1f(this.u.material, resolved.material);
       gl.uniform1f(this.u.materialDensity, resolved.density);
       gl.uniform1f(this.u.materialSign, resolved.side);
       gl.uniform3f(this.u.materialTone, resolved.tone[0], resolved.tone[1], resolved.tone[2]);
-      gl.uniform1f(this.u.materialAlpha, resolved.materialAlpha);
       gl.uniform1f(this.u.specularPrimary, resolved.specularPrimary);
       gl.uniform1f(this.u.specularSecondary, resolved.specularSecondary);
       const contact = this._lensContact(lens, fsTime(this._externalFrameState));
       gl.uniform4f(this.u.contact, contact.x, contact.y, contact.press, 0);
       gl.uniform1f(this.u.scrollEdge, lens.el.id === "libList" && lens.el.scrollTop > 0 ? 1 : 0);
-
-      if (forceCanary) {
-        const canary = this._ensureDebugCanaryTexture();
-        if (canary) {
-          gl.activeTexture(gl.TEXTURE0);
-          gl.bindTexture(gl.TEXTURE_2D, canary);
-          gl.uniform1i(this.u.tex, 0);
-          gl.uniform2f(this.u.textureResolution, 2, 2);
-          if (this.u.useAlbumTransitionSource) gl.uniform1i(this.u.useAlbumTransitionSource, 0);
-          if (this.u.debugAlbumSourceFlat) gl.uniform1i(this.u.debugAlbumSourceFlat, 0);
-        }
-      }
 
       const clip = lens.clipRectPx;
       if (clip) {
@@ -2576,483 +2116,6 @@
     }
 
     /* ----------------------------- */
-    _createRoundedRectPath(ctx, w, h, radii) {
-      ctx.beginPath();
-      ctx.moveTo(radii.tl, 0);
-      ctx.lineTo(w - radii.tr, 0);
-      ctx.arcTo(w, 0, w, radii.tr, radii.tr);
-      ctx.lineTo(w, h - radii.br);
-      ctx.arcTo(w, h, w - radii.br, h, radii.br);
-      ctx.lineTo(radii.bl, h);
-      ctx.arcTo(0, h, 0, h - radii.bl, radii.bl);
-      ctx.lineTo(0, radii.tl);
-      ctx.arcTo(0, 0, radii.tl, 0, radii.tl);
-      ctx.closePath();
-    }
-
-    /* ----------------------------- */
-    _updateDynamicVideos() {
-      if (this._isScrolling && this._scrollUpdateCounter % 2 !== 0) return;
-      if (
-        !this.texture ||
-        !this.staticSnapshotCanvas ||
-        !this._videoNodes.length
-      )
-        return;
-      const gl = this.gl;
-
-      const snapRect = this._snapshotRectPx || this.snapshotTarget.getBoundingClientRect();
-
-      const maxLensZ = this._getMaxLensZ();
-
-      this._videoNodes.forEach((vid) => {
-        if (effectiveZ(vid) >= maxLensZ) {
-          return;
-        }
-
-        if (this._isIgnored(vid) || vid.readyState < 2) return;
-
-        const rect = vid.getBoundingClientRect();
-        const texX = (rect.left - snapRect.left) * this.scaleFactor;
-        const texY = (rect.top - snapRect.top) * this.scaleFactor;
-        const texW = rect.width * this.scaleFactor;
-        const texH = rect.height * this.scaleFactor;
-
-        const drawW = Math.round(texW);
-        const drawH = Math.round(texH);
-
-        if (drawW <= 0 || drawH <= 0) return;
-
-        if (
-          this._tmpCanvas.width !== drawW ||
-          this._tmpCanvas.height !== drawH
-        ) {
-          this._tmpCanvas.width = drawW;
-          this._tmpCanvas.height = drawH;
-        }
-
-        try {
-          this._tmpCtx.save();
-          this._tmpCtx.clearRect(0, 0, drawW, drawH);
-
-          const style = window.getComputedStyle(vid);
-          const scaledRadii = {
-            tl: parseFloat(style.borderTopLeftRadius) * this.scaleFactor,
-            tr: parseFloat(style.borderTopRightRadius) * this.scaleFactor,
-            br: parseFloat(style.borderBottomRightRadius) * this.scaleFactor,
-            bl: parseFloat(style.borderBottomLeftRadius) * this.scaleFactor,
-          };
-
-          if (Object.values(scaledRadii).some((r) => r > 0)) {
-            this._createRoundedRectPath(
-              this._tmpCtx,
-              drawW,
-              drawH,
-              scaledRadii
-            );
-            this._tmpCtx.clip();
-          }
-
-          this._tmpCtx.drawImage(
-            this.staticSnapshotCanvas,
-            texX,
-            texY,
-            texW,
-            texH,
-            0,
-            0,
-            drawW,
-            drawH
-          );
-
-          this._tmpCtx.drawImage(vid, 0, 0, drawW, drawH);
-          this._tmpCtx.restore();
-        } catch (e) {
-          liquidGLLog("warn", "liquidGL: Error drawing video frame", e);
-          return;
-        }
-
-        const drawX = Math.round(texX);
-        const drawY = Math.round(texY);
-
-        if (drawW <= 0 || drawH <= 0) return;
-
-        const maxW = this.textureWidth;
-        const maxH = this.textureHeight;
-        let dstX = drawX;
-        let dstY = drawY;
-        let srcX = 0,
-          srcY = 0,
-          updW = drawW,
-          updH = drawH;
-
-        if (dstX < 0) {
-          srcX = -dstX;
-          updW += dstX;
-          dstX = 0;
-        }
-        if (dstY < 0) {
-          srcY = -dstY;
-          updH += dstY;
-          dstY = 0;
-        }
-
-        if (dstX + updW > maxW) {
-          updW = maxW - dstX;
-        }
-        if (dstY + updH > maxH) {
-          updH = maxH - dstY;
-        }
-
-        if (updW <= 0 || updH <= 0) return;
-
-        gl.bindTexture(gl.TEXTURE_2D, this.texture);
-        gl.pixelStorei(gl.UNPACK_FLIP_Y_WEBGL, false);
-        gl.texSubImage2D(
-          gl.TEXTURE_2D,
-          0,
-          dstX,
-          dstY,
-          gl.RGBA,
-          gl.UNSIGNED_BYTE,
-          this._tmpCanvas
-        );
-      });
-    }
-
-    /* ----------------------------- */
-    _updateDynamicNodes() {
-      if (this._isScrolling && this._scrollUpdateCounter % 2 !== 0) return;
-      const gl = this.gl;
-      if (!this.texture || !this._dynMeta || !this._dynamicNodes.length) return;
-      const snapRect = this._snapshotRectPx || this.snapshotTarget.getBoundingClientRect();
-      const maxLensZ = this._getMaxLensZ();
-
-      const lensRects = this.lenses.map((ln) => ln.rectPx).filter(Boolean);
-
-      const rectsIntersect = (a, b) =>
-        a.left < b.left + b.width &&
-        a.left + a.width > b.left &&
-        a.top < b.top + b.height &&
-        a.top + a.height > b.top;
-
-      const rectWithin = (a, b) =>
-        a.left >= b.left &&
-        a.top >= b.top &&
-        a.left + a.width <= b.left + b.width &&
-        a.top + a.height <= b.top + b.height;
-
-      const lensVisibleForRect = (lens, rect) => {
-        if (!lens || !lens.rectPx || !rectsIntersect(rect, lens.rectPx)) return false;
-        const inset = Number(lens.hollowInsetCss || 0);
-        if (inset > 0) {
-          const lr = lens.rectPx;
-          const inner = {
-            left: lr.left + inset,
-            top: lr.top + inset,
-            width: Math.max(0, lr.width - inset * 2),
-            height: Math.max(0, lr.height - inset * 2),
-          };
-          if (rectWithin(rect, inner)) return false;
-        }
-        return true;
-      };
-
-      if (!this._compositeCtx) {
-        this._compositeCtx = document.createElement("canvas").getContext("2d");
-      }
-
-      const compositeVideos = (compositeCtx, dynamicElRect) => {
-        this._videoNodes.forEach((vid) => {
-          if (effectiveZ(vid) > maxLensZ) return;
-          const vidRect = vid.getBoundingClientRect();
-
-          if (
-            dynamicElRect.left < vidRect.right &&
-            dynamicElRect.right > vidRect.left &&
-            dynamicElRect.top < vidRect.bottom &&
-            dynamicElRect.bottom > vidRect.top
-          ) {
-            const xInComposite =
-              (vidRect.left - dynamicElRect.left) * this.scaleFactor;
-            const yInComposite =
-              (vidRect.top - dynamicElRect.top) * this.scaleFactor;
-            const wInComposite = vidRect.width * this.scaleFactor;
-            const hInComposite = vidRect.height * this.scaleFactor;
-            compositeCtx.drawImage(
-              vid,
-              xInComposite,
-              yInComposite,
-              wInComposite,
-              hInComposite
-            );
-          }
-        });
-      };
-
-      this._dynamicNodes.forEach((node) => {
-        const el = node.el;
-        const meta = this._dynMeta.get(el);
-        if (!meta) return;
-
-        if (meta.needsRecapture && !meta._capturing && !this._isScrolling) {
-          const imageCapture = this._captureImageElement(el);
-          if (imageCapture) {
-            meta.lastCapture = imageCapture;
-            meta.needsRecapture = false;
-            requestAnimationFrame(() => this.render());
-          } else if (el && el.tagName === "IMG") {
-            liquidGLLog(
-              "warn",
-              "liquidGL: Image dynamic capture failed; relying on the static snapshot.",
-              el.currentSrc || el.src || el
-            );
-            meta.needsRecapture = false;
-          }
-        }
-
-        if (meta.needsRecapture && !meta._capturing && !this._isScrolling) {
-          meta.needsRecapture = false;
-        }
-
-        if (meta.lastCapture) {
-          if (meta.prevDrawRect && !(this._workerEnabled && meta._heavyAnim)) {
-            const { x, y, w, h } = meta.prevDrawRect;
-            if (w > 0 && h > 0) {
-              const eraseCanvas = this._compositeCtx.canvas;
-              if (eraseCanvas.width !== w || eraseCanvas.height !== h) {
-                eraseCanvas.width = w;
-                eraseCanvas.height = h;
-              }
-              this._compositeCtx.drawImage(
-                this.staticSnapshotCanvas,
-                x,
-                y,
-                w,
-                h,
-                0,
-                0,
-                w,
-                h
-              );
-              gl.bindTexture(gl.TEXTURE_2D, this.texture);
-              try {
-                gl.texSubImage2D(
-                  gl.TEXTURE_2D,
-                  0,
-                  x,
-                  y,
-                  gl.RGBA,
-                  gl.UNSIGNED_BYTE,
-                  eraseCanvas
-                );
-              } catch (e) {
-                liquidGLLog("warn", "liquidGL: Dynamic texture erase failed.", e);
-              }
-            }
-          }
-
-          const rect = el.getBoundingClientRect();
-          if (
-            effectiveZ(el) > maxLensZ ||
-            !document.contains(el) ||
-            rect.width === 0 ||
-            rect.height === 0
-          ) {
-            meta.prevDrawRect = null;
-            return;
-          }
-
-          if (!this.lenses.some((lens) => lensVisibleForRect(lens, rect))) {
-            meta.prevDrawRect = null;
-            return;
-          }
-
-          const texX = (rect.left - snapRect.left) * this.scaleFactor;
-          const texY = (rect.top - snapRect.top) * this.scaleFactor;
-          const drawW = Math.round(rect.width * this.scaleFactor);
-          const drawH = Math.round(rect.height * this.scaleFactor);
-          const drawX = Math.round(texX);
-          const drawY = Math.round(texY);
-
-          if (drawW <= 0 || drawH <= 0) return;
-
-          const maxW = this.textureWidth;
-          const maxH = this.textureHeight;
-          let dstX = drawX;
-          let dstY = drawY;
-          let srcX = 0,
-            srcY = 0,
-            updW = drawW,
-            updH = drawH;
-
-          if (dstX < 0) {
-            srcX = -dstX;
-            updW += dstX;
-            dstX = 0;
-          }
-          if (dstY < 0) {
-            srcY = -dstY;
-            updH += dstY;
-            dstY = 0;
-          }
-
-          if (dstX + updW > maxW) {
-            updW = maxW - dstX;
-          }
-          if (dstY + updH > maxH) {
-            updH = maxH - dstY;
-          }
-
-          if (updW <= 0 || updH <= 0) return;
-
-          const compositeCanvas = this._compositeCtx.canvas;
-          if (
-            compositeCanvas.width !== drawW ||
-            compositeCanvas.height !== drawH
-          ) {
-            compositeCanvas.width = drawW;
-            compositeCanvas.height = drawH;
-          }
-          this._compositeCtx.clearRect(0, 0, drawW, drawH);
-
-          this._compositeCtx.drawImage(
-            this.staticSnapshotCanvas,
-            texX,
-            texY,
-            rect.width * this.scaleFactor,
-            rect.height * this.scaleFactor,
-            0,
-            0,
-            drawW,
-            drawH
-          );
-          compositeVideos(this._compositeCtx, rect);
-
-          const style = window.getComputedStyle(el);
-          this._compositeCtx.save();
-          this._compositeCtx.translate(drawW / 2, drawH / 2);
-          if (style.transform !== "none") {
-            this._compositeCtx.transform(
-              ...this._parseTransform(style.transform)
-            );
-          }
-          this._compositeCtx.translate(-drawW / 2, -drawH / 2);
-          this._compositeCtx.globalAlpha = parseFloat(style.opacity) || 1.0;
-          this._compositeCtx.drawImage(meta.lastCapture, 0, 0, drawW, drawH);
-          this._compositeCtx.restore();
-
-          gl.bindTexture(gl.TEXTURE_2D, this.texture);
-          try {
-            gl.texSubImage2D(
-              gl.TEXTURE_2D,
-              0,
-              dstX,
-              dstY,
-              gl.RGBA,
-              gl.UNSIGNED_BYTE,
-              compositeCanvas
-            );
-          } catch (e) {
-            liquidGLLog("warn", "liquidGL: Dynamic texture update failed.", e);
-            return;
-          }
-
-          if (this._workerEnabled && meta._heavyAnim) {
-            const jobId = `${Date.now()}_${Math.random()}`;
-            this._dynJobs.set(jobId, {
-              x: dstX,
-              y: dstY,
-              w: updW,
-              h: updH,
-            });
-
-            Promise.all([
-              createImageBitmap(
-                this.staticSnapshotCanvas,
-                dstX,
-                dstY,
-                updW,
-                updH
-              ),
-              createImageBitmap(meta.lastCapture),
-            ]).then(([snapBmp, dynBmp]) => {
-              this._dynWorker.postMessage(
-                {
-                  id: jobId,
-                  width: updW,
-                  height: updH,
-                  snap: snapBmp,
-                  dyn: dynBmp,
-                },
-                [snapBmp, dynBmp]
-              );
-            });
-            meta.prevDrawRect = { x: dstX, y: dstY, w: updW, h: updH };
-            return;
-          }
-
-          meta.prevDrawRect = { x: dstX, y: dstY, w: updW, h: updH };
-        }
-      });
-    }
-
-    _parseTransform(transform) {
-      if (transform === "none") return [1, 0, 0, 1, 0, 0];
-      const matrixMatch = transform.match(/matrix\((.+)\)/);
-      if (matrixMatch) {
-        const values = matrixMatch[1].split(",").map(parseFloat);
-        return values;
-      }
-      const matrix3dMatch = transform.match(/matrix3d\((.+)\)/);
-      if (matrix3dMatch) {
-        const v = matrix3dMatch[1].split(",").map(parseFloat);
-        return [v[0], v[1], v[4], v[5], v[12], v[13]];
-      }
-      return [1, 0, 0, 1, 0, 0];
-    }
-
-    _captureImageElement(el) {
-      try {
-        if (!el || el.tagName !== "IMG" || !el.complete || !el.naturalWidth || !el.naturalHeight) {
-          return null;
-        }
-        const rect = el.getBoundingClientRect();
-        const w = Math.max(1, Math.round(rect.width * this.scaleFactor));
-        const h = Math.max(1, Math.round(rect.height * this.scaleFactor));
-        const canvas = document.createElement("canvas");
-        canvas.width = w;
-        canvas.height = h;
-        const ctx = canvas.getContext("2d");
-        const iw = el.naturalWidth;
-        const ih = el.naturalHeight;
-        const fit = window.getComputedStyle(el).objectFit || "fill";
-        let dw = w;
-        let dh = h;
-        let dx = 0;
-        let dy = 0;
-        if (fit === "cover") {
-          const s = Math.max(w / iw, h / ih);
-          dw = iw * s;
-          dh = ih * s;
-          dx = (w - dw) / 2;
-          dy = (h - dh) / 2;
-        } else if (fit === "contain") {
-          const s = Math.min(w / iw, h / ih);
-          dw = iw * s;
-          dh = ih * s;
-          dx = (w - dw) / 2;
-          dy = (h - dh) / 2;
-        }
-        ctx.drawImage(el, dx, dy, dw, dh);
-        return canvas;
-      } catch (e) {
-        liquidGLLog("warn", "liquidGL: Image element capture failed.", e);
-        return null;
-      }
-    }
-
-    /* ----------------------------- */
     _getMaxLensZ() {
       let maxZ = 0;
       this.lenses.forEach((ln) => {
@@ -3060,234 +2123,6 @@
         if (z > maxZ) maxZ = z;
       });
       return maxZ;
-    }
-
-    /* ----------------------------- */
-    addDynamicElement(el) {
-      if (!el) return;
-      if (typeof el === "string") {
-        this.snapshotTarget
-          .querySelectorAll(el)
-          .forEach((n) => this.addDynamicElement(n));
-        return;
-      }
-      if (NodeList.prototype.isPrototypeOf(el) || Array.isArray(el)) {
-        Array.from(el).forEach((n) => this.addDynamicElement(n));
-        return;
-      }
-      if (!el.getBoundingClientRect) return;
-      if (el.id === "visualizerBg" || (el.classList && el.classList.contains("visualizerBg"))) return;
-      if (el.closest && el.closest("[data-liquid-ignore]")) return;
-      if (this._dynamicNodes.some((n) => n.el === el)) return;
-
-      this._dynamicNodes = this._dynamicNodes.filter((n) => !el.contains(n.el));
-
-      const meta = {
-        _capturing: false,
-        prevDrawRect: null,
-        lastCapture: null,
-        needsRecapture: true,
-        hoverClassName: null,
-        _animating: false,
-        _rafId: null,
-        _lastCaptureTs: 0,
-        _heavyAnim: false,
-        lastDrawSignature: null,
-      };
-      this._dynMeta.set(el, meta);
-
-      const setDirty = () => {
-        const m = this._dynMeta.get(el);
-        if (m && !m.needsRecapture) {
-          m.needsRecapture = true;
-          requestAnimationFrame(() => this.render());
-        }
-      };
-
-      const findAppliedHoverStyles = (element) => {
-        let cssText = "";
-        for (const sheet of document.styleSheets) {
-          try {
-            for (const rule of sheet.cssRules) {
-              if (!rule.selectorText || !rule.selectorText.includes(":hover")) {
-                continue;
-              }
-              const baseSelector = rule.selectorText.split(":hover")[0];
-              if (element.matches(baseSelector)) {
-                cssText += rule.style.cssText;
-              }
-            }
-          } catch (e) {}
-        }
-        return cssText;
-      };
-
-      const handleLeave = () => {
-        const m = this._dynMeta.get(el);
-        if (!m || !m.hoverClassName) return;
-
-        el.classList.remove(m.hoverClassName);
-        for (let i = this._dynamicStyleSheet.cssRules.length - 1; i >= 0; i--) {
-          const rule = this._dynamicStyleSheet.cssRules[i];
-          if (rule.selectorText === `.${m.hoverClassName}`) {
-            this._dynamicStyleSheet.deleteRule(i);
-            break;
-          }
-        }
-        m.hoverClassName = null;
-        setDirty();
-      };
-
-      el.addEventListener(
-        "mouseenter",
-        () => {
-          const m = this._dynMeta.get(el);
-          if (!m) return;
-          const hoverCss = findAppliedHoverStyles(el);
-          if (hoverCss) {
-            const className = `lqgl-h-${Math.random()
-              .toString(36)
-              .substr(2, 9)}`;
-            const rule = `.${className} { ${hoverCss} }`;
-            try {
-              this._dynamicStyleSheet.insertRule(
-                rule,
-                this._dynamicStyleSheet.cssRules.length
-              );
-              m.hoverClassName = className;
-              el.classList.add(className);
-            } catch (e) {
-              liquidGLLog("error", "liquidGL: Failed to insert hover style rule.", e);
-            }
-          }
-          setDirty();
-        },
-        { passive: true }
-      );
-
-      el.addEventListener("mouseleave", handleLeave, { passive: true });
-      el.addEventListener("transitionend", setDirty, { passive: true });
-
-      const startRealtime = () => {
-        const m = this._dynMeta.get(el);
-        if (!m || m._animating) return;
-        m._animating = true;
-
-        m._heavyAnim = false;
-
-        const step = (ts) => {
-          const meta = this._dynMeta.get(el);
-          if (!meta || !meta._animating) return;
-
-          if (
-            meta._heavyAnim &&
-            !meta._capturing &&
-            ts - meta._lastCaptureTs > 33
-          ) {
-            meta._lastCaptureTs = ts;
-            meta.needsRecapture = true;
-          }
-          if (meta._heavyAnim) {
-            meta._rafId = requestAnimationFrame(step);
-          } else {
-            meta._rafId = null;
-          }
-        };
-        m._rafId = requestAnimationFrame(step);
-      };
-
-      const trackProperty = (prop) => {
-        const m = this._dynMeta.get(el);
-        if (!m) return;
-        const low = (prop || "").toLowerCase();
-        if (!(low.includes("transform") || low.includes("opacity"))) {
-          const wasHeavy = m._heavyAnim;
-          m._heavyAnim = true;
-          if (m._animating && !wasHeavy && !m._rafId) {
-            m._animating = false;
-            startRealtime();
-          }
-        }
-      };
-
-      const transitionRunHandler = (e) => {
-        trackProperty(e.propertyName);
-        startRealtime();
-      };
-
-      el.addEventListener("transitionrun", transitionRunHandler, {
-        passive: true,
-      });
-      el.addEventListener("transitionstart", transitionRunHandler, {
-        passive: true,
-      });
-      el.addEventListener(
-        "animationstart",
-        () => {
-          const m = this._dynMeta.get(el);
-          if (m) m._heavyAnim = true;
-          startRealtime();
-        },
-        { passive: true }
-      );
-
-      el.addEventListener(
-        "animationiteration",
-        () => {
-          const m = this._dynMeta.get(el);
-          if (m) {
-            m._heavyAnim = true;
-            if (!m._animating) startRealtime();
-          }
-        },
-        { passive: true }
-      );
-
-      const stopRealtime = () => {
-        const m = this._dynMeta.get(el);
-        if (!m || !m._animating) return;
-        m._animating = false;
-        if (m._rafId) {
-          cancelAnimationFrame(m._rafId);
-          m._rafId = null;
-        }
-        m._heavyAnim = false;
-        setDirty();
-      };
-
-      el.addEventListener("transitionend", stopRealtime, { passive: true });
-      el.addEventListener("transitioncancel", stopRealtime, { passive: true });
-      el.addEventListener("animationend", stopRealtime, { passive: true });
-      el.addEventListener("animationcancel", stopRealtime, { passive: true });
-
-      /* --------------------------------------------------
-       *  Removal clean-up
-       * --------------------------------------------------*/
-      if (typeof MutationObserver !== "undefined") {
-        const removalObserver = new MutationObserver(() => {
-          if (!document.contains(el)) {
-            handleLeave();
-            removalObserver.disconnect();
-            this._dynamicNodes = this._dynamicNodes.filter((n) => n.el !== el);
-            this._dynMeta.delete(el);
-          }
-        });
-        removalObserver.observe(document.body, {
-          childList: true,
-          subtree: true,
-        });
-      }
-
-      this._dynamicNodes.push({ el });
-    }
-
-    /* ----------------------------- */
-    _isIgnored(el) {
-      return !!(
-        el &&
-        typeof el.closest === "function" &&
-        el.closest("[data-liquid-ignore]")
-      );
     }
   }
 
@@ -3349,7 +2184,6 @@
         this.options.material !== null && this.options.material !== undefined ? true : this.options.shadow,
         initialOptics.shadowStrength
       );
-      if (this.options.tilt) this._bindTiltHandlers();
 
       if (typeof ResizeObserver !== "undefined" && !this._sizeObs) {
         this._sizeObs = new ResizeObserver(() => {
@@ -3381,7 +2215,6 @@
     }
 
     _applyOptionsPatch(patch, requestFrame) {
-      const hadTilt = !!this.options.tilt;
       const hadShadow = !!this.options.shadow;
       Object.assign(this.options, patch || {});
       this.revealTypeIndex = this.options.reveal === "fade" ? 1 : 0;
@@ -3390,10 +2223,6 @@
         this.el.hasAttribute("data-liquid-mask-content");
       if (Object.prototype.hasOwnProperty.call(patch || {}, "liveGeometry")) {
         this._syncDomRect = this.options.liveGeometry === true;
-      }
-
-      if (Object.prototype.hasOwnProperty.call(patch || {}, "tilt") && hadTilt !== !!this.options.tilt) {
-        this.setTilt(this.options.tilt);
       }
 
       const optics = this.resolveOptics(1);
@@ -3541,10 +2370,7 @@
     /* ----------------------------- */
     updateMetrics() {
       const suppliedRect = this.options && typeof this.options.geometryRect === "function" ? this.options.geometryRect(this.el) : null;
-      const rect = suppliedRect || (
-        this._mirrorActive && this._baseRect
-          ? this._baseRect
-          : this.el.getBoundingClientRect());
+      const rect = suppliedRect || this.el.getBoundingClientRect();
       const style = window.getComputedStyle(this.el);
 
       if (
@@ -3622,82 +2448,6 @@
       const dpr = this.renderer && this.renderer._dpr ? this.renderer._dpr : Math.min(2, window.devicePixelRatio || 1);
       this.radiusGl = this.radiusCss * dpr;
       this.hollowInsetGl = this.hollowInsetCss * dpr;
-
-      if (this._shadowSyncFn) {
-        this._shadowSyncFn();
-      }
-    }
-
-    /* ----------------------------- */
-    _handleOverscrollCompensation() {
-      let overscrollY = 0;
-      let overscrollX = 0;
-
-      if (window.visualViewport) {
-        overscrollX = -window.visualViewport.offsetLeft;
-        overscrollY = -window.visualViewport.offsetTop;
-      } else {
-        const bodyStyle = window.getComputedStyle(document.body);
-        const htmlStyle = window.getComputedStyle(document.documentElement);
-
-        if (bodyStyle.transform && bodyStyle.transform !== "none") {
-          const matrix = new DOMMatrix(bodyStyle.transform);
-          overscrollX = matrix.m41;
-          overscrollY = matrix.m42;
-        }
-
-        if (
-          overscrollY === 0 &&
-          overscrollX === 0 &&
-          htmlStyle.transform &&
-          htmlStyle.transform !== "none"
-        ) {
-          const matrix = new DOMMatrix(htmlStyle.transform);
-          overscrollX = matrix.m41;
-          overscrollY = matrix.m42;
-        }
-      }
-
-      this._currentOverscrollX = overscrollX;
-      this._currentOverscrollY = overscrollY;
-
-      if (overscrollY !== 0 || overscrollX !== 0) {
-        const compensationTransform = `translate(${-overscrollX}px, ${-overscrollY}px)`;
-
-        let currentTransform = this.el.style.transform;
-        currentTransform = currentTransform
-          .replace(/translate\([^)]*\)\s*/g, "")
-          .trim();
-
-        this.el.style.transform =
-          compensationTransform +
-          (currentTransform ? " " + currentTransform : "");
-
-        if (this._shadowEl) {
-          let shadowTransform = this._shadowEl.style.transform || "";
-          shadowTransform = shadowTransform
-            .replace(/translate\([^)]*\)\s*/g, "")
-            .trim();
-          this._shadowEl.style.transform =
-            compensationTransform +
-            (shadowTransform ? " " + shadowTransform : "");
-        }
-      } else if (!this._tiltInteracting) {
-        this.el.style.transform = this._savedTransform || "";
-        if (this._shadowEl) {
-          this._shadowEl.style.transform = "";
-        }
-      }
-    }
-
-    /* ----------------------------- */
-    setTilt(enabled) {
-      this.options.tilt = !!enabled;
-      if (this.options.tilt) {
-        this._bindTiltHandlers();
-      } else {
-        this._unbindTiltHandlers();
-      }
     }
 
     /* ----------------------------- */
@@ -3715,7 +2465,6 @@
       if (!this.options || !this.options.shadow) return;
       const value = this._shadowValue(clamp(finiteNumber(this._shadowStrength, 0.1), 0, 0.4));
       this.el.style.boxShadow = value;
-      if (this._shadowEl) this._shadowEl.style.boxShadow = value;
     }
 
     setShadow(enabled, strength) {
@@ -3727,11 +2476,6 @@
       // The lens DOM element already owns the rounded shadow and follows
       // scrolling, clipping, transforms and visibility. A body-level clone
       // leaves stale rectangular ghosts when virtual rows are recycled.
-      if (this._shadowEl) {
-        window.removeEventListener("resize", this._shadowSyncFn);
-        this._shadowEl.remove();
-        this._shadowEl = null;
-      }
       this.el.style.boxShadow = enabled ? shadowValue : this.originalShadow;
     }
 
@@ -3758,9 +2502,6 @@
         this.renderer.lenses.forEach((ln) => {
           ln._revealProgress = progress;
           ln.el.style.opacity = (ln.originalOpacity || 1) * progress;
-          if (ln._shadowEl) {
-            ln._shadowEl.style.opacity = progress;
-          }
         });
 
         this.renderer.canvas.style.opacity = String(progress);
@@ -3781,310 +2522,11 @@
       requestAnimationFrame(animate);
     }
 
-    /* ----------------------------- */
-    _bindTiltHandlers() {
-      if (this._tiltHandlersBound) return;
-
-      if (this._savedTransform === undefined) {
-        const currentTransform = this.el.style.transform;
-        if (currentTransform && currentTransform.includes("translate")) {
-          this._savedTransform = currentTransform
-            .replace(/translate\([^)]*\)\s*/g, "")
-            .trim();
-          if (this._savedTransform === "") this._savedTransform = "none";
-        } else {
-          this._savedTransform = currentTransform;
-        }
-      }
-      if (this._savedTransformStyle === undefined) {
-        this._savedTransformStyle = this.el.style.transformStyle;
-      }
-      this.el.style.transformStyle = "preserve-3d";
-
-      const getMaxTilt = () =>
-        Number.isFinite(this.options.tiltFactor) ? this.options.tiltFactor : 5;
-
-      this._applyTilt = (clientX, clientY) => {
-        if (!this._tiltInteracting) {
-          this._tiltInteracting = true;
-          this.el.style.transition =
-            "transform 0.12s cubic-bezier(0.33,1,0.68,1)";
-          this._createMirrorCanvas();
-          if (this._mirror) {
-            this._mirror.style.transition =
-              "transform 0.12s cubic-bezier(0.33,1,0.68,1)";
-          }
-          if (this._shadowEl) {
-            this._shadowEl.style.transition =
-              "transform 0.12s cubic-bezier(0.33,1,0.68,1)";
-          }
-        }
-
-        const r = this._baseRect || (this._baseRect = this.el.getBoundingClientRect());
-        const cx = r.left + r.width / 2;
-        const cy = r.top + r.height / 2;
-
-        this._pivotOrigin = `${cx}px ${cy}px`;
-
-        const pctX = (clientX - cx) / (r.width / 2);
-        const pctY = (clientY - cy) / (r.height / 2);
-        const maxTilt = getMaxTilt();
-        const rotY = pctX * maxTilt;
-        const rotX = -pctY * maxTilt;
-        const baseTransform =
-          this._savedTransform && this._savedTransform !== "none"
-            ? this._savedTransform + " "
-            : "";
-
-        let overscrollCompensation = "";
-        const bodyStyle = window.getComputedStyle(document.body);
-        if (bodyStyle.transform && bodyStyle.transform !== "none") {
-          const matrix = new DOMMatrix(bodyStyle.transform);
-          const overscrollX = matrix.m41;
-          const overscrollY = matrix.m42;
-          if (overscrollX !== 0 || overscrollY !== 0) {
-            overscrollCompensation = `translate(${-overscrollX}px, ${-overscrollY}px) `;
-          }
-        }
-
-        const transformStr = `${overscrollCompensation}${baseTransform}perspective(800px) rotateX(${rotX}deg) rotateY(${rotY}deg)`;
-
-        this.tiltX = rotX;
-        this.tiltY = rotY;
-
-        this.el.style.transformOrigin = `50% 50%`;
-        this.el.style.transform = transformStr;
-
-        if (this._mirror) {
-          this._mirror.style.transformOrigin = this._pivotOrigin;
-          this._mirror.style.transform = transformStr;
-        }
-
-        if (this._shadowEl) {
-          this._shadowEl.style.transformOrigin = `50% 50%`;
-          this._shadowEl.style.transform = transformStr;
-        }
-
-      };
-
-      this._smoothReset = () => {
-        this.el.style.transition = "transform 0.4s cubic-bezier(0.33,1,0.68,1)";
-        this.el.style.transformOrigin = `50% 50%`;
-        const baseRest =
-          this._savedTransform && this._savedTransform !== "none"
-            ? this._savedTransform + " "
-            : "";
-
-        let overscrollCompensation = "";
-        const bodyStyle = window.getComputedStyle(document.body);
-        if (bodyStyle.transform && bodyStyle.transform !== "none") {
-          const matrix = new DOMMatrix(bodyStyle.transform);
-          const overscrollX = matrix.m41;
-          const overscrollY = matrix.m42;
-          if (overscrollX !== 0 || overscrollY !== 0) {
-            overscrollCompensation = `translate(${-overscrollX}px, ${-overscrollY}px) `;
-          }
-        }
-
-        this.el.style.transform = `${overscrollCompensation}${baseRest}perspective(800px) rotateX(0deg) rotateY(0deg)`;
-
-        this.tiltX = 0;
-        this.tiltY = 0;
-        this.renderer.render();
-
-        if (this._mirror) {
-          this._mirror.style.transition =
-            "transform 0.4s cubic-bezier(0.33, 1, 0.68, 1)";
-          this._mirror.style.transformOrigin = this._pivotOrigin || "50% 50%";
-          this._mirror.style.transform = `${baseRest}perspective(800px) rotateX(0deg) rotateY(0deg)`;
-          const clean = () => {
-            this._destroyMirrorCanvas();
-            this._resetCleanupTimer = null;
-          };
-          this._mirror.addEventListener("transitionend", clean, {
-            once: true,
-          });
-          this._resetCleanupTimer = setTimeout(clean, 350);
-        }
-
-        if (this._shadowEl) {
-          this._shadowEl.style.transition =
-            "transform 0.4s cubic-bezier(0.33,1,0.68,1)";
-          this._shadowEl.style.transformOrigin = `50% 50%`;
-          this._shadowEl.style.transform = `${baseRest}perspective(800px) rotateX(0deg) rotateY(0deg)`;
-        }
-      };
-
-      this._onMouseEnter = (e) => {
-        if (this._resetCleanupTimer) {
-          clearTimeout(this._resetCleanupTimer);
-          this._resetCleanupTimer = null;
-          this._destroyMirrorCanvas();
-          this.el.style.transition = "none";
-          this.el.style.transform = this._savedTransform || "";
-          void this.el.offsetHeight;
-        }
-
-        this._tiltInteracting = false;
-        this._createMirrorCanvas();
-
-        const r = this._baseRect || this.el.getBoundingClientRect();
-        const cx = r.left + r.width / 2;
-        const cy = r.top + r.height / 2;
-
-        this._applyTilt(cx, cy);
-
-        if (e && typeof e.clientX === "number") {
-          requestAnimationFrame(() => {
-            this._applyTilt(e.clientX, e.clientY);
-          });
-        }
-
-        document.addEventListener("mousemove", this._boundCheckLeave, {
-          passive: true,
-        });
-      };
-
-      this._onMouseMove = (e) => this._applyTilt(e.clientX, e.clientY);
-
-      this._onTouchStart = (e) => {
-        this._tiltInteracting = false;
-        this._createMirrorCanvas();
-        if (e.touches && e.touches.length === 1) {
-          const t = e.touches[0];
-          this._applyTilt(t.clientX, t.clientY);
-        }
-      };
-      this._onTouchMove = (e) => {
-        if (e.touches && e.touches.length === 1) {
-          const t = e.touches[0];
-          this._applyTilt(t.clientX, t.clientY);
-        }
-      };
-      this._onTouchEnd = () => {
-        this._smoothReset();
-      };
-
-      this.el.addEventListener("mouseenter", this._onMouseEnter, {
-        passive: true,
-      });
-      this.el.addEventListener("mousemove", this._onMouseMove, {
-        passive: true,
-      });
-      this.el.addEventListener("touchstart", this._onTouchStart, {
-        passive: true,
-      });
-      this.el.addEventListener("touchmove", this._onTouchMove, {
-        passive: true,
-      });
-      this.el.addEventListener("touchend", this._onTouchEnd, {
-        passive: true,
-      });
-
-      /* ----------------------------- */
-      this._tiltActive = false;
-
-      this._docPointerMove = (e) => {
-        const x = e.clientX ?? (e.touches && e.touches[0].clientX);
-        const y = e.clientY ?? (e.touches && e.touches[0].clientY);
-        if (x === undefined || y === undefined) return;
-
-        const r = this._baseRect || (this._baseRect = this.el.getBoundingClientRect());
-        const inside =
-          x >= r.left && x <= r.right && y >= r.top && y <= r.bottom;
-
-        if (inside) {
-          if (!this._tiltActive) {
-            this._tiltActive = true;
-            this._onMouseEnter({ clientX: x, clientY: y });
-          } else {
-            this._applyTilt(x, y);
-          }
-        } else if (this._tiltActive) {
-          this._tiltActive = false;
-          this._smoothReset();
-        }
-      };
-
-      document.addEventListener("pointermove", this._docPointerMove, {
-        passive: true,
-      });
-
-      this._tiltHandlersBound = true;
-    }
-
-    _unbindTiltHandlers() {
-      if (!this._tiltHandlersBound) return;
-      this.el.removeEventListener("mouseenter", this._onMouseEnter);
-      this.el.removeEventListener("mousemove", this._onMouseMove);
-      document.removeEventListener("mousemove", this._boundCheckLeave);
-      this.el.removeEventListener("touchstart", this._onTouchStart);
-      this.el.removeEventListener("touchmove", this._onTouchMove);
-      this.el.removeEventListener("touchend", this._onTouchEnd);
-
-      if (this._docPointerMove) {
-        document.removeEventListener("pointermove", this._docPointerMove);
-        this._docPointerMove = null;
-      }
-      this._tiltHandlersBound = false;
-
-      this.el.style.transform = this._savedTransform || "";
-      this.el.style.transformStyle = this._savedTransformStyle || "";
-
-      this.renderer.render();
-    }
-
-    _createMirrorCanvas() {
-      this._baseRect = this.el.getBoundingClientRect();
-      if (this._mirror) return;
-      this._mirror = document.createElement("canvas");
-      Object.assign(this._mirror.style, {
-        position: "fixed",
-        top: 0,
-        left: 0,
-        width: "100%",
-        height: "100%",
-        pointerEvents: "none",
-        zIndex: effectiveZ(this.el) - 1,
-        willChange: "transform",
-      });
-      this._mirrorCtx = this._mirror.getContext("2d");
-      document.body.appendChild(this._mirror);
-
-      const updateClip = () => {
-        if (this._mirrorActive) this._baseRect = this._baseRect || this.el.getBoundingClientRect();
-        const r = this._baseRect || this.el.getBoundingClientRect();
-        const radius = `${this.radiusCss}px`;
-        this._mirror.style.clipPath = `inset(${r.top}px ${
-          innerWidth - r.right
-        }px ${innerHeight - r.bottom}px ${r.left}px round ${radius})`;
-        this._mirror.style.webkitClipPath = this._mirror.style.clipPath;
-      };
-      updateClip();
-      this._mirrorClipUpdater = updateClip;
-      window.addEventListener("resize", updateClip, { passive: true });
-
-      this._mirrorActive = true;
-    }
-
-    _destroyMirrorCanvas() {
-      if (!this._mirror) return;
-      window.removeEventListener("resize", this._mirrorClipUpdater);
-      this._mirror.remove();
-      this._mirror = this._mirrorCtx = null;
-      this._baseRect = null;
-      this._mirrorActive = false;
-    }
-
     destroy() {
       this._transition = null;
       try {
         if (this._sizeObs) this._sizeObs.disconnect();
       } catch (e) {}
-      try {
-        if (this._shadowEl) this._shadowEl.remove();
-      } catch (e) {}
-      this._destroyMirrorCanvas();
     }
 
     _TriggerInit() {
@@ -4112,11 +2554,8 @@
       shadow: true,
       specular: true,
       reveal: "fade",
-      tilt: false,
-      tiltFactor: 5,
       magnify: 1,
       material: null,
-      engine: "snapdom",
       sourceType: "visualizerWebgl",
       sourceElement: "#visualizerBg",
       on: {},
@@ -4219,114 +2658,6 @@
     lensMinorDimensionInSourceUV,
   });
 
-  /* --------------------------------------------------
-   *  Public helper: register elements that need live updates
-   * ------------------------------------------------*/
-  window.liquidGL.registerDynamic = function (elements) {
-    const renderers = window.__liquidGLRenderers__ || {};
-    const list = Object.keys(renderers).map((key) => renderers[key]).filter(Boolean);
-    if (window.__liquidGLRenderer__ && list.indexOf(window.__liquidGLRenderer__) < 0) {
-      list.push(window.__liquidGLRenderer__);
-    }
-    list.forEach((renderer) => {
-      try {
-        if (!renderer || !renderer.addDynamicElement) return;
-        renderer.addDynamicElement(elements);
-        if (renderer.captureSnapshot) renderer.captureSnapshot("registerDynamic");
-      } catch (e) {
-        liquidGLLog("warn", "liquidGL: registerDynamic failed for renderer.", e);
-      }
-    });
-  };
-
-  /* --------------------------------------------------
-   *  Public helper: Universal smooth scroll / animation sync
-   * ------------------------------------------------*/
-  window.liquidGL.syncWith = function (config = {}) {
-    const renderer = window.__liquidGLRenderer__;
-    if (!renderer) {
-      liquidGLLog(
-        "warn",
-        "liquidGL: Please initialize liquidGL *before* calling syncWith()."
-      );
-      return;
-    }
-
-    const G = window.gsap;
-    const L = window.Lenis;
-    const LS = window.LocomotiveScroll;
-    const ST = G ? G.ScrollTrigger : null;
-
-    let lenis = config.lenis;
-    let loco = config.locomotiveScroll;
-    const useGSAP = config.gsap !== false && G && ST;
-
-    if (config.lenis !== false && L && !lenis) {
-      lenis = new L();
-    }
-
-    if (
-      config.locomotiveScroll !== false &&
-      LS &&
-      !loco &&
-      document.querySelector("[data-scroll-container]")
-    ) {
-      loco = new LS({
-        el: document.querySelector("[data-scroll-container]"),
-        smooth: true,
-      });
-    }
-
-    if (useGSAP && ST) {
-      if (loco) {
-        loco.on("scroll", ST.update);
-        ST.scrollerProxy(loco.el, {
-          scrollTop(value) {
-            return arguments.length
-              ? loco.scrollTo(value, { duration: 0, disableLerp: true })
-              : loco.scroll.instance.scroll.y;
-          },
-          getBoundingClientRect() {
-            return {
-              top: 0,
-              left: 0,
-              width: window.innerWidth,
-              height: window.innerHeight,
-            };
-          },
-          pinType: loco.el.style.transform ? "transform" : "fixed",
-        });
-        ST.addEventListener("refresh", () => loco.update());
-        ST.refresh();
-      } else if (lenis) {
-        lenis.on("scroll", ST.update);
-      }
-    }
-
-    if (renderer._rafId) {
-      cancelAnimationFrame(renderer._rafId);
-      renderer._rafId = null;
-    }
-    renderer.useExternalTicker = true;
-
-    if (useGSAP) {
-      G.ticker.add((time) => {
-        if (lenis) lenis.raf(time * 1000);
-        renderer.render();
-      });
-      G.ticker.lagSmoothing(0);
-    } else {
-      const loop = (time) => {
-        if (lenis) lenis.raf(time);
-        if (loco) loco.update();
-        renderer.render();
-        renderer._rafId = requestAnimationFrame(loop);
-      };
-      renderer._rafId = requestAnimationFrame(loop);
-    }
-
-    return { lenis, locomotiveScroll: loco };
-  };
   window.liquidGL.motion = window.LiquidGlassMotion;
   window.liquidGL.overlays = window.LiquidGlassOverlays;
 })();
