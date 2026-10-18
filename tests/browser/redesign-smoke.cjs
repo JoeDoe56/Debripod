@@ -50,6 +50,9 @@ const server=http.createServer((req,res)=>{
   try{
     await page.goto(`http://127.0.0.1:${server.address().port}/`);
     await page.waitForFunction(()=>window.state&&state.items.length>5&&document.querySelector('.dpStandardRow'));
+    // The glass checks read WebGL lens state; auto quality would pick a CSS tier on a software GPU.
+    await page.waitForFunction(()=>window.DebriPod&&DebriPod.glass&&DebriPod.glass.instance);
+    await page.evaluate(()=>{DebriPod.uiSettings.settings.glassQuality='superfluid';DebriPod.glass.instance.invalidate(true);});
     await page.evaluate(()=>document.fonts.ready);
     await page.screenshot({path:path.join(output,'redesign-library.png')});
     const before=await page.locator('#libList').boundingBox();

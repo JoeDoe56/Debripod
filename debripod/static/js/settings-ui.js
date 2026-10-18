@@ -1867,9 +1867,10 @@ async function libDoSearch(engine, q){
         try{ backend = await apiGet("/api/performance", {networkOnly:true, skipMirror:true}); }catch(e){ backend = null; }
         const schedulerStats = (window.DebriPod && DebriPod.frameScheduler && DebriPod.frameScheduler.stats) ? DebriPod.frameScheduler.stats() : {};
         items.push({kind:"info", label:"FPS", pills:[String(Math.round(Number(schedulerStats.fps || 0))), "long " + String(Number(schedulerStats.longFrames || 0))]});
-        const renderers = (window.DebriPod && DebriPod.liquidDiagnostics && DebriPod.liquidDiagnostics.renderers) ? DebriPod.liquidDiagnostics.renderers() : [];
-        for(const r of renderers){
-          items.push({kind:"info", label:"LiquidGL " + String(r.key || "renderer"), pills:[r.visible ? "visible" : "hidden", "res " + String(r.resolution || ""), String(r.texture || "")]});
+        const glassStats = (window.DebriPod && DebriPod.glass && DebriPod.glass.stats) ? DebriPod.glass.stats() : null;
+        if(glassStats){
+          items.push({kind:"info", label:"Glass", pills:[String(glassStats.tier || ""), "scale " + Number(glassStats.renderScale || 0).toFixed(2), String(glassStats.lenses || 0) + " lenses"]});
+          items.push({kind:"info", label:"Glass frames", pills:[String(glassStats.renders || 0) + " drawn", String(glassStats.prepares || 0) + " backdrops", String(glassStats.copies || 0) + " copies"]});
         }
         const rows = (window.DebriPod && DebriPod.listDiagnostics && DebriPod.listDiagnostics.rows) ? DebriPod.listDiagnostics.rows() : {visible:0,total:(state.items || []).length};
         items.push({kind:"info", label:"Rows", pills:[String(rows.visible || 0) + " visible", String(rows.total || 0) + " total"]});
@@ -1986,7 +1987,6 @@ async function libDoSearch(engine, q){
       items.push({kind:"libui_action", label:"Glass quality", sub_label:"Auto picks a level for this device and steps down if frames run slow", action:"cycle_glass_quality", pills:[glassQualitySummary()], forceTwoLine:true, settingRow:true});
       items.push({kind:"libui_action", label:"Render scale", sub_label:"Glass backing-resolution scale", action:"set_glass_quality:glassRenderScale", pills:[String(Number(uiSettings.glassRenderScale || 1).toFixed(2)) + "x"], forceTwoLine:true, settingRow:true});
       items.push({kind:"libui_action", label:"Frost samples", sub_label:"Deterministic frost kernel samples", action:"set_glass_quality:glassFrostSamples", pills:[String(Math.round(Number(uiSettings.glassFrostSamples || 8)))], forceTwoLine:true, settingRow:true});
-      items.push({kind:"libui_action", label:"Idle glass FPS", action:"set_glass_quality:glassIdleFps", pills:[String(normalizeAnimationFps(uiSettings.glassIdleFps)) + " FPS"], forceTwoLine:true, settingRow:true});
       items.push({kind:"libui_action", label:"Interaction glass FPS", action:"set_glass_quality:glassInteractionFps", pills:[String(normalizeAnimationFps(uiSettings.glassInteractionFps)) + " FPS"], forceTwoLine:true, settingRow:true});
       return items;
     }

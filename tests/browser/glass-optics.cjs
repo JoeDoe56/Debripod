@@ -44,6 +44,8 @@ const server=http.createServer((req,res)=>{
   try{
     await page.goto(url);
     await page.waitForFunction(()=>window.liquidGlassReady && window.DebriPod?.wallpaper && typeof viewLibUiSettings==='function');
+    // These checks inspect the WebGL optics; auto quality would pick a CSS tier on a software GPU.
+    await page.evaluate(()=>{DebriPod.uiSettings.settings.glassQuality='superfluid';DebriPod.glass.instance.invalidate(true);});
     await page.evaluate(()=>DebriPod.wallpaper.ready);
     await page.evaluate(()=>viewLibUiSettings(true));
     await page.waitForFunction(()=>state.items.some(row=>row.action==='upload_test_wallpaper'));
@@ -145,6 +147,7 @@ const server=http.createServer((req,res)=>{
     assert.equal(await page.evaluate(()=>DebriPod.wallpaper.active()),true);
     await page.reload();
     await page.waitForFunction(()=>window.liquidGlassReady && window.DebriPod?.wallpaper);
+    await page.evaluate(()=>{DebriPod.uiSettings.settings.glassQuality='superfluid';DebriPod.glass.instance.invalidate(true);});
     await page.evaluate(()=>DebriPod.wallpaper.ready);
     assert.equal(await page.evaluate(()=>DebriPod.wallpaper.active() && !visualizerEnabled),true,'restores until the visualizer is enabled');
     await page.evaluate(()=>setVisualizerEnabled(true));
@@ -153,6 +156,7 @@ const server=http.createServer((req,res)=>{
     assert.equal(await page.evaluate(()=>DebriPod.wallpaper.active()),false);
     await page.reload();
     await page.waitForFunction(()=>window.liquidGlassReady && window.DebriPod?.wallpaper);
+    await page.evaluate(()=>{DebriPod.uiSettings.settings.glassQuality='superfluid';DebriPod.glass.instance.invalidate(true);});
     await page.evaluate(()=>DebriPod.wallpaper.ready);
     assert.equal(await page.evaluate(()=>DebriPod.wallpaper.active()),false,'deleted wallpaper cannot return on reload');
     const tiltLighting=await require('./tilt-lighting-checks.cjs')(page);

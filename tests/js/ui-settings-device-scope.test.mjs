@@ -133,11 +133,11 @@ test("glass quality defaults to auto and only keeps known tiers", () => {
   assert.equal(user.glassQuality, "auto");
   user.glassQuality = "lite";
   settings.saveUiSettings(user);
-  user = settings.setDeviceSettingsUserId("quality-user");
-  assert.equal(user.glassQuality, "lite");
+  // A fresh page load reads the saved value back from storage.
+  const reloaded = loadUiSettings(storage).setDeviceSettingsUserId("quality-user");
+  assert.equal(reloaded.glassQuality, "lite");
   user.glassQuality = "ultra";
   settings.saveUiSettings(user);
-  user = settings.setDeviceSettingsUserId("quality-user");
-  assert.equal(user.glassQuality, "auto");
+  assert.equal(loadUiSettings(storage).setDeviceSettingsUserId("quality-user").glassQuality, "auto");
   assert.deepEqual(Array.from(settings.GLASS_QUALITY_LEVELS), ["auto", "superfluid", "glass", "lite", "frost", "static"]);
 });

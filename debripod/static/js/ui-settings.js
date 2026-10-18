@@ -240,6 +240,7 @@
     if(saved.animationFps != null) out.animationFps = cloneAnimationFps(saved.animationFps);
     if(saved.performanceOverlayText != null) out.performanceOverlayText = !!saved.performanceOverlayText;
     if(saved.liquidGlassElements != null) out.liquidGlassElements = cloneGlassElementSettings(saved.liquidGlassElements);
+    if(saved.glassQuality != null) out.glassQuality = String(saved.glassQuality);
     if(saved.glassRenderScale != null) out.glassRenderScale = Number(saved.glassRenderScaleVersion || 0) < 1 ? 1.5 : clampNumber(saved.glassRenderScale, out.glassRenderScale, 0.5, 2);
     out.glassRenderScaleVersion = 1;
     if(saved.glassFrostSamples != null) out.glassFrostSamples = Math.round(clampNumber(saved.glassFrostSamples, out.glassFrostSamples, 0, 16));
