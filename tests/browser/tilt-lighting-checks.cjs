@@ -3,7 +3,7 @@ const assert = require('node:assert/strict');
 module.exports = async function checkTiltLighting(page) {
   const response = await page.evaluate(() => {
     const glass = DebriPod.glass.instance, surface = DebriPod.glass.surface;
-    const lens = surface.lenses.find(item => item.el.id === 'libList');
+    const lens = surface.lenses.find(item => item.group === 'libraryList');
     // One frame draws the whole surface; lens geometry is re-read in its measure phase.
     const draw = () => { glass.requestRender(); glass.frame({timestamp: performance.now(), flags: {render: true}}); };
     draw();

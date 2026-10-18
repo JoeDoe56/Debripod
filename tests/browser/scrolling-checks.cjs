@@ -10,7 +10,7 @@ module.exports=async function checkScrolling(page,touch,drag,wheel){
   });
   await page.waitForTimeout(500);
   assert.ok(await page.locator('#libList .ipodItem').count()<60,'large Songs view stays virtualized');
-  assert.equal(await page.locator('#libList .dpRowSecondary').first().textContent(),'Artist');
+  assert.equal(await page.locator('#libList .dpRowSecondary').first().textContent(),'Song 0 · Artist · Artist');
   assert.equal(await page.evaluate(()=>state.items.some(item=>item.kind==='random')),false);
   const box=await page.locator('#libList').boundingBox();
   const anchor=await page.evaluate(()=>{
@@ -29,7 +29,7 @@ module.exports=async function checkScrolling(page,touch,drag,wheel){
   assert.equal(await page.evaluate(()=>DebriPod.listScroll.isDirectScrolling()),true,'stationary held finger must retain scroll ownership');
   // The glass eases its contact glow once per drawn frame, so each probe draws a few frames first.
   const heldGlow=await page.evaluate(()=>{
-    const glass=DebriPod.glass.instance,lens=DebriPod.glass.surface.lenses.find(l=>l.el===libList);
+    const glass=DebriPod.glass.instance,lens=DebriPod.glass.surface.lenses.find(l=>l.group==='libraryList');
     let now=Math.max(performance.now(),lens&&lens.contact?lens.contact.time+64:0);
     for(let i=0;i<6;i++){now+=64;glass.frame({timestamp:now,flags:{render:true}});}
     return {cancels:window._glassScrollCancels,press:lens&&lens.contact?lens.contact.press:0};
@@ -40,7 +40,7 @@ module.exports=async function checkScrolling(page,touch,drag,wheel){
   assert.equal(await page.evaluate(()=>[...libList.querySelectorAll('.dpRowPrimary,.dpRowSecondary')].some(el=>el.style.clipPath)),false,'hidden glass leaves no native text holes');
   for(let step=1;step<=10;step++){await touch('touchMove',x,y-30-step*16);await page.waitForTimeout(12);}
   const movedGlow=await page.evaluate(({x,y})=>{
-    const glass=DebriPod.glass.instance,lens=DebriPod.glass.surface.lenses.find(l=>l.el===libList);
+    const glass=DebriPod.glass.instance,lens=DebriPod.glass.surface.lenses.find(l=>l.group==='libraryList');
     let now=Math.max(performance.now(),lens.contact?lens.contact.time+64:0);
     for(let i=0;i<6;i++){now+=64;glass.frame({timestamp:now,flags:{render:true}});}
     const rect=lens.el.getBoundingClientRect(),contact=lens.contact||{press:0,x:0,y:0};
@@ -51,7 +51,7 @@ module.exports=async function checkScrolling(page,touch,drag,wheel){
   await touch('touchEnd');
   await page.waitForTimeout(250);
   assert.ok(await page.evaluate(()=>{
-    const glass=DebriPod.glass.instance,lens=DebriPod.glass.surface.lenses.find(l=>l.el===libList);
+    const glass=DebriPod.glass.instance,lens=DebriPod.glass.surface.lenses.find(l=>l.group==='libraryList');
     let now=Math.max(performance.now(),lens&&lens.contact?lens.contact.time+64:0);
     for(let i=0;i<8;i++){now+=64;glass.frame({timestamp:now,flags:{render:true}});}
     return lens&&lens.contact?lens.contact.press:0;

@@ -7,7 +7,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 const assert = require('node:assert/strict');
 const base = path.resolve(__dirname, '../..');
-const output = path.join(base, '.pytest_cache');
+const output = process.env.DEBRIPOD_TEST_OUTPUT || path.join(base, '.pytest_cache');
 fs.mkdirSync(output, {recursive:true});
 const png = new PNG({width:480,height:800});
 for(let y=0;y<800;y++) for(let x=0;x<480;x++){
@@ -85,7 +85,7 @@ const server=http.createServer((req,res)=>{
     const corners=await page.evaluate(()=>{
       const glass=DebriPod.glass.instance, surface=DebriPod.glass.surface, gl=surface.gl;
       const draw=()=>{glass.requestRender();glass.frame({timestamp:performance.now(),flags:{render:true}});};
-      const lens=surface.lenses.find(l=>l.el.id==='libList');
+      const lens=surface.lenses.find(l=>l.group==='libraryList');
       draw();
       const rect=lens.rect, dpr=surface.renderScale, H=surface.canvas.height;
       const pixel=(x,y)=>{

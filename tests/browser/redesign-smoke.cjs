@@ -7,7 +7,8 @@ const path = require('node:path');
 const assert = require('node:assert/strict');
 const {PNG} = require('pngjs');
 const base = path.resolve(__dirname, '../..');
-const output = path.join(base, '.pytest_cache');
+const output = process.env.DEBRIPOD_TEST_OUTPUT || path.join(base, '.pytest_cache');
+fs.mkdirSync(output, {recursive:true});
 const types={'.js':'text/javascript','.css':'text/css','.svg':'image/svg+xml','.ttf':'font/ttf','.woff2':'font/woff2','.png':'image/png','.html':'text/html'};
 const calls=[];
 function api(url){

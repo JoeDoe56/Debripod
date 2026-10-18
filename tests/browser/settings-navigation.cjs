@@ -47,6 +47,7 @@ const server = http.createServer((req, res) => {
       {kind:'album', label:'Artist — Album', sub_label:'Artist · Album · 2026'},
     ])}, true));
     assert.deepEqual(await page.locator('#libList .dpRowSecondary').allTextContents(), ['The Band', 'Artist · Album · 2026']);
+    await require('./panel-layout-checks.cjs')(page);
     const position = () => page.evaluate(() => ({selection:state.sel, scroll:libList.scrollTop, offset:state.pageAnchorOffset,
       y:libList.querySelector('.ipodItem.sel').getBoundingClientRect().top}));
     async function select(action) {

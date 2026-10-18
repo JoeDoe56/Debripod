@@ -105,6 +105,7 @@
       const all = cloneGlassElementSettings(uiSettings.liquidGlassElements);
       applyRootGlassMaterialClass(all.libraryList.material);
       applyGlassMaterialClass(document.getElementById("libList"), all.libraryList.material);
+      applyGlassMaterialClass(document.getElementById("libListGlass"), all.libraryList.material);
       applyGlassMaterialClass(document.getElementById("wheel"), all.wheel.material);
       applyGlassMaterialClass(document.getElementById("libHeader"), all.pathPill.material);
       applyGlassMaterialClass(document.getElementById("infoPill"), all.infoPill.material);
@@ -380,8 +381,8 @@
       layer: debripodGlassLayer
     };
     if(key === "libraryList"){
-      options.geometry = (el)=> el && el.parentElement ? el.parentElement.getBoundingClientRect() : null;
-      options.edgeFrost = (el)=> el && el.scrollTop > 0 ? 1 : 0;
+      options.geometry = "live";
+      options.edgeFrost = ()=> document.getElementById("libList")?.scrollTop > 0 ? 1 : 0;
     }else if(key === "selectedRow"){
       options.geometry = "live";
       options.underlay = ()=> (window.DebriPod && window.DebriPod.rowRefraction) || null;
@@ -410,7 +411,7 @@
       if(el.classList.contains("ipodPill") && el.hasAttribute("data-liquid-row-pill")) return "listPills";
       if(el.classList.contains("wheelGlassRing") || el.classList.contains("wheelCenterGlass")) return "wheel";
     }
-    if(el && el.id === "libList") return "libraryList";
+    if(el && el.id === "libListGlass") return "libraryList";
     if(el && el.id === "libListSelectedGlass") return "selectedRow";
     return "pathPill";
   }
@@ -444,7 +445,7 @@
       if(liquidGlassLensElementKey(lens) === elementKey) lens.setOptions({material:material});
     });
     const targets = {
-      libraryList:[document.getElementById("libList")],
+      libraryList:[document.getElementById("libList"), document.getElementById("libListGlass")],
       wheel:[document.getElementById("wheel")],
       pathPill:[document.getElementById("libHeader")],
       infoPill:[document.getElementById("infoPill")],
@@ -812,7 +813,7 @@
       debripodGlassMainSurface = debripodGlass.surface({host:stage || undefined, z:65, className:"liquidGlassCanvasMain", attributes:{"data-liquid-renderer":"main"}});
       refreshLiquidGlassVisualizerSources("init");
       const surface = debripodGlassMainSurface;
-      surface.syncGroup("libraryList", [document.getElementById("libList")].filter(Boolean), glassLensOptions("libraryList"));
+      surface.syncGroup("libraryList", [document.getElementById("libListGlass")].filter(Boolean), glassLensOptions("libraryList"));
       surface.syncGroup("pathPill", Array.from(document.querySelectorAll(".pathPillGlass.liquidGlass")), glassLensOptions("pathPill"));
       surface.syncGroup("infoPill", Array.from(document.querySelectorAll(".infoPillGlass.liquidGlass")), glassLensOptions("infoPill"));
       surface.syncGroup("wheel", Array.from(document.querySelectorAll(".wheelGlassRing.liquidGlass, .wheelCenterGlass.liquidGlass")), glassLensOptions("wheel"));

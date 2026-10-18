@@ -1160,6 +1160,11 @@
       gap:10px;
     }
 
+    .libraryListGlass{
+      inset:0;
+      border-radius:var(--screenRadius);
+    }
+
     .ipodList{
       position:absolute;
       inset:0;
