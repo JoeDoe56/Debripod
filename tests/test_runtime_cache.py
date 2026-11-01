@@ -17,6 +17,26 @@ class RuntimeCacheTests(unittest.TestCase):
         self.assertFalse(os.path.commonpath([configured_download, resolved]) == configured_download)
         self.assertTrue(resolved.endswith(os.path.join("data", "runtime_cache")))
 
+    def test_unreadable_legacy_folder_is_skipped(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp) / "downloads"
+            legacy = root / "_debripod_cache"
+            legacy.mkdir(parents=True)
+            destination = Path(temp) / "central"
+            db_path = str(Path(temp) / "state.sqlite3")
+            real_scandir = os.scandir
+            def scandir(path):
+                if os.fspath(path) == str(legacy):
+                    raise PermissionError("blocked")
+                return real_scandir(path)
+            with patch.dict(os.environ, {"DEBRIPOD_DATABASE": db_path}), \
+                 patch("debripod.paths.cache_dir", return_value=str(destination)), \
+                 patch("debripod.paths.os.scandir", side_effect=scandir):
+                initialize_database()
+                result = migrate_legacy_runtime_caches([str(root)])
+            self.assertEqual(result, {"moved": 0, "failed": 0})
+            self.assertTrue(legacy.is_dir())
+
     def test_failed_legacy_move_keeps_nonempty_directory(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             root = Path(temp) / "downloads"

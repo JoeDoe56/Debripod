@@ -106,11 +106,19 @@ def migrate_legacy_runtime_caches(download_roots: list[str]) -> dict[str, int]:
         legacy = os.path.join(root, "_debripod_cache") if root and os.path.isdir(root) else ""
         if not legacy or not os.path.isdir(legacy):
             continue
-        for child in list(os.scandir(legacy)):
+        try:
+            children = list(os.scandir(legacy))
+        except OSError:
+            continue
+        for child in children:
             target_name = aliases.get(child.name.lower())
             if not target_name:
                 continue
-            sources = list(os.scandir(child.path)) if child.is_dir(follow_symlinks=False) else [child]
+            try:
+                is_directory = child.is_dir(follow_symlinks=False)
+                sources = list(os.scandir(child.path)) if is_directory else [child]
+            except OSError:
+                continue
             target_dir = os.path.join(cache_dir(), target_name)
             for source in sources:
                 if not source.is_file(follow_symlinks=False):
@@ -131,7 +139,7 @@ def migrate_legacy_runtime_caches(download_roots: list[str]) -> dict[str, int]:
                     moved += 1
                 except OSError:
                     failed += 1
-            if child.is_dir(follow_symlinks=False):
+            if is_directory:
                 try:
                     os.rmdir(child.path)
                 except OSError:
