@@ -899,7 +899,7 @@
           labelWrap.appendChild(label);
           const prompt = document.createElement("span");
           prompt.className = "ipodSubLabel hScrollText";
-          setGlassText(prompt, String(it.placeholder || "Paste debrid token"));
+          setGlassText(prompt, String(it.sub_label || it.placeholder || "Paste debrid token"));
           labelWrap.appendChild(prompt);
           li.appendChild(labelWrap);
           const pills = document.createElement("span");

@@ -291,7 +291,11 @@ async function goBack(){
           if(p && p.q) state.libSearch.q = p.q;
           const inQ = document.getElementById("libSearchInput");
           if(inQ && p && p.q) inQ.value = p.q;
-          if(p && p.engine && p.q){
+          let restored = false;
+          if(p && p.q && p.cache_key && typeof libRestoreSearchFromHistory === "function"){
+            restored = await libRestoreSearchFromHistory(p.q, p.cache_key);
+          }
+          if(!restored && p && p.engine && p.q){
             await libDoSearch(p.engine, p.q);
           }
         }catch(e){}

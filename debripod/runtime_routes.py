@@ -302,6 +302,15 @@ class _UnifiedSearchDiskCache:
         with _SEARCH_DISK_LOCK:
             _disk_cache_set(cache_key, "combined", str(payload.get("query") or ""), {"schema": SEARCH_CACHE_SCHEMA}, stored)
 
+    def set_snapshot(self, cache_key: str, payload: dict[str, Any]) -> None:
+        stored = {**payload, "schema_version": SEARCH_CACHE_SCHEMA}
+        with _SEARCH_DISK_LOCK:
+            _disk_cache_set(_history_snapshot_key(cache_key), "history", str(payload.get("query") or ""), {"schema": SEARCH_CACHE_SCHEMA}, stored)
+
+
+def _history_snapshot_key(cache_key: str) -> str:
+    return "history:" + str(cache_key or "")
+
 
 def _build_unified_search_runtime(
     settings: dict[str, Any],
@@ -1012,6 +1021,28 @@ async def api_youtube_enqueue(request: web.Request):
     th = threading.Thread(target=youtube_worker, args=(task_id,), daemon=True)
     th.start()
     return json_response(ok=True, task_id=task_id)
+
+
+@routes.get("/api/search_history/results")
+async def api_search_history_results(request: web.Request):
+    """Results saved for one of this user's history entries, without searching."""
+    key = str(request.query.get("key") or "").strip()
+    runtime = user_runtime_for(request)
+    entry = next((row for row in runtime.search_history if str(row.get("cache_key") or "") == key), None) if key else None
+    if entry is None:
+        return json_response(ok=False, error="Not in search history", status=404)
+    payload: dict[str, Any] = {}
+    with _SEARCH_DISK_LOCK:
+        for candidate in (_history_snapshot_key(key), key):
+            got = _disk_cache_get(candidate)
+            data = dict((got or {}).get("payload") or {})
+            if data.get("schema_version") == SEARCH_CACHE_SCHEMA and isinstance(data.get("results"), list):
+                payload = data
+                break
+    if not payload:
+        return json_response(ok=False, error="No saved results for this search", status=404)
+    results = payload.get("results", [])
+    return json_response(ok=True, q=str(entry.get("q") or ""), cache_key=key, search_id=key, cached=True, results=results, result_count=len(results), provider_status=payload.get("provider_status", []))
 
 
 @routes.get("/api/search_history")

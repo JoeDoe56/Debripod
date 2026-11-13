@@ -98,6 +98,18 @@ class SearchPipeline:
     def _cache_set(self, context: SearchContext, payload: dict[str, Any]) -> None:
         if self.cache is None:
             return
+        # Search history restores exactly what was shown, partial or not, so
+        # every finished search keeps a snapshot for its history entry.
+        if hasattr(self.cache, "set_snapshot"):
+            try:
+                self.cache.set_snapshot(context.search_id, {
+                    "query": context.query,
+                    "search_id": context.search_id,
+                    "results": payload.get("results", []),
+                    "provider_status": payload.get("provider_status", []),
+                })
+            except Exception:
+                pass
         # A search where a source was unavailable, timed out or failed must
         # not be cached: the cached copy would hide that source (for example
         # Soulseek while it was still logging in) until the cache expired.

@@ -518,6 +518,10 @@
             kind:"debrid_token",
             label:"Debrid token",
             placeholder:"Paste RealDebrid, AllDebrid, Torbox, or Premiumize token",
+            // Standard rows drop pills, so the connection state has to be the
+            // visible secondary line.
+            sub_label:activeProvider ? ("Connected to " + connectedLabel + " · Select to replace token") : "Not connected · Paste RealDebrid, AllDebrid, Torbox, or Premiumize token",
+            active:!!activeProvider,
             pills:[activeProvider ? {text:"Connected to " + connectedLabel, tone:"ok"} : {text:"Not connected", tone:"warn"}]
           });
           const slsk = services.soulseek || {};
@@ -1352,6 +1356,18 @@ function libTaskBuildItemsForView(view){
 
   var msg = String((t && t.message) || "");
   if(msg){
+    // Soulseek tasks: show the combined speed of the files transferring now.
+    // Kept in the label so in-place task updates patch it every poll.
+    if(String((t && t.source) || "").toLowerCase() === "soulseek" && taskState === "downloading"){
+      var bps = 0;
+      files.forEach(function(f){
+        var st = String((f && f.state) || "").toLowerCase();
+        if(st === "complete" || st === "done" || st === "paused" || st === "canceled" || st === "failed" || st === "error") return;
+        var s = Number((f && f.speed) || 0);
+        if(isFinite(s) && s > 0) bps += s;
+      });
+      msg += " · " + humanBytes(bps) + "/s";
+    }
     items.push({kind:"info", label: msg});
   }
 
@@ -1463,7 +1479,7 @@ async function libTasksPollTick(){
       overall_total:t.overall_total || 0,
       debrid_files:(t.debrid_files || []).map(f=>[f.file_id, f.state, f.done, f.total]),
       youtube_files:(t.youtube_files || []).map(f=>[f.file_id, f.state, f.done, f.total]),
-      slsk_files:(t.slsk_files || []).map(f=>[f.file_id, f.state, f.done, f.total])
+      slsk_files:(t.slsk_files || []).map(f=>[f.file_id, f.state, f.done, f.total, Math.round(Number(f.speed || 0))])
     })));
     if(state.libTasks && state.libTasks.lastSignature === signature) return;
     if(!state.libTasks) state.libTasks = {tasks:[]};
@@ -1559,6 +1575,34 @@ async function libDoSearch(engine, q){
       reportUiStatus(String(e && e.message ? e.message : e), "warn");
     }
   }
+
+  // Show a history entry's saved results at once. Returns false when nothing
+  // is saved (expired or never finished), so the caller can search again.
+  async function libRestoreSearchFromHistory(q, cacheKey){
+    const qq = String(q || "").trim(), key = String(cacheKey || "").trim();
+    if(!qq || !key) return false;
+    let js = null;
+    try{ js = await apiGet("/api/search_history/results?key=" + encodeURIComponent(key), {networkOnly:true}); }catch(e){ js = null; }
+    if(!js || !js.ok || !Array.isArray(js.results)) return false;
+    if(_libUnifiedSearchAbortController){ try{ _libUnifiedSearchAbortController.abort(); }catch(e){} }
+    const model = libUnifiedSearchModel();
+    state.libSearch.q = qq;
+    state.libSearch.engine = "combined";
+    state.libSearch.search_token = "history:" + key;
+    model.reset(qq, key);
+    model.ingestFinal({search_id:key, results:js.results, provider_status:js.provider_status || [], cached:true});
+    state.libSearch.result_source = "combined";
+    state.libSearch.cache_key = key;
+    state.libSearch.sourceStatus = {};
+    state.libSearch.last_count = js.results.length;
+    state.libSearch.searching = false;
+    state.libSearch.running = false;
+    state.libSearch.cached = true;
+    libSetStatus(String(js.results.length) + " results · Cached", "ok");
+    libRefreshSearchIfVisible();
+    return true;
+  }
+  try{ window.libRestoreSearchFromHistory = libRestoreSearchFromHistory; }catch(e){}
 
   async function viewLibSearchHistory(push){
     showNowPlaying(false);
