@@ -205,7 +205,7 @@ async def _download_from_queue(task_id: str) -> list[str]:
                     retryable = not isinstance(exc, DownloadHTTPError) or exc.status_code in {401,403,404,408,429,500,502,503,504}
                     if attempt or not resolved.requires_refresh or not retryable:
                         if isinstance(exc, aiohttp.ClientConnectorCertificateError):
-                            raise DebridProviderError("The provider download server has an invalid or expired TLS certificate. A refreshed link also failed; the provider must repair its certificate.") from exc
+                            raise DebridProviderError(f"Could not verify the TLS certificate of the provider download server ({getattr(exc, 'host', '') or 'unknown host'}). A refreshed link also failed.") from exc
                         raise
                     resolved = await provider.resolve_file_url(file)
             _update_task_file_entry(task_id, "debrid_files", file_id, state="complete", error="")

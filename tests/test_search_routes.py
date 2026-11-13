@@ -27,14 +27,10 @@ class Pipeline:
         return final
 
 
-async def _request(monkeypatch, path: str, generation: str = "7"):
+async def _request(monkeypatch, path: str):
     cache_keys = []
-    runtime = SimpleNamespace(
-        pipeline=Pipeline(),
-        local_index=SimpleNamespace(diagnostics=lambda: {"meta": {"local_index_generation": generation}}),
-    )
+    runtime = SimpleNamespace(pipeline=Pipeline())
     user_runtime = SimpleNamespace(user_id="user-tester", search_runtime=runtime, search_history=[], settings={
-        "LOCAL_INDEX_ENABLED": True,
         "TORRENT_SEARCH_ENABLED_SOURCES": ["knaben"],
         "SOULSEEK_USERNAME": "",
         "SOULSEEK_PASSWORD": "",
@@ -74,9 +70,9 @@ def test_combined_nonstream_is_canonical_without_provider_arrays(monkeypatch):
     assert not ({"knaben_results", "slsk_users", "youtube_results"} & set(payload))
 
 
-def test_combined_cache_key_normalizes_query_and_changes_with_local_index_generation(monkeypatch):
-    _status, _body, first = asyncio.run(_request(monkeypatch, "/api/libsearch/combined?q=Alice", "7"))
-    _status, _body, normalized = asyncio.run(_request(monkeypatch, "/api/libsearch/combined?q=ALICE", "7"))
-    _status, _body, updated = asyncio.run(_request(monkeypatch, "/api/libsearch/combined?q=Alice", "8"))
+def test_combined_cache_key_normalizes_query_and_changes_with_query(monkeypatch):
+    _status, _body, first = asyncio.run(_request(monkeypatch, "/api/libsearch/combined?q=Alice"))
+    _status, _body, normalized = asyncio.run(_request(monkeypatch, "/api/libsearch/combined?q=ALICE"))
+    _status, _body, other = asyncio.run(_request(monkeypatch, "/api/libsearch/combined?q=Bob"))
     assert first == normalized
-    assert updated != first
+    assert other != first

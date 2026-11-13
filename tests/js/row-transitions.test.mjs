@@ -63,3 +63,13 @@ test("adaptive overscan stays small at rest and bounded at scroll velocity", () 
   assert.ok(adaptiveOverscanRows(560, 56, 0.01) <= 16);
   assert.ok(adaptiveOverscanRows(560, 56, 99) >= 15);
 });
+
+test("selection stays on the same row when several rows share one identity", () => {
+  // Task file rows used to all carry the task id; selecting the second file
+  // must not jump to the last duplicate after the list is rebuilt.
+  const rows = [{key: "action"}, {key: "task"}, {key: "task"}, {key: "task"}, {key: "task"}];
+  const plan = planRowMutation(rows, rows.map((row) => ({...row})), (item) => item.key, "task", {selectedIndex: 2});
+  assert.equal(plan.selectionIndex, 2);
+  const byKey = planRowMutation(rows, rows.map((row) => ({...row})), (item) => item.key, "task");
+  assert.equal(byKey.selectionIndex, 1);
+});

@@ -42,7 +42,7 @@ test("a stale 1000-row worker reply cannot overwrite a newer 2000-row reply", ()
 
   model.ingestSource({event: "source", search_id: "search-1", provider_group: "library", source_id: "library", results: Array.from({length: 1000}, (_, index) => result(index))});
   const first = worker.messages.at(-1);
-  model.ingestSource({event: "source", search_id: "search-1", provider_group: "local_index", source_id: "local_index", results: Array.from({length: 1000}, (_, index) => result(index + 1000))});
+  model.ingestSource({event: "source", search_id: "search-1", provider_group: "torrents", source_id: "knaben", results: Array.from({length: 1000}, (_, index) => result(index + 1000))});
   const second = worker.messages.at(-1);
 
   worker.deliver({type: "result", requestId: second.requestId, ids: Array.from({length: 2000}, (_, index) => `result-${index}`)});
@@ -72,9 +72,9 @@ test("30000 canonical rows remain logical while filters only change visible IDs"
   const rows = Array.from({length: 30000}, (_, index) => ({
     ...result(index),
     filter_values: {
-      sources: [index % 2 ? "Torrents" : "Local Index"],
+      sources: [index % 2 ? "Torrents" : "Library"],
       types: ["Torrent"],
-      indexers: [index % 2 ? "Knaben" : "DMM"],
+      indexers: [index % 2 ? "Knaben" : "Magnetz"],
       media: ["video"],
     },
   }));

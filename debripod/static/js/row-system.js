@@ -165,9 +165,15 @@
   }
 
   function itemSecondary(item, row){
+    return secondaryText(item, collectPillText(row));
+  }
+
+  // The secondary line for an item, given the texts of its pills. Shared with
+  // in-place row updates, which no longer have pills in the DOM to read.
+  function secondaryText(item, pillTexts){
     const direct = item && (item.secondary || item.subtitle || [item.artist, item.album].filter(Boolean).join(" · ") || itemDescription(item));
     if(direct) return String(direct);
-    const values = collectPillText(row);
+    const values = Array.isArray(pillTexts) ? pillTexts.slice() : [];
     if(item && item.badge && values.indexOf(String(item.badge)) < 0) values.unshift(String(item.badge));
     return values.slice(0, 3).join("  ·  ");
   }
@@ -464,6 +470,7 @@
     createRing,
     createSelectedState,
     decorateList,
+    secondaryText,
     updatePanel,
     setPanelProgress,
     setPanelOpen,

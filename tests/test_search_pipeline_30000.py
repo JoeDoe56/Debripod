@@ -8,7 +8,7 @@ from debripod.Services.search.providers import SearchContext
 
 
 def _row(index, group, source, *, related=True):
-    labels = {"library": "Library", "soulseek": "Soulseek", "torrent": "Torrent", "youtube": "YouTube", "local_index": "Local Index"}
+    labels = {"library": "Library", "soulseek": "Soulseek", "torrent": "Torrent", "youtube": "YouTube"}
     kind = "torrent" if source == "torrent" else "song"
     provider_data = {"infohash": f"{index:040x}", "indexer_labels": ["Synthetic"], "indexer_ids": ["synthetic"], "source_urls": [], "seeders": index % 50, "leechers": 0, "verified": False, "magnet": "", "category": "Audio"} if source == "torrent" else {}
     return {

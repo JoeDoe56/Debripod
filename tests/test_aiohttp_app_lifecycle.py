@@ -13,11 +13,6 @@ from debripod.Services import lastfm as lastfm_service
 from debripod.factory import SERVICES_KEY
 
 
-class _LocalIndex:
-    def diagnostics(self):
-        return {"ready": True, "count": 0, "meta": {"local_index_generation": "0"}}
-
-
 def test_full_aiohttp_app_routes_and_shared_session_lifecycle(monkeypatch, tmp_path):
     monkeypatch.setenv("DEBRIPOD_DATABASE", str(tmp_path / "app-lifecycle.sqlite3"))
     monkeypatch.setattr(

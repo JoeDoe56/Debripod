@@ -88,7 +88,7 @@ def _merge_torrent(winner: dict[str, Any], later: dict[str, Any], key: str) -> N
 
 
 class TorrentAccumulator:
-    """Incrementally merge Local Index and remote torrent rows by canonical identity."""
+    """Incrementally merge torrent rows from several sources by canonical identity."""
 
     def __init__(self):
         self.rows: dict[str, dict[str, Any]] = {}
@@ -129,7 +129,7 @@ def deduplicate_torrents(results: list[Any]) -> list[dict[str, Any]]:
     accumulator = TorrentAccumulator()
     for item in results:
         row = _dict(item)
-        if row.get("source") not in {"torrent", "local_index"}:
+        if row.get("source") != "torrent":
             output.append(row)
             continue
         winner, created = accumulator.upsert(row)
@@ -168,7 +168,7 @@ class IncrementalDeduplicator:
 
     def ingest(self, row: dict[str, Any]) -> dict[str, Any]:
         source = str(row.get("source") or "")
-        if source in {"torrent", "local_index"}:
+        if source == "torrent":
             winner, created = self.torrents.upsert(row)
             existing_id = str(winner.get("result_id") or "")
             if created:

@@ -7,7 +7,7 @@ from debripod.Services.search.providers import SearchContext
 
 
 def _canonical(result_id, group, source, title):
-    labels = {"library": "Library", "soulseek": "Soulseek", "torrent": "Torrent", "youtube": "YouTube", "local_index": "Local Index"}
+    labels = {"library": "Library", "soulseek": "Soulseek", "torrent": "Torrent", "youtube": "YouTube"}
     kind = "torrent" if source == "torrent" else "song"
     return {
         "result_id": result_id, "provider_group": group, "source": source, "source_label": labels[source],

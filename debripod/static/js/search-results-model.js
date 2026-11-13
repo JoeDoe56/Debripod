@@ -63,6 +63,17 @@
       }
       this._installResults(this.state.resultById.values(), false);
     }
+    // Record a source's status without adding its results to the page. The
+    // search page shows a spinner until the final, ranked result set arrives.
+    ingestSourceStatus(event){
+      if(!this._acceptEvent(event)) return false;
+      const group = String(event.provider_group || "");
+      const sourceId = String(event.source_id || event.source || group);
+      const row = {provider_group:group, source_id:sourceId, source_status:event.source_status || {}, status:String(event.status || (event.source_status || {}).status || (event.error ? "error" : "ok")), error:String(event.error || ""), duration_ms:Number(event.duration_ms || 0), result_count:Number(event.result_count || (event.results || []).length), done:true};
+      const index = this.state.providerStatus.findIndex(item=>item.provider_group === group && String(item.source_id || item.provider_group || "") === sourceId);
+      if(index >= 0) this.state.providerStatus[index] = row; else this.state.providerStatus.push(row);
+      return true;
+    }
     ingestSource(event){
       if(!this._acceptEvent(event)) return false;
       const group = String(event.provider_group || "");
@@ -164,7 +175,7 @@
     toRow(result){
       const pills=[]; const data=result.provider_data||{};
       pills.push(pill(result.source_label || result.source,"sources"));
-      if(result.source === "torrent" || result.source === "local_index") (data.indexer_labels || []).forEach(label=>pills.push(pill(label,"indexers")));
+      if(result.source === "torrent") (data.indexer_labels || []).forEach(label=>pills.push(pill(label,"indexers")));
       pills.push(pill(result.kind_label || result.kind,"types"));
       if(result.source === "torrent" && data.category) pills.push(pill(data.category,"media"));
       return {kind:"libsearch_result",row_layout_key:"search-result-fixed",label:String(result.title||"Result"),sub_label:String(result.subtitle||result.artist||result.album||""),source:String(result.source||""),result_id:String(result.result_id||""),raw:result,pills:pills};

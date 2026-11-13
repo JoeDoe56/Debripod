@@ -97,7 +97,12 @@
     try{
       if(!item) return "idx:" + String(index || 0);
       const rootId = item.root && item.root.id || item.rootId || item.root_id || "";
+      // Rows inside one page (task files, search files) share their parent's
+      // task/result id, so the per-row id must come first or every row of the
+      // page collapses onto one identity and selection jumps to the last one.
+      const rowId = item.file_id || item.remote_path || item.source_url || "";
       const stable = item.rel || item.value || item.cat || item.action || item.task_id || item.result_id || "";
+      if(rowId) return [rootId, stable, String(item.kind || ""), rowId].join("/");
       if(stable) return [rootId, stable].join("/");
       if(item.queueKind || item.queueIndex != null) return ["queue", item.queueKind || "", item.queueIndex == null ? index : item.queueIndex].join("/");
       return "idx:" + String(index || 0);
@@ -303,7 +308,7 @@
       : (previous[state.sel] ? virtualItemIdentity(previous[state.sel], state.sel) : "");
     const transitionApi = window.DebriPod && DebriPod.rowTransitions;
     const reducedMotion = !!(window.matchMedia && window.matchMedia("(prefers-reduced-motion: reduce)").matches);
-    const plan = transitionApi ? transitionApi.planRowMutation(previous, next, virtualItemIdentity, selectedIdentity, {reducedMotion:reducedMotion}) : null;
+    const plan = transitionApi ? transitionApi.planRowMutation(previous, next, virtualItemIdentity, selectedIdentity, {reducedMotion:reducedMotion, selectedIndex:Object.prototype.hasOwnProperty.call(opts, "transitionSelectionIdentity") ? -1 : state.sel}) : null;
     state.items = next;
     state.itemsVersion = Number(state.itemsVersion || 0) + 1;
     if(opts.preserveSelection && plan && plan.selectionIndex >= 0) state.sel = plan.selectionIndex;
@@ -314,6 +319,73 @@
     if(opts.preserveScroll && libList) libList.scrollTop = oldScroll;
     invalidateVirtualPrefix();
     return plan;
+  }
+
+  // Texts of the pills a row shows, in render order (see renderList).
+  function listRowPillTexts(it){
+    const out = [];
+    if(!it) return out;
+    if(Array.isArray(it.pills)){
+      for(const p of it.pills){
+        if(!p) continue;
+        const text = typeof p === "string" ? p : String(p.text || "");
+        if(text.trim()) out.push(text.trim());
+      }
+    }
+    if(it.badge) out.push(String(it.badge));
+    if(it.selectable) out.push(it.selected ? "Selected" : "Select");
+    return out;
+  }
+
+  // Redraw the text of rows that are on screen from state.items, without
+  // replacing any DOM node. Used for live updates (task progress, selection
+  // toggles) so the page never rebuilds and the selection never moves.
+  function patchRenderedRows(){
+    if(!libList) return;
+    const rowSystem = window.DebriPod && DebriPod.rowSystem;
+    libList.querySelectorAll(":scope > .ipodItem[data-index]").forEach((row)=>{
+      try{
+        const index = Number(row.dataset.index);
+        const it = state.items[index];
+        if(!it) return;
+        syncSelectedRowMarkers(row, index === state.sel);
+        const label = row.querySelector(".ipodLabel");
+        if(label && !it.label_html && it.kind !== "album" && label.getAttribute("data-text") !== String(it.label || "")) setGlassText(label, it.label || "");
+        const secondary = row.querySelector(".dpRowSecondary, .ipodSubLabel");
+        if(secondary && secondary.tagName !== "INPUT"){
+          const text = it.sub_label ? String(it.sub_label) : (rowSystem && rowSystem.secondaryText ? rowSystem.secondaryText(it, listRowPillTexts(it)) : null);
+          if(text != null && secondary.getAttribute("data-text") !== text) setGlassText(secondary, text);
+        }
+        row.classList.toggle("disabled", !!it.disabled);
+      }catch(e){}
+    });
+    try{ if(typeof refreshSelectedHScrollText === "function") refreshSelectedHScrollText(); }catch(e){}
+    try{ if(rowSystem && rowSystem.updatePanel) rowSystem.updatePanel(); }catch(e){}
+    try{ if(typeof markFrameWork === "function") markFrameWork({render:true, textContrast:true}); }catch(e){}
+  }
+
+  // Apply a new item list. When it has the same rows (same identities and
+  // kinds, in the same order) the existing item objects are updated in place
+  // and only the on-screen text is patched; otherwise this falls back to a
+  // normal replaceListItems, which keeps the selection on the same row.
+  function updateListItemsInPlace(nextItems, options){
+    const previous = Array.isArray(state.items) ? state.items : [];
+    const next = Array.isArray(nextItems) ? nextItems : [];
+    let same = previous.length === next.length && previous.length > 0;
+    for(let i=0; same && i<next.length; i++){
+      const a = previous[i], b = next[i];
+      if(!a || !b || String(a.kind || "") !== String(b.kind || "") || virtualItemIdentity(a, i) !== virtualItemIdentity(b, i) || !!a.disabled !== !!b.disabled) same = false;
+    }
+    if(!same) return replaceListItems(next, Object.assign({preserveSelection:true, preserveScroll:true}, options || {}));
+    for(let i=0; i<next.length; i++){
+      const target = previous[i], source = next[i];
+      // Keep the same object so click handlers that closed over it see the
+      // new state.
+      Object.keys(target).forEach((key)=>{ if(!(key in source)) delete target[key]; });
+      Object.assign(target, source);
+    }
+    patchRenderedRows();
+    return null;
   }
 
   let nowPlayingListSnapshot = null;
@@ -1268,7 +1340,12 @@
                   it.selected = !it.selected;
                 }
               }catch(e){}
-              renderList();
+              if(it.kind === "libtask_file" && typeof libTaskBuildItemsForView === "function"){
+                // Selected count badges on the action rows change too.
+                try{ setHeader(); updateListItemsInPlace(libTaskBuildItemsForView(state.current || {}), {reason:"task file selection"}); }catch(e){ renderList(); }
+              }else{
+                patchRenderedRows();
+              }
             });
           }
           if(p.filter_kind){ sp.dataset.filterKind=String(p.filter_kind); sp.dataset.filterValue=String(p.filter_value || p.text || ""); }

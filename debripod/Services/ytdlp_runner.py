@@ -37,7 +37,8 @@ def _ffmpeg_location() -> str:
 
 
 def base_args(*, include_ffmpeg: bool = True) -> list[str]:
-    args = ["--no-warnings", "--ignore-config", "--plugin-dirs", plugin_root()]
+    # UTF-8 output on every platform (Windows pipes default to the ANSI code page).
+    args = ["--no-warnings", "--ignore-config", "--encoding", "utf-8", "--plugin-dirs", plugin_root()]
     location = _ffmpeg_location() if include_ffmpeg else ""
     if location:
         args.extend(["--ffmpeg-location", location])

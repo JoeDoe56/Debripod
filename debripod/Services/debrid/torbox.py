@@ -15,6 +15,14 @@ from .models import DebridFile, DebridPreview, DebridResolvedLink
 from .identifiers import first_identifier, identifiers_equal, normalize_identifier, normalize_identifier_list
 
 
+PREVIEW_METADATA_WAIT_SECONDS = 20.0
+
+
+def _not_listed_yet(exc: Exception) -> bool:
+    text = str(exc)
+    return "(404)" in text and "ITEM_NOT_FOUND" in text
+
+
 def find_torbox_files(payload: Any) -> list[dict]:
     if not isinstance(payload, dict):
         return []
@@ -104,11 +112,37 @@ class TorBoxProvider(DebridProviderBase):
         task_id = first_identifier(task, "torrent_id", "id") or first_identifier(data if isinstance(data, dict) else {}, "id")
         if task_id is None:
             raise DebridProviderError("Debrid provider did not return a task id.")
-        return await self.refresh_preview(task_id)
+        # A magnet TorBox has not seen yet reports "metaDL"/"checking" with no
+        # files for a few seconds while it fetches the torrent's metadata. Wait
+        # for the file list instead of showing an empty preview.
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + PREVIEW_METADATA_WAIT_SECONDS
+        delay = 0.5
+        while True:
+            try:
+                preview = await self.refresh_preview(task_id)
+            except DebridProviderError as exc:
+                # TorBox can briefly answer 404 ITEM_NOT_FOUND for a torrent it
+                # has just created; keep waiting until the deadline.
+                if not _not_listed_yet(exc) or loop.time() + delay > deadline:
+                    raise
+                await asyncio.sleep(delay)
+                delay = min(2.0, delay * 1.5)
+                continue
+            if preview.files:
+                return preview
+            if preview.status.lower() in {"error", "failed", "dead"}:
+                raise DebridProviderError(f"Debrid provider reported status: {preview.status}")
+            if loop.time() + delay > deadline:
+                return preview
+            await asyncio.sleep(delay)
+            delay = min(2.0, delay * 1.5)
 
     async def refresh_preview(self, provider_task_id: str) -> DebridPreview:
+        # bypass_cache: TorBox's cached list can lag behind a just-added torrent
+        # (no files yet, or an old download_present value).
         payload = await self._request("GET", "/v1/api/torrents/mylist", params={
-            "id": provider_task_id, "bypass_cache": "false", "offset": 0, "limit": 1000,
+            "id": provider_task_id, "bypass_cache": "true", "offset": 0, "limit": 1000,
         })
         if not isinstance(payload, dict):
             raise DebridProviderError("Debrid provider returned an invalid torrent response.")
@@ -160,7 +194,13 @@ class TorBoxProvider(DebridProviderBase):
             raise DebridProviderError("No files selected.")
         deadline = asyncio.get_running_loop().time() + max(1, int(timeout_seconds or 0))
         while asyncio.get_running_loop().time() <= deadline:
-            preview = await self.refresh_preview(provider_task_id)
+            try:
+                preview = await self.refresh_preview(provider_task_id)
+            except DebridProviderError as exc:
+                if not _not_listed_yet(exc):
+                    raise
+                await asyncio.sleep(max(1, int(poll_interval_seconds or 1)))
+                continue
             if preview.ready:
                 return [item for item in preview.files if item.file_id in wanted]
             if preview.status.lower() in {"error", "failed", "dead"}:
@@ -205,6 +245,6 @@ class TorBoxProvider(DebridProviderBase):
         if provider_task_id is None:
             return
         try:
-            await self._request("POST", "/v1/api/torrents/controltorrent", json_body={"torrent_id": provider_task_id, "action": "delete"})
+            await self._request("POST", "/v1/api/torrents/controltorrent", json_body={"torrent_id": provider_task_id, "operation": "delete"})
         except Exception:
             pass

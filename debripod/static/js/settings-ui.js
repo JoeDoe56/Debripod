@@ -537,21 +537,9 @@
     showNowPlaying(false);
     await setView({kind:"settings_torrent_sources",label:"Torrent Sources",load:async function(){
       await settingsLoad();
-      let diagnostics={};
-      try{ diagnostics=await apiGet("/api/local-index/status"); }catch(e){ diagnostics={ready:false,error:String(e&&e.message||e)}; }
-      const meta=diagnostics.meta||{};
-      const updater=diagnostics.updater||{};
-      const indexError=String(updater.error||diagnostics.error||"");
-      const lastSuccessful=Math.max(Number(meta.dmm_last_success_unix||0),Number(meta.torrents_csv_last_success_unix||0));
       const enabled=new Set(((state.appSettings||{}).TORRENT_SEARCH_ENABLED_SOURCES||[]).map(String));
       const labels={knaben:"Knaben",bitsearch:"BitSearch",magnetz:"Magnetz",torlock:"TorLock",bt4g:"BT4G",torrentclaw:"TorrentClaw",torapi:"TorAPI"};
-      const rows=[
-        {kind:"setting_value",label:"Local Index",key:"LOCAL_INDEX_ENABLED",settingType:"bool",value:!!(state.appSettings||{}).LOCAL_INDEX_ENABLED,pills:[{text:(state.appSettings||{}).LOCAL_INDEX_ENABLED?"Enabled":"Disabled",tone:(state.appSettings||{}).LOCAL_INDEX_ENABLED?"ok":""},{text:indexError?"Error":updater.building?"Building":diagnostics.ready?"Ready":"Pending",tone:indexError?"warn":diagnostics.ready?"ok":"warn"}],sub_label:indexError,settingRow:true},
-        {kind:"info",label:"Indexed torrents",sub_label:[String(diagnostics.total||0)+" total",String(diagnostics.dmm||0)+" DMM",String(diagnostics.torrents_csv||0)+" Torrents CSV",String(diagnostics.overlap||0)+" overlap"].join(" · "),forceTwoLine:true},
-        {kind:"info",label:"Database",sub_label:[String(diagnostics.path||""),String(diagnostics.size_bytes||0)+" bytes"].filter(Boolean).join(" · "),forceTwoLine:true},
-        {kind:"info",label:"Source revisions",sub_label:[meta.dmm_commit_sha?("DMM "+meta.dmm_commit_sha):"DMM pending",meta.torrents_csv_commit_sha?("CSV "+meta.torrents_csv_commit_sha):"CSV pending"].join(" · "),forceTwoLine:true},
-        {kind:"info",label:"Last successful update",sub_label:lastSuccessful?new Date(lastSuccessful*1000).toLocaleString():"Pending",forceTwoLine:true}
-      ];
+      const rows=[];
       Object.keys(labels).forEach(function(sourceId){
         const on=enabled.has(sourceId);
         rows.push({kind:"settings_torrent_source_toggle",label:labels[sourceId],sourceId:sourceId,enabled:on,pills:[{text:on?"Enabled":"Disabled",tone:on?"ok":""}],settingRow:true});
@@ -1032,10 +1020,10 @@
       const model = libUnifiedSearchModel();
       const items = [];
       const status = Array.isArray(state.libSearch.providerStatus) ? state.libSearch.providerStatus : [];
-      const sourceRows = {Library:{done:false,count:0,error:""},"Local Index":{done:false,count:0,error:""},Torrents:{done:false,count:0,error:""},Soulseek:{done:false,count:0,error:""},YouTube:{done:false,count:0,error:""}};
+      const sourceRows = {Library:{done:false,count:0,error:""},Torrents:{done:false,count:0,error:""},Soulseek:{done:false,count:0,error:""},YouTube:{done:false,count:0,error:""}};
       status.forEach(group=>{
         const name = String(group.provider_group || "");
-        const target = name === "library" ? sourceRows.Library : name === "local_index" ? sourceRows["Local Index"] : name === "torrents" ? sourceRows.Torrents : name === "soulseek" ? sourceRows.Soulseek : (name === "ytdlp" || name === "youtube") ? sourceRows.YouTube : null;
+        const target = name === "library" ? sourceRows.Library : name === "torrents" ? sourceRows.Torrents : name === "soulseek" ? sourceRows.Soulseek : (name === "ytdlp" || name === "youtube") ? sourceRows.YouTube : null;
         if(!target) return;
         target.done = true;
         target.count += Number(group.result_count || 0);
@@ -1057,6 +1045,10 @@
       items.push({kind:"libsearch_filter",row_layout_key:"search-filter-fixed",label:"Enter filters",pills:activeCount?[{text:String(activeCount)+" active"}]:[]});
       items.push({kind:"libsearch_action",label:"Clear"});
       items.push({kind:"libsearch_status",row_layout_key:"search-sources",label:"",pills:sourcePills});
+      if(state.libSearch.running){
+        items.push({kind:"loading",row_layout_key:"search-loading",label:"Searching",loading:true});
+        return items;
+      }
       return items.concat(model.resultRows());
     }
     const q = state.libSearch.q || "";
@@ -1066,9 +1058,9 @@
     const sourceRows = Object.values((state.libSearch && state.libSearch.sourceStatus) || {});
     const sourceMap = {};
     sourceRows.forEach(src=>{ if(src && src.source) sourceMap[String(src.source).toLowerCase()] = src; });
-    const sourcePills = ["library", "local_index", "torrent", "soulseek", "youtube"].map(source=>{
+    const sourcePills = ["library", "torrent", "soulseek", "youtube"].map(source=>{
       const src = sourceMap[source] || {};
-      const label = source === "local_index" ? "Local Index" : (source === "soulseek" ? "Soulseek" : source.charAt(0).toUpperCase() + source.slice(1));
+      const label = source === "soulseek" ? "Soulseek" : source.charAt(0).toUpperCase() + source.slice(1);
       if(String(src.error || "")) return {text:label + " ×", tone:"warn"};
       if(src.done === false || !sourceMap[source]) return {text:label + " …", tone:""};
       return {text:label + " " + String(Number(src.result_count || 0)), tone:"ok"};
@@ -1163,6 +1155,12 @@
     return items;
   }
 
+  // Search updates arrive while the user may be on another page; they must
+  // never draw search rows over it. Returning to Search rebuilds from state.
+  function libRefreshSearchIfVisible(){
+    if(state.current && state.current.kind === "libsearch") libRefreshList(true);
+  }
+
   function libRefreshList(preserveSel){
     const items = libResultsToItems();
     const prevSel = state.sel;
@@ -1181,8 +1179,7 @@
 
     const nextItems = Array.isArray(items) ? items : [];
     if(preserveSel){
-      const max = Math.max(0, nextItems.length - 1);
-      state.sel = Math.max(0, Math.min(max, prevSel));
+      // Selection follows the row's identity (see updateListItemsInPlace).
     }else if(restoreSel != null){
       const max = Math.max(0, nextItems.length - 1);
       state.sel = Math.max(0, Math.min(max, restoreSel));
@@ -1191,7 +1188,12 @@
     }
 
     setHeader();
-    replaceListItems(nextItems, {animate:true, preserveSelection:!!preserveSel, preserveScroll:true, selectionIndex:state.sel, reason:"search results"});
+    if(preserveSel){
+      // Status changes patch rows in place; new results replace only rows.
+      updateListItemsInPlace(nextItems, {animate:true, selectionIndex:state.sel, reason:"search results"});
+      return;
+    }
+    replaceListItems(nextItems, {animate:true, preserveSelection:false, preserveScroll:true, selectionIndex:state.sel, reason:"search results"});
 
     if(!preserveSel && restoreScroll != null && libList){
       const top = Math.max(0, restoreScroll);
@@ -1300,8 +1302,7 @@ function libTasksRefreshList(preserveSel){
 
   const nextItems = Array.isArray(items) ? items : [];
   if(preserveSel){
-    const max = Math.max(0, nextItems.length - 1);
-    state.sel = Math.max(0, Math.min(max, prevSel));
+    // Selection follows the row's identity (see updateListItemsInPlace).
   }else if(restoreSel != null){
     const max = Math.max(0, nextItems.length - 1);
     state.sel = Math.max(0, Math.min(max, restoreSel));
@@ -1310,7 +1311,11 @@ function libTasksRefreshList(preserveSel){
   }
 
   setHeader();
-  replaceListItems(nextItems, {animate:true, preserveSelection:!!preserveSel, preserveScroll:true, selectionIndex:state.sel, reason:"task list"});
+  if(preserveSel){
+    updateListItemsInPlace(nextItems, {animate:true, selectionIndex:state.sel, reason:"task list"});
+    return;
+  }
+  replaceListItems(nextItems, {animate:true, preserveSelection:false, preserveScroll:true, selectionIndex:state.sel, reason:"task list"});
 
   if(!preserveSel && restoreScroll != null && libList){
     const top = Math.max(0, restoreScroll);
@@ -1436,7 +1441,7 @@ async function viewLibTask(push, taskId){
 }
 
 async function libTasksPollTick(){
-  var vk = (state.current && state.current.kind) ? state.current.kind : "";
+  let vk = (state.current && state.current.kind) ? state.current.kind : "";
   if(vk !== "libtasks" && vk !== "libtask") return;
   try{
     if(window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.isServerUnavailable && DebriPod.clientSync.isServerUnavailable()){
@@ -1444,8 +1449,11 @@ async function libTasksPollTick(){
     }
   }catch(e){}
   try{
-    const js = await apiGet("/api/tasks");
+    // Always ask the server: the local mirror would hand back stale progress.
+    const js = await apiGet("/api/tasks", {networkOnly:true});
     const tasks = (js && js.tasks) ? js.tasks : [];
+    vk = (state.current && state.current.kind) ? state.current.kind : "";
+    if(vk !== "libtasks" && vk !== "libtask") return;
     const signature = JSON.stringify(tasks.map(t=>({
       id:t.id || "",
       state:t.state || "",
@@ -1470,14 +1478,8 @@ async function libTasksPollTick(){
         view.task = t;
         if(t.title) view.label = String(t.title);
       }
-      const prevSel = state.sel;
-      const prevScroll = (libList ? libList.scrollTop : 0);
-      const nextItems = libTaskBuildItemsForView(view);
-      const max = Math.max(0, nextItems.length - 1);
-      state.sel = Math.max(0, Math.min(max, prevSel));
       setHeader();
-      replaceListItems(nextItems, {animate:true, preserveSelection:true, preserveScroll:true, selectionIndex:state.sel, reason:"task polling"});
-      try{ if(libList) libList.scrollTop = prevScroll; }catch(e){}
+      updateListItemsInPlace(libTaskBuildItemsForView(view), {animate:true, reason:"task polling"});
     }
   }catch(e){}
 }
@@ -1512,8 +1514,8 @@ async function libDoSearch(engine, q){
     try{
       if(window.DebriPod && DebriPod.clientSync && DebriPod.clientSync.isServerUnavailable && DebriPod.clientSync.isServerUnavailable()){
         libSetStatus(DebriPod.clientSync.serverRequiredMessage ? DebriPod.clientSync.serverRequiredMessage("Search") : "Search requires the local DebriPod server.", "warn");
-        if(state.libSearch) state.libSearch.searching = false;
-        libRefreshList(true);
+        if(state.libSearch){ state.libSearch.searching = false; state.libSearch.running = false; }
+        libRefreshSearchIfVisible();
         return;
       }
     }catch(e){}
@@ -1528,7 +1530,7 @@ async function libDoSearch(engine, q){
     state.libSearch.cached = false;
     state.libSearch.showSourceStatus = true;
     libSetStatus("Searching", "");
-    libRefreshList(true);
+    libRefreshSearchIfVisible();
     try{
       const js = await libSearchCombinedProgressive(qq, searchToken);
       if(state.libSearch.search_token !== searchToken) return;
@@ -1547,12 +1549,13 @@ async function libDoSearch(engine, q){
       }
       state.libSearch.cached = !!js.cached;
       libSetStatus(String(state.libSearch.last_count) + " results" + (state.libSearch.cached ? " · Cached" : ""), "ok");
-      libRefreshList(true);
+      libRefreshSearchIfVisible();
     }catch(e){
       if(state.libSearch.search_token !== searchToken || (e && e.name === "AbortError")) return;
       state.libSearch.searching = false;
+      state.libSearch.running = false;
       libSetStatus("Error", "warn");
-      libRefreshList(true);
+      libRefreshSearchIfVisible();
       reportUiStatus(String(e && e.message ? e.message : e), "warn");
     }
   }
@@ -2019,7 +2022,7 @@ async function libDoSearch(engine, q){
       const key = String((row && row.key) || "");
       if(cat === "search") return key === "RESULTS_PER_PAGE" || key === "MAX_FILES_PER_TORRENT" || key === "MAX_TORRENT_WAIT_SECONDS" || key === "SEARCH_HISTORY_MAX_ITEMS" || key === "SEARCH_DISK_CACHE_TTL_SECONDS" || key === "SEARCH_STREAM_SESSION_TTL_SECONDS";
       if(cat === "downloads") return key === "REPLACE_ORIGINAL";
-      if(cat === "services") return key.indexOf("SOULSEEK_") === 0 || key === "AIOSLSK_LOGGING_ENABLED" || key.indexOf("LOCAL_INDEX_") === 0 || key.indexOf("TORRENT_SEARCH_") === 0 || key.indexOf("LASTFM_") === 0 || key === "YTDLP_CMD" || key.indexOf("YOUTUBE_") === 0 || key === "RD_BASE";
+      if(cat === "services") return key.indexOf("SOULSEEK_") === 0 || key === "AIOSLSK_LOGGING_ENABLED" || key.indexOf("TORRENT_SEARCH_") === 0 || key.indexOf("LASTFM_") === 0 || key === "YTDLP_CMD" || key.indexOf("YOUTUBE_") === 0 || key === "RD_BASE";
       if(cat === "playback") return key === "WHEEL_ROTATION_MAX_DEGREES" || key === "FFMPEG_PATH" || key === "FFPROBE_PATH" || key === "AUDIO_TRANSCODE" || key === "VIDEO_BROWSER_TARGET_EXT" || key === "AUTO_TRANSCODE_FOR_BROWSER_COMPATIBILITY" || key === "PRELOAD_NEXT_CHUNK_BYTES" || key === "ENABLE_GAPLESS_PLAYBACK";
       return false;
     }).map(settingRowToListItem);
@@ -2343,9 +2346,9 @@ async function libDoSearch(engine, q){
     const movie = /\b(movie|film|show|series|season|episode|1080p|2160p|720p|4k|bluray|webrip|webdl|hdtv|x264|x265|hevc|hdr|s\d{1,2}e\d+)\b/.test(query) || /\b(?:19|20)\d{2}\b/.test(query);
     const video = /\b(tutorial|review|explained|interview|podcast|trailer|clip|performance|news|walkthrough|guide)\b/.test(query);
     const sourceBoosts = music
-      ? {library:180, soulseek:150, youtube:95, torrent:30, local_index:30}
-      : (movie ? {library:180, torrent:150, local_index:150, youtube:90, soulseek:25}
-        : (video ? {library:180, youtube:150, soulseek:55, torrent:55, local_index:55} : {library:160, youtube:70, soulseek:65, torrent:60, local_index:60}));
+      ? {library:180, soulseek:150, youtube:95, torrent:30}
+      : (movie ? {library:180, torrent:150, youtube:90, soulseek:25}
+        : (video ? {library:180, youtube:150, soulseek:55, torrent:55} : {library:160, youtube:70, soulseek:65, torrent:60}));
     const score = item=>{
       const title = normalize(item.title || item.directory_title || item.name || "");
       const artistTitle = normalize(String(item.artist || item.user || "") + " " + title);
@@ -2419,22 +2422,26 @@ async function libDoSearch(engine, q){
         return fallback;
       }
       const decoder=new TextDecoder(),reader=response.body.getReader(); let buffer="",finalPayload=null,validSources=0,parseErrors=0;
+      // Results from each source are held here, not shown: the page keeps a
+      // spinner until every source has answered, then shows one ranked list.
+      const pending=new Map();
       function handle(line){
         if(!line || state.libSearch.search_token!==searchToken)return;
         let event=null; try{event=JSON.parse(line);}catch(_error){parseErrors++;return;}
         if(event.event==="source"){
-          if(!model.ingestSource(event)) return;
+          if(!model.ingestSourceStatus(event)) return;
           validSources++;
+          (event.results||[]).forEach(raw=>{ if(raw && raw.result_id){ const id=String(raw.result_id), prev=pending.get(id); pending.set(id, prev ? Object.assign({}, prev, raw) : raw); } });
           libSetStatus(libSearchCombinedStatusText(model.state.providerStatus),event.error?"warn":"");
-          libRefreshList(true);
+          libRefreshSearchIfVisible();
         }else if(event.event==="done"){
           if(!model.ingestFinal(event)) return;
           finalPayload=event;
           libSetStatus(String(model.state.allResults.length)+" results"+(event.cached?" · Cached":""),"ok");
-          libRefreshList(true);
+          libRefreshSearchIfVisible();
         }else if(event.event==="start"){
           model.setSearchId(event.search_id || searchToken);
-          state.libSearch.cached=!!event.cached; libSetStatus(event.cached?"Loading cached results":"Searching",""); libRefreshList(true);
+          state.libSearch.cached=!!event.cached; libSetStatus(event.cached?"Loading cached results":"Searching",""); libRefreshSearchIfVisible();
         }
       }
       try{
@@ -2446,7 +2453,8 @@ async function libDoSearch(engine, q){
       }
       if(!finalPayload && !validSources && parseErrors) throw new Error("Search stream was incomplete");
       if(!finalPayload){
-        model.ingestFinal({search_id:model.state.searchId,results:model.state.allResults,provider_status:model.state.providerStatus,cached:false});
+        const ranked=Array.from(pending.values()).sort((a,b)=>Number(b.rank_score||0)-Number(a.rank_score||0)||String(a.result_id).localeCompare(String(b.result_id)));
+        model.ingestFinal({search_id:model.state.searchId,results:ranked,provider_status:model.state.providerStatus,cached:false});
       }
       return finalPayload||{ok:true,search_id:model.state.searchId,q:qq,cache_key:"",results:model.state.allResults,result_count:model.state.allResults.length,provider_status:model.state.providerStatus};
     }finally{

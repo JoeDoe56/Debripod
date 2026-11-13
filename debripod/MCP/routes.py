@@ -293,7 +293,7 @@ def _mcp_group_soulseek_items(items: List[Dict[str, Any]]) -> List[Dict[str, Any
 
 async def _mcp_search_torrents(query: str, limit: int, runtime: UserRuntime) -> dict:
     search_runtime = runtime.search_runtime
-    pipeline = SearchPipeline([search_runtime.local_index_provider, search_runtime.torrent_provider])
+    pipeline = SearchPipeline([search_runtime.torrent_provider])
     context = SearchContext(
         username=runtime.user_id,
         query=query,
@@ -579,7 +579,7 @@ def _mcp_tools_list() -> List[dict]:
         {
             'name': 'debripod_torrent_search',
             'title': 'DebriPod Torrent Search',
-            'description': 'Search DebriPod Local Index and enabled structured torrent APIs. Returns DebriPod download identifiers.',
+            'description': 'Search the enabled structured torrent APIs in DebriPod. Returns DebriPod download identifiers.',
             'inputSchema': {
                 'type': 'object',
                 'properties': {

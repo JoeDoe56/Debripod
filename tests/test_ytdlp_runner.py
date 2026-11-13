@@ -16,7 +16,7 @@ def test_base_args_and_flat_json(monkeypatch):
     ytdlp_runner.configure_ytdlp_runner(ytdlp_cmd_provider=lambda: "custom-ytdlp")
     assert ytdlp_runner.run_flat_entries("https://example.test") == [{"id": "1"}]
     assert captured["args"][0] == "custom-ytdlp"
-    assert captured["args"][1:6] == ["--no-warnings", "--ignore-config", "--plugin-dirs", ytdlp_runner.plugin_root(), "--flat-playlist"]
+    assert captured["args"][1:8] == ["--no-warnings", "--ignore-config", "--encoding", "utf-8", "--plugin-dirs", ytdlp_runner.plugin_root(), "--flat-playlist"]
     assert "--playlist-end" not in captured["args"] and "--max-downloads" not in captured["args"]
 
 

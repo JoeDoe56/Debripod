@@ -521,8 +521,14 @@ def validate_ytdlp_output(path: str, media: str = "", expected_duration: float =
     if duration <= 0:
         raise RuntimeError("yt-dlp output has no duration")
     expected = _yt_number(expected_duration)
-    if expected > 0 and duration + 0.75 < expected:
-        raise RuntimeError("yt-dlp output is shorter than the requested media")
+    # Listing durations are whole seconds and often rounded up (a flat
+    # playlist reports 141 for a 140.14 s track), and container durations
+    # differ slightly from the source's. Only a clearly truncated file fails.
+    tolerance = max(2.0, expected * 0.02)
+    if expected > 0 and duration + tolerance < expected:
+        raise RuntimeError(
+            f"yt-dlp output is shorter than the requested media ({duration:.1f} s of {expected:.0f} s)"
+        )
     # A merged file with wildly divergent track starts/durations is incomplete
     # even if ffprobe can parse it. Small encoder padding differences are fine.
     if "video" in kinds and "audio" in kinds:
@@ -618,7 +624,10 @@ def _prepare_youtube_stream_file(url: str, fmt: dict) -> str:
 def _yt_dlp_base_args() -> List[str]:
     # Sort by requested resolution first, then prefer broadly playable H.264
     # and AAC only among equal-resolution candidates.
-    args = ["--no-playlist", "--no-warnings", "--ignore-config", "-S", "res,vcodec:h264,acodec:aac"]
+    # --encoding utf-8: on Windows yt-dlp writes piped output in the ANSI code
+    # page, so titles with emoji or other non-Latin characters came back
+    # mangled in the printed final path and the finished file was "missing".
+    args = ["--no-playlist", "--no-warnings", "--ignore-config", "--encoding", "utf-8", "-S", "res,vcodec:h264,acodec:aac"]
     ff_loc = _ytdlp_ffmpeg_location()
     if ff_loc:
         args += ["--ffmpeg-location", ff_loc]

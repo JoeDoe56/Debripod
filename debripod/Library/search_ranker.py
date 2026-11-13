@@ -59,8 +59,6 @@ def infer_query_intent(q: str, *, library_hits: list[dict] | None = None) -> dic
 
 
 def _source_priority(source: str, intent: dict[str, float]) -> int:
-    if source == "local_index":
-        source = "torrent"
     music = float(intent.get("music") or 0)
     movie = float(intent.get("movie_show") or 0)
     video = float(intent.get("general_video") or 0)
@@ -74,7 +72,7 @@ def _source_priority(source: str, intent: dict[str, float]) -> int:
 
 
 def source_priority_for_intent(intent: dict[str, float]) -> list[str]:
-    sources = ["library", "local_index", "torrent", "soulseek", "youtube"]
+    sources = ["library", "torrent", "soulseek", "youtube"]
     return sorted(sources, key=lambda source: (-_source_priority(source, intent), sources.index(source)))
 
 
@@ -92,7 +90,7 @@ def _quality_score(result: dict[str, Any]) -> float:
     source = str(result.get("source") or "").lower()
     provider = result.get("provider_data") if isinstance(result.get("provider_data"), dict) else {}
     score = 0.0
-    if source in {"torrent", "local_index"}:
+    if source == "torrent":
         seeders = max(0, int(provider.get("seeders") or 0))
         score += min(120.0, math.log2(seeders + 1) * 12.0)
         if provider.get("verified"):

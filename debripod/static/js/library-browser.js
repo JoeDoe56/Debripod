@@ -2083,27 +2083,15 @@ if(it.kind === "libtask_action"){
         if(v && v.file_id) view.selected.delete(String(v.file_id));
       }
     }
-    const prevSel = state.sel;
-    const prevScroll = (libList ? libList.scrollTop : 0);
-    const nextItems = libTaskBuildItemsForView(view);
-    const max = Math.max(0, nextItems.length - 1);
-    state.sel = Math.max(0, Math.min(max, prevSel));
     setHeader();
-    replaceListItems(nextItems, {animate:true, preserveSelection:true, preserveScroll:true, selectionIndex:state.sel, reason:"task selection"});
-    try{ if(libList) libList.scrollTop = prevScroll; }catch(e){}
+    updateListItemsInPlace(libTaskBuildItemsForView(view), {animate:true, reason:"task selection"});
     return;
   }
 
   if(it.action === "clear"){
     view.selected = new Set();
-    const prevSel = state.sel;
-    const prevScroll = (libList ? libList.scrollTop : 0);
-    const nextItems = libTaskBuildItemsForView(view);
-    const max = Math.max(0, nextItems.length - 1);
-    state.sel = Math.max(0, Math.min(max, prevSel));
     setHeader();
-    replaceListItems(nextItems, {animate:true, preserveSelection:true, preserveScroll:true, selectionIndex:state.sel, reason:"task selection"});
-    try{ if(libList) libList.scrollTop = prevScroll; }catch(e){}
+    updateListItemsInPlace(libTaskBuildItemsForView(view), {animate:true, reason:"task selection"});
     return;
   }
 
@@ -2166,14 +2154,8 @@ if(it.kind === "libtask_file"){
       else it.selected = !it.selected;
     }catch(e){}
     const view = state.current || {};
-    const prevSel = state.sel;
-    const prevScroll = (libList ? libList.scrollTop : 0);
-    const nextItems = libTaskBuildItemsForView(view);
-    const max = Math.max(0, nextItems.length - 1);
-    state.sel = Math.max(0, Math.min(max, prevSel));
     setHeader();
-    replaceListItems(nextItems, {animate:true, preserveSelection:true, preserveScroll:true, selectionIndex:state.sel, reason:"task file selection"});
-    try{ if(libList) libList.scrollTop = prevScroll; }catch(e){}
+    updateListItemsInPlace(libTaskBuildItemsForView(view), {animate:true, reason:"task file selection"});
     return;
   }
 }

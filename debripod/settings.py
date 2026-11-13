@@ -75,8 +75,6 @@ DEFAULT_APP_SETTINGS: dict[str, Any] = {'APP_NAME': 'DebriPod',
  'MCP_SEARCH_RESULT_LIMIT': 20,
  'MCP_SSE_KEEPALIVE_SECONDS': 15,
  'MCP_SESSION_TTL_SECONDS': 43200,
- 'LOCAL_INDEX_ENABLED': True,
- 'LOCAL_INDEX_UPDATE_INTERVAL_SECONDS': 21600,
  'TORRENT_SEARCH_ENABLED_SOURCES': ['knaben',
                                     'bitsearch',
                                     'magnetz',
@@ -158,7 +156,6 @@ SERVER_SETTING_KEYS = frozenset({
     "RD_BASE", "ALLDEBRID_BASE", "PREMIUMIZE_BASE", "TORBOX_BASE",
     "YOUTUBE_WEB_BASE", "LASTFM_API_ROOT", "LASTFM_CALLBACK_URL",
     "FFMPEG_PATH", "FFPROBE_PATH", "YTDLP_CMD",
-    "LOCAL_INDEX_ENABLED", "LOCAL_INDEX_UPDATE_INTERVAL_SECONDS",
 })
 DEVICE_SETTING_KEYS = frozenset(DEFAULT_UI_APP_SETTINGS)
 USER_SETTING_KEYS = frozenset(APP_SETTING_KEYS.difference(SERVER_SETTING_KEYS))
@@ -411,6 +408,41 @@ def migrate_user_secrets(legacy_username: str, user_id: str) -> None:
                 set_secret(old_scope, service, "")
         except Exception:
             continue
+
+
+# Per-user secrets that older single-user releases saved under the shared
+# "global" scope. The owner inherits them once if their own scope has none.
+_OWNER_INHERITED_GLOBAL_SECRETS = ("SOULSEEK_USERNAME", "SOULSEEK_PASSWORD")
+
+
+def adopt_global_secrets_for_owner(user_id: str) -> list[str]:
+    """Copy legacy global-scope Soulseek credentials to the owner's scope.
+
+    Without this, an owner upgraded from a single-user install has Soulseek
+    credentials saved only under "global", their runtime loads none, the
+    Soulseek service never starts and search silently omits Soulseek.
+    The global copy is kept so a failed keyring write never loses it.
+    """
+    scope = str(user_id or "").strip()
+    if not scope or scope == "global":
+        return []
+    adopted: list[str] = []
+    try:
+        mine = saved_status(scope)
+        legacy = saved_status("global")
+    except Exception:
+        return []
+    for service in _OWNER_INHERITED_GLOBAL_SECRETS:
+        if (mine.get(service) or {}).get("saved") or not (legacy.get(service) or {}).get("saved"):
+            continue
+        try:
+            value = get_secret("global", service)
+            if value:
+                set_secret(scope, service, value)
+                adopted.append(service)
+        except Exception:
+            continue
+    return adopted
 
 
 def ensure_app_settings(

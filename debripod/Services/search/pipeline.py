@@ -48,7 +48,7 @@ def normalize_result(result: Any) -> dict[str, Any]:
         media = "music"
     elif validated["kind"] in {"movie", "show", "season", "episode", "video"}:
         media = "video"
-    indexers = list(provider.get("indexer_labels") or []) if validated["source"] in {"torrent", "local_index"} else []
+    indexers = list(provider.get("indexer_labels") or []) if validated["source"] == "torrent" else []
     incoming_filters = validated.get("filter_values") if isinstance(validated.get("filter_values"), dict) else {}
     validated["filter_values"] = {
         "sources": list(dict.fromkeys([*(incoming_filters.get("sources") or []), validated["source_label"]])),
@@ -98,6 +98,12 @@ class SearchPipeline:
     def _cache_set(self, context: SearchContext, payload: dict[str, Any]) -> None:
         if self.cache is None:
             return
+        # A search where a source was unavailable, timed out or failed must
+        # not be cached: the cached copy would hide that source (for example
+        # Soulseek while it was still logging in) until the cache expired.
+        for status in payload.get("provider_status", []) or []:
+            if str((status or {}).get("status") or "") not in {"ok", "empty"}:
+                return
         safe_payload = {
             "query": context.query,
             "search_id": context.search_id,
@@ -116,9 +122,6 @@ class SearchPipeline:
         queue: asyncio.Queue[tuple[str, Any, Any]] = asyncio.Queue()
         deduplicator = IncrementalDeduplicator(self.torrent_accumulator_factory)
         statuses: list[dict[str, Any]] = []
-        has_local_index = any(str(getattr(provider, "provider_group", "")) == "local_index" for provider in self.providers)
-        local_index_seeded = not has_local_index
-        buffered_torrent_responses: list[ProviderSearchResponse] = []
 
         async def run_provider(provider: Any) -> None:
             started = time.monotonic()
@@ -179,21 +182,8 @@ class SearchPipeline:
                 message, provider, response = await queue.get()
                 if message == "done":
                     completed += 1
-                    if str(getattr(provider, "provider_group", "")) == "local_index" and not local_index_seeded:
-                        local_index_seeded = True
-                        for buffered in buffered_torrent_responses:
-                            yield ingest_response(buffered)
-                        buffered_torrent_responses.clear()
-                    continue
-                if response.provider_group == "torrents" and not local_index_seeded:
-                    buffered_torrent_responses.append(response)
                     continue
                 yield ingest_response(response)
-                if response.provider_group == "local_index" and not local_index_seeded:
-                    local_index_seeded = True
-                    for buffered in buffered_torrent_responses:
-                        yield ingest_response(buffered)
-                    buffered_torrent_responses.clear()
             ranked = rank_combined_results(deduplicator.values(), query, intent=context.intent)
             payload = {
                 "event": "done", "ok": True, "search_id": context.search_id,

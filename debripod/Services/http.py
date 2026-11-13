@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import email.utils
 import json
+import ssl
 import time
 from dataclasses import dataclass
 from typing import Any, Mapping
@@ -26,9 +27,30 @@ class HttpStatusError(RuntimeError):
         super().__init__(f"HTTP {status} from {url}")
 
 
+def create_ssl_context() -> ssl.SSLContext:
+    """Trust the operating-system store plus the Mozilla bundle from certifi.
+
+    On Windows, Python only sees root certificates Windows has already cached.
+    Windows adds some roots (such as Let's Encrypt's) lazily, the first time an
+    Edge or Windows component needs them, so a valid chain from a debrid CDN
+    could fail with CERTIFICATE_VERIFY_FAILED. Loading certifi's bundle as
+    well keeps verification on while trusting the same public roots browsers do.
+    """
+    context = ssl.create_default_context()
+    try:
+        import certifi  # installed with requests (a pywebpush dependency)
+
+        context.load_verify_locations(cafile=certifi.where())
+    except Exception:
+        pass
+    return context
+
+
 def create_client_session(version: str = "dev", *, connector: aiohttp.BaseConnector | None = None) -> aiohttp.ClientSession:
     return aiohttp.ClientSession(
-        connector=connector or aiohttp.TCPConnector(limit=64, limit_per_host=12, ttl_dns_cache=300, keepalive_timeout=30),
+        connector=connector or aiohttp.TCPConnector(
+            limit=64, limit_per_host=12, ttl_dns_cache=300, keepalive_timeout=30, ssl=create_ssl_context(),
+        ),
         timeout=aiohttp.ClientTimeout(total=HttpTimeouts().metadata),
         auto_decompress=True,
         headers={"User-Agent": f"DebriPod/{version}"},

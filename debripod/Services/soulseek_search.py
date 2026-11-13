@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import os
 import time
 from typing import Any, Callable
@@ -7,6 +8,9 @@ from typing import Any, Callable
 from .search.identity import soulseek_result_id
 from .search.models import ProviderSearchResponse
 from .soulseek import _slsk_group_items_to_dirs
+
+
+LOGIN_WAIT_SECONDS = 20.0
 
 
 class SoulseekSearchProvider:
@@ -18,8 +22,17 @@ class SoulseekSearchProvider:
     async def search(self, query: str, context: Any = None) -> ProviderSearchResponse:
         started = time.monotonic()
         service = self.service_provider()
-        if service is None or not service.is_ready():
-            return ProviderSearchResponse("soulseek", {"status": "unavailable"}, [], error="Soulseek service is not ready", duration_ms=int((time.monotonic() - started) * 1000))
+        if service is None:
+            return ProviderSearchResponse("soulseek", {"status": "unavailable"}, [], error="Soulseek is not configured for this account", duration_ms=int((time.monotonic() - started) * 1000))
+        # The client logs in in the background after the user runtime is
+        # created, so the first search often arrives before login finishes.
+        # Wait for it instead of dropping Soulseek from that search.
+        deadline = started + LOGIN_WAIT_SECONDS
+        while not service.is_ready() and not service.start_error() and time.monotonic() < deadline:
+            await asyncio.sleep(0.25)
+        if not service.is_ready():
+            reason = str(service.start_error() or "") or "Soulseek is still connecting"
+            return ProviderSearchResponse("soulseek", {"status": "unavailable"}, [], error=reason, duration_ms=int((time.monotonic() - started) * 1000))
         items = await service.search_async(query)
         by_user: dict[str, list[dict[str, Any]]] = {}
         for item in items:

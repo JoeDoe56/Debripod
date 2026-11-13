@@ -344,8 +344,11 @@ def _youtube_download_from_queue(task_id: str) -> List[str]:
                 completed_paths.append(out_path)
         except Cancelled:
             raise
-        except Exception:
-            _update_task_file_entry(task_id, 'youtube_files', fid, state='failed', error='YouTube download failed', paused=False)
+        except Exception as exc:
+            # Keep the real reason (yt-dlp's ERROR line or the validation
+            # failure); a generic message made failures impossible to diagnose.
+            reason = str(exc).strip()[:300] or 'YouTube download failed'
+            _update_task_file_entry(task_id, 'youtube_files', fid, state='failed', error=reason, paused=False)
             _youtube_recompute_overall(task_id)
     _youtube_finalize_task_state(task_id)
     return completed_paths

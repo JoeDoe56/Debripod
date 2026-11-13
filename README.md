@@ -82,13 +82,11 @@ ffmpeg and ffprobe are used for metadata, artwork extraction, muxing, transcodin
 
 ### Search, downloads, and tasks
 
-DebriPod searches the indexed Library, Local Index, remote torrent sources, Soulseek, and YouTube concurrently, then presents one globally ranked feed. Standard rows show identity and a smaller secondary line; source, quality, and other metadata remain available in the contextual information panel. The text filter row accepts ordinary terms plus `source:`, `type:`, `indexer:`, and `media:` filters; quote values containing spaces.
+DebriPod searches the indexed Library, remote torrent sources, Soulseek, and YouTube concurrently, then presents one globally ranked feed. Standard rows show identity and a smaller secondary line; source, quality, and other metadata remain available in the contextual information panel. The text filter row accepts ordinary terms plus `source:`, `type:`, `indexer:`, and `media:` filters; quote values containing spaces.
 
 YouTube Music searches Songs, Music Videos, Albums, Artists, Music Playlists, Podcasts, and Episodes. Ordinary YouTube adds Videos, Playlists, and Channels. YouTube Music wins duplicate YouTube identities.
 
-Local Index searches `data/torrent_index.sqlite`, a persistent WAL/FTS5 database merging Debrid Media Manager hashlists and top-level Torrents CSV rows by validated 20-byte infohash. Its automatic updater uses exact source commits and transactional add/modify/delete reconciliation. Expect approximately 0.5–1.0 GB for a low-single-digit-million corpus; Settings reports the actual database size, counts, source SHAs, and update status. Searches always use the last successful database state and never wait for an update.
-
-Remote Torrent search uses exactly seven structured-data APIs: Knaben, BitSearch, Magnetz, TorLock, BT4G, TorrentClaw, and TorAPI. Their requests begin concurrently with Local Index, but remote rows merge only after Local Index seeds the shared infohash accumulator. A duplicate updates the existing row with current swarm, verification, magnet, URL, category, and provenance data instead of creating another result. Torrents CSV is an ingestion source only and is never queried interactively.
+Remote Torrent search uses exactly seven structured-data APIs: Knaben, BitSearch, Magnetz, TorLock, BT4G, TorrentClaw, and TorAPI. Their rows merge into a shared infohash accumulator as each source answers. A duplicate updates the existing row with current swarm, verification, magnet, URL, category, and provenance data instead of creating another result.
 
 Long running work appears in the task panel. Debrid, Soulseek, YouTube, and video processing jobs can show queued, active, paused, failed, canceled, and completed states. Search history and completed combined search payloads are cached locally.
 
@@ -188,7 +186,7 @@ debripod/
   storage/                primary SQLite database, migrations, codecs, and repositories
   MCP/                    optional MCP HTTP and SSE route helpers
   Routes/                 modular aiohttp route groups
-  Services/               unified search, Local Index, torrent API, Debrid, Soulseek, yt-dlp, and Last.fm helpers
+  Services/               unified search, torrent API, Debrid, Soulseek, yt-dlp, and Last.fm helpers
   Tasks/                  task model and task manager helpers
   playback/               streaming, range responses, ffprobe, and command helpers
   static/                 static shell/auth pages, JS modules, vendored sfgl, visualizer, service worker, fonts
@@ -216,8 +214,6 @@ Port selection does not create a JSON configuration file. Accounts, opaque serve
 ## Runtime data
 
 DebriPod uses one primary database at `data/debripod.sqlite3` for nonsecret structured state: accounts and passkeys, settings and setup, playback, tasks, Last.fm loved tracks, Library indexes and metadata, search history/cache, packed palettes, and visualizer analysis. Normal operation uses SQLite WAL mode. Real secrets stay in the OS keyring.
-
-Local torrent discovery uses a separate WAL database at `data/torrent_index.sqlite` plus temporary update state under `data/torrent_index_update/`. DMM archives and full CSV streams are temporary; the SQLite index is the permanent searchable representation. See [the search architecture](docs/search-architecture.md) for bootstrap, incremental update, recovery, transaction, and disk-budget details.
 
 Static palettes store exactly three packed RGB bytes per color. Video palette timelines are sampled at 2 Hz, omit adjacent repeats, and store no contrast/UI roles. The browser shares one memoized palette utility for music and video contrast, roles, wheel text, and selected-pill colors, and interpolates neighboring video samples.
 

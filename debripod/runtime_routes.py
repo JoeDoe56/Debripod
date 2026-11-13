@@ -27,8 +27,6 @@ from .Services.youtube import ytdlp_comments, ytdlp_inspect
 from .Services.ytdlp_runner import run_flat_entries_async
 from .Services.ytdlp_search import YtdlpSearchProvider
 from .Services.library_search import LibrarySearchProvider
-from .Services.local_index_search import LocalIndexSearchProvider
-from .Services.local_torrent_index import LocalIndexUpdater, LocalTorrentIndex
 from .Services.soulseek_search import SoulseekSearchProvider
 from .Services.torrent_search import TorrentSearchProvider
 from .Services.torrent_sources import TorrentHit
@@ -66,6 +64,7 @@ from .user_runtime import USER_RUNTIME_KEY, UserRuntime, UserRuntimeRegistry, us
 from .runtime_state import *
 from .runtime_downloads import *
 from .settings import APP_SETTING_KEYS, DEFAULT_APP_SETTINGS, DEFAULT_UI_SETTINGS, DEVICE_SETTING_KEYS, SECRET_SETTING_KEYS, SERVER_SETTING_KEYS, SETTING_DESCRIPTORS, default_app_settings, executable_status, ensure_app_settings, masked_settings, migrate_owner_server_settings, migrate_user_secrets, pick_system_path, save_app_settings, save_server_settings, settings_fingerprint
+from .settings import adopt_global_secrets_for_owner
 from .playback.state import load_playback_runtime
 
 # =========================
@@ -244,6 +243,7 @@ async def _create_user_runtime(services: AppServices, user: Any) -> UserRuntime:
     migrate_user_secrets(username, user_id)
     if str(getattr(user, "role", "") or "") == "owner":
         migrate_owner_server_settings(user_id, _default_app_overrides())
+        adopt_global_secrets_for_owner(user_id)
     settings = ensure_app_settings(
         user_id=user_id,
         legacy_username=username,
@@ -265,8 +265,6 @@ async def _create_user_runtime(services: AppServices, user: Any) -> UserRuntime:
     runtime.search_runtime = _build_unified_search_runtime(
         runtime.settings,
         http_client=services.http,
-        local_index=services.local_index,
-        local_index_updater=services.local_index_updater,
         soulseek_service=runtime.soulseek_service,
         user_id=runtime.user_id,
     )
@@ -309,18 +307,10 @@ def _build_unified_search_runtime(
     settings: dict[str, Any],
     *,
     http_client: HttpClient | None = None,
-    local_index: LocalTorrentIndex | None = None,
-    local_index_updater: LocalIndexUpdater | None = None,
     soulseek_service: Any = None,
     user_id: str = "",
 ):
     current = dict(settings)
-    local_index = local_index or LocalTorrentIndex()
-    local_index.initialize()
-    local_index_provider = LocalIndexSearchProvider(local_index)
-    local_index_updater = local_index_updater or (
-        LocalIndexUpdater(local_index, http=http_client) if http_client is not None else None
-    )
     enabled_sources = list(current.get("TORRENT_SEARCH_ENABLED_SOURCES") or [])
     torrent = (
         TorrentSearchProvider.from_http(
@@ -342,20 +332,14 @@ def _build_unified_search_runtime(
     )
     soulseek = SoulseekSearchProvider(lambda: soulseek_service)
     ytdlp = YtdlpSearchProvider(max_concurrent=int(current.get("YTDLP_SEARCH_MAX_CONCURRENT") or 4))
-    providers = [library]
-    if current.get("LOCAL_INDEX_ENABLED", True):
-        providers.append(local_index_provider)
-    providers.extend([soulseek, torrent, ytdlp])
+    providers = [library, soulseek, torrent, ytdlp]
     pipeline = SearchPipeline(providers, cache=_UnifiedSearchDiskCache(user_id))
     return build_search_runtime(
         pipeline=pipeline,
         library_provider=library,
-        local_index_provider=local_index_provider,
         soulseek_provider=soulseek,
         torrent_provider=torrent,
         ytdlp_provider=ytdlp,
-        local_index=local_index,
-        local_index_updater=local_index_updater,
         torrent_adapters={str(adapter.source_id): adapter for adapter in torrent.adapters},
     )
 
@@ -500,14 +484,10 @@ async def api_libsearch_combined(request: web.Request):
     settings = dict(user_runtime.settings)
     runtime = _active_search_runtime(request)
     debug = str(request.query.get("debug") or "").strip().lower() in {"1", "true", "yes"}
-    local_diagnostics = await asyncio.to_thread(runtime.local_index.diagnostics)
-    local_meta = local_diagnostics.get("meta") if isinstance(local_diagnostics, dict) else {}
     cache_inputs = {
         "schema": SEARCH_CACHE_SCHEMA,
         "user_id": user_runtime.user_id,
         "roots": _request_library_versions(request),
-        "local_index_enabled": bool(settings.get("LOCAL_INDEX_ENABLED", True)),
-        "local_index_generation": str((local_meta or {}).get("local_index_generation") or "0"),
         "torrent_sources": sorted(str(value).strip().lower() for value in (settings.get("TORRENT_SEARCH_ENABLED_SOURCES") or []) if str(value).strip()),
         "soulseek_enabled": bool(settings.get("SOULSEEK_USERNAME") and settings.get("SOULSEEK_PASSWORD")),
         "soulseek_max_results": int(settings.get("SOULSEEK_SEARCH_MAX_RESULTS") or 0),
@@ -842,14 +822,6 @@ async def api_ytdlp_directory(request: web.Request):
         return json_response(ok=False, error=str(exc), entries=[], result_count=0, status=400)
     except Exception as exc:
         return json_response(ok=False, error=str(exc) or "Failed to load directory", entries=[], result_count=0, status=400)
-
-
-@routes.get("/api/local-index/status")
-async def api_local_index_status(request: web.Request):
-    runtime = _active_search_runtime(request)
-    diagnostics = await asyncio.to_thread(runtime.local_index.diagnostics)
-    updater_state = dict(request.app[SERVICES_KEY].local_index_state or {})
-    return json_response(ok=True, **diagnostics, updater=updater_state)
 
 
 @routes.post("/api/torrent-search/resolve")
@@ -1548,8 +1520,7 @@ def _service_status_payload(settings: dict[str, Any], soulseek_service: Any = No
         },
         "torrent_search": {
             "enabled_sources": list(settings.get("TORRENT_SEARCH_ENABLED_SOURCES") or []),
-            "local_index_enabled": bool(settings.get("LOCAL_INDEX_ENABLED", True)),
-            "status": "configured" if settings.get("TORRENT_SEARCH_ENABLED_SOURCES") or settings.get("LOCAL_INDEX_ENABLED", True) else "disabled",
+            "status": "configured" if settings.get("TORRENT_SEARCH_ENABLED_SOURCES") else "disabled",
         },
         "youtube": {
             "tool": tools["yt_dlp"],
@@ -3475,23 +3446,6 @@ async def stream(request: web.Request):
     return await range_response(request, playable)
 
 
-async def _local_index_update_loop(services: AppServices) -> None:
-    await asyncio.sleep(2.0)
-    while True:
-        updater = services.local_index_updater
-        if updater is None:
-            return
-        services.local_index_state = {"building": True, **dict(getattr(updater, "state", {}) or {})}
-        try:
-            services.local_index_state = await updater.update()
-        except asyncio.CancelledError:
-            raise
-        except Exception as exc:
-            services.local_index_state = {"building": False, "error": str(exc)}
-        interval = max(300, int(DEFAULT_APP_SETTINGS.get("LOCAL_INDEX_UPDATE_INTERVAL_SECONDS") or 21600))
-        await asyncio.sleep(interval)
-
-
 async def _library_reconciliation_loop() -> None:
     while True:
         for root_id, _name, root_abs, mode in state_module.roots():
@@ -3511,27 +3465,18 @@ async def _application_services(app: web.Application):
     youtube_module.configure_youtube_http(services.http)
     tvmaze_module.configure_tvmaze_http(services.http)
     downloads_module.configure_debrid_downloads(services.http, asyncio.get_running_loop())
-    services.local_index = LocalTorrentIndex()
-    services.local_index.initialize()
-    services.local_index_updater = LocalIndexUpdater(services.local_index, http=services.http)
     services.user_runtimes = UserRuntimeRegistry(lambda user: _create_user_runtime(services, user))
     configure_task_manager(
         soulseek_service_provider=lambda user_id: getattr(
             services.user_runtimes.snapshot().get(str(user_id or "")), "soulseek_service", None
         )
     )
-    services.local_index_state = services.local_index.diagnostics()
-    services.local_index_task = asyncio.create_task(_local_index_update_loop(services), name="local-index-updater")
     services.library_reconciliation_task = asyncio.create_task(
         _library_reconciliation_loop(), name="library-native-watcher-reconciliation"
     )
     try:
         yield
     finally:
-        if services.local_index_task is not None:
-            services.local_index_task.cancel()
-            with contextlib.suppress(asyncio.CancelledError):
-                await services.local_index_task
         if services.library_reconciliation_task is not None:
             services.library_reconciliation_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):

@@ -17,33 +17,6 @@ def context(search_id="async-search"):
     return SearchContext("user", "Example Release", "example release", {}, {}, search_id)
 
 
-def local_row():
-    return {
-        "result_id": "torrent:" + INFOHASH, "provider_group": "local_index", "source": "local_index",
-        "source_label": "Local Index", "kind": "torrent", "kind_label": "Torrent", "title": "Example Release",
-        "subtitle": "", "artist": "", "album": "", "year": "", "duration": 0, "thumbnail": "",
-        "canonical_url": "magnet:?xt=urn:btih:" + INFOHASH, "stable_source_id": INFOHASH, "search_blob": "",
-        "filter_values": {"sources": ["Local Index"], "types": ["Torrent"], "indexers": ["DMM"], "media": []},
-        "match_confidence": 0, "rank_score": 0, "browse_available": True, "stream_available": False,
-        "download_available": True, "files_loaded": False, "file_count": 0, "size": 100, "files": [],
-        "provider_data": {"infohash": INFOHASH, "magnet": "magnet:?xt=urn:btih:" + INFOHASH,
-                          "indexer_ids": ["dmm"], "indexer_labels": ["DMM"], "source_urls": [],
-                          "seeders": 0, "leechers": 0, "verified": False},
-    }
-
-
-class LocalProvider:
-    provider_group = "local_index"
-
-    def __init__(self, remote_started):
-        self.remote_started = remote_started
-
-    async def search(self, query, search_context):
-        await asyncio.wait_for(self.remote_started.wait(), timeout=1)
-        await asyncio.sleep(.02)
-        return ProviderSearchResponse("local_index", {"source_id": "local_index", "status": "ok"}, [local_row()])
-
-
 class Adapter:
     source_id = "knaben"
     source_label = "Knaben"
@@ -57,27 +30,7 @@ class Adapter:
         return [TorrentHit(self.source_id, self.source_label, "Example Release", infohash=INFOHASH, seeders=20)]
 
 
-def test_remote_io_starts_at_t0_but_local_index_emits_and_seeds_dedup_first():
-    async def scenario():
-        started = asyncio.Event()
-        providers = [LocalProvider(started), TorrentSearchProvider([Adapter(started)])]
-        return [event async for event in SearchPipeline(providers).search_stream("Example Release", context())]
-
-    events = asyncio.run(scenario())
-    sources = [event for event in events if event["event"] == "source"]
-    assert [event["provider_group"] for event in sources] == ["local_index", "torrents"]
-    assert sources[0]["results"][0]["provider_data"]["seeders"] == 0
-    assert sources[1]["results"][0]["provider_data"]["seeders"] == 20
-    assert sources[1]["results"][0]["result_id"] == "torrent:" + INFOHASH
-    final = events[-1]
-    assert final["ok"] is True and final["result_count"] == 1
-    assert len(final["results"]) == 1
-    assert final["results"][0]["source"] == "local_index"
-    assert final["results"][0]["filter_values"]["sources"] == ["Local Index", "Torrents"]
-    assert final["results"][0]["provider_data"]["indexer_labels"] == ["DMM", "Knaben"]
-
-
-def test_pathological_stream_timing_releases_fast_remote_immediately_after_local_barrier():
+def test_torrent_sources_stream_as_soon_as_each_one_answers():
     class DelayedProvider:
         def __init__(self, provider_group, delay):
             self.provider_group = provider_group
@@ -89,17 +42,6 @@ def test_pathological_stream_timing_releases_fast_remote_immediately_after_local
                 self.provider_group,
                 {"source_id": self.provider_group, "status": "empty"},
                 [],
-            )
-
-    class DelayedLocal:
-        provider_group = "local_index"
-
-        async def search_stream(self, query, search_context):
-            await asyncio.sleep(0.010)
-            yield ProviderSearchResponse(
-                "local_index",
-                {"source_id": "local_index", "status": "ok"},
-                [local_row()],
             )
 
     class DelayedAdapter:
@@ -118,7 +60,6 @@ def test_pathological_stream_timing_releases_fast_remote_immediately_after_local
     async def scenario():
         providers = [
             DelayedProvider("library", 0.005),
-            DelayedLocal(),
             DelayedProvider("soulseek", 0.020),
             TorrentSearchProvider(
                 [
@@ -138,10 +79,9 @@ def test_pathological_stream_timing_releases_fast_remote_immediately_after_local
     timeline = asyncio.run(scenario())
     source_events = [(elapsed, event) for elapsed, event in timeline if event["event"] == "source"]
     identities = [event["source_id"] for _elapsed, event in source_events]
-    assert identities == ["library", "local_index", "knaben", "soulseek", "ytdlp", "torlock", "torrentclaw"]
-    local_time = next(elapsed for elapsed, event in source_events if event["source_id"] == "local_index")
+    assert identities == ["knaben", "library", "soulseek", "ytdlp", "torlock", "torrentclaw"]
     knaben_time = next(elapsed for elapsed, event in source_events if event["source_id"] == "knaben")
-    assert local_time <= knaben_time < 0.100
+    assert knaben_time < 0.100
     final = timeline[-1][1]
     assert final["event"] == "done"
     assert len(final["results"]) == 3

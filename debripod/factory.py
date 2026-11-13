@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import secrets
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import Any
 
 from aiohttp import web
@@ -73,11 +73,7 @@ class AppServices:
     http: HttpClient | None = None
     task_manager: Any = None
     user_runtimes: UserRuntimeRegistry | None = None
-    local_index: Any = None
-    local_index_updater: Any = None
-    local_index_task: asyncio.Task[Any] | None = None
     library_reconciliation_task: asyncio.Task[Any] | None = None
-    local_index_state: dict[str, Any] = field(default_factory=dict)
 
 
 SERVICES_KEY: web.AppKey[AppServices] = web.AppKey("services", AppServices)

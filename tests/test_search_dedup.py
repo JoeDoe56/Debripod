@@ -42,17 +42,9 @@ def test_hashless_torrents_only_merge_on_exact_magnet():
     assert len(deduplicate_torrents([one, two, three])) == 2
 
 
-def test_local_index_baseline_merges_two_remote_sources_and_keeps_remote_only_hash():
+def test_accumulator_merges_two_remote_sources_and_keeps_remote_only_hash():
     shared_hash = "a" * 40
     remote_hash = "b" * 40
-    local = _row(
-        "torrent:" + shared_hash, "local_index", "torrent", "Torrent",
-        {"infohash": shared_hash, "magnet": "magnet:?xt=urn:btih:" + shared_hash,
-         "indexer_ids": ["dmm"], "indexer_labels": ["DMM"], "source_urls": [],
-         "seeders": 0, "leechers": 0, "verified": False},
-        filter_values={"sources": ["Local Index"], "types": ["Torrent"], "indexers": ["DMM"], "media": []},
-    )
-    local.update(provider_group="local_index", source_label="Local Index")
     knaben = _row(
         "torrent:" + shared_hash, "torrent", "torrent", "Torrent",
         {"infohash": shared_hash, "magnet": "magnet:?xt=urn:btih:" + shared_hash,
@@ -76,17 +68,16 @@ def test_local_index_baseline_merges_two_remote_sources_and_keeps_remote_only_ha
     )
 
     accumulator = TorrentAccumulator()
-    assert accumulator.ingest(local)["result_id"] == "torrent:" + shared_hash
     assert accumulator.ingest(knaben)["result_id"] == "torrent:" + shared_hash
     merged = accumulator.ingest(magnetz)
     accumulator.ingest(remote_only)
     assert len(accumulator.values()) == 2
-    assert merged["source"] == "local_index"
-    assert merged["filter_values"]["sources"] == ["Local Index", "Torrents"]
-    assert merged["provider_data"]["indexer_labels"] == ["DMM", "Knaben", "Magnetz"]
+    assert merged["source"] == "torrent"
+    assert merged["filter_values"]["sources"] == ["Torrents"]
+    assert merged["provider_data"]["indexer_labels"] == ["Knaben", "Magnetz"]
     assert merged["provider_data"]["source_urls"] == ["https://knaben.invalid/detail", "https://magnetz.invalid/detail"]
     assert (merged["provider_data"]["seeders"], merged["provider_data"]["leechers"], merged["provider_data"]["verified"]) == (200, 10, True)
 
-    final = deduplicate_torrents([local, knaben, magnetz, remote_only])
+    final = deduplicate_torrents([knaben, magnetz, remote_only])
     assert len(final) == 2
     assert final[0]["provider_data"] == merged["provider_data"]

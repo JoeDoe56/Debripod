@@ -24,8 +24,19 @@
     const oldItems = Array.isArray(previous) ? previous : [];
     const newItems = Array.isArray(next) ? next : [];
     const keyOf = typeof identity === "function" ? identity : function(item, index){ return String(index); };
-    const oldMap = new Map(oldItems.map((item, index)=>[String(keyOf(item, index)), {item:item, index:index}]));
-    const nextMap = new Map(newItems.map((item, index)=>[String(keyOf(item, index)), {item:item, index:index}]));
+    // Duplicate identities are disambiguated by occurrence so a repeated key
+    // maps to the same row before and after, never to the last duplicate.
+    const keyed = function(items){
+      const seen = new Map();
+      return items.map(function(item, index){
+        const base = String(keyOf(item, index));
+        const count = seen.get(base) || 0;
+        seen.set(base, count + 1);
+        return [count ? base + "#" + count : base, {item:item, index:index}];
+      });
+    };
+    const oldMap = new Map(keyed(oldItems));
+    const nextMap = new Map(keyed(newItems));
     const retained = [];
     const inserted = [];
     const removed = [];
@@ -36,7 +47,11 @@
     oldMap.forEach((row, key)=>{
       if(!nextMap.has(key)) removed.push({key:key, oldIndex:row.index, item:row.item});
     });
-    const selectedKey = String(selectedIdentity == null ? "" : selectedIdentity);
+    let selectedKey = String(selectedIdentity == null ? "" : selectedIdentity);
+    const selectedOld = options && Number.isInteger(options.selectedIndex) ? options.selectedIndex : -1;
+    if(selectedOld >= 0){
+      for(const [key, row] of oldMap){ if(row.index === selectedOld){ selectedKey = key; break; } }
+    }
     const selectionIndex = nextMap.has(selectedKey) ? nextMap.get(selectedKey).index : -1;
     return {retained:retained, inserted:inserted, removed:removed, selectionIndex:selectionIndex, animate:false};
   }
