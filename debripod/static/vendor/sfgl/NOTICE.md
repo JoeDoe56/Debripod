@@ -12,6 +12,17 @@ work from the following projects, each also under the MIT License:
   shadow falloff, glass colour matrices and press response. Copyright (c) 2026
   liquid-glass contributors. See `licenses/liquid-glass-react/`.
 
+**Host Grotesk** (https://github.com/Element-Type/HostGrotesk), copyright 2023
+The Host Grotesk Project Authors, is bundled in `fonts/host-grotesk/` under the
+SIL Open Font License 1.1 (not MIT). The files are the unmodified `woff2`
+builds from `@fontsource-variable/host-grotesk` 5.3.0. The license text is in
+`fonts/host-grotesk/OFL.txt`.
+
+**SF Symbols.** `symbols/glyphs/` holds Apple's SF Symbols as PNG bitmaps,
+copied from the `wan-kong/sf-symbols-online` mirror. They are Apple's artwork
+and are *not* covered by sfgl's MIT License; Apple's own terms apply to them.
+See `symbols/PROVENANCE.md` before using or redistributing them.
+
 [AlexStrNik/ShatteredGlass](https://github.com/AlexStrNik/ShatteredGlass) was
 consulted as an architectural reference only; no code from it is included.
 
