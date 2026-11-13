@@ -98,6 +98,9 @@
       let visibleFileCount = 0;
       for(const ff of files){
         const name = String(ff.name || ff.title || ff.label || "");
+        // Soulseek search files carry the share path as path/provider_data.remote_path;
+        // without it the enqueue request has no files and the server answers 400.
+        const remotePath = String(ff.remote_path || (ff.provider_data && ff.provider_data.remote_path) || (src === "soulseek" ? (ff.path || "") : "") || "");
         const ext = String(ff.ext || "").toLowerCase();
         const bd = Number(ff.bit_depth || 0);
         const sr = Number(ff.sample_rate || 0);
@@ -109,7 +112,7 @@
         if(f.bitDepth && (!bd || bd !== f.bitDepth)) continue;
         if(f.sampleRate && (!sr || sr !== f.sampleRate)) continue;
         visibleFileCount += 1;
-        const key = src === "torrent" ? ("file:" + firstIdentifierText(ff.file_id, name)) : (src === "youtube" ? ("quality:" + firstIdentifierText(ff.file_id, name)) : (src === "library" ? ("library:" + String(ff.root_id || rr.root_id || "") + ":" + String(ff.rel || "")) : (String(ff.remote_path || name))));
+        const key = src === "torrent" ? ("file:" + firstIdentifierText(ff.file_id, name)) : (src === "youtube" ? ("quality:" + firstIdentifierText(ff.file_id, name)) : (src === "library" ? ("library:" + String(ff.root_id || rr.root_id || "") + ":" + String(ff.rel || "")) : (String(remotePath || name))));
         const dlState = normalizeSlskDownloadState(String(ff.download_state || ""));
         const pills = [];
         // yt-dlp keeps "youtube" as its internal source for format handling,
@@ -128,7 +131,7 @@
           selectable: !dlState,
           selected: !dlState && target.selected.has(key),
           pills:pills,
-          remote_path: String(ff.remote_path || ""),
+          remote_path: remotePath,
           file_id: identifierText(ff.file_id),
           size: Number(ff.size || 0),
           root_id: String(ff.root_id || rr.root_id || ""),
@@ -145,7 +148,7 @@
           onToggle: ()=>{
             if(dlState) return;
             if(target.selected.has(key)) target.selected.delete(key);
-            else target.selected.set(key, {key:key, remote_path:String(ff.remote_path || ""), file_id:identifierText(ff.file_id), size:Number(ff.size || 0), name:name, label:name, source:String(ff.source || src || ""), ext:String(ff.ext || ""), quality:String(ff.quality || ""), quality_target:String(ff.quality_target || ""), audio_extract:!!ff.audio_extract, duration:Number(ff.duration || 0), bitrate:String(ff.bitrate || ""), media:String(ff.media || rr.media || ""), root_id:String(ff.root_id || rr.root_id || ""), rel:String(ff.rel || ""), source_url:String(ff.source_url || rr.source_url || rr.original_url || rr.canonical_url || rr.url || ""), url:String((target.result && (target.result.url || target.result.original_url || target.result.canonical_url)) || "")});
+            else target.selected.set(key, {key:key, remote_path:remotePath, file_id:identifierText(ff.file_id), size:Number(ff.size || 0), name:name, label:name, source:String(ff.source || src || ""), ext:String(ff.ext || ""), quality:String(ff.quality || ""), quality_target:String(ff.quality_target || ""), audio_extract:!!ff.audio_extract, duration:Number(ff.duration || 0), bitrate:String(ff.bitrate || ""), media:String(ff.media || rr.media || ""), root_id:String(ff.root_id || rr.root_id || ""), rel:String(ff.rel || ""), source_url:String(ff.source_url || rr.source_url || rr.original_url || rr.canonical_url || rr.url || ""), url:String((target.result && (target.result.url || target.result.original_url || target.result.canonical_url)) || "")});
           }
         });
       }

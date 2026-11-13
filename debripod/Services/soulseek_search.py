@@ -51,7 +51,7 @@ class SoulseekSearchProvider:
             files = []
             for raw in directory.get("files") or []:
                 remote = str(raw.get("remote_path") or raw.get("name") or "")
-                files.append({"file_id": remote, "name": str(raw.get("name") or os.path.basename(remote)), "title": str(raw.get("name") or os.path.basename(remote)), "path": remote, "size": int(raw.get("size") or 0), "duration": float(raw.get("duration") or 0), "media": str(raw.get("kind") or "file"), "stream_available": False, "download_available": True, "provider_data": {"remote_path": remote}})
+                files.append({"file_id": remote, "name": str(raw.get("name") or os.path.basename(remote)), "title": str(raw.get("name") or os.path.basename(remote)), "path": remote, "remote_path": remote, "size": int(raw.get("size") or 0), "duration": float(raw.get("duration") or 0), "media": str(raw.get("kind") or "file"), "stream_available": False, "download_available": True, "provider_data": {"remote_path": remote}})
             title = path.replace("/", "\\").rstrip("\\").split("\\")[-1] or user or "Soulseek directory"
             result_id = soulseek_result_id(user, path)
             results.append({
